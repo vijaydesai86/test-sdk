@@ -13,7 +13,18 @@ export default function ChatInterface() {
   const [isLoading, setIsLoading] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [model, setModel] = useState('gpt-4.1');
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  const availableModels = [
+    { value: 'gpt-4.1', label: 'GPT-4.1' },
+    { value: 'gpt-4.1-mini', label: 'GPT-4.1 Mini' },
+    { value: 'gpt-4o', label: 'GPT-4o' },
+    { value: 'o3-mini', label: 'o3-mini' },
+    { value: 'o4-mini', label: 'o4-mini' },
+    { value: 'claude-sonnet-4', label: 'Claude Sonnet 4' },
+    { value: 'claude-3.5-sonnet', label: 'Claude 3.5 Sonnet' },
+  ];
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -42,6 +53,7 @@ export default function ChatInterface() {
         body: JSON.stringify({
           message: userMessage,
           sessionId,
+          model,
         }),
       });
 
@@ -85,8 +97,24 @@ export default function ChatInterface() {
           📊 Stock Information Assistant
         </h1>
         <p className="text-gray-600 dark:text-gray-300">
-          Powered by GitHub Copilot SDK - Ask me anything about US stocks!
+          Powered by GitHub Copilot - Ask me anything about US stocks!
         </p>
+        <div className="mt-3 flex items-center gap-2">
+          <label htmlFor="model-select" className="text-sm text-gray-600 dark:text-gray-400">Model:</label>
+          <select
+            id="model-select"
+            value={model}
+            onChange={(e) => {
+              setModel(e.target.value);
+              setSessionId(null);
+            }}
+            className="text-sm px-3 py-1.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+          >
+            {availableModels.map((m) => (
+              <option key={m.value} value={m.value}>{m.label}</option>
+            ))}
+          </select>
+        </div>
         <div className="mt-4 flex flex-wrap gap-2">
           {messages.length === 0 && exampleQuestions.map((question, idx) => (
             <button

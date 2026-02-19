@@ -4,7 +4,7 @@ import { AlphaVantageService, MockStockDataService, StockDataService } from '@/a
 
 // GitHub Copilot API — uses your existing Copilot subscription
 const COPILOT_TOKEN_URL = 'https://api.github.com/copilot_internal/v2/token';
-const MODEL = process.env.COPILOT_MODEL || 'gpt-4.1';
+const DEFAULT_MODEL = process.env.COPILOT_MODEL || 'gpt-4.1';
 const MAX_TOOL_ROUNDS = 5;
 
 interface ChatMessage {
@@ -72,7 +72,8 @@ async function getCopilotToken(githubPAT: string): Promise<CopilotToken> {
  */
 async function callCopilotAPI(
   messages: ChatMessage[],
-  githubPAT: string
+  githubPAT: string,
+  model: string
 ): Promise<any> {
   const copilotToken = await getCopilotToken(githubPAT);
 
@@ -86,7 +87,7 @@ async function callCopilotAPI(
       'Openai-Intent': 'conversation-panel',
     },
     body: JSON.stringify({
-      model: MODEL,
+      model,
       messages,
       tools: getToolDefinitions(),
     }),
@@ -106,7 +107,7 @@ async function callCopilotAPI(
 
 export async function POST(request: NextRequest) {
   try {
-    const { message, sessionId } = await request.json();
+    const { message, sessionId, model } = await request.json();
 
     if (!message) {
       return NextResponse.json(
@@ -150,7 +151,7 @@ export async function POST(request: NextRequest) {
 
     while (rounds < MAX_TOOL_ROUNDS) {
       rounds++;
-      const result = await callCopilotAPI(conversationMessages, githubToken);
+      const result = await callCopilotAPI(conversationMessages, githubToken, model || DEFAULT_MODEL);
       const choice = result.choices?.[0];
 
       if (!choice) {
