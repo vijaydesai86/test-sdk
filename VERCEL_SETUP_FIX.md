@@ -63,15 +63,15 @@ If you truly cannot change the Root Directory in the Vercel UI, the `vercel.json
 
 ```json
 {
-  "buildCommand": "npm --prefix web install && npm --prefix web run build",
+  "buildCommand": "cd web && npm install && npm run build",
   "outputDirectory": "web/.next",
-  "installCommand": "npm --prefix web install"
+  "installCommand": "cd web && npm install"
 }
 ```
 
 This tells Vercel:
-- Install dependencies from the `web/` directory
-- Build the Next.js app in the `web/` directory
+- Change to the `web/` directory and install dependencies
+- Build the Next.js app from the `web/` directory
 - Look for the build output in `web/.next`
 
 ### To deploy with this configuration:
