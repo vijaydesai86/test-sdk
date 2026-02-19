@@ -2,17 +2,20 @@
 
 An AI-powered stock information tool that provides comprehensive US stock market data through both a CLI and web interface.
 
-## ⚡ Deploy to Vercel in 5 Minutes
+## ⚡ Deploy to Vercel Using Your GitHub Copilot Subscription
 
-**Want to use it right away?** Deploy to Vercel - no local setup needed!
+**No OpenAI subscription needed!** Use your existing GitHub Copilot subscription on Vercel.
 
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/vijaydesai86/test-sdk&root-directory=web&env=OPENAI_API_KEY&envDescription=OpenAI%20API%20key%20required%20for%20AI%20responses&envLink=https://platform.openai.com/api-keys)
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/vijaydesai86/test-sdk&root-directory=web&env=GITHUB_TOKEN&envDescription=GitHub%20token%20to%20use%20your%20Copilot%20subscription&envLink=https://github.com/settings/tokens)
 
-**📖 [Complete Vercel Deployment Guide](VERCEL_DEPLOYMENT.md)** - Step-by-step instructions
+**📖 [Complete Vercel Setup Guide](VERCEL_WITH_COPILOT.md)** - Uses your existing Copilot subscription!
 
-**Requirements for Vercel:**
-- OpenAI API key ([Get one here](https://platform.openai.com/api-keys)) - Required
-- Alpha Vantage key ([Get free key](https://www.alphavantage.co/support/#api-key)) - Optional, for real stock data
+**What You Need for Vercel:**
+- ✅ GitHub Copilot subscription (you already have this!)
+- ✅ GitHub Personal Access Token ([Create here](https://github.com/settings/tokens)) - FREE
+- ✅ Alpha Vantage key ([Get free key](https://www.alphavantage.co/support/#api-key)) - Optional, for real stock data
+
+**Total Additional Cost: $0/month** 🎉
 
 ## Features
 
@@ -26,9 +29,15 @@ An AI-powered stock information tool that provides comprehensive US stock market
 
 ## 🚀 Quick Start Options
 
-### Option 1: Deploy to Vercel (Recommended - Just Works!)
+### Option 1: Deploy to Vercel (Recommended - Uses Your Copilot Subscription!)
 
-See [VERCEL_DEPLOYMENT.md](VERCEL_DEPLOYMENT.md) for detailed instructions.
+See [VERCEL_WITH_COPILOT.md](VERCEL_WITH_COPILOT.md) for detailed instructions.
+
+**Quick Steps:**
+1. Create GitHub token at [github.com/settings/tokens](https://github.com/settings/tokens)
+2. Import project to Vercel, set root directory to `web`
+3. Add `GITHUB_TOKEN` environment variable
+4. Deploy! (Uses your existing Copilot subscription)
 
 ### Option 2: Run Locally (CLI Version)
 
@@ -99,9 +108,9 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000) in your browser.
 
-### Deploy to Vercel (✅ Now Works!)
+### Deploy to Vercel (✅ Uses Your Copilot Subscription!)
 
-The web interface now works seamlessly on Vercel using OpenAI directly (no Copilot CLI required).
+The web interface works on Vercel using your existing GitHub Copilot subscription - no additional costs!
 
 1. **Push to GitHub** (if not already done)
    ```bash
@@ -116,14 +125,15 @@ The web interface now works seamlessly on Vercel using OpenAI directly (no Copil
    - Select your GitHub repository
    - Set the **Root Directory** to `web`
    - Add environment variables:
-     - `OPENAI_API_KEY=your_openai_key` (**REQUIRED**)
+     - `GITHUB_TOKEN=ghp_...` (**REQUIRED** - uses your Copilot subscription!)
      - `USE_REAL_API=false` (or `true` with Alpha Vantage key)
      - `ALPHA_VANTAGE_API_KEY=your_key` (optional, for real stock data)
    - Click "Deploy"
 
-3. **Get OpenAI API Key**:
-   - Visit [platform.openai.com/api-keys](https://platform.openai.com/api-keys)
-   - Create a new API key
+3. **Get GitHub Token** (FREE - uses your existing Copilot subscription):
+   - Visit [github.com/settings/tokens](https://github.com/settings/tokens)
+   - Create a new Personal Access Token
+   - Select `repo` or `public_repo` scope
    - Add it to Vercel environment variables
 
 4. **Important Vercel Configuration**:
@@ -131,12 +141,14 @@ The web interface now works seamlessly on Vercel using OpenAI directly (no Copil
    - Framework Preset: Next.js
    - Node.js Version: 18.x or higher
 
-**Note**: The web deployment uses OpenAI directly for Vercel compatibility. The CLI version still uses GitHub Copilot SDK for local development.
+**Note**: The web deployment uses GitHub Copilot SDK with token authentication. No OpenAI subscription needed!
 
 ## 🔑 API Configuration
 
 ### For Vercel Deployment:
-1. **OpenAI API Key** (REQUIRED): Get from [platform.openai.com](https://platform.openai.com/api-keys)
+1. **GitHub Token** (REQUIRED - FREE!): Create at [github.com/settings/tokens](https://github.com/settings/tokens)
+   - Uses your existing GitHub Copilot subscription
+   - No additional cost!
 2. **Alpha Vantage Key** (Optional): Get from [Alpha Vantage](https://www.alphavantage.co/support/#api-key)
 
 ### For Local Development:

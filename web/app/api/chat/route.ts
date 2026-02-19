@@ -1,156 +1,26 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { CopilotClient } from '@github/copilot-sdk';
+import { createStockTools } from '@/app/lib/stockTools';
 import { AlphaVantageService, MockStockDataService } from '@/app/lib/stockDataService';
-import OpenAI from 'openai';
-import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 
-// Store conversation history for sessions
-const conversationHistory = new Map<string, ChatCompletionMessageParam[]>();
+// Store sessions in memory
+const sessions = new Map<string, any>();
+let copilotClient: CopilotClient | null = null;
 
-// Initialize OpenAI client for Vercel deployment
-let openaiClient: OpenAI | null = null;
-
-function getOpenAIClient() {
-  if (!openaiClient && process.env.OPENAI_API_KEY) {
-    openaiClient = new OpenAI({
-      apiKey: process.env.OPENAI_API_KEY,
+async function getCopilotClient() {
+  if (!copilotClient) {
+    // Use GitHub token authentication (no CLI required)
+    // This works on Vercel with your GitHub Copilot subscription
+    const githubToken = process.env.GITHUB_TOKEN || process.env.GH_TOKEN || process.env.COPILOT_GITHUB_TOKEN;
+    
+    copilotClient = new CopilotClient({
+      githubToken: githubToken,
     });
+    await copilotClient.start();
   }
-  return openaiClient;
+  return copilotClient;
 }
 
-// Tool definitions for function calling
-const stockTools = [
-  {
-    type: 'function' as const,
-    function: {
-      name: 'search_stock',
-      description: 'Search for US stock symbols by company name or ticker',
-      parameters: {
-        type: 'object',
-        properties: {
-          query: {
-            type: 'string',
-            description: 'Company name or stock ticker to search for',
-          },
-        },
-        required: ['query'],
-      },
-    },
-  },
-  {
-    type: 'function' as const,
-    function: {
-      name: 'get_stock_price',
-      description: 'Get the current stock price and quote information',
-      parameters: {
-        type: 'object',
-        properties: {
-          symbol: {
-            type: 'string',
-            description: 'Stock ticker symbol (e.g., AAPL, MSFT)',
-          },
-        },
-        required: ['symbol'],
-      },
-    },
-  },
-  {
-    type: 'function' as const,
-    function: {
-      name: 'get_price_history',
-      description: 'Get historical price data for a stock',
-      parameters: {
-        type: 'object',
-        properties: {
-          symbol: {
-            type: 'string',
-            description: 'Stock ticker symbol',
-          },
-          range: {
-            type: 'string',
-            description: 'Time range: daily, weekly, or monthly',
-            enum: ['daily', 'weekly', 'monthly'],
-          },
-        },
-        required: ['symbol'],
-      },
-    },
-  },
-  {
-    type: 'function' as const,
-    function: {
-      name: 'get_company_overview',
-      description: 'Get company fundamentals including EPS, PE ratio, market cap, etc.',
-      parameters: {
-        type: 'object',
-        properties: {
-          symbol: {
-            type: 'string',
-            description: 'Stock ticker symbol',
-          },
-        },
-        required: ['symbol'],
-      },
-    },
-  },
-  {
-    type: 'function' as const,
-    function: {
-      name: 'get_insider_trading',
-      description: 'Get insider trading information for a stock',
-      parameters: {
-        type: 'object',
-        properties: {
-          symbol: {
-            type: 'string',
-            description: 'Stock ticker symbol',
-          },
-        },
-        required: ['symbol'],
-      },
-    },
-  },
-  {
-    type: 'function' as const,
-    function: {
-      name: 'get_analyst_ratings',
-      description: 'Get analyst ratings and target price for a stock',
-      parameters: {
-        type: 'object',
-        properties: {
-          symbol: {
-            type: 'string',
-            description: 'Stock ticker symbol',
-          },
-        },
-        required: ['symbol'],
-      },
-    },
-  },
-];
-
-async function executeToolCall(toolName: string, args: any, stockService: any) {
-  try {
-    switch (toolName) {
-      case 'search_stock':
-        return await stockService.searchStock(args.query);
-      case 'get_stock_price':
-        return await stockService.getStockPrice(args.symbol);
-      case 'get_price_history':
-        return await stockService.getPriceHistory(args.symbol, args.range || 'daily');
-      case 'get_company_overview':
-        return await stockService.getCompanyOverview(args.symbol);
-      case 'get_insider_trading':
-        return await stockService.getInsiderTrading(args.symbol);
-      case 'get_analyst_ratings':
-        return await stockService.getAnalystRatings(args.symbol);
-      default:
-        return { error: 'Unknown tool' };
-    }
-  } catch (error: any) {
-    return { error: error.message };
-  }
-}
 
 export async function POST(request: NextRequest) {
   try {
@@ -163,12 +33,13 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Check if OpenAI API key is available
-    if (!process.env.OPENAI_API_KEY) {
+    // Check if GitHub token is available
+    const githubToken = process.env.GITHUB_TOKEN || process.env.GH_TOKEN || process.env.COPILOT_GITHUB_TOKEN;
+    if (!githubToken) {
       return NextResponse.json(
         {
-          error: 'OpenAI API key not configured',
-          details: 'Please set OPENAI_API_KEY environment variable in Vercel dashboard to enable AI responses. The app uses OpenAI directly when deployed to Vercel (no Copilot CLI required).',
+          error: 'GitHub token not configured',
+          details: 'Please set GITHUB_TOKEN (or GH_TOKEN) environment variable in Vercel. This uses your existing GitHub Copilot subscription - no additional payment needed! Get a token at: https://github.com/settings/tokens',
         },
         { status: 503 }
       );
@@ -180,114 +51,47 @@ export async function POST(request: NextRequest) {
       ? new AlphaVantageService(process.env.ALPHA_VANTAGE_API_KEY)
       : new MockStockDataService();
 
-    // Get or create conversation history
-    const newSessionId = sessionId || Math.random().toString(36).substring(7);
-    let history = conversationHistory.get(newSessionId) || [];
-
-    // Add user message to history
-    history.push({ role: 'user', content: message } as ChatCompletionMessageParam);
-
-    // Keep only last 10 messages to avoid token limits
-    if (history.length > 10) {
-      history = history.slice(-10);
-    }
-
-    const client = getOpenAIClient();
-    if (!client) {
-      throw new Error('Failed to initialize OpenAI client');
-    }
-
-    // Create chat completion with function calling
-    const completion = await client.chat.completions.create({
-      model: 'gpt-4-turbo-preview',
-      messages: [
-        {
-          role: 'system',
-          content: `You are a helpful stock information assistant. You have access to various tools to fetch stock data. 
-When users ask about stocks, use the appropriate tools to get the information. 
-Provide clear, concise answers with relevant data. Format numbers nicely and explain financial terms when helpful.`,
-        },
-        ...history,
-      ],
-      tools: stockTools,
-      tool_choice: 'auto',
-    });
-
-    let responseMessage = completion.choices[0].message;
-
-    // Handle function calls
-    if (responseMessage.tool_calls && responseMessage.tool_calls.length > 0) {
-      // Execute all tool calls
-      const toolMessages = [];
-      
-      for (const toolCall of responseMessage.tool_calls) {
-        if (toolCall.type === 'function' && toolCall.function) {
-          const functionName = toolCall.function.name;
-          const functionArgs = JSON.parse(toolCall.function.arguments);
-          
-          const result = await executeToolCall(functionName, functionArgs, stockService);
-          
-          toolMessages.push({
-            role: 'tool' as const,
-            tool_call_id: toolCall.id,
-            content: JSON.stringify(result),
-          });
-        }
-      }
-
-      // Add assistant message with tool calls to history
-      history.push({
-        role: 'assistant',
-        content: responseMessage.content || '',
-      } as ChatCompletionMessageParam);
-
-      // Get final response with tool results
-      const secondCompletion = await client.chat.completions.create({
-        model: 'gpt-4-turbo-preview',
-        messages: [
-          {
-            role: 'system',
-            content: `You are a helpful stock information assistant. You have access to various tools to fetch stock data. 
-When users ask about stocks, use the appropriate tools to get the information. 
-Provide clear, concise answers with relevant data. Format numbers nicely and explain financial terms when helpful.`,
-          },
-          ...history,
-          ...toolMessages,
-        ],
+    // Get or create session
+    let session = sessionId ? sessions.get(sessionId) : null;
+    
+    if (!session) {
+      const client = await getCopilotClient();
+      session = await client.createSession({
+        model: 'gpt-4o',
       });
 
-      responseMessage = secondCompletion.choices[0].message;
+      const stockTools = createStockTools(stockService);
+      session.setTools(stockTools);
+
+      const newSessionId = Math.random().toString(36).substring(7);
+      sessions.set(newSessionId, session);
+
+      // Store session ID in response
+      session._sessionId = newSessionId;
     }
 
-    // Add assistant response to history
-    if (responseMessage.content) {
-      history.push({
-        role: 'assistant',
-        content: responseMessage.content,
-      } as ChatCompletionMessageParam);
-    }
-
-    // Save updated history
-    conversationHistory.set(newSessionId, history);
-
-    // Clean up old sessions (keep only last 100)
-    if (conversationHistory.size > 100) {
-      const keys = Array.from(conversationHistory.keys());
-      for (let i = 0; i < keys.length - 100; i++) {
-        conversationHistory.delete(keys[i]);
-      }
-    }
-
-    return NextResponse.json({
-      response: responseMessage.content || 'No response generated',
-      sessionId: newSessionId,
+    // Send message and get response
+    const response = await session.sendAndWait({
+      prompt: message,
     });
+
+    if (response && response.data && response.data.content) {
+      return NextResponse.json({
+        response: response.data.content,
+        sessionId: session._sessionId,
+      });
+    } else {
+      return NextResponse.json({
+        response: "I apologize, but I couldn't generate a response. Please try again.",
+        sessionId: session._sessionId,
+      });
+    }
   } catch (error: any) {
     console.error('Chat API error:', error);
     return NextResponse.json(
       {
         error: error.message || 'Failed to process message',
-        details: 'Make sure OPENAI_API_KEY is set in your Vercel environment variables.',
+        details: 'Make sure GITHUB_TOKEN is set in your Vercel environment variables. Create one at: https://github.com/settings/tokens',
       },
       { status: 500 }
     );
@@ -298,8 +102,10 @@ export async function DELETE(request: NextRequest) {
   try {
     const { sessionId } = await request.json();
 
-    if (sessionId && conversationHistory.has(sessionId)) {
-      conversationHistory.delete(sessionId);
+    if (sessionId && sessions.has(sessionId)) {
+      const session = sessions.get(sessionId);
+      await session.destroy();
+      sessions.delete(sessionId);
     }
 
     return NextResponse.json({ success: true });
