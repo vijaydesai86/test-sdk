@@ -204,9 +204,9 @@ export class AlphaVantageService implements StockDataService {
       hold: data.AnalystRatingHold || 'N/A',
       sell: data.AnalystRatingSell || 'N/A',
       strongSell: data.AnalystRatingStrongSell || 'N/A',
-      currentPrice: data['50DayMovingAverage'] || 'N/A',
+      movingAverage50Day: data['50DayMovingAverage'] || 'N/A',
       upside: data.AnalystTargetPrice && data['50DayMovingAverage']
-        ? `${(((Number(data.AnalystTargetPrice) / Number(data['50DayMovingAverage'])) - 1) * 100).toFixed(1)}%`
+        ? `${(((Number(data.AnalystTargetPrice) / Number(data['50DayMovingAverage'])) - 1) * 100).toFixed(1)}% (vs 50-day MA)`
         : 'N/A',
     };
   }
