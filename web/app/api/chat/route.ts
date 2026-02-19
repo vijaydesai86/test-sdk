@@ -4,7 +4,7 @@ import { AlphaVantageService, MockStockDataService, StockDataService } from '@/a
 
 // GitHub Copilot API — uses your existing Copilot subscription
 const COPILOT_TOKEN_URL = 'https://api.github.com/copilot_internal/v2/token';
-const MODEL = 'gpt-4o';
+const MODEL = process.env.COPILOT_MODEL || 'gpt-4.1';
 const MAX_TOOL_ROUNDS = 5;
 
 interface ChatMessage {
@@ -34,7 +34,7 @@ const SYSTEM_PROMPT = `You are a helpful stock information assistant. You can lo
  */
 async function getCopilotToken(githubPAT: string): Promise<CopilotToken> {
   // Return cached token if still valid (with 60s buffer)
-  if (cachedCopilotToken && cachedCopilotToken.expiresAt > Date.now() / 1000 + 60) {
+  if (cachedCopilotToken && cachedCopilotToken.expiresAt > (Date.now() / 1000) + 60) {
     return cachedCopilotToken;
   }
 
@@ -135,11 +135,10 @@ export async function POST(request: NextRequest) {
 
     // Get or create conversation history
     let conversationMessages: ChatMessage[] = sessionId ? sessions.get(sessionId) || [] : [];
-    let currentSessionId = sessionId;
+    let currentSessionId = sessionId || Math.random().toString(36).substring(7);
 
     if (conversationMessages.length === 0) {
       conversationMessages.push({ role: 'system', content: SYSTEM_PROMPT });
-      currentSessionId = Math.random().toString(36).substring(7);
     }
 
     // Add user message
@@ -186,7 +185,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Save conversation history
-    sessions.set(currentSessionId!, conversationMessages);
+    sessions.set(currentSessionId, conversationMessages);
 
     return NextResponse.json({
       response: assistantContent || "I apologize, but I couldn't generate a response. Please try again.",

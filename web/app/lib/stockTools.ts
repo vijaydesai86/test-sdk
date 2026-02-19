@@ -119,21 +119,21 @@ export function getToolDefinitions() {
  */
 export async function executeTool(
   toolName: string,
-  args: Record<string, string>,
+  args: Record<string, string | undefined>,
   stockService: StockDataService
 ): Promise<{ success: boolean; data?: any; message?: string; error?: string }> {
   try {
     switch (toolName) {
       case 'search_stock': {
-        const results = await stockService.searchStock(args.query);
+        const results = await stockService.searchStock(args.query || '');
         return {
           success: true,
           data: results,
-          message: `Found ${results.results?.length || 0} matching stocks for "${args.query}"`,
+          message: `Found ${results.results?.length || 0} matching stocks for "${args.query || ''}"`,
         };
       }
       case 'get_stock_price': {
-        const price = await stockService.getStockPrice(args.symbol);
+        const price = await stockService.getStockPrice(args.symbol || '');
         return {
           success: true,
           data: price,
@@ -141,7 +141,7 @@ export async function executeTool(
         };
       }
       case 'get_price_history': {
-        const history = await stockService.getPriceHistory(args.symbol, args.range || 'daily');
+        const history = await stockService.getPriceHistory(args.symbol || '', args.range || 'daily');
         return {
           success: true,
           data: history,
@@ -149,7 +149,7 @@ export async function executeTool(
         };
       }
       case 'get_company_overview': {
-        const overview = await stockService.getCompanyOverview(args.symbol);
+        const overview = await stockService.getCompanyOverview(args.symbol || '');
         return {
           success: true,
           data: overview,
@@ -157,7 +157,7 @@ export async function executeTool(
         };
       }
       case 'get_insider_trading': {
-        const insiderData = await stockService.getInsiderTrading(args.symbol);
+        const insiderData = await stockService.getInsiderTrading(args.symbol || '');
         return {
           success: true,
           data: insiderData,
@@ -165,7 +165,7 @@ export async function executeTool(
         };
       }
       case 'get_analyst_ratings': {
-        const ratings = await stockService.getAnalystRatings(args.symbol);
+        const ratings = await stockService.getAnalystRatings(args.symbol || '');
         return {
           success: true,
           data: ratings,
