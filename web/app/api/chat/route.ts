@@ -75,7 +75,8 @@ export async function POST(request: NextRequest) {
       prompt: message,
     });
 
-    if (response && response.data && response.data.content) {
+    // Response is an AssistantMessageEvent with type: "assistant.message" and data.content
+    if (response?.data?.content) {
       return NextResponse.json({
         response: response.data.content,
         sessionId: session._sessionId,

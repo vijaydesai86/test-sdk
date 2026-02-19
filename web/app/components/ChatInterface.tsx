@@ -62,7 +62,7 @@ export default function ChatInterface() {
         ...prev,
         {
           role: 'assistant',
-          content: `Error: ${err.message}. Please make sure GitHub Copilot CLI is installed and you are authenticated.`,
+          content: `Error: ${err.message}. Please make sure GITHUB_TOKEN environment variable is configured in Vercel.`,
         },
       ]);
     } finally {

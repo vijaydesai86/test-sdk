@@ -1,154 +1,173 @@
-# Deploying to Vercel
+# 🚀 Deployment Guide
 
-This guide explains how to deploy the Stock Information Assistant web interface to Vercel.
+## Deploy to Vercel (Recommended)
 
-## Prerequisites
+### ✅ Uses Your Existing GitHub Copilot Subscription - No Additional Cost!
 
-1. A GitHub account
-2. A Vercel account (sign up at [vercel.com](https://vercel.com))
-3. Your code pushed to a GitHub repository
+You already pay for GitHub Copilot, so you can use it on Vercel **without any additional subscription**.
 
-## Deployment Steps
+### Quick Deploy (5 Minutes)
 
-### 1. Push Your Code to GitHub
+#### Step 1: Create a GitHub Token
 
-Make sure all your changes are committed and pushed:
+1. Go to [github.com/settings/tokens](https://github.com/settings/tokens)
+2. Click **"Generate new token"** → **"Generate new token (classic)"**
+3. Name it: `Vercel Stock App`
+4. Select scopes:
+   - ✅ `repo` (if using private repos) OR
+   - ✅ `public_repo` (for public repos only)
+5. Click **"Generate token"**
+6. **Copy the token** (starts with `ghp_...`) - you won't see it again!
 
-```bash
-git add .
-git commit -m "Ready for deployment"
-git push origin main
-```
-
-### 2. Import Project on Vercel
+#### Step 2: Import to Vercel
 
 1. Go to [vercel.com](https://vercel.com) and sign in
-2. Click **"Add New..."** → **"Project"**
-3. Select **"Import Git Repository"**
-4. Find and select your `test-sdk` repository
+2. Click **"Add New Project"**
+3. Select your **test-sdk** repository
+4. Click **"Import"**
 
-### 3. Configure Build Settings
+#### Step 3: Configure Project
 
-**Important:** Since the Next.js app is in the `web` subdirectory:
+**IMPORTANT Settings:**
 
-1. In the project settings, expand **"Build and Output Settings"**
-2. Set **Root Directory** to: `web`
-3. Framework Preset should auto-detect as **Next.js**
-4. Leave other settings at default
+1. **Root Directory**: Set to `web` ⚠️ (Critical!)
+2. **Framework Preset**: Next.js (auto-detected) ✅
+3. **Build Command**: Leave default
+4. **Node.js Version**: 18.x or higher
 
-### 4. Configure Environment Variables (Optional)
+#### Step 4: Add Environment Variables
 
-If you want to use real stock data instead of mock data:
+Click **"Environment Variables"** and add:
 
-1. Click **"Environment Variables"**
-2. Add the following variables:
-   - Key: `USE_REAL_API`, Value: `true`
-   - Key: `ALPHA_VANTAGE_API_KEY`, Value: `your_api_key_here`
+**Required:**
+```
+Name: GITHUB_TOKEN
+Value: ghp_... (paste your token from Step 1)
+```
 
-To get a free API key:
-- Visit [Alpha Vantage](https://www.alphavantage.co/support/#api-key)
-- Sign up for a free API key
-- Free tier: 5 API calls per minute
+**Optional (for real stock data):**
+```
+Name: USE_REAL_API
+Value: true
+```
+```
+Name: ALPHA_VANTAGE_API_KEY
+Value: your_alpha_vantage_key
+```
 
-### 5. Deploy
+Get a free Alpha Vantage key at: https://www.alphavantage.co/support/#api-key
 
-1. Click **"Deploy"**
-2. Wait for the build to complete (usually 1-2 minutes)
-3. Once deployed, you'll get a URL like: `https://your-app.vercel.app`
+#### Step 5: Deploy
 
-## Post-Deployment
+Click **"Deploy"** and wait 2 minutes. Done! 🚀
 
-### Test Your Deployment
+### What This Costs You
 
-1. Visit your deployment URL
+#### ✅ FREE (Using What You Already Pay For!)
+
+- **GitHub Copilot Subscription**: You already have this! ✅
+- **Vercel Hosting**: Free tier (100GB bandwidth/month)
+- **Alpha Vantage**: Free tier (5 calls/minute)
+
+**Total Additional Cost: $0/month** 🎉
+
+### How It Works
+
+```
+Your Browser
+     ↓
+Vercel (Next.js App)
+     ↓
+GitHub Copilot SDK (using GITHUB_TOKEN)
+     ↓
+GitHub Copilot API (using your subscription!)
+     ↓
+Stock Tools + Alpha Vantage API (optional)
+```
+
+### Testing Your Deployment
+
+1. Visit your deployment URL (e.g., `https://your-app.vercel.app`)
 2. Try asking questions like:
    - "What is the current price of Apple stock?"
    - "Show me Microsoft's EPS and PE ratio"
    - "Search for Tesla stock"
 
-### Set Up Custom Domain (Optional)
+### Troubleshooting
+
+#### Error: "GitHub token not configured"
+- Make sure you added `GITHUB_TOKEN` environment variable in Vercel
+- Verify the token is valid at [github.com/settings/tokens](https://github.com/settings/tokens)
+- Redeploy after adding the environment variable
+
+#### Error: "q.resolve is not a function"
+- This should be fixed in the latest code
+- Make sure you're using the latest version from the repository
+- Check that `GITHUB_TOKEN` is properly set
+
+#### Build Fails
+- Verify Root Directory is set to `web`
+- Check that all dependencies are listed in `web/package.json`
+- Review build logs in Vercel dashboard
+
+#### API Rate Limit
+- Alpha Vantage free tier: 5 calls/minute
+- Wait a minute before making more requests
+- Or use mock data: Set `USE_REAL_API=false` or remove the environment variable
+
+### Custom Domain (Optional)
 
 1. In your Vercel project, go to **Settings** → **Domains**
 2. Add your custom domain
 3. Follow the DNS configuration instructions
 
-### Monitor Usage
+### Monitoring
 
-- Vercel dashboard shows deployment logs and analytics
-- Alpha Vantage dashboard shows API usage (if using real API)
+- **Vercel Dashboard**: View deployment logs and analytics
+- **Alpha Vantage Dashboard**: Monitor API usage (if using real API)
 
-## Troubleshooting
+## Local Development
 
-### Build Fails
+### Prerequisites
 
-**Error: "Cannot find module"**
-- Solution: Make sure all dependencies are in `web/package.json`
-- Run `cd web && npm install` locally to verify
+1. **Node.js** 18+ installed
+2. **GitHub Copilot CLI** installed and authenticated (for local development only)
+   ```bash
+   npm install -g @github/copilot-cli
+   copilot auth login
+   ```
 
-**Error: "Root directory not found"**
-- Solution: Double-check that Root Directory is set to `web` in project settings
+### Setup Web App Locally
 
-### Runtime Errors
-
-**Error: "Failed to start Copilot client"**
-- This error will occur at runtime because Copilot CLI cannot run in Vercel's serverless environment
-- See "Alternative Deployment Options" below
-
-### API Rate Limits
-
-**Error: "API rate limit exceeded"**
-- Alpha Vantage free tier: 5 calls per minute
-- Solution: Upgrade to premium or add rate limiting
-
-## Alternative Deployment Options
-
-### Limitations of Vercel Deployment
-
-GitHub Copilot SDK requires the Copilot CLI to be installed and running, which is **not available** in Vercel's serverless environment. The web interface will build successfully but will fail at runtime when trying to connect to the Copilot CLI.
-
-### Recommended Alternatives:
-
-#### 1. Run Locally
 ```bash
-cd web
+# Clone the repository
+git clone https://github.com/vijaydesai86/test-sdk.git
+cd test-sdk/web
+
+# Install dependencies
+npm install
+
+# Create .env.local file (optional)
+echo "ALPHA_VANTAGE_API_KEY=your_key_here" > .env.local
+echo "USE_REAL_API=true" >> .env.local
+
+# Run development server
 npm run dev
 ```
-Access at http://localhost:3000
 
-#### 2. Deploy with Copilot CLI Support
-
-Deploy to a platform that supports persistent processes:
-
-**Railway** (recommended):
-- Supports long-running processes
-- Can install and run Copilot CLI
-- Easy deployment from GitHub
-
-**DigitalOcean App Platform**:
-- Supports custom Dockerfiles
-- Can include Copilot CLI in container
-
-**AWS EC2 or Google Cloud Compute**:
-- Full control over environment
-- Install Copilot CLI and run Node.js server
-
-#### 3. Use BYOK (Bring Your Own Key)
-
-Modify the implementation to use BYOK authentication instead of Copilot CLI:
-- Configure the SDK to use OpenAI, Anthropic, or Azure OpenAI directly
-- No Copilot CLI required
-- See [BYOK documentation](https://github.com/github/copilot-sdk/blob/main/docs/auth/byok.md)
+Open [http://localhost:3000](http://localhost:3000) in your browser.
 
 ## Environment Variables Reference
 
-| Variable | Required | Description | Default |
-|----------|----------|-------------|---------|
-| `USE_REAL_API` | No | Use real Alpha Vantage API | `false` |
-| `ALPHA_VANTAGE_API_KEY` | No | Alpha Vantage API key | Uses mock data |
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `GITHUB_TOKEN` | Yes (Vercel) | GitHub Personal Access Token to use your Copilot subscription |
+| `USE_REAL_API` | No | Set to `true` to use real Alpha Vantage API, `false` for mock data (default) |
+| `ALPHA_VANTAGE_API_KEY` | No | Your Alpha Vantage API key (only needed if `USE_REAL_API=true`) |
 
 ## Support
 
-For issues:
-1. Check the [troubleshooting section](#troubleshooting) above
-2. Review Vercel deployment logs
-3. Open an issue on GitHub
+For issues and questions:
+- Check the [README.md](README.md) for general information
+- See [QUICKSTART.md](QUICKSTART.md) for quick setup
+- Open an issue on GitHub

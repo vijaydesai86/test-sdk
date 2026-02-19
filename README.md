@@ -4,11 +4,11 @@ An AI-powered stock information tool that provides comprehensive US stock market
 
 ## ⚡ Deploy to Vercel Using Your GitHub Copilot Subscription
 
-**No OpenAI subscription needed!** Use your existing GitHub Copilot subscription on Vercel.
+**No additional subscription needed!** Use your existing GitHub Copilot subscription on Vercel.
 
 [![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/vijaydesai86/test-sdk&root-directory=web&env=GITHUB_TOKEN&envDescription=GitHub%20token%20to%20use%20your%20Copilot%20subscription&envLink=https://github.com/settings/tokens)
 
-**📖 [Complete Vercel Setup Guide](VERCEL_WITH_COPILOT.md)** - Uses your existing Copilot subscription!
+**📖 [Complete Deployment Guide](DEPLOYMENT.md)** - Deploy to Vercel in 5 minutes!
 
 **What You Need for Vercel:**
 - ✅ GitHub Copilot subscription (you already have this!)
@@ -29,9 +29,9 @@ An AI-powered stock information tool that provides comprehensive US stock market
 
 ## 🚀 Quick Start Options
 
-### Option 1: Deploy to Vercel (Recommended - Uses Your Copilot Subscription!)
+### Option 1: Deploy to Vercel (Recommended)
 
-See [VERCEL_WITH_COPILOT.md](VERCEL_WITH_COPILOT.md) for detailed instructions.
+See [DEPLOYMENT.md](DEPLOYMENT.md) for detailed instructions.
 
 **Quick Steps:**
 1. Create GitHub token at [github.com/settings/tokens](https://github.com/settings/tokens)
@@ -108,40 +108,18 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000) in your browser.
 
-### Deploy to Vercel (✅ Uses Your Copilot Subscription!)
+### Deploy to Vercel
 
 The web interface works on Vercel using your existing GitHub Copilot subscription - no additional costs!
 
-1. **Push to GitHub** (if not already done)
-   ```bash
-   git add .
-   git commit -m "Add stock information assistant"
-   git push origin main
-   ```
+See [DEPLOYMENT.md](DEPLOYMENT.md) for complete deployment instructions.
 
-2. **Deploy on Vercel**:
-   - Go to [vercel.com](https://vercel.com)
-   - Click "Import Project"
-   - Select your GitHub repository
-   - Set the **Root Directory** to `web`
-   - Add environment variables:
-     - `GITHUB_TOKEN=ghp_...` (**REQUIRED** - uses your Copilot subscription!)
-     - `USE_REAL_API=false` (or `true` with Alpha Vantage key)
-     - `ALPHA_VANTAGE_API_KEY=your_key` (optional, for real stock data)
-   - Click "Deploy"
+**Key Points:**
+- Set the **Root Directory** to `web`
+- Add `GITHUB_TOKEN` environment variable (uses your Copilot subscription!)
+- Optionally add `ALPHA_VANTAGE_API_KEY` for real stock data
 
-3. **Get GitHub Token** (FREE - uses your existing Copilot subscription):
-   - Visit [github.com/settings/tokens](https://github.com/settings/tokens)
-   - Create a new Personal Access Token
-   - Select `repo` or `public_repo` scope
-   - Add it to Vercel environment variables
-
-4. **Important Vercel Configuration**:
-   - Root Directory: `web`
-   - Framework Preset: Next.js
-   - Node.js Version: 18.x or higher
-
-**Note**: The web deployment uses GitHub Copilot SDK with token authentication. No OpenAI subscription needed!
+**Note**: The web deployment uses GitHub Copilot SDK with token authentication.
 
 ## 🔑 API Configuration
 
