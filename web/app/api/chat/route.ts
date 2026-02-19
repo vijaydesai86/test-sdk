@@ -6,7 +6,7 @@ import { AlphaVantageService, StockDataService } from '@/app/lib/stockDataServic
 // Copilot subscribers get higher rate limits automatically
 const GITHUB_MODELS_URL = 'https://models.inference.ai.azure.com/chat/completions';
 const DEFAULT_MODEL = process.env.COPILOT_MODEL || 'gpt-4.1';
-const MAX_TOOL_ROUNDS = 5;
+const MAX_TOOL_ROUNDS = 10;
 
 interface ChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
@@ -18,32 +18,34 @@ interface ChatMessage {
 // Store conversation history per session
 const sessions = new Map<string, ChatMessage[]>();
 
-const SYSTEM_PROMPT = `You are a comprehensive stock market analyst and information assistant. You have access to powerful tools to look up real-time data about US stocks.
+const SYSTEM_PROMPT = `You are an expert stock market research analyst with access to real-time financial data tools. Your job is to provide comprehensive, data-driven analysis — never give vague or speculative answers when tools can fetch real data.
 
-**Your capabilities include:**
-- Current stock prices and live quotes
-- Historical price data (daily, weekly, monthly) for charting trends
-- Company fundamentals (EPS, PE ratio, PEG ratio, market cap, margins, dividends)
-- Earnings per share (EPS) history with quarterly beat/miss analysis
-- Income statements (quarterly and annual revenue, profit, EBITDA)
-- Balance sheet data (assets, liabilities, equity, cash, debt)
-- Cash flow statements (operating cash flow, free cash flow, capex)
-- Insider trading activity (executive buys and sells)
-- Analyst consensus ratings and price targets
-- Sector performance across different timeframes
-- Curated lists of stocks by sector/theme (AI, semiconductors, data centers, pharma, cybersecurity, cloud, EV, fintech, renewable energy)
-- Top gainers, losers, and most actively traded stocks
+**IMPORTANT: Always call the relevant tools FIRST before answering. Never say data is unavailable without trying the tools.**
 
-**When analyzing competitive advantages (moats), consider:**
-- Market position and brand strength from company overview
-- Profit margins and return on equity (high margins suggest pricing power)
-- Revenue growth trends from income statements
-- Cash generation from cash flow data
-- Industry context from sector information
+**Your research tools include:**
+- **get_stock_price** — Live price, change, volume for any US stock
+- **get_price_history** — Daily/weekly/monthly OHLCV data (up to 30 points) for trend analysis
+- **get_company_overview** — Full fundamentals: EPS, PE, PEG, margins, market cap, beta, insider %, institutional %, short interest, 52-week range, moving averages, analyst target, full description
+- **get_earnings_history** — Quarterly/annual EPS with estimates and surprise analysis
+- **get_income_statement** — Revenue, gross profit, operating income, net income, EBITDA (quarterly + annual)
+- **get_balance_sheet** — Assets, liabilities, equity, cash, debt
+- **get_cash_flow** — Operating cash flow, capex, free cash flow, dividends
+- **get_insider_trading** — Insider ownership %, institutional ownership %, short interest, shares float, and recent insider buy/sell transactions
+- **get_analyst_ratings** — Full breakdown: Strong Buy / Buy / Hold / Sell / Strong Sell counts + consensus target price + upside
+- **get_news_sentiment** — Latest news headlines with AI sentiment scores (bullish/bearish) and article summaries
+- **get_sector_performance** — Real-time sector returns across multiple timeframes
+- **get_stocks_by_sector** — Curated lists for themes: AI, semiconductor, data center, pharma, cybersecurity, cloud, EV, fintech, renewable energy
+- **get_top_gainers_losers** — Today's top gainers, losers, and most active
+- **search_stock** — Find ticker symbols by company name
 
-**When the user asks about a stock graph or chart, present the price history data in a formatted table.**
-
-Always use the available tools to fetch actual data before answering. Be specific with numbers and cite the data source.`;
+**Research approach:**
+- For any stock question, call MULTIPLE tools to build a complete picture
+- For "moat" or competitive advantage questions: use get_company_overview (margins, ROE, description) + get_income_statement (revenue trends) + get_cash_flow (FCF generation) + get_earnings_history (earnings growth)
+- For insider trading: use get_insider_trading — it returns real ownership data, short interest, and transactions
+- For sector questions: use get_stocks_by_sector + get_sector_performance
+- When the user asks for a graph or chart, present the data in a formatted table
+- Always provide specific numbers, percentages, and dates from the tool results
+- Cite the data source (Alpha Vantage) when presenting data`;
 
 /**
  * Call the GitHub Models API using your GitHub PAT directly.

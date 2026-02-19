@@ -81,7 +81,7 @@ export function getToolDefinitions() {
       type: 'function' as const,
       function: {
         name: 'get_insider_trading',
-        description: 'Get insider trading information for a US stock. Shows transactions by company insiders (executives, directors) including buy/sell activity.',
+        description: 'Get insider ownership data for a US stock. Returns percentage of shares held by insiders and institutions, shares outstanding, float, short interest data, and recent insider buy/sell transactions when available.',
         parameters: {
           type: 'object',
           properties: {
@@ -98,7 +98,7 @@ export function getToolDefinitions() {
       type: 'function' as const,
       function: {
         name: 'get_analyst_ratings',
-        description: 'Get analyst ratings and target price for a US stock. Shows consensus rating (Buy/Sell/Hold) and price target.',
+        description: 'Get analyst ratings breakdown and consensus target price for a US stock. Returns the number of Strong Buy, Buy, Hold, Sell, and Strong Sell ratings plus the consensus price target and implied upside.',
         parameters: {
           type: 'object',
           properties: {
@@ -220,6 +220,23 @@ export function getToolDefinitions() {
         },
       },
     },
+    {
+      type: 'function' as const,
+      function: {
+        name: 'get_news_sentiment',
+        description: 'Get the latest news articles and AI-powered sentiment analysis for a US stock. Returns recent headlines, summaries, sentiment scores (bullish/bearish), and source URLs. Use this for market sentiment, recent developments, and news-driven analysis.',
+        parameters: {
+          type: 'object',
+          properties: {
+            symbol: {
+              type: 'string',
+              description: 'Stock ticker symbol (e.g., "AAPL", "MSFT", "TSLA")',
+            },
+          },
+          required: ['symbol'],
+        },
+      },
+    },
   ];
 }
 
@@ -335,6 +352,14 @@ export async function executeTool(
           success: true,
           data: gainersLosers,
           message: 'Retrieved top gainers, losers, and most active stocks',
+        };
+      }
+      case 'get_news_sentiment': {
+        const news = await stockService.getNewsSentiment(args.symbol || '');
+        return {
+          success: true,
+          data: news,
+          message: `Retrieved news and sentiment for ${args.symbol}`,
         };
       }
       default:

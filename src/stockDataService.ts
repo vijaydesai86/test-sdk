@@ -14,6 +14,7 @@ export interface StockDataService {
   getSectorPerformance(): Promise<any>;
   getStocksBySector(sector: string): Promise<any>;
   getTopGainersLosers(): Promise<any>;
+  getNewsSentiment(symbol: string): Promise<any>;
 }
 
 /**
@@ -110,40 +111,103 @@ export class AlphaVantageService implements StockDataService {
         marketCapitalization: data.MarketCapitalization,
         eps: data.EPS,
         peRatio: data.PERatio,
+        forwardPE: data.ForwardPE,
         pegRatio: data.PEGRatio,
+        bookValue: data.BookValue,
+        dividendPerShare: data.DividendPerShare,
         dividendYield: data.DividendYield,
+        revenueTTM: data.RevenueTTM,
+        grossProfitTTM: data.GrossProfitTTM,
         '52WeekHigh': data['52WeekHigh'],
         '52WeekLow': data['52WeekLow'],
+        '50DayMovingAverage': data['50DayMovingAverage'],
+        '200DayMovingAverage': data['200DayMovingAverage'],
+        beta: data.Beta,
         profitMargin: data.ProfitMargin,
         operatingMargin: data.OperatingMarginTTM,
+        returnOnAssets: data.ReturnOnAssetsTTM,
         returnOnEquity: data.ReturnOnEquityTTM,
         revenuePerShare: data.RevenuePerShareTTM,
         quarterlyEarningsGrowth: data.QuarterlyEarningsGrowthYOY,
         quarterlyRevenueGrowth: data.QuarterlyRevenueGrowthYOY,
+        sharesOutstanding: data.SharesOutstanding,
+        sharesFloat: data.SharesFloat,
+        percentInsiders: data.PercentInsiders,
+        percentInstitutions: data.PercentInstitutions,
+        shortRatio: data.ShortRatio,
+        shortPercentFloat: data.ShortPercentFloat,
+        shortPercentOutstanding: data.ShortPercentOutstanding,
         analystTargetPrice: data.AnalystTargetPrice,
+        analystRatingStrongBuy: data.AnalystRatingStrongBuy,
+        analystRatingBuy: data.AnalystRatingBuy,
+        analystRatingHold: data.AnalystRatingHold,
+        analystRatingSell: data.AnalystRatingSell,
+        analystRatingStrongSell: data.AnalystRatingStrongSell,
+        exDividendDate: data.ExDividendDate,
+        dividendDate: data.DividendDate,
       };
     }
     throw new Error('Unable to fetch company overview');
   }
 
   async getInsiderTrading(symbol: string): Promise<any> {
-    // Note: Alpha Vantage free tier doesn't provide insider trading data
-    // This is a placeholder that returns information about the limitation
-    return {
+    const overviewData = await this.makeRequest({
+      function: 'OVERVIEW',
       symbol: symbol.toUpperCase(),
-      message: 'Insider trading data requires a premium API subscription. Alpha Vantage free tier does not include this data.',
-      suggestion: 'Consider using Financial Modeling Prep API or SEC EDGAR for insider trading information.',
+    });
+
+    const result: any = {
+      symbol: symbol.toUpperCase(),
+      insiderOwnership: overviewData.PercentInsiders ? `${overviewData.PercentInsiders}%` : 'N/A',
+      institutionalOwnership: overviewData.PercentInstitutions ? `${overviewData.PercentInstitutions}%` : 'N/A',
+      sharesOutstanding: overviewData.SharesOutstanding || 'N/A',
+      sharesFloat: overviewData.SharesFloat || 'N/A',
+      shortRatio: overviewData.ShortRatio || 'N/A',
+      shortPercentFloat: overviewData.ShortPercentFloat ? `${overviewData.ShortPercentFloat}%` : 'N/A',
+      shortPercentOutstanding: overviewData.ShortPercentOutstanding ? `${overviewData.ShortPercentOutstanding}%` : 'N/A',
     };
+
+    try {
+      const txnData = await this.makeRequest({
+        function: 'INSIDER_TRANSACTIONS',
+        symbol: symbol.toUpperCase(),
+      });
+      if (txnData.data && Array.isArray(txnData.data) && txnData.data.length > 0) {
+        result.recentTransactions = txnData.data.slice(0, 15).map((t: any) => ({
+          transactionDate: t.transaction_date,
+          insider: t.executive,
+          title: t.executive_title,
+          transactionType: t.acquisition_or_disposal === 'A' ? 'Purchase' : 'Sale',
+          shares: t.shares,
+          sharePrice: t.share_price,
+          totalValue: t.shares && t.share_price ? (Number(t.shares) * Number(t.share_price)).toFixed(0) : 'N/A',
+        }));
+      }
+    } catch {
+      // Premium endpoint unavailable — ownership data above is still returned
+    }
+
+    return result;
   }
 
   async getAnalystRatings(symbol: string): Promise<any> {
-    // Note: Alpha Vantage free tier has limited analyst data
-    // The company overview includes analyst target price
-    const overview = await this.getCompanyOverview(symbol);
+    const data = await this.makeRequest({
+      function: 'OVERVIEW',
+      symbol: symbol.toUpperCase(),
+    });
+
     return {
       symbol: symbol.toUpperCase(),
-      analystTargetPrice: overview.analystTargetPrice,
-      message: 'Full analyst ratings require a premium API subscription.',
+      analystTargetPrice: data.AnalystTargetPrice || 'N/A',
+      strongBuy: data.AnalystRatingStrongBuy || 'N/A',
+      buy: data.AnalystRatingBuy || 'N/A',
+      hold: data.AnalystRatingHold || 'N/A',
+      sell: data.AnalystRatingSell || 'N/A',
+      strongSell: data.AnalystRatingStrongSell || 'N/A',
+      currentPrice: data['50DayMovingAverage'] || 'N/A',
+      upside: data.AnalystTargetPrice && data['50DayMovingAverage']
+        ? `${(((Number(data.AnalystTargetPrice) / Number(data['50DayMovingAverage'])) - 1) * 100).toFixed(1)}%`
+        : 'N/A',
     };
   }
 
@@ -314,6 +378,39 @@ export class AlphaVantageService implements StockDataService {
         volume: s.volume,
       })),
     };
+  }
+
+  async getNewsSentiment(symbol: string): Promise<any> {
+    const data = await this.makeRequest({
+      function: 'NEWS_SENTIMENT',
+      tickers: symbol.toUpperCase(),
+      limit: '10',
+    });
+
+    if (data.feed) {
+      return {
+        symbol: symbol.toUpperCase(),
+        sentimentScoreDefinition: 'Bearish: x <= -0.35, Somewhat-Bearish: -0.35 < x <= -0.15, Neutral: -0.15 < x < 0.15, Somewhat-Bullish: 0.15 <= x < 0.35, Bullish: x >= 0.35',
+        articles: data.feed.slice(0, 10).map((article: any) => {
+          const tickerSentiment = (article.ticker_sentiment || []).find(
+            (t: any) => t.ticker === symbol.toUpperCase()
+          );
+          return {
+            title: article.title,
+            source: article.source,
+            publishedAt: article.time_published,
+            summary: article.summary,
+            overallSentimentScore: article.overall_sentiment_score,
+            overallSentimentLabel: article.overall_sentiment_label,
+            tickerSentimentScore: tickerSentiment?.ticker_sentiment_score || 'N/A',
+            tickerSentimentLabel: tickerSentiment?.ticker_sentiment_label || 'N/A',
+            tickerRelevanceScore: tickerSentiment?.relevance_score || 'N/A',
+            url: article.url,
+          };
+        }),
+      };
+    }
+    throw new Error('Unable to fetch news sentiment');
   }
 }
 

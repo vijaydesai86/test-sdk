@@ -83,11 +83,11 @@ export default function ChatInterface() {
   };
 
   const exampleQuestions = [
-    "What is the current price of Apple stock?",
-    "Show me the EPS history for Microsoft",
+    "What is Apple's competitive moat?",
+    "Show me insider trading data for NVDA",
     "What are the top AI stocks?",
-    "How is the tech sector performing?",
-    "Show me quarterly results for NVDA",
+    "Show me the latest news sentiment for Tesla",
+    "Show me quarterly results for MSFT",
     "What are today's top gainers?",
   ];
 
@@ -101,8 +101,8 @@ export default function ChatInterface() {
         <p className="text-gray-600 dark:text-gray-300">
           Powered by GitHub Models API — Real-time US stock data from Alpha Vantage
         </p>
-        <div className="mt-3 flex items-center gap-2">
-          <label htmlFor="model-select" className="text-sm text-gray-600 dark:text-gray-400">Model:</label>
+        <div className="mt-3 flex items-center gap-3">
+          <label htmlFor="model-select" className="text-sm text-gray-600 dark:text-gray-400">AI Model:</label>
           <select
             id="model-select"
             value={model}
@@ -116,6 +116,9 @@ export default function ChatInterface() {
               <option key={m.value} value={m.value}>{m.label}</option>
             ))}
           </select>
+          <span className="text-xs text-gray-400 dark:text-gray-500 max-w-xs">
+            The selected model runs your queries via <a href="https://github.com/marketplace/models" target="_blank" rel="noopener noreferrer" className="underline hover:text-blue-500">GitHub Models API</a>
+          </span>
         </div>
         <div className="mt-4 flex flex-wrap gap-2">
           {messages.length === 0 && exampleQuestions.map((question, idx) => (
@@ -140,13 +143,14 @@ export default function ChatInterface() {
             <ul className="text-left max-w-md mx-auto space-y-2">
               <li>• Current stock prices and live quotes</li>
               <li>• Price history (daily, weekly, monthly)</li>
-              <li>• Company fundamentals (EPS, PE ratio, market cap)</li>
+              <li>• Company fundamentals (EPS, PE, market cap, margins, beta)</li>
               <li>• EPS history with beat/miss analysis</li>
               <li>• Financial statements (income, balance sheet, cash flow)</li>
-              <li>• Insider trading activity</li>
-              <li>• Analyst ratings and target prices</li>
-              <li>• Sector performance and stock lists (AI, semis, pharma...)</li>
-              <li>• Top gainers, losers, and most active stocks</li>
+              <li>• Insider ownership %, institutional holdings, short interest</li>
+              <li>• Analyst ratings (Strong Buy/Buy/Hold/Sell) + target prices</li>
+              <li>• News headlines with AI sentiment scores</li>
+              <li>• Sector performance and themed stock lists</li>
+              <li>• Competitive moat and in-depth research analysis</li>
             </ul>
           </div>
         ) : (

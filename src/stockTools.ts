@@ -74,7 +74,7 @@ export function createStockTools(stockService: StockDataService) {
   });
 
   const getInsiderTradingTool = defineTool('get_insider_trading', {
-    description: 'Get insider trading information for a US stock. Shows transactions by company insiders (executives, directors).',
+    description: 'Get insider ownership data for a US stock. Returns insider %, institutional %, short interest, and recent insider transactions.',
     parameters: {
       symbol: { type: 'string', description: 'Stock ticker symbol (e.g., "AAPL", "MSFT")' },
     },
@@ -90,7 +90,7 @@ export function createStockTools(stockService: StockDataService) {
   });
 
   const getAnalystRatingsTool = defineTool('get_analyst_ratings', {
-    description: 'Get analyst ratings and target price for a US stock. Shows consensus rating and price target.',
+    description: 'Get full analyst ratings breakdown (Strong Buy/Buy/Hold/Sell/Strong Sell) and consensus target price with upside.',
     parameters: {
       symbol: { type: 'string', description: 'Stock ticker symbol (e.g., "AAPL", "MSFT")' },
     },
@@ -211,6 +211,22 @@ export function createStockTools(stockService: StockDataService) {
     },
   });
 
+  const getNewsSentimentTool = defineTool('get_news_sentiment', {
+    description: 'Get the latest news articles and AI-powered sentiment analysis for a US stock. Returns headlines, summaries, and sentiment scores.',
+    parameters: {
+      symbol: { type: 'string', description: 'Stock ticker symbol (e.g., "AAPL", "MSFT", "TSLA")' },
+    },
+    handler: async (args: any) => {
+      const { symbol } = args;
+      try {
+        const news = await stockService.getNewsSentiment(symbol);
+        return { success: true, data: news, message: `Retrieved news and sentiment for ${symbol}` };
+      } catch (error: any) {
+        return { success: false, error: error.message };
+      }
+    },
+  });
+
   return [
     searchStockTool,
     getCurrentPriceTool,
@@ -225,5 +241,6 @@ export function createStockTools(stockService: StockDataService) {
     getSectorPerformanceTool,
     getStocksBySectorTool,
     getTopGainersLosersTool,
+    getNewsSentimentTool,
   ];
 }
