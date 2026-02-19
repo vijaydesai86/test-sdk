@@ -1,24 +1,19 @@
 # Stock Information Assistant - Web Interface
 
-A web-based chat interface for the Stock Information Assistant, built with Next.js and GitHub Copilot SDK.
+A web-based chat interface for the Stock Information Assistant, built with Next.js and the GitHub Models API.
 
 ## Features
 
 - 💬 Interactive chat interface
 - 📊 Real-time stock information queries
 - 🎨 Modern, responsive UI with Tailwind CSS
-- 🚀 Optimized for production deployment
+- 🚀 Optimized for Vercel deployment
 
 ## Getting Started
 
 ### Prerequisites
 
-1. **GitHub Copilot CLI** installed and authenticated
-   ```bash
-   npm install -g @github/copilot-cli
-   copilot auth login
-   ```
-
+1. **GitHub Personal Access Token** — create one at [github.com/settings/personal-access-tokens](https://github.com/settings/personal-access-tokens)
 2. **Node.js 18+** installed
 
 ### Development
@@ -28,13 +23,14 @@ A web-based chat interface for the Stock Information Assistant, built with Next.
    npm install
    ```
 
-2. Set up environment variables (optional):
+2. Set up environment variables:
    ```bash
    cp .env.example .env.local
    ```
    
-   Edit `.env.local` to add your Alpha Vantage API key if you want real data:
+   Edit `.env.local` to add your tokens:
    ```env
+   GITHUB_TOKEN=ghp_your_token_here
    ALPHA_VANTAGE_API_KEY=your_key_here
    USE_REAL_API=true
    ```
@@ -65,7 +61,7 @@ web/
 │   │   └── ChatInterface.tsx     # Main chat UI component
 │   ├── lib/
 │   │   ├── stockDataService.ts   # Stock API integration
-│   │   └── stockTools.ts         # Copilot SDK tools
+│   │   └── stockTools.ts         # Tool definitions for AI
 │   ├── layout.tsx                # Root layout
 │   ├── page.tsx                  # Home page
 │   └── globals.css               # Global styles
@@ -77,6 +73,7 @@ web/
 
 | Variable | Description | Default |
 |----------|-------------|---------|
+| `GITHUB_TOKEN` | GitHub Personal Access Token (required) | — |
 | `USE_REAL_API` | Use real Alpha Vantage API | `false` |
 | `ALPHA_VANTAGE_API_KEY` | Alpha Vantage API key | Uses mock data |
 
@@ -94,25 +91,23 @@ See [DEPLOYMENT.md](../DEPLOYMENT.md) in the root directory for detailed deploym
 
 ### Quick Deploy to Vercel
 
-⚠️ **Important Note**: Due to GitHub Copilot CLI requirements, the application works best when run locally or deployed to platforms that support persistent processes. See DEPLOYMENT.md for alternative deployment options.
-
-For local development:
-1. Ensure GitHub Copilot CLI is installed and authenticated
-2. Run `npm run dev`
-3. Access at http://localhost:3000
+1. Import your repository on [vercel.com](https://vercel.com)
+2. Set **Root Directory** to `web`
+3. Add environment variables: `GITHUB_TOKEN`, `ALPHA_VANTAGE_API_KEY`, `USE_REAL_API=true`
+4. Deploy!
 
 ## Tech Stack
 
 - **Framework**: Next.js 15 (App Router)
 - **Language**: TypeScript
 - **Styling**: Tailwind CSS
-- **AI Engine**: GitHub Copilot SDK
+- **AI Engine**: GitHub Models API (GPT-4o)
 - **Stock Data**: Alpha Vantage API
 
 ## Learn More
 
 - [Next.js Documentation](https://nextjs.org/docs)
-- [GitHub Copilot SDK](https://github.com/github/copilot-sdk)
+- [GitHub Models](https://github.com/marketplace/models)
 - [Alpha Vantage API](https://www.alphavantage.co/documentation/)
 
 ## License
