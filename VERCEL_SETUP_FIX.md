@@ -6,14 +6,14 @@ Getting 404 errors for all routes (/, /favicon.ico, etc.) when deploying to Verc
 ## Root Cause
 The Next.js application is in the `/web` subdirectory, but Vercel is trying to deploy from the root directory `/`. This causes Vercel to not find any pages, resulting in 404 errors.
 
-## Solution: Set Root Directory in Vercel Dashboard
+## Solution 1: Set Root Directory in Vercel Dashboard (RECOMMENDED)
 
-### Step 1: Delete Current Deployment (if exists)
+### Step 1: Delete Current Deployment
 1. Go to your Vercel dashboard
 2. Select your project
 3. Go to Settings → General
-4. Scroll to "Delete Project" and delete it
-5. This will allow you to reconfigure from scratch
+4. Scroll down and click "Delete Project"
+5. Confirm deletion
 
 ### Step 2: Import Project Again
 1. Go to [vercel.com](https://vercel.com)
@@ -23,25 +23,20 @@ The Next.js application is in the `/web` subdirectory, but Vercel is trying to d
 
 ### Step 3: **CRITICAL - Configure Root Directory**
 
-Before clicking Deploy, you MUST configure the Root Directory:
+**Before clicking Deploy:**
 
-1. Look for **"Root Directory"** setting (it's in the "Build and Output Settings" section)
-2. Click the **"Edit"** button next to Root Directory
-3. Type: `web`
-4. Click **"Save"** or **"Continue"**
+1. In the "Configure Project" screen, find **"Root Directory"**
+2. Click the **"Edit"** button (NOT "Override")
+3. You should see a file browser or text field
+4. Select or type: `web`
+5. Click "Continue"
 
-**Visual Guide:**
-```
-Root Directory: [Edit]
-└─> Change from: ./
-    Change to:   web
-```
-
-This tells Vercel that your Next.js app is in the `web` folder, not at the repository root.
+**Where to find it:**
+- It's in the "Build and Output Settings" section
+- Usually between "Framework Preset" and "Build Command"
+- If you don't see it, click "Edit" next to "Build and Output Settings"
 
 ### Step 4: Add Environment Variables
-
-Add these environment variables:
 
 **Required:**
 ```
@@ -56,77 +51,181 @@ ALPHA_VANTAGE_API_KEY=your-key
 
 ### Step 5: Deploy
 
-Click **"Deploy"** and wait for the build to complete.
+Click **"Deploy"** and wait for the build to complete. This should fix all 404 errors!
 
-## Why This Was Failing Before
+---
 
-The `vercel.json` file in the root had build commands like `cd web && npm run build`, but this doesn't actually tell Vercel WHERE the Next.js app is located. Vercel needs to know the Root Directory so it can:
+## Solution 2: Use vercel.json Configuration (IF Solution 1 Doesn't Work)
 
-1. Find the `next.config.ts` file
-2. Find the `app/` directory with pages
-3. Properly build and serve the Next.js application
-4. Set up the correct routing
+If you truly cannot change the Root Directory in the Vercel UI, the `vercel.json` file in this repository has been configured to work around this limitation.
 
-## Alternative Solution (If You Still Can't Change Root Directory)
+### What's in the vercel.json:
 
-If Vercel's UI truly won't let you change the Root Directory, you can:
+```json
+{
+  "buildCommand": "npm --prefix web install && npm --prefix web run build",
+  "outputDirectory": "web/.next",
+  "installCommand": "npm --prefix web install"
+}
+```
 
-### Option A: Use Vercel CLI
+This tells Vercel:
+- Install dependencies from the `web/` directory
+- Build the Next.js app in the `web/` directory
+- Look for the build output in `web/.next`
+
+### To deploy with this configuration:
+
+1. Make sure the latest code is pushed to GitHub
+2. In Vercel, delete the old project if it exists
+3. Import the project again
+4. **Do NOT change the Root Directory** - leave it as default `/`
+5. Add your environment variables
+6. Click "Deploy"
+
+Vercel should now:
+- ✅ Detect it as a Next.js project
+- ✅ Build it correctly
+- ✅ Serve all routes properly
+- ✅ No more 404 errors
+
+---
+
+## Solution 3: Use Vercel CLI (Alternative Method)
+
+If the dashboard isn't working:
 
 ```bash
 # Install Vercel CLI
 npm install -g vercel
 
+# Navigate to your repository
+cd /path/to/test-sdk
+
 # Login to Vercel
 vercel login
 
-# Deploy with root directory specified
+# Deploy with web as root directory
+cd web
+vercel
+
+# Or deploy from root with specific config
+cd ..
 vercel --cwd web
 ```
 
-### Option B: Contact Vercel Support
+---
 
-If the UI is preventing you from changing the Root Directory, this might be a bug or account limitation. Contact Vercel support.
+## Why Were You Getting 404 Errors?
 
-### Option C: Restructure Repository (NOT RECOMMENDED)
+When Vercel deployed with Root Directory set to `/` (the repository root):
 
-Move everything from `/web` to root:
-```bash
-# This would require moving files and updating paths
-# NOT RECOMMENDED - just fix the Vercel settings instead
-```
+1. ❌ Vercel looked for Next.js app at `/` (root)
+2. ❌ But the app is actually at `/web`
+3. ❌ Vercel couldn't find `app/page.tsx` or any routes
+4. ❌ Result: 404 errors for all routes
 
-## Verification
+With the fix:
 
-After deploying with the correct Root Directory setting:
+1. ✅ Vercel looks for Next.js app at `/web` (via Root Directory OR vercel.json)
+2. ✅ Vercel finds `web/app/page.tsx` and all routes
+3. ✅ Builds and deploys correctly
+4. ✅ Result: Your app works!
 
-1. Your Vercel URL should load the chat interface
-2. No more 404 errors for `/`
-3. Favicon should load from `/web/app/favicon.ico`
-4. The app should work correctly
+---
 
-## Common Misconceptions
+## Troubleshooting
 
-❌ **"Adding `cd web` to buildCommand in vercel.json will fix it"**
-- This only changes where the build command runs, not where Vercel looks for the app
+### "I still don't see the Root Directory option"
 
-❌ **"Setting outputDirectory to web/.next will fix it"**
-- This tells Vercel where the build output is, but Vercel still needs to know the root directory
+**Try this:**
+1. Make sure you're on the "Configure Project" screen (right after clicking "Import")
+2. Look for "Build and Output Settings" section
+3. Click "Edit" or "Override" button
+4. The Root Directory field should appear
 
-✅ **"Setting Root Directory to `web` in Vercel dashboard fixes it"**
-- This is the correct solution - it tells Vercel where your Next.js app actually lives
+**If it's still not there:**
+- Your account might have a different Vercel UI version
+- Use Solution 2 (vercel.json) or Solution 3 (Vercel CLI)
 
-## Need Help?
+### "Build succeeds but I still get 404s"
 
-If you're still having issues:
+This usually means:
+1. The `outputDirectory` is wrong, OR
+2. Vercel isn't detecting it as a Next.js app
 
-1. Make sure you deleted the old project and started fresh
-2. Double-check the Root Directory is set to `web`
-3. Verify your environment variables are correct
-4. Check the Vercel build logs for any errors
+**Fix:**
+- Make sure `vercel.json` has the correct `outputDirectory`: `web/.next`
+- Try deploying again with a fresh build (delete and re-import project)
+
+### "The Edit button is grayed out"
+
+This can happen if:
+- There's a conflicting `vercel.json` (but we've fixed that!)
+- The project was imported with git integration issues
+
+**Fix:**
+- Delete the project completely
+- Make sure your GitHub repository connection is working
+- Import again
+
+### "Build fails with 'cannot find package.json'"
+
+This means Vercel is looking in the wrong directory.
+
+**Fix:**
+- Make sure `vercel.json` has: `"installCommand": "npm --prefix web install"`
+- This tells npm to install from the `web/` directory
+
+---
+
+## Verification Checklist
+
+After deploying, verify these work:
+
+- [ ] Opening your Vercel URL loads the chat interface
+- [ ] No 404 error for the root route `/`
+- [ ] Favicon loads (check browser dev tools)
+- [ ] You can type messages in the chat
+- [ ] AI responses work (requires OPENAI_API_KEY)
+
+---
+
+## Quick Reference
+
+**✅ Best Solution:** Set Root Directory to `web` in Vercel dashboard
+
+**🔄 Backup Solution:** Use the configured `vercel.json` file (already set up)
+
+**🛠️ Alternative:** Use Vercel CLI: `vercel --cwd web`
+
+---
+
+## Still Having Issues?
+
+1. **Check Vercel build logs:**
+   - Go to your project on Vercel
+   - Click on the failed deployment
+   - Read the build logs for specific errors
+
+2. **Verify your environment variables:**
+   - `OPENAI_API_KEY` must be set
+   - Make sure there are no typos
+
+3. **Check that web/package.json has correct dependencies:**
+   - Should include `next`, `react`, `react-dom`
+
+4. **Try the nuclear option:**
+   - Delete the Vercel project completely
+   - Delete any `.vercel` folder in your local repo
+   - Push latest changes to GitHub
+   - Import to Vercel as a brand new project
+   - Set Root Directory to `web` (or use vercel.json)
+
+---
 
 ## Summary
 
-**The Fix:** Set Root Directory to `web` in Vercel dashboard before deploying.
+**The Fix:** Set Root Directory to `web` in Vercel dashboard, OR use the configured `vercel.json` file.
 
-That's it! The vercel.json file has been simplified to `{}` so it doesn't interfere with Vercel's configuration.
+Both methods tell Vercel where your Next.js app actually lives, fixing the 404 errors.
