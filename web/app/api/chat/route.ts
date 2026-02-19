@@ -2,8 +2,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getToolDefinitions, executeTool } from '@/app/lib/stockTools';
 import { AlphaVantageService, MockStockDataService, StockDataService } from '@/app/lib/stockDataService';
 
-// GitHub Copilot API — uses your existing Copilot subscription
-const COPILOT_TOKEN_URL = 'https://api.github.com/copilot_internal/v2/token';
+// GitHub Models API — works with PATs from github.com/settings/personal-access-tokens
+// Copilot subscribers get higher rate limits automatically
+const GITHUB_MODELS_URL = 'https://models.inference.ai.azure.com/chat/completions';
 const DEFAULT_MODEL = process.env.COPILOT_MODEL || 'gpt-4.1';
 const MAX_TOOL_ROUNDS = 5;
 
@@ -14,77 +15,26 @@ interface ChatMessage {
   tool_call_id?: string;
 }
 
-interface CopilotToken {
-  token: string;
-  expiresAt: number;
-  apiUrl: string;
-}
-
-// Cache the Copilot token so we don't re-fetch on every request
-let cachedCopilotToken: CopilotToken | null = null;
-
 // Store conversation history per session
 const sessions = new Map<string, ChatMessage[]>();
 
 const SYSTEM_PROMPT = `You are a helpful stock information assistant. You can look up current stock prices, price history, company fundamentals (EPS, PE ratio, market cap, etc.), insider trading data, analyst ratings, and search for stock symbols. Use the available tools to fetch real-time data when answering questions about stocks.`;
 
 /**
- * Exchange a GitHub PAT for a short-lived Copilot API token.
- * This is exactly what the Copilot SDK/CLI does internally.
+ * Call the GitHub Models API using your GitHub PAT directly.
+ * No token exchange needed — works with fine-grained PATs from
+ * https://github.com/settings/personal-access-tokens
  */
-async function getCopilotToken(githubPAT: string): Promise<CopilotToken> {
-  // Return cached token if still valid (with 60s buffer)
-  if (cachedCopilotToken && cachedCopilotToken.expiresAt > (Date.now() / 1000) + 60) {
-    return cachedCopilotToken;
-  }
-
-  const response = await fetch(COPILOT_TOKEN_URL, {
-    headers: {
-      'Authorization': `token ${githubPAT}`,
-      'Accept': 'application/json',
-    },
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    if (response.status === 401) {
-      throw new Error('Invalid GitHub token. Please check your GITHUB_TOKEN in Vercel environment variables.');
-    }
-    if (response.status === 403) {
-      throw new Error('Your GitHub account does not have an active Copilot subscription. Please ensure GitHub Copilot is enabled on your account.');
-    }
-    throw new Error(`Failed to get Copilot token (${response.status}): ${errorText}`);
-  }
-
-  const data = await response.json();
-
-  cachedCopilotToken = {
-    token: data.token,
-    expiresAt: data.expires_at,
-    apiUrl: data.endpoints?.api || 'https://api.individual.githubcopilot.com',
-  };
-
-  return cachedCopilotToken;
-}
-
-/**
- * Call the GitHub Copilot chat completions API using your Copilot subscription.
- */
-async function callCopilotAPI(
+async function callGitHubModelsAPI(
   messages: ChatMessage[],
-  githubPAT: string,
+  githubToken: string,
   model: string
 ): Promise<any> {
-  const copilotToken = await getCopilotToken(githubPAT);
-
-  const response = await fetch(`${copilotToken.apiUrl}/chat/completions`, {
+  const response = await fetch(GITHUB_MODELS_URL, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${copilotToken.token}`,
-      'Editor-Version': 'vscode/1.95.0',
-      'Editor-Plugin-Version': 'copilot/1.0.0',
-      'Openai-Intent': 'conversation-panel',
+      'Authorization': `Bearer ${githubToken}`,
     },
     body: JSON.stringify({
       model,
@@ -95,11 +45,13 @@ async function callCopilotAPI(
 
   if (!response.ok) {
     const errorText = await response.text();
-    // Invalidate cached token on auth errors so next request re-fetches
     if (response.status === 401) {
-      cachedCopilotToken = null;
+      throw new Error('Invalid GitHub token. Please check your GITHUB_TOKEN in Vercel environment variables.');
     }
-    throw new Error(`Copilot API error (${response.status}): ${errorText}`);
+    if (response.status === 403) {
+      throw new Error('Access denied. Please ensure your GitHub token has the required permissions.');
+    }
+    throw new Error(`GitHub Models API error (${response.status}): ${errorText}`);
   }
 
   return response.json();
@@ -151,7 +103,7 @@ export async function POST(request: NextRequest) {
 
     while (rounds < MAX_TOOL_ROUNDS) {
       rounds++;
-      const result = await callCopilotAPI(conversationMessages, githubToken, model || DEFAULT_MODEL);
+      const result = await callGitHubModelsAPI(conversationMessages, githubToken, model || DEFAULT_MODEL);
       const choice = result.choices?.[0];
 
       if (!choice) {
@@ -197,7 +149,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       {
         error: error.message || 'Failed to process message',
-        details: 'Make sure GITHUB_TOKEN is set in your Vercel environment variables and you have an active GitHub Copilot subscription. Create a token at: https://github.com/settings/personal-access-tokens',
+        details: 'Make sure GITHUB_TOKEN is set in your Vercel environment variables. Create a token at: https://github.com/settings/personal-access-tokens',
       },
       { status: 500 }
     );

@@ -78,9 +78,9 @@ Your Browser
      ↓
 Vercel (Next.js App)
      ↓
-GitHub Copilot API (using your existing Copilot subscription via GITHUB_TOKEN)
+GitHub Models API (using GITHUB_TOKEN from github.com/settings/personal-access-tokens)
      ↓
-GPT-4o with Tool Calling
+GPT-4.1 / Claude / o3-mini with Tool Calling
      ↓
 Stock Tools + Alpha Vantage API
 ```
