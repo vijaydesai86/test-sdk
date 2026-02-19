@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
+import ReactMarkdown from 'react-markdown';
 
 interface Message {
   role: 'user' | 'assistant';
@@ -17,13 +18,34 @@ export default function ChatInterface() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const availableModels = [
+    // OpenAI — latest
     { value: 'gpt-4.1', label: 'GPT-4.1 (Recommended)' },
-    { value: 'gpt-4.1-mini', label: 'GPT-4.1 Mini (Faster)' },
+    { value: 'gpt-4.1-mini', label: 'GPT-4.1 Mini (Fast)' },
+    { value: 'gpt-4.1-nano', label: 'GPT-4.1 Nano (Fastest)' },
     { value: 'gpt-4o', label: 'GPT-4o' },
-    { value: 'o3-mini', label: 'o3-mini (Reasoning)' },
+    // OpenAI reasoning
     { value: 'o4-mini', label: 'o4-mini (Reasoning)' },
+    { value: 'o3', label: 'o3 (Reasoning)' },
+    { value: 'o3-mini', label: 'o3-mini (Reasoning)' },
+    { value: 'o1', label: 'o1 (Reasoning)' },
+    // Anthropic — latest
+    { value: 'claude-sonnet-4-5', label: 'Claude Sonnet 4.5' },
     { value: 'claude-sonnet-4', label: 'Claude Sonnet 4' },
+    { value: 'claude-3-7-sonnet', label: 'Claude 3.7 Sonnet' },
     { value: 'claude-3.5-sonnet', label: 'Claude 3.5 Sonnet' },
+    // Meta Llama — latest
+    { value: 'meta-llama-3.3-70b-instruct', label: 'Llama 3.3 70B' },
+    { value: 'meta-llama-3.1-405b-instruct', label: 'Llama 3.1 405B' },
+    // Microsoft Phi — latest
+    { value: 'phi-4', label: 'Phi-4' },
+    { value: 'phi-4-mini', label: 'Phi-4 Mini' },
+    // Mistral — latest
+    { value: 'mistral-large-2411', label: 'Mistral Large 2411' },
+    { value: 'mistral-nemo', label: 'Mistral Nemo' },
+    // Google — latest
+    { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
+    // Cohere
+    { value: 'cohere-command-r-plus', label: 'Cohere Command R+' },
   ];
 
   const scrollToBottom = () => {
@@ -172,7 +194,13 @@ export default function ChatInterface() {
                   <div className="font-semibold mb-1">
                     {message.role === 'user' ? 'You' : '🤖 Assistant'}
                   </div>
-                  <div className="whitespace-pre-wrap">{message.content}</div>
+                  {message.role === 'assistant' ? (
+                    <div className="prose prose-sm dark:prose-invert max-w-none">
+                      <ReactMarkdown>{message.content}</ReactMarkdown>
+                    </div>
+                  ) : (
+                    <div className="whitespace-pre-wrap">{message.content}</div>
+                  )}
                 </div>
               </div>
             ))}
