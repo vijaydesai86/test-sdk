@@ -80,9 +80,9 @@ npm run dev
 
 Open http://localhost:3000 in your browser and start chatting!
 
-## Using Real Stock Data (Optional)
+## Setting Up Stock Data API
 
-By default, the app uses mock data. To use real data:
+All stock data is served from the real Alpha Vantage API — no mock data.
 
 ### Step 1: Get API Key
 
@@ -95,7 +95,6 @@ For CLI:
 ```bash
 # Create .env file in root directory
 echo "ALPHA_VANTAGE_API_KEY=your_key_here" > .env
-echo "USE_REAL_API=true" >> .env
 ```
 
 For Web:
@@ -103,12 +102,11 @@ For Web:
 # Create .env.local file in web directory
 cd web
 echo "ALPHA_VANTAGE_API_KEY=your_key_here" > .env.local
-echo "USE_REAL_API=true" >> .env.local
 ```
 
 ### Step 3: Restart
 
-Restart the application to use real data!
+Restart the application to use real-time stock data!
 
 ## Troubleshooting
 
@@ -144,7 +142,6 @@ PORT=3001 npm run dev
 **Solution**: Alpha Vantage free tier has 5 calls/minute
 - Wait a minute before making more requests
 - Or upgrade to premium plan
-- Or use mock data (`USE_REAL_API=false`)
 
 ## Need Help?
 

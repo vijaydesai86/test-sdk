@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getToolDefinitions, executeTool } from '@/app/lib/stockTools';
-import { AlphaVantageService, MockStockDataService, StockDataService } from '@/app/lib/stockDataService';
+import { AlphaVantageService, StockDataService } from '@/app/lib/stockDataService';
 
 // GitHub Models API — works with PATs from github.com/settings/personal-access-tokens
 // Copilot subscribers get higher rate limits automatically
 const GITHUB_MODELS_URL = 'https://models.inference.ai.azure.com/chat/completions';
 const DEFAULT_MODEL = process.env.COPILOT_MODEL || 'gpt-4.1';
-const MAX_TOOL_ROUNDS = 5;
+const MAX_TOOL_ROUNDS = 10;
 
 interface ChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
@@ -18,7 +18,34 @@ interface ChatMessage {
 // Store conversation history per session
 const sessions = new Map<string, ChatMessage[]>();
 
-const SYSTEM_PROMPT = `You are a helpful stock information assistant. You can look up current stock prices, price history, company fundamentals (EPS, PE ratio, market cap, etc.), insider trading data, analyst ratings, and search for stock symbols. Use the available tools to fetch real-time data when answering questions about stocks.`;
+const SYSTEM_PROMPT = `You are an expert stock market research analyst with access to real-time financial data tools. Your job is to provide comprehensive, data-driven analysis — never give vague or speculative answers when tools can fetch real data.
+
+**IMPORTANT: Always call the relevant tools FIRST before answering. Never say data is unavailable without trying the tools.**
+
+**Your research tools include:**
+- **get_stock_price** — Live price, change, volume for any US stock
+- **get_price_history** — Daily/weekly/monthly OHLCV data (up to 30 points) for trend analysis
+- **get_company_overview** — Full fundamentals: EPS, PE, PEG, margins, market cap, beta, insider %, institutional %, short interest, 52-week range, moving averages, analyst target, full description
+- **get_earnings_history** — Quarterly/annual EPS with estimates and surprise analysis
+- **get_income_statement** — Revenue, gross profit, operating income, net income, EBITDA (quarterly + annual)
+- **get_balance_sheet** — Assets, liabilities, equity, cash, debt
+- **get_cash_flow** — Operating cash flow, capex, free cash flow, dividends
+- **get_insider_trading** — Insider ownership %, institutional ownership %, short interest, shares float, and recent insider buy/sell transactions
+- **get_analyst_ratings** — Full breakdown: Strong Buy / Buy / Hold / Sell / Strong Sell counts + consensus target price + upside
+- **get_news_sentiment** — Latest news headlines with AI sentiment scores (bullish/bearish) and article summaries
+- **get_sector_performance** — Real-time sector returns across multiple timeframes
+- **get_stocks_by_sector** — Curated lists for themes: AI, semiconductor, data center, pharma, cybersecurity, cloud, EV, fintech, renewable energy
+- **get_top_gainers_losers** — Today's top gainers, losers, and most active
+- **search_stock** — Find ticker symbols by company name
+
+**Research approach:**
+- For any stock question, call MULTIPLE tools to build a complete picture
+- For "moat" or competitive advantage questions: use get_company_overview (margins, ROE, description) + get_income_statement (revenue trends) + get_cash_flow (FCF generation) + get_earnings_history (earnings growth)
+- For insider trading: use get_insider_trading — it returns real ownership data, short interest, and transactions
+- For sector questions: use get_stocks_by_sector + get_sector_performance
+- When the user asks for a graph or chart, present the data in a formatted table
+- Always provide specific numbers, percentages, and dates from the tool results
+- Cite the data source (Alpha Vantage) when presenting data`;
 
 /**
  * Call the GitHub Models API using your GitHub PAT directly.
@@ -92,11 +119,18 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Initialize stock service
-    const useRealAPI = process.env.USE_REAL_API === 'true' && !!process.env.ALPHA_VANTAGE_API_KEY;
-    const stockService: StockDataService = useRealAPI
-      ? new AlphaVantageService(process.env.ALPHA_VANTAGE_API_KEY)
-      : new MockStockDataService();
+    // Initialize stock service (always uses real Alpha Vantage API)
+    const alphaVantageKey = process.env.ALPHA_VANTAGE_API_KEY;
+    if (!alphaVantageKey) {
+      return NextResponse.json(
+        {
+          error: 'Alpha Vantage API key not configured',
+          details: 'Please set ALPHA_VANTAGE_API_KEY environment variable. Get a free API key at: https://www.alphavantage.co/support/#api-key',
+        },
+        { status: 503 }
+      );
+    }
+    const stockService: StockDataService = new AlphaVantageService(alphaVantageKey);
 
     // Get or create conversation history
     let conversationMessages: ChatMessage[] = sessionId ? sessions.get(sessionId) || [] : [];
