@@ -1,6 +1,18 @@
 # 📊 Stock Information Assistant
 
-An AI-powered stock information tool built with GitHub Copilot SDK that provides comprehensive US stock market data through both a CLI and web interface.
+An AI-powered stock information tool that provides comprehensive US stock market data through both a CLI and web interface.
+
+## ⚡ Deploy to Vercel in 5 Minutes
+
+**Want to use it right away?** Deploy to Vercel - no local setup needed!
+
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/vijaydesai86/test-sdk&root-directory=web&env=OPENAI_API_KEY&envDescription=OpenAI%20API%20key%20required%20for%20AI%20responses&envLink=https://platform.openai.com/api-keys)
+
+**📖 [Complete Vercel Deployment Guide](VERCEL_DEPLOYMENT.md)** - Step-by-step instructions
+
+**Requirements for Vercel:**
+- OpenAI API key ([Get one here](https://platform.openai.com/api-keys)) - Required
+- Alpha Vantage key ([Get free key](https://www.alphavantage.co/support/#api-key)) - Optional, for real stock data
 
 ## Features
 
@@ -10,11 +22,17 @@ An AI-powered stock information tool built with GitHub Copilot SDK that provides
 - **Insider Trading**: Track insider transactions (with premium API)
 - **Analyst Ratings**: View consensus ratings and target prices
 - **Stock Search**: Find stocks by company name or ticker symbol
-- **AI-Powered Chat**: Natural language interface powered by GitHub Copilot
+- **AI-Powered Chat**: Natural language interface
 
-## 🚀 Quick Start
+## 🚀 Quick Start Options
 
-### Prerequisites
+### Option 1: Deploy to Vercel (Recommended - Just Works!)
+
+See [VERCEL_DEPLOYMENT.md](VERCEL_DEPLOYMENT.md) for detailed instructions.
+
+### Option 2: Run Locally (CLI Version)
+
+#### Prerequisites
 
 1. **Node.js** 18+ installed
 2. **GitHub Copilot CLI** installed and authenticated
@@ -25,9 +43,9 @@ An AI-powered stock information tool built with GitHub Copilot SDK that provides
    # Authenticate
    copilot auth login
    ```
-3. **GitHub Copilot subscription** (or use BYOK - Bring Your Own Key)
+3. **GitHub Copilot subscription**
 
-### Installation
+#### Installation
 
 ```bash
 # Clone the repository
@@ -81,7 +99,9 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000) in your browser.
 
-### Deploy to Vercel
+### Deploy to Vercel (✅ Now Works!)
+
+The web interface now works seamlessly on Vercel using OpenAI directly (no Copilot CLI required).
 
 1. **Push to GitHub** (if not already done)
    ```bash
@@ -95,19 +115,31 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
    - Click "Import Project"
    - Select your GitHub repository
    - Set the **Root Directory** to `web`
-   - Add environment variables (optional):
-     - `USE_REAL_API=false` (or `true` if you have an API key)
-     - `ALPHA_VANTAGE_API_KEY=your_key_here` (if using real API)
+   - Add environment variables:
+     - `OPENAI_API_KEY=your_openai_key` (**REQUIRED**)
+     - `USE_REAL_API=false` (or `true` with Alpha Vantage key)
+     - `ALPHA_VANTAGE_API_KEY=your_key` (optional, for real stock data)
    - Click "Deploy"
 
-3. **Important Vercel Configuration**:
+3. **Get OpenAI API Key**:
+   - Visit [platform.openai.com/api-keys](https://platform.openai.com/api-keys)
+   - Create a new API key
+   - Add it to Vercel environment variables
+
+4. **Important Vercel Configuration**:
    - Root Directory: `web`
    - Framework Preset: Next.js
    - Node.js Version: 18.x or higher
 
+**Note**: The web deployment uses OpenAI directly for Vercel compatibility. The CLI version still uses GitHub Copilot SDK for local development.
+
 ## 🔑 API Configuration
 
-By default, the application uses mock data. To use real stock data:
+### For Vercel Deployment:
+1. **OpenAI API Key** (REQUIRED): Get from [platform.openai.com](https://platform.openai.com/api-keys)
+2. **Alpha Vantage Key** (Optional): Get from [Alpha Vantage](https://www.alphavantage.co/support/#api-key)
+
+### For Local Development:
 
 1. Get a free API key from [Alpha Vantage](https://www.alphavantage.co/support/#api-key)
 
