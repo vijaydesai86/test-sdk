@@ -6,7 +6,9 @@ Getting 404 errors for all routes (/, /favicon.ico, etc.) when deploying to Verc
 ## Root Cause
 The Next.js application is in the `/web` subdirectory, but Vercel is trying to deploy from the root directory `/`. This causes Vercel to not find any pages, resulting in 404 errors.
 
-## Solution 1: Set Root Directory in Vercel Dashboard (RECOMMENDED)
+## Solution 1: Set Root Directory in Vercel Dashboard (REQUIRED)
+
+**CRITICAL:** You MUST set the Root Directory to `web` for this deployment to work. The vercel.json configuration assumes the root directory is set to `web`.
 
 ### Step 1: Delete Current Deployment
 1. Go to your Vercel dashboard
@@ -55,11 +57,9 @@ Click **"Deploy"** and wait for the build to complete. This should fix all 404 e
 
 ---
 
-## Solution 2: Use vercel.json Configuration (IF Solution 1 Doesn't Work)
+## Solution 2: If Root Directory Cannot Be Changed
 
-If you truly cannot change the Root Directory in the Vercel UI, the `vercel.json` file in this repository has been configured to work around this limitation.
-
-### What's in the vercel.json:
+If you truly cannot change the Root Directory in the Vercel UI, then the current vercel.json will NOT work. You would need a different configuration that uses `cd web` commands:
 
 ```json
 {
@@ -69,10 +69,24 @@ If you truly cannot change the Root Directory in the Vercel UI, the `vercel.json
 }
 ```
 
+However, this approach has been problematic. **The recommended solution is to set Root Directory to `web`.**
+
+### What's in the vercel.json:
+
+```json
+{
+  "buildCommand": "npm install && npm run build",
+  "outputDirectory": ".next",
+  "installCommand": "npm install"
+}
+```
+
+**Important:** This configuration assumes the Root Directory is set to `web` in Vercel's dashboard. When the root directory is set to `web`, Vercel's working directory is already inside the `web` folder, so commands run directly without needing `cd web`.
+
 This tells Vercel:
-- Change to the `web/` directory and install dependencies
-- Build the Next.js app from the `web/` directory
-- Look for the build output in `web/.next`
+- Install dependencies (already in the `web/` directory)
+- Build the Next.js app
+- Look for the build output in `.next` (relative to `web/`)
 
 ### To deploy with this configuration:
 
