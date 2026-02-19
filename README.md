@@ -13,7 +13,7 @@ An AI-powered stock information tool that provides comprehensive US stock market
 **What You Need for Vercel:**
 - ✅ GitHub Copilot subscription (you already have this!)
 - ✅ GitHub Personal Access Token ([Create here](https://github.com/settings/tokens)) - FREE
-- ✅ Alpha Vantage key ([Get free key](https://www.alphavantage.co/support/#api-key)) - Optional, for real stock data
+- ✅ Alpha Vantage key ([Get free key](https://www.alphavantage.co/support/#api-key)) - REQUIRED for real-time stock data
 
 **Total Additional Cost: $0/month** 🎉
 
@@ -22,10 +22,15 @@ An AI-powered stock information tool that provides comprehensive US stock market
 - **Real-time Stock Prices**: Get current prices, changes, and volume
 - **Price History**: View daily, weekly, or monthly historical data
 - **Company Fundamentals**: EPS, PE ratio, PEG ratio, market cap, profit margins
-- **Insider Trading**: Track insider transactions (with premium API)
+- **EPS History**: Quarterly and annual earnings with beat/miss analysis
+- **Financial Statements**: Income statement, balance sheet, cash flow data
+- **Insider Trading**: Track insider transactions
 - **Analyst Ratings**: View consensus ratings and target prices
+- **Sector Performance**: Real-time sector performance across timeframes
+- **Sector Stock Lists**: Curated lists for AI, semiconductors, data centers, pharma, cybersecurity, cloud, EV, fintech, renewable energy
+- **Top Movers**: Today's top gainers, losers, and most active stocks
 - **Stock Search**: Find stocks by company name or ticker symbol
-- **AI-Powered Chat**: Natural language interface
+- **AI-Powered Chat**: Natural language interface with model selection
 
 ## 🚀 Quick Start Options
 
@@ -117,7 +122,7 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) for complete deployment instructions.
 **Key Points:**
 - Set the **Root Directory** to `web`
 - Add `GITHUB_TOKEN` environment variable (uses your Copilot subscription!)
-- Optionally add `ALPHA_VANTAGE_API_KEY` for real stock data
+- Optionally add `ALPHA_VANTAGE_API_KEY` for real-time stock data
 
 **Note**: The web deployment uses GitHub Copilot SDK with token authentication.
 
@@ -136,13 +141,11 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) for complete deployment instructions.
 2. Create `.env.local` in the `web` directory:
    ```env
    ALPHA_VANTAGE_API_KEY=your_api_key_here
-   USE_REAL_API=true
    ```
 
 3. For CLI, create `.env` in the root directory:
    ```env
    ALPHA_VANTAGE_API_KEY=your_api_key_here
-   USE_REAL_API=true
    ```
 
 **Note**: Alpha Vantage free tier has a limit of 5 API calls per minute.
@@ -156,7 +159,7 @@ GitHub Copilot SDK
         ↓
 Custom Stock Tools
         ↓
-Stock Data API (Alpha Vantage or Mock)
+Stock Data API (Alpha Vantage)
 ```
 
 ### Components
@@ -173,10 +176,17 @@ The AI assistant has access to these tools:
 
 1. **search_stock**: Find stock symbols by company name
 2. **get_stock_price**: Get current price and quote data
-3. **get_price_history**: Retrieve historical prices
-4. **get_company_overview**: Get fundamentals (EPS, PE, margins, etc.)
+3. **get_price_history**: Retrieve historical prices (daily, weekly, monthly)
+4. **get_company_overview**: Get fundamentals (EPS, PE, margins, sector, description)
 5. **get_insider_trading**: View insider transactions
 6. **get_analyst_ratings**: See analyst consensus and targets
+7. **get_earnings_history**: Quarterly/annual EPS history with beat/miss data
+8. **get_income_statement**: Revenue, profit, EBITDA (quarterly and annual)
+9. **get_balance_sheet**: Assets, liabilities, equity, cash, debt
+10. **get_cash_flow**: Operating cash flow, free cash flow, capex
+11. **get_sector_performance**: Real-time sector performance across timeframes
+12. **get_stocks_by_sector**: Curated stock lists by sector/theme (AI, semis, pharma, etc.)
+13. **get_top_gainers_losers**: Today's top gainers, losers, and most active
 
 ## 🔒 Authentication
 
@@ -193,9 +203,15 @@ See [GitHub Copilot SDK Authentication](https://github.com/github/copilot-sdk/bl
 - "What is Apple's current stock price?"
 - "Show me Microsoft's EPS and PE ratio"
 - "What's the price history for Tesla over the last month?"
-- "Search for Amazon stock"
+- "Show me the earnings history for NVDA"
+- "What are the quarterly results for Amazon?"
+- "Show me all AI stocks"
+- "What semiconductor stocks should I look at?"
+- "How is the tech sector performing?"
+- "What are today's top gainers?"
 - "What are analysts saying about Google?"
 - "Show me insider trading for NVDA"
+- "What is Apple's competitive moat?"
 
 ## 📦 Tech Stack
 
@@ -215,7 +231,6 @@ See [GitHub Copilot SDK Authentication](https://github.com/github/copilot-sdk/bl
 ### "API rate limit exceeded"
 - Alpha Vantage free tier: 5 calls/minute
 - Wait a minute or upgrade to premium
-- Use mock data for testing: `USE_REAL_API=false`
 
 ### Vercel Deployment Issues
 - Ensure Root Directory is set to `web`

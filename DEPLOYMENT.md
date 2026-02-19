@@ -45,11 +45,7 @@ Name: GITHUB_TOKEN
 Value: ghp_... (paste your token from Step 1)
 ```
 
-**Optional (for real stock data):**
-```
-Name: USE_REAL_API
-Value: true
-```
+**Optional (for real-time stock data):**
 ```
 Name: ALPHA_VANTAGE_API_KEY
 Value: your_alpha_vantage_key
@@ -113,7 +109,6 @@ Stock Tools + Alpha Vantage API
 #### API Rate Limit
 - Alpha Vantage free tier: 5 calls/minute
 - Wait a minute before making more requests
-- Or use mock data: Set `USE_REAL_API=false` or remove the environment variable
 
 ### Custom Domain (Optional)
 
@@ -147,9 +142,8 @@ cd test-sdk/web
 # Install dependencies
 npm install
 
-# Create .env.local file (optional)
+# Create .env.local file
 echo "ALPHA_VANTAGE_API_KEY=your_key_here" > .env.local
-echo "USE_REAL_API=true" >> .env.local
 
 # Run development server
 npm run dev
@@ -162,8 +156,7 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `GITHUB_TOKEN` | Yes (Vercel) | GitHub Personal Access Token to use your Copilot subscription |
-| `USE_REAL_API` | No | Set to `true` to use real Alpha Vantage API, `false` for mock data (default) |
-| `ALPHA_VANTAGE_API_KEY` | No | Your Alpha Vantage API key (only needed if `USE_REAL_API=true`) |
+| `ALPHA_VANTAGE_API_KEY` | Yes | Your Alpha Vantage API key for real-time stock data. Get free at https://www.alphavantage.co/support/#api-key |
 
 ## Support
 

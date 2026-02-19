@@ -1,7 +1,7 @@
 import { CopilotClient } from '@github/copilot-sdk';
 import * as readline from 'readline';
 import { createStockTools } from './stockTools';
-import { AlphaVantageService, MockStockDataService } from './stockDataService';
+import { AlphaVantageService } from './stockDataService';
 import * as dotenv from 'dotenv';
 
 // Load environment variables
@@ -10,17 +10,15 @@ dotenv.config();
 async function main() {
   console.log('🚀 Starting Stock Information Assistant with GitHub Copilot SDK...\n');
 
-  // Initialize stock data service
-  const useRealAPI = process.env.USE_REAL_API === 'true' && process.env.ALPHA_VANTAGE_API_KEY;
-  const stockService = useRealAPI
-    ? new AlphaVantageService(process.env.ALPHA_VANTAGE_API_KEY)
-    : new MockStockDataService();
-
-  console.log(`📊 Using ${useRealAPI ? 'Alpha Vantage API' : 'Mock Data Service'}\n`);
-
-  if (!useRealAPI) {
-    console.log('💡 Tip: Set USE_REAL_API=true and ALPHA_VANTAGE_API_KEY in .env file to use real data\n');
+  // Initialize stock data service (always uses real Alpha Vantage API)
+  const apiKey = process.env.ALPHA_VANTAGE_API_KEY;
+  if (!apiKey) {
+    console.error('❌ ALPHA_VANTAGE_API_KEY is required. Get a free key at: https://www.alphavantage.co/support/#api-key');
+    process.exit(1);
   }
+  const stockService = new AlphaVantageService(apiKey);
+
+  console.log('📊 Using Alpha Vantage API for real-time stock data\n');
 
   // Create Copilot client
   let client: CopilotClient | null = null;
@@ -49,17 +47,23 @@ async function main() {
     console.log('  Ask me anything about US stocks!');
     console.log('=' .repeat(70));
     console.log('\nAvailable information:');
-    console.log('  • Current stock prices and quotes');
+    console.log('  • Current stock prices and live quotes');
     console.log('  • Price history (daily, weekly, monthly)');
     console.log('  • Company fundamentals (EPS, PE ratio, market cap, etc.)');
-    console.log('  • Insider trading data');
-    console.log('  • Analyst ratings');
-    console.log('  • Stock symbol search');
+    console.log('  • EPS history with beat/miss analysis');
+    console.log('  • Financial statements (income, balance sheet, cash flow)');
+    console.log('  • Insider trading activity');
+    console.log('  • Analyst ratings and target prices');
+    console.log('  • Sector performance across timeframes');
+    console.log('  • Sector stock lists (AI, semiconductors, pharma, etc.)');
+    console.log('  • Top gainers, losers, and most active stocks');
     console.log('\nExamples:');
     console.log('  - "What is the current price of Apple stock?"');
-    console.log('  - "Show me the EPS and PE ratio for Microsoft"');
-    console.log('  - "What are the analyst ratings for Tesla?"');
-    console.log('  - "Search for Amazon stock symbol"');
+    console.log('  - "Show me the EPS history for Microsoft"');
+    console.log('  - "What are the top AI stocks?"');
+    console.log('  - "How is the tech sector performing?"');
+    console.log('  - "Show me quarterly results for NVDA"');
+    console.log('  - "What are today\'s top gainers?"');
     console.log('\nType "quit" or "exit" to end the session\n');
     console.log('=' .repeat(70) + '\n');
 

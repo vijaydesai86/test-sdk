@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getToolDefinitions, executeTool } from '@/app/lib/stockTools';
-import { AlphaVantageService, MockStockDataService, StockDataService } from '@/app/lib/stockDataService';
+import { AlphaVantageService, StockDataService } from '@/app/lib/stockDataService';
 
 // GitHub Models API — works with PATs from github.com/settings/personal-access-tokens
 // Copilot subscribers get higher rate limits automatically
@@ -18,7 +18,32 @@ interface ChatMessage {
 // Store conversation history per session
 const sessions = new Map<string, ChatMessage[]>();
 
-const SYSTEM_PROMPT = `You are a helpful stock information assistant. You can look up current stock prices, price history, company fundamentals (EPS, PE ratio, market cap, etc.), insider trading data, analyst ratings, and search for stock symbols. Use the available tools to fetch real-time data when answering questions about stocks.`;
+const SYSTEM_PROMPT = `You are a comprehensive stock market analyst and information assistant. You have access to powerful tools to look up real-time data about US stocks.
+
+**Your capabilities include:**
+- Current stock prices and live quotes
+- Historical price data (daily, weekly, monthly) for charting trends
+- Company fundamentals (EPS, PE ratio, PEG ratio, market cap, margins, dividends)
+- Earnings per share (EPS) history with quarterly beat/miss analysis
+- Income statements (quarterly and annual revenue, profit, EBITDA)
+- Balance sheet data (assets, liabilities, equity, cash, debt)
+- Cash flow statements (operating cash flow, free cash flow, capex)
+- Insider trading activity (executive buys and sells)
+- Analyst consensus ratings and price targets
+- Sector performance across different timeframes
+- Curated lists of stocks by sector/theme (AI, semiconductors, data centers, pharma, cybersecurity, cloud, EV, fintech, renewable energy)
+- Top gainers, losers, and most actively traded stocks
+
+**When analyzing competitive advantages (moats), consider:**
+- Market position and brand strength from company overview
+- Profit margins and return on equity (high margins suggest pricing power)
+- Revenue growth trends from income statements
+- Cash generation from cash flow data
+- Industry context from sector information
+
+**When the user asks about a stock graph or chart, present the price history data in a formatted table.**
+
+Always use the available tools to fetch actual data before answering. Be specific with numbers and cite the data source.`;
 
 /**
  * Call the GitHub Models API using your GitHub PAT directly.
@@ -92,11 +117,18 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Initialize stock service
-    const useRealAPI = process.env.USE_REAL_API === 'true' && !!process.env.ALPHA_VANTAGE_API_KEY;
-    const stockService: StockDataService = useRealAPI
-      ? new AlphaVantageService(process.env.ALPHA_VANTAGE_API_KEY)
-      : new MockStockDataService();
+    // Initialize stock service (always uses real Alpha Vantage API)
+    const alphaVantageKey = process.env.ALPHA_VANTAGE_API_KEY;
+    if (!alphaVantageKey) {
+      return NextResponse.json(
+        {
+          error: 'Alpha Vantage API key not configured',
+          details: 'Please set ALPHA_VANTAGE_API_KEY environment variable. Get a free API key at: https://www.alphavantage.co/support/#api-key',
+        },
+        { status: 503 }
+      );
+    }
+    const stockService: StockDataService = new AlphaVantageService(alphaVantageKey);
 
     // Get or create conversation history
     let conversationMessages: ChatMessage[] = sessionId ? sessions.get(sessionId) || [] : [];

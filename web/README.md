@@ -32,7 +32,6 @@ A web-based chat interface for the Stock Information Assistant, built with Next.
    ```env
    GITHUB_TOKEN=ghp_your_token_here
    ALPHA_VANTAGE_API_KEY=your_key_here
-   USE_REAL_API=true
    ```
 
 3. Run the development server:
@@ -74,8 +73,7 @@ web/
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `GITHUB_TOKEN` | GitHub Personal Access Token (required) | — |
-| `USE_REAL_API` | Use real Alpha Vantage API | `false` |
-| `ALPHA_VANTAGE_API_KEY` | Alpha Vantage API key | Uses mock data |
+| `ALPHA_VANTAGE_API_KEY` | Alpha Vantage API key (required for stock data) | — |
 
 ## Usage Examples
 
@@ -93,7 +91,7 @@ See [DEPLOYMENT.md](../DEPLOYMENT.md) in the root directory for detailed deploym
 
 1. Import your repository on [vercel.com](https://vercel.com)
 2. Set **Root Directory** to `web`
-3. Add environment variables: `GITHUB_TOKEN`, `ALPHA_VANTAGE_API_KEY`, `USE_REAL_API=true`
+3. Add environment variables: `GITHUB_TOKEN`, `ALPHA_VANTAGE_API_KEY`
 4. Deploy!
 
 ## Tech Stack
