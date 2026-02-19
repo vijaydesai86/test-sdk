@@ -45,11 +45,23 @@ async function callGitHubModelsAPI(
 
   if (!response.ok) {
     const errorText = await response.text();
+    console.error(`GitHub Models API ${response.status}: ${errorText}`);
     if (response.status === 401) {
-      throw new Error('Invalid GitHub token. Please check your GITHUB_TOKEN in Vercel environment variables.');
+      throw new Error(
+        'GitHub Models API authentication failed (401). ' +
+        'Your GITHUB_TOKEN may be invalid, expired, or missing the required permissions. ' +
+        'Please use a classic PAT from https://github.com/settings/tokens with no specific scopes needed, ' +
+        'or a fine-grained PAT from https://github.com/settings/personal-access-tokens with "Models" read permission enabled. ' +
+        `API response: ${errorText}`
+      );
     }
     if (response.status === 403) {
-      throw new Error('Access denied. Please ensure your GitHub token has the required permissions.');
+      throw new Error(
+        'GitHub Models API access denied (403). ' +
+        'Your token does not have permission to use GitHub Models. ' +
+        'If using a fine-grained PAT, enable the "Models" permission under "Account permissions". ' +
+        `API response: ${errorText}`
+      );
     }
     throw new Error(`GitHub Models API error (${response.status}): ${errorText}`);
   }
@@ -149,7 +161,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       {
         error: error.message || 'Failed to process message',
-        details: 'Make sure GITHUB_TOKEN is set in your Vercel environment variables. Create a token at: https://github.com/settings/personal-access-tokens',
+        details: 'Make sure GITHUB_TOKEN is set in your Vercel environment variables. Use a classic PAT from https://github.com/settings/tokens (no scopes needed), or a fine-grained PAT with "Models" read permission from https://github.com/settings/personal-access-tokens.',
       },
       { status: 500 }
     );
