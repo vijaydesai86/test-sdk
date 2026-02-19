@@ -262,6 +262,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       response: assistantContent || "I apologize, but I couldn't generate a response. Please try again.",
       sessionId: currentSessionId,
+      model: model || DEFAULT_MODEL,
     });
   } catch (error: any) {
     console.error('Chat API error:', error);

@@ -6,6 +6,7 @@ import ReactMarkdown from 'react-markdown';
 interface Message {
   role: 'user' | 'assistant';
   content: string;
+  model?: string;
 }
 
 export default function ChatInterface() {
@@ -18,34 +19,48 @@ export default function ChatInterface() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const availableModels = [
-    // OpenAI — latest
+    // OpenAI GPT-5 series — latest
+    { value: 'gpt-5.3-codex', label: 'GPT-5.3 Codex (Latest)' },
+    { value: 'gpt-5.2-codex', label: 'GPT-5.2 Codex' },
+    { value: 'gpt-5.2', label: 'GPT-5.2' },
+    { value: 'gpt-5.1-codex-max', label: 'GPT-5.1 Codex Max' },
+    { value: 'gpt-5.1-codex', label: 'GPT-5.1 Codex' },
+    { value: 'gpt-5.1-codex-mini', label: 'GPT-5.1 Codex Mini' },
+    { value: 'gpt-5.1', label: 'GPT-5.1' },
+    { value: 'gpt-5-codex', label: 'GPT-5 Codex' },
+    { value: 'gpt-5-mini', label: 'GPT-5 Mini' },
+    { value: 'gpt-5', label: 'GPT-5' },
+    // OpenAI GPT-4.1 series
     { value: 'gpt-4.1', label: 'GPT-4.1 (Recommended)' },
-    { value: 'gpt-4.1-mini', label: 'GPT-4.1 Mini (Fast)' },
-    { value: 'gpt-4.1-nano', label: 'GPT-4.1 Nano (Fastest)' },
-    { value: 'gpt-4o', label: 'GPT-4o' },
+    { value: 'gpt-4.1-mini', label: 'GPT-4.1 Mini' },
+    { value: 'gpt-4.1-nano', label: 'GPT-4.1 Nano' },
     // OpenAI reasoning
     { value: 'o4-mini', label: 'o4-mini (Reasoning)' },
     { value: 'o3', label: 'o3 (Reasoning)' },
-    { value: 'o3-mini', label: 'o3-mini (Reasoning)' },
-    { value: 'o1', label: 'o1 (Reasoning)' },
-    // Anthropic — latest
+    // Anthropic Claude — latest
+    { value: 'claude-opus-4-6', label: 'Claude Opus 4.6 (Most Powerful)' },
+    { value: 'claude-opus-4-5', label: 'Claude Opus 4.5' },
+    { value: 'claude-opus-4-1', label: 'Claude Opus 4.1' },
+    { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
     { value: 'claude-sonnet-4-5', label: 'Claude Sonnet 4.5' },
     { value: 'claude-sonnet-4', label: 'Claude Sonnet 4' },
-    { value: 'claude-3-7-sonnet', label: 'Claude 3.7 Sonnet' },
-    { value: 'claude-3.5-sonnet', label: 'Claude 3.5 Sonnet' },
+    { value: 'claude-haiku-4-5', label: 'Claude Haiku 4.5 (Fast)' },
+    // Google Gemini — latest
+    { value: 'gemini-3-pro', label: 'Gemini 3 Pro' },
+    { value: 'gemini-3-flash', label: 'Gemini 3 Flash (Fast)' },
+    { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
+    // xAI
+    { value: 'grok-code-fast-1', label: 'Grok Code Fast 1' },
+    // Microsoft fine-tuned
+    { value: 'raptor-mini', label: 'Raptor Mini' },
+    { value: 'goldeneye', label: 'Goldeneye' },
     // Meta Llama — latest
     { value: 'meta-llama-3.3-70b-instruct', label: 'Llama 3.3 70B' },
-    { value: 'meta-llama-3.1-405b-instruct', label: 'Llama 3.1 405B' },
     // Microsoft Phi — latest
     { value: 'phi-4', label: 'Phi-4' },
     { value: 'phi-4-mini', label: 'Phi-4 Mini' },
-    // Mistral — latest
+    // Mistral
     { value: 'mistral-large-2411', label: 'Mistral Large 2411' },
-    { value: 'mistral-nemo', label: 'Mistral Nemo' },
-    // Google — latest
-    { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
-    // Cohere
-    { value: 'cohere-command-r-plus', label: 'Cohere Command R+' },
   ];
 
   const scrollToBottom = () => {
@@ -88,7 +103,7 @@ export default function ChatInterface() {
       setSessionId(data.sessionId);
       setMessages((prev) => [
         ...prev,
-        { role: 'assistant', content: data.response },
+        { role: 'assistant', content: data.response, model: data.model },
       ]);
     } catch (err: any) {
       setError(err.message);
@@ -191,8 +206,15 @@ export default function ChatInterface() {
                       : 'bg-gray-100 dark:bg-gray-700 text-gray-800 dark:text-white'
                   }`}
                 >
-                  <div className="font-semibold mb-1">
-                    {message.role === 'user' ? 'You' : '🤖 Assistant'}
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="font-semibold">
+                      {message.role === 'user' ? 'You' : '🤖 Assistant'}
+                    </span>
+                    {message.role === 'assistant' && message.model && (
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 font-mono">
+                        {message.model}
+                      </span>
+                    )}
                   </div>
                   {message.role === 'assistant' ? (
                     <div className="prose prose-sm dark:prose-invert max-w-none">
@@ -207,6 +229,12 @@ export default function ChatInterface() {
             {isLoading && (
               <div className="flex justify-start">
                 <div className="bg-gray-100 dark:bg-gray-700 rounded-lg p-4">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 font-mono">
+                      {model}
+                    </span>
+                    <span className="text-xs text-gray-500 dark:text-gray-400">thinking…</span>
+                  </div>
                   <div className="flex items-center space-x-2">
                     <div className="animate-bounce">●</div>
                     <div className="animate-bounce delay-100">●</div>
