@@ -78,11 +78,11 @@ Your Browser
      ↓
 Vercel (Next.js App)
      ↓
-GitHub Copilot SDK (using GITHUB_TOKEN)
+GitHub Copilot API (using your existing Copilot subscription via GITHUB_TOKEN)
      ↓
-GitHub Copilot API (using your subscription!)
+GPT-4o with Tool Calling
      ↓
-Stock Tools + Alpha Vantage API (optional)
+Stock Tools + Alpha Vantage API
 ```
 
 ### Testing Your Deployment
