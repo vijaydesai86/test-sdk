@@ -6,7 +6,11 @@ import { AlphaVantageService, StockDataService } from '@/app/lib/stockDataServic
 // Copilot subscribers get higher rate limits automatically
 const GITHUB_MODELS_URL = 'https://models.inference.ai.azure.com/chat/completions';
 const DEFAULT_MODEL = process.env.COPILOT_MODEL || 'gpt-4.1';
-const MAX_TOOL_ROUNDS = 10;
+// Allow enough rounds for multi-stock research (20 stocks × 2-3 tools = 40-60 tool calls)
+const MAX_TOOL_ROUNDS = 50;
+
+// Vercel: allow up to 5 minutes for deep research requests
+export const maxDuration = 300;
 
 interface ChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
