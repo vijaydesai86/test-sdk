@@ -75,7 +75,7 @@ However, this approach has been problematic. **The recommended solution is to se
 
 ```json
 {
-  "buildCommand": "npm install && npm run build",
+  "buildCommand": "npm run build",
   "outputDirectory": ".next",
   "installCommand": "npm install"
 }
@@ -84,8 +84,8 @@ However, this approach has been problematic. **The recommended solution is to se
 **Important:** This configuration assumes the Root Directory is set to `web` in Vercel's dashboard. When the root directory is set to `web`, Vercel's working directory is already inside the `web` folder, so commands run directly without needing `cd web`.
 
 This tells Vercel:
-- Install dependencies (already in the `web/` directory)
-- Build the Next.js app
+- Install dependencies via installCommand
+- Build the Next.js app via buildCommand
 - Look for the build output in `.next` (relative to `web/`)
 
 ### To deploy with this configuration:
