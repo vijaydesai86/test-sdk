@@ -233,7 +233,7 @@ export class AlphaVantageService implements StockDataService {
         quarterlyReports: data.quarterlyReports.slice(0, 4).map((r: any) => ({
           fiscalQuarter: r.fiscalDateEnding,
           totalAssets: r.totalAssets,
-          totalLiabilities: r.totalCurrentLiabilities,
+          totalLiabilities: r.totalLiabilities,
           totalShareholderEquity: r.totalShareholderEquity,
           cashAndEquivalents: r.cashAndCashEquivalentsAtCarryingValue,
           longTermDebt: r.longTermDebt,
@@ -384,8 +384,7 @@ function getStocksBySectorData(sector: string): any {
         { symbol: 'SMCI', name: 'Super Micro Computer', description: 'AI server platforms and GPU racks' },
         { symbol: 'ANET', name: 'Arista Networks', description: 'High-speed networking for AI clusters' },
         { symbol: 'DLR', name: 'Digital Realty', description: 'AI-ready data center facilities' },
-        { symbol: 'EATON', name: 'Eaton Corp', description: 'Power management for data centers' },
-        { symbol: 'ETN', name: 'Eaton Corp PLC', description: 'Electrical power infrastructure' },
+        { symbol: 'ETN', name: 'Eaton Corp', description: 'Power management for data centers' },
         { symbol: 'FLNC', name: 'Fluence Energy', description: 'Energy storage for data centers' },
       ],
     },
