@@ -49,6 +49,7 @@ const TOOL_CALL_WARNING =
   'Model returned tool calls as plain text. Switch to a tool-calling model from the dropdown.';
 const isToolCallText = (content: string) =>
   /"name"\s*:\s*"functions\./.test(content) || /"arguments"\s*:\s*\{/.test(content);
+const SAMPLE_REPORT_LINK = '/api/reports/nvda-2025-01-01T00-00-00.md';
 
 export default function ChatInterface() {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -241,9 +242,18 @@ export default function ChatInterface() {
             <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wide">Artifacts</h2>
             <div className="mt-3 space-y-2 text-sm">
               {reportLinks.length === 0 ? (
-                <p className="text-gray-500 dark:text-gray-400">
-                  No reports saved yet. Ask for a report to generate an artifact.
-                </p>
+                <div className="space-y-2">
+                  <p className="text-gray-500 dark:text-gray-400">
+                    No reports saved yet. Ask for a report to generate an artifact.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => handleReportClick(SAMPLE_REPORT_LINK)}
+                    className="block w-full text-left truncate rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-2 text-blue-600 dark:text-blue-300 hover:bg-blue-50 dark:hover:bg-blue-900/30"
+                  >
+                    Sample NVDA report (mock data)
+                  </button>
+                </div>
               ) : (
                 reportLinks.map((link) => (
                   <button
