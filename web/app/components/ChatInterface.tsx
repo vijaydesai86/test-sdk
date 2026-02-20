@@ -9,59 +9,46 @@ interface Message {
   model?: string;
 }
 
+interface ModelOption {
+  value: string;
+  label: string;
+  rateLimitTier?: string;
+}
+
+const DEFAULT_MODEL = 'openai/gpt-4.1';
+
 export default function ChatInterface() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [model, setModel] = useState('gpt-4.1');
+  const [model, setModel] = useState(DEFAULT_MODEL);
+  const [availableModels, setAvailableModels] = useState<ModelOption[]>([
+    { value: DEFAULT_MODEL, label: 'GPT-4.1', rateLimitTier: 'high' },
+  ]);
+  const [modelsLoading, setModelsLoading] = useState(true);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  const availableModels = [
-    // OpenAI GPT-5 series — latest
-    { value: 'gpt-5.3-codex', label: 'GPT-5.3 Codex (Latest)' },
-    { value: 'gpt-5.2-codex', label: 'GPT-5.2 Codex' },
-    { value: 'gpt-5.2', label: 'GPT-5.2' },
-    { value: 'gpt-5.1-codex-max', label: 'GPT-5.1 Codex Max' },
-    { value: 'gpt-5.1-codex', label: 'GPT-5.1 Codex' },
-    { value: 'gpt-5.1-codex-mini', label: 'GPT-5.1 Codex Mini' },
-    { value: 'gpt-5.1', label: 'GPT-5.1' },
-    { value: 'gpt-5-codex', label: 'GPT-5 Codex' },
-    { value: 'gpt-5-mini', label: 'GPT-5 Mini' },
-    { value: 'gpt-5', label: 'GPT-5' },
-    // OpenAI GPT-4.1 series
-    { value: 'gpt-4.1', label: 'GPT-4.1 (Recommended)' },
-    { value: 'gpt-4.1-mini', label: 'GPT-4.1 Mini' },
-    { value: 'gpt-4.1-nano', label: 'GPT-4.1 Nano' },
-    // OpenAI reasoning
-    { value: 'o4-mini', label: 'o4-mini (Reasoning)' },
-    { value: 'o3', label: 'o3 (Reasoning)' },
-    // Anthropic Claude — latest
-    { value: 'claude-opus-4-6', label: 'Claude Opus 4.6 (Most Powerful)' },
-    { value: 'claude-opus-4-5', label: 'Claude Opus 4.5' },
-    { value: 'claude-opus-4-1', label: 'Claude Opus 4.1' },
-    { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
-    { value: 'claude-sonnet-4-5', label: 'Claude Sonnet 4.5' },
-    { value: 'claude-sonnet-4', label: 'Claude Sonnet 4' },
-    { value: 'claude-haiku-4-5', label: 'Claude Haiku 4.5 (Fast)' },
-    // Google Gemini — latest
-    { value: 'gemini-3-pro', label: 'Gemini 3 Pro' },
-    { value: 'gemini-3-flash', label: 'Gemini 3 Flash (Fast)' },
-    { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
-    // xAI
-    { value: 'grok-code-fast-1', label: 'Grok Code Fast 1' },
-    // Microsoft fine-tuned
-    { value: 'raptor-mini', label: 'Raptor Mini' },
-    { value: 'goldeneye', label: 'Goldeneye' },
-    // Meta Llama — latest
-    { value: 'meta-llama-3.3-70b-instruct', label: 'Llama 3.3 70B' },
-    // Microsoft Phi — latest
-    { value: 'phi-4', label: 'Phi-4' },
-    { value: 'phi-4-mini', label: 'Phi-4 Mini' },
-    // Mistral
-    { value: 'mistral-large-2411', label: 'Mistral Large 2411' },
-  ];
+  // Fetch the live model catalog on mount
+  useEffect(() => {
+    fetch('/api/models')
+      .then((res) => res.json())
+      .then((models: ModelOption[]) => {
+        if (Array.isArray(models) && models.length > 0) {
+          setAvailableModels(models);
+          // Keep the current model if it's in the new list; otherwise use the first one
+          if (!models.find((m) => m.value === model)) {
+            setModel(models[0].value);
+          }
+        }
+      })
+      .catch(() => {
+        // Keep the fallback model already in state
+      })
+      .finally(() => setModelsLoading(false));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -97,7 +84,10 @@ export default function ChatInterface() {
       const data = await response.json();
 
       if (!response.ok) {
-        throw new Error(data.error || 'Failed to get response');
+        const message = data.details
+          ? `${data.error || 'Failed to get response'} — ${data.details}`
+          : data.error || 'Failed to get response';
+        throw new Error(message);
       }
 
       setSessionId(data.sessionId);
@@ -111,7 +101,7 @@ export default function ChatInterface() {
         ...prev,
         {
           role: 'assistant',
-          content: `Error: ${err.message}. Please make sure GITHUB_TOKEN environment variable is configured in Vercel.`,
+          content: `Error: ${err.message}`,
         },
       ]);
     } finally {
@@ -147,11 +137,16 @@ export default function ChatInterface() {
               setModel(e.target.value);
               setSessionId(null);
             }}
-            className="text-sm px-3 py-1.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+            disabled={modelsLoading}
+            className="text-sm px-3 py-1.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-60"
           >
-            {availableModels.map((m) => (
-              <option key={m.value} value={m.value}>{m.label}</option>
-            ))}
+            {modelsLoading ? (
+              <option>Loading models…</option>
+            ) : (
+              availableModels.map((m) => (
+                <option key={m.value} value={m.value}>{m.label}</option>
+              ))
+            )}
           </select>
           <span className="text-xs text-gray-400 dark:text-gray-500 max-w-xs">
             The selected model runs your queries via <a href="https://github.com/marketplace/models" target="_blank" rel="noopener noreferrer" className="underline hover:text-blue-500">GitHub Models API</a>

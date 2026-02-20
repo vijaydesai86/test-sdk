@@ -9,14 +9,11 @@ export function getToolDefinitions() {
       type: 'function' as const,
       function: {
         name: 'search_stock',
-        description: 'Search for US stock symbols by company name or ticker. Use this when the user wants to find a stock symbol or company.',
+        description: 'Search for a US stock ticker by company name or partial ticker.',
         parameters: {
           type: 'object',
           properties: {
-            query: {
-              type: 'string',
-              description: 'Company name or stock ticker to search for (e.g., "Apple", "AAPL", "Microsoft")',
-            },
+            query: { type: 'string', description: 'Company name or ticker (e.g. "Apple" or "AAPL")' },
           },
           required: ['query'],
         },
@@ -26,14 +23,11 @@ export function getToolDefinitions() {
       type: 'function' as const,
       function: {
         name: 'get_stock_price',
-        description: 'Get the current stock price and basic quote information for a US stock. Returns current price, change, volume, and latest trading day.',
+        description: 'Get current price, daily change, change percent, and volume for a US stock.',
         parameters: {
           type: 'object',
           properties: {
-            symbol: {
-              type: 'string',
-              description: 'Stock ticker symbol (e.g., "AAPL", "MSFT", "GOOGL")',
-            },
+            symbol: { type: 'string', description: 'Ticker symbol (e.g. AAPL)' },
           },
           required: ['symbol'],
         },
@@ -43,18 +37,12 @@ export function getToolDefinitions() {
       type: 'function' as const,
       function: {
         name: 'get_price_history',
-        description: 'Get historical price data for a US stock. Returns up to 30 data points of open, high, low, close, and volume. Use this when the user wants price charts, graphs, or historical trends.',
+        description: 'Get up to 30 OHLCV data points (daily/weekly/monthly) for trend and technical analysis.',
         parameters: {
           type: 'object',
           properties: {
-            symbol: {
-              type: 'string',
-              description: 'Stock ticker symbol (e.g., "AAPL", "MSFT")',
-            },
-            range: {
-              type: 'string',
-              description: 'Time range: "daily", "weekly", or "monthly". Default is "daily"',
-            },
+            symbol: { type: 'string', description: 'Ticker symbol (e.g. AAPL)' },
+            range: { type: 'string', description: '"daily", "weekly", or "monthly". Default: "daily"' },
           },
           required: ['symbol'],
         },
@@ -64,14 +52,11 @@ export function getToolDefinitions() {
       type: 'function' as const,
       function: {
         name: 'get_company_overview',
-        description: 'Get comprehensive company information including fundamentals like EPS, PE ratio, PEG ratio, profit margins, market cap, dividend yield, 52-week high/low, analyst target price, sector, industry, and business description. Use this for fundamental analysis, moat assessment, and understanding the company business model.',
+        description: 'Get company fundamentals: EPS, P/E, PEG, margins, ROE, ROA, market cap, dividend yield, beta, 52-week range, analyst target, insider %, institutional %, short interest, sector, industry, business description.',
         parameters: {
           type: 'object',
           properties: {
-            symbol: {
-              type: 'string',
-              description: 'Stock ticker symbol (e.g., "AAPL", "MSFT")',
-            },
+            symbol: { type: 'string', description: 'Ticker symbol (e.g. AAPL)' },
           },
           required: ['symbol'],
         },
@@ -81,14 +66,11 @@ export function getToolDefinitions() {
       type: 'function' as const,
       function: {
         name: 'get_insider_trading',
-        description: 'Get insider ownership data for a US stock. Returns percentage of shares held by insiders and institutions, shares outstanding, float, short interest data, and recent insider buy/sell transactions when available.',
+        description: 'Get insider ownership %, institutional ownership %, short interest data, and recent insider buy/sell transactions.',
         parameters: {
           type: 'object',
           properties: {
-            symbol: {
-              type: 'string',
-              description: 'Stock ticker symbol (e.g., "AAPL", "MSFT")',
-            },
+            symbol: { type: 'string', description: 'Ticker symbol (e.g. AAPL)' },
           },
           required: ['symbol'],
         },
@@ -98,14 +80,11 @@ export function getToolDefinitions() {
       type: 'function' as const,
       function: {
         name: 'get_analyst_ratings',
-        description: 'Get analyst ratings breakdown and consensus target price for a US stock. Returns the number of Strong Buy, Buy, Hold, Sell, and Strong Sell ratings plus the consensus price target and implied upside.',
+        description: 'Get analyst ratings breakdown (Strong Buy/Buy/Hold/Sell/Strong Sell counts), consensus price target, and implied upside/downside.',
         parameters: {
           type: 'object',
           properties: {
-            symbol: {
-              type: 'string',
-              description: 'Stock ticker symbol (e.g., "AAPL", "MSFT")',
-            },
+            symbol: { type: 'string', description: 'Ticker symbol (e.g. AAPL)' },
           },
           required: ['symbol'],
         },
@@ -115,14 +94,11 @@ export function getToolDefinitions() {
       type: 'function' as const,
       function: {
         name: 'get_earnings_history',
-        description: 'Get historical earnings per share (EPS) data including quarterly and annual EPS, EPS estimates, and earnings surprises. Use this for EPS history, earnings trends, and beat/miss analysis.',
+        description: 'Get 8+ quarters of earnings: reported EPS, estimated EPS, surprise amount, surprise %, beat/miss/in-line.',
         parameters: {
           type: 'object',
           properties: {
-            symbol: {
-              type: 'string',
-              description: 'Stock ticker symbol (e.g., "AAPL", "MSFT")',
-            },
+            symbol: { type: 'string', description: 'Ticker symbol (e.g. AAPL)' },
           },
           required: ['symbol'],
         },
@@ -132,14 +108,11 @@ export function getToolDefinitions() {
       type: 'function' as const,
       function: {
         name: 'get_income_statement',
-        description: 'Get quarterly and annual income statement data for a US stock. Returns revenue, gross profit, operating income, net income, and EBITDA. Use this for quarterly results documents and revenue analysis.',
+        description: 'Get quarterly and annual income statement: revenue, gross profit, operating income, net income, EBITDA.',
         parameters: {
           type: 'object',
           properties: {
-            symbol: {
-              type: 'string',
-              description: 'Stock ticker symbol (e.g., "AAPL", "MSFT")',
-            },
+            symbol: { type: 'string', description: 'Ticker symbol (e.g. AAPL)' },
           },
           required: ['symbol'],
         },
@@ -149,14 +122,11 @@ export function getToolDefinitions() {
       type: 'function' as const,
       function: {
         name: 'get_balance_sheet',
-        description: 'Get balance sheet data for a US stock. Returns total assets, liabilities, shareholder equity, cash, and debt levels.',
+        description: 'Get balance sheet: total assets, liabilities, shareholder equity, cash, and long-term debt.',
         parameters: {
           type: 'object',
           properties: {
-            symbol: {
-              type: 'string',
-              description: 'Stock ticker symbol (e.g., "AAPL", "MSFT")',
-            },
+            symbol: { type: 'string', description: 'Ticker symbol (e.g. AAPL)' },
           },
           required: ['symbol'],
         },
@@ -166,14 +136,11 @@ export function getToolDefinitions() {
       type: 'function' as const,
       function: {
         name: 'get_cash_flow',
-        description: 'Get cash flow statement data for a US stock. Returns operating cash flow, capital expenditures, free cash flow, and dividends.',
+        description: 'Get cash flow statement: operating cash flow, CapEx, free cash flow, dividends paid.',
         parameters: {
           type: 'object',
           properties: {
-            symbol: {
-              type: 'string',
-              description: 'Stock ticker symbol (e.g., "AAPL", "MSFT")',
-            },
+            symbol: { type: 'string', description: 'Ticker symbol (e.g. AAPL)' },
           },
           required: ['symbol'],
         },
@@ -183,7 +150,7 @@ export function getToolDefinitions() {
       type: 'function' as const,
       function: {
         name: 'get_sector_performance',
-        description: 'Get real-time sector performance data showing how different market sectors (Technology, Healthcare, Financials, Energy, etc.) are performing across various timeframes.',
+        description: 'Get real-time performance for all 11 GICS market sectors across multiple timeframes (1D, 5D, 1M, 3M, YTD, 1Y).',
         parameters: {
           type: 'object',
           properties: {},
@@ -195,14 +162,11 @@ export function getToolDefinitions() {
       type: 'function' as const,
       function: {
         name: 'get_stocks_by_sector',
-        description: 'Get a curated list of top stocks in a specific sector or investment theme. Available sectors: ai, semiconductor, data center, ai data center, pharma, cybersecurity, cloud, ev (electric vehicles), fintech, renewable (energy). Returns key companies with descriptions.',
+        description: 'Get a curated list of top stocks for a sector or theme. Available: ai, semiconductor, data center, ai data center, pharma, cybersecurity, cloud, ev, fintech, renewable, banking, healthcare, defense, energy, consumer, insurance, industrials, real estate, utilities, telecom, media, software, nuclear, quantum, robotics, crypto, logistics.',
         parameters: {
           type: 'object',
           properties: {
-            sector: {
-              type: 'string',
-              description: 'Sector or theme name (e.g., "ai", "semiconductor", "data center", "pharma", "cybersecurity", "cloud", "ev", "fintech", "renewable")',
-            },
+            sector: { type: 'string', description: 'Sector or theme name (e.g. "ai", "cloud", "ev")' },
           },
           required: ['sector'],
         },
@@ -212,7 +176,7 @@ export function getToolDefinitions() {
       type: 'function' as const,
       function: {
         name: 'get_top_gainers_losers',
-        description: 'Get today\'s top gaining stocks, top losing stocks, and most actively traded stocks in the US market.',
+        description: "Get today's top 10 gaining stocks, top 10 losing stocks, and 10 most actively traded US stocks.",
         parameters: {
           type: 'object',
           properties: {},
@@ -224,14 +188,11 @@ export function getToolDefinitions() {
       type: 'function' as const,
       function: {
         name: 'get_news_sentiment',
-        description: 'Get the latest news articles and AI-powered sentiment analysis for a US stock. Returns recent headlines, summaries, sentiment scores (bullish/bearish), and source URLs. Use this for market sentiment, recent developments, and news-driven analysis.',
+        description: 'Get the latest news headlines and AI sentiment scores (Bullish/Bearish/Neutral) for a US stock.',
         parameters: {
           type: 'object',
           properties: {
-            symbol: {
-              type: 'string',
-              description: 'Stock ticker symbol (e.g., "AAPL", "MSFT", "TSLA")',
-            },
+            symbol: { type: 'string', description: 'Ticker symbol (e.g. AAPL)' },
           },
           required: ['symbol'],
         },
