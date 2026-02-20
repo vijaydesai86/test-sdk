@@ -122,7 +122,7 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) for complete deployment instructions.
 **Key Points:**
 - Set the **Root Directory** to `web`
 - Add `GITHUB_TOKEN` environment variable (uses your Copilot subscription!)
-- Optionally add `ALPHA_VANTAGE_API_KEY` for real-time stock data
+- Set `ALPHA_VANTAGE_API_KEY`, `FMP_API_KEY`, `FINNHUB_API_KEY`, and `NEWSAPI_KEY` for full data coverage
 
 **Note**: The web deployment uses GitHub Copilot SDK with token authentication.
 
@@ -132,7 +132,10 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) for complete deployment instructions.
 1. **GitHub Token** (REQUIRED - FREE!): Create at [github.com/settings/tokens](https://github.com/settings/tokens)
    - Uses your existing GitHub Copilot subscription
    - No additional cost!
-2. **Alpha Vantage Key** (Optional): Get from [Alpha Vantage](https://www.alphavantage.co/support/#api-key)
+2. **Alpha Vantage Key** (Required for market data): Get from [Alpha Vantage](https://www.alphavantage.co/support/#api-key)
+3. **FMP Key** (Required for screening/search): Get a free key from [Financial Modeling Prep](https://financialmodelingprep.com/developer/docs/)
+4. **Finnhub Key** (Required for analyst data, peers, sentiment): Get a free key from [Finnhub](https://finnhub.io/)
+5. **NewsAPI Key** (Required for broader news search): Get a free key from [NewsAPI](https://newsapi.org/)
 
 ### For Local Development:
 
@@ -141,11 +144,17 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) for complete deployment instructions.
 2. Create `.env.local` in the `web` directory:
    ```env
    ALPHA_VANTAGE_API_KEY=your_api_key_here
+   FMP_API_KEY=your_fmp_key_here
+   FINNHUB_API_KEY=your_finnhub_key_here
+   NEWSAPI_KEY=your_newsapi_key_here
    ```
 
 3. For CLI, create `.env` in the root directory:
    ```env
    ALPHA_VANTAGE_API_KEY=your_api_key_here
+   FMP_API_KEY=your_fmp_key_here
+   FINNHUB_API_KEY=your_finnhub_key_here
+   NEWSAPI_KEY=your_newsapi_key_here
    ```
 
 **Note**: Alpha Vantage free tier has a limit of 5 API calls per minute.
@@ -159,7 +168,7 @@ GitHub Copilot SDK
         ↓
 Custom Stock Tools
         ↓
-Stock Data API (Alpha Vantage)
+Stock Data APIs (Alpha Vantage + FMP + Finnhub + NewsAPI)
 ```
 
 ### Components
@@ -178,15 +187,33 @@ The AI assistant has access to these tools:
 2. **get_stock_price**: Get current price and quote data
 3. **get_price_history**: Retrieve historical prices (daily, weekly, monthly)
 4. **get_company_overview**: Get fundamentals (EPS, PE, margins, sector, description)
-5. **get_insider_trading**: View insider transactions
-6. **get_analyst_ratings**: See analyst consensus and targets
-7. **get_earnings_history**: Quarterly/annual EPS history with beat/miss data
-8. **get_income_statement**: Revenue, profit, EBITDA (quarterly and annual)
-9. **get_balance_sheet**: Assets, liabilities, equity, cash, debt
-10. **get_cash_flow**: Operating cash flow, free cash flow, capex
-11. **get_sector_performance**: Real-time sector performance across timeframes
-12. **get_stocks_by_sector**: Curated stock lists by sector/theme (AI, semis, pharma, etc.)
-13. **get_top_gainers_losers**: Today's top gainers, losers, and most active
+5. **get_basic_financials**: Ratios and metric history (including PE history)
+6. **get_insider_trading**: View insider transactions
+7. **get_analyst_ratings**: See analyst consensus and targets
+8. **get_analyst_recommendations**: Analyst rating trends over time
+9. **get_price_targets**: Analyst price target summary
+10. **get_peers**: Peer tickers for comps
+11. **get_earnings_history**: Quarterly/annual EPS history with beat/miss data
+12. **get_income_statement**: Revenue, profit, EBITDA (quarterly and annual)
+13. **get_balance_sheet**: Assets, liabilities, equity, cash, debt
+14. **get_cash_flow**: Operating cash flow, free cash flow, capex
+15. **get_sector_performance**: Real-time sector performance across timeframes
+16. **get_stocks_by_sector**: Sector screening by name
+17. **screen_stocks**: Advanced stock screener filters
+18. **get_top_gainers_losers**: Today's top gainers, losers, and most active
+19. **get_news_sentiment**: News + sentiment scores
+20. **get_company_news**: Recent company news
+21. **search_news**: Keyword news search
+22. **search_companies**: Multi-source company search
+23. **generate_stock_report**: Build + save a comprehensive stock report
+24. **generate_sector_report**: Build + save a sector/theme report
+
+### Report Artifacts
+
+Generated reports are saved as markdown files and can be downloaded via `GET /api/reports/{filename}` (web). The tool response includes `filename`, `filePath`, and `downloadUrl`.
+
+Charts are emitted as Mermaid diagrams and render in the web UI.
+Stock reports include revenue/margin trends, analyst target distributions, and a composite scorecard (growth, profitability, valuation, momentum, moat proxy). Sector reports include market cap, P/E, price, target mean charts, and score rankings.
 
 ## 🔒 Authentication
 

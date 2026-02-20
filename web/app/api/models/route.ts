@@ -36,16 +36,24 @@ export async function GET() {
 
     const catalog: any[] = await response.json();
 
-    // Three filters:
+    // Filters:
     // 1. Publisher: only OpenAI, Anthropic, Google
     // 2. Capability: tool-calling required (the assistant calls tools on every request)
     // 3. Exclude superseded models: gpt-4o / gpt-4o-mini are replaced by gpt-4.1 / gpt-4.1-mini
+    // 4. Keep only the newest models based on catalog timestamps
     //
     // No rate_limit_tier filter — the system prompt and tool definitions have been
     // shortened to ~2,200 tokens total so all models (including gpt-5 at 4,000 input
     // token limit) now have enough headroom for typical queries.
     const ALLOWED_PUBLISHERS = new Set(['openai', 'anthropic', 'google']);
     const SUPERSEDED_IDS     = new Set(['openai/gpt-4o', 'openai/gpt-4o-mini']);
+    const MAX_MODELS = 8;
+
+    const getModelDate = (model: any) => {
+      const raw = model.updated_at || model.created_at || model.released_at;
+      const date = raw ? new Date(raw).getTime() : 0;
+      return Number.isNaN(date) ? 0 : date;
+    };
 
     const models = catalog
       .filter((m: any) => {
@@ -54,9 +62,12 @@ export async function GET() {
           ALLOWED_PUBLISHERS.has(publisher) &&
           !SUPERSEDED_IDS.has(m.id as string) &&
           Array.isArray(m.capabilities) &&
-          m.capabilities.includes('tool-calling')
+          m.capabilities.includes('tool-calling') &&
+          !m.deprecated
         );
       })
+      .sort((a: any, b: any) => getModelDate(b) - getModelDate(a))
+      .slice(0, MAX_MODELS)
       .map((m: any) => ({
         value: m.id as string,
         label: m.name as string,

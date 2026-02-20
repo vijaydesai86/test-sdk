@@ -94,14 +94,24 @@ All stock data is served from the real Alpha Vantage API — no mock data.
 For CLI:
 ```bash
 # Create .env file in root directory
-echo "ALPHA_VANTAGE_API_KEY=your_key_here" > .env
+cat <<EOF > .env
+ALPHA_VANTAGE_API_KEY=your_key_here
+FMP_API_KEY=your_fmp_key_here
+FINNHUB_API_KEY=your_finnhub_key_here
+NEWSAPI_KEY=your_newsapi_key_here
+EOF
 ```
 
 For Web:
 ```bash
 # Create .env.local file in web directory
 cd web
-echo "ALPHA_VANTAGE_API_KEY=your_key_here" > .env.local
+cat <<EOF > .env.local
+ALPHA_VANTAGE_API_KEY=your_key_here
+FMP_API_KEY=your_fmp_key_here
+FINNHUB_API_KEY=your_finnhub_key_here
+NEWSAPI_KEY=your_newsapi_key_here
+EOF
 ```
 
 ### Step 3: Restart

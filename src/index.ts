@@ -18,6 +18,16 @@ async function main() {
   }
   const stockService = new AlphaVantageService(apiKey);
 
+  if (!process.env.FMP_API_KEY) {
+    console.warn('⚠️  FMP_API_KEY not set. Stock screening and multi-source search will be unavailable.');
+  }
+  if (!process.env.FINNHUB_API_KEY) {
+    console.warn('⚠️  FINNHUB_API_KEY not set. Analyst ratings, peers, and sentiment will be unavailable.');
+  }
+  if (!process.env.NEWSAPI_KEY) {
+    console.warn('⚠️  NEWSAPI_KEY not set. Broader news search will be unavailable.');
+  }
+
   console.log('📊 Using Alpha Vantage API for real-time stock data\n');
 
   // Create Copilot client

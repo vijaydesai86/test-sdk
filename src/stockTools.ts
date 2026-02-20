@@ -1,5 +1,6 @@
 import { defineTool } from '@github/copilot-sdk';
 import { StockDataService } from './stockDataService';
+import { buildSectorReport, buildStockReport, saveReport } from './reportGenerator';
 
 /**
  * Create stock information tools for GitHub Copilot SDK
@@ -73,6 +74,22 @@ export function createStockTools(stockService: StockDataService) {
     },
   });
 
+  const getBasicFinancialsTool = defineTool('get_basic_financials', {
+    description: 'Get detailed financial ratios, metrics, and historical series (including PE history) for a US stock.',
+    parameters: {
+      symbol: { type: 'string', description: 'Stock ticker symbol (e.g., "AAPL", "MSFT")' },
+    },
+    handler: async (args: any) => {
+      const { symbol } = args;
+      try {
+        const metrics = await stockService.getBasicFinancials(symbol);
+        return { success: true, data: metrics, message: `Retrieved basic financials for ${symbol}` };
+      } catch (error: any) {
+        return { success: false, error: error.message };
+      }
+    },
+  });
+
   const getInsiderTradingTool = defineTool('get_insider_trading', {
     description: 'Get insider ownership data for a US stock. Returns insider %, institutional %, short interest, and recent insider transactions.',
     parameters: {
@@ -99,6 +116,54 @@ export function createStockTools(stockService: StockDataService) {
       try {
         const ratings = await stockService.getAnalystRatings(symbol);
         return { success: true, data: ratings, message: `Retrieved analyst ratings for ${symbol}` };
+      } catch (error: any) {
+        return { success: false, error: error.message };
+      }
+    },
+  });
+
+  const getAnalystRecommendationsTool = defineTool('get_analyst_recommendations', {
+    description: 'Get analyst recommendation trends over time (strong buy/buy/hold/sell/strong sell counts).',
+    parameters: {
+      symbol: { type: 'string', description: 'Stock ticker symbol (e.g., "AAPL", "MSFT")' },
+    },
+    handler: async (args: any) => {
+      const { symbol } = args;
+      try {
+        const recs = await stockService.getAnalystRecommendations(symbol);
+        return { success: true, data: recs, message: `Retrieved analyst recommendations for ${symbol}` };
+      } catch (error: any) {
+        return { success: false, error: error.message };
+      }
+    },
+  });
+
+  const getPriceTargetsTool = defineTool('get_price_targets', {
+    description: 'Get analyst price target summary (high/low/mean/median) for a US stock.',
+    parameters: {
+      symbol: { type: 'string', description: 'Stock ticker symbol (e.g., "AAPL", "MSFT")' },
+    },
+    handler: async (args: any) => {
+      const { symbol } = args;
+      try {
+        const targets = await stockService.getPriceTargets(symbol);
+        return { success: true, data: targets, message: `Retrieved price targets for ${symbol}` };
+      } catch (error: any) {
+        return { success: false, error: error.message };
+      }
+    },
+  });
+
+  const getPeersTool = defineTool('get_peers', {
+    description: 'Get a list of peer tickers for a US stock.',
+    parameters: {
+      symbol: { type: 'string', description: 'Stock ticker symbol (e.g., "AAPL", "MSFT")' },
+    },
+    handler: async (args: any) => {
+      const { symbol } = args;
+      try {
+        const peers = await stockService.getPeers(symbol);
+        return { success: true, data: peers, message: `Retrieved peers for ${symbol}` };
       } catch (error: any) {
         return { success: false, error: error.message };
       }
@@ -183,15 +248,34 @@ export function createStockTools(stockService: StockDataService) {
   });
 
   const getStocksBySectorTool = defineTool('get_stocks_by_sector', {
-    description: 'Get a curated list of top stocks in a specific sector or theme. Available: ai, semiconductor, data center, ai data center, pharma, cybersecurity, cloud, ev, fintech, renewable.',
+    description: 'Screen stocks by sector name using real-time data. For themes, use `search_companies` or `search_news` to build a list.',
     parameters: {
-      sector: { type: 'string', description: 'Sector or theme name (e.g., "ai", "semiconductor", "pharma", "cybersecurity")' },
+      sector: { type: 'string', description: 'Sector name (e.g., "Technology", "Healthcare", "Financial Services")' },
     },
     handler: async (args: any) => {
       const { sector } = args;
       try {
         const sectorStocks = await stockService.getStocksBySector(sector);
         return { success: true, data: sectorStocks, message: `Retrieved stocks for sector: ${sector}` };
+      } catch (error: any) {
+        return { success: false, error: error.message };
+      }
+    },
+  });
+
+  const screenStocksTool = defineTool('screen_stocks', {
+    description: 'Screen stocks with filters like sector, industry, market cap thresholds, and limit.',
+    parameters: {
+      sector: { type: 'string', description: 'Sector name filter (optional)' },
+      industry: { type: 'string', description: 'Industry name filter (optional)' },
+      marketCapMoreThan: { type: 'number', description: 'Minimum market cap (optional)' },
+      marketCapLowerThan: { type: 'number', description: 'Maximum market cap (optional)' },
+      limit: { type: 'number', description: 'Max results (optional, default 20)' },
+    },
+    handler: async (args: any) => {
+      try {
+        const results = await stockService.screenStocks(args);
+        return { success: true, data: results, message: 'Retrieved stock screener results' };
       } catch (error: any) {
         return { success: false, error: error.message };
       }
@@ -227,20 +311,220 @@ export function createStockTools(stockService: StockDataService) {
     },
   });
 
+  const getCompanyNewsTool = defineTool('get_company_news', {
+    description: 'Get recent company news articles for a US stock (typically last 30 days).',
+    parameters: {
+      symbol: { type: 'string', description: 'Stock ticker symbol (e.g., "AAPL", "MSFT")' },
+      days: { type: 'number', description: 'Lookback window in days (optional)' },
+    },
+    handler: async (args: any) => {
+      const { symbol, days } = args;
+      try {
+        const news = await stockService.getCompanyNews(symbol, days);
+        return { success: true, data: news, message: `Retrieved company news for ${symbol}` };
+      } catch (error: any) {
+        return { success: false, error: error.message };
+      }
+    },
+  });
+
+  const searchNewsTool = defineTool('search_news', {
+    description: 'Search recent market news by keyword or company name.',
+    parameters: {
+      query: { type: 'string', description: 'Keyword or company name to search' },
+      days: { type: 'number', description: 'Lookback window in days (optional)' },
+    },
+    handler: async (args: any) => {
+      const { query, days } = args;
+      try {
+        const news = await stockService.searchNews(query, days);
+        return { success: true, data: news, message: `Retrieved news for query: ${query}` };
+      } catch (error: any) {
+        return { success: false, error: error.message };
+      }
+    },
+  });
+
+  const searchCompaniesTool = defineTool('search_companies', {
+    description: 'Search US-listed companies by keyword across multiple data sources.',
+    parameters: {
+      query: { type: 'string', description: 'Company name or keyword to search for' },
+    },
+    handler: async (args: any) => {
+      const { query } = args;
+      try {
+        const results = await stockService.searchCompanies(query);
+        return { success: true, data: results, message: `Found companies for "${query}"` };
+      } catch (error: any) {
+        return { success: false, error: error.message };
+      }
+    },
+  });
+
+  const generateStockReportTool = defineTool('generate_stock_report', {
+    description: 'Generate a comprehensive stock research report and save it as a markdown artifact.',
+    parameters: {
+      symbol: { type: 'string', description: 'Stock ticker symbol (e.g., "AAPL")' },
+    },
+    handler: async (args: any) => {
+      const { symbol } = args;
+      try {
+        const [
+          price,
+          priceHistory,
+          companyOverview,
+          basicFinancials,
+          earningsHistory,
+          incomeStatement,
+          balanceSheet,
+          cashFlow,
+          analystRatings,
+          analystRecommendations,
+          priceTargets,
+          peers,
+          newsSentiment,
+          companyNews,
+        ] = await Promise.all([
+          stockService.getStockPrice(symbol),
+          stockService.getPriceHistory(symbol, 'daily'),
+          stockService.getCompanyOverview(symbol),
+          stockService.getBasicFinancials(symbol),
+          stockService.getEarningsHistory(symbol),
+          stockService.getIncomeStatement(symbol),
+          stockService.getBalanceSheet(symbol),
+          stockService.getCashFlow(symbol),
+          stockService.getAnalystRatings(symbol),
+          stockService.getAnalystRecommendations(symbol),
+          stockService.getPriceTargets(symbol),
+          stockService.getPeers(symbol),
+          stockService.getNewsSentiment(symbol),
+          stockService.getCompanyNews(symbol, 30),
+        ]);
+
+        const content = buildStockReport({
+          symbol: symbol.toUpperCase(),
+          generatedAt: new Date().toISOString(),
+          price,
+          priceHistory,
+          companyOverview,
+          basicFinancials,
+          earningsHistory,
+          incomeStatement,
+          balanceSheet,
+          cashFlow,
+          analystRatings,
+          analystRecommendations,
+          priceTargets,
+          peers,
+          newsSentiment,
+          companyNews,
+        });
+        const saved = await saveReport(content, `${symbol}-stock-report`);
+        return {
+          success: true,
+          data: { content, ...saved },
+          message: `Saved stock report to ${saved.filePath}`,
+        };
+      } catch (error: any) {
+        return { success: false, error: error.message };
+      }
+    },
+  });
+
+  const generateSectorReportTool = defineTool('generate_sector_report', {
+    description: 'Generate a comprehensive sector/theme report and save it as a markdown artifact.',
+    parameters: {
+      query: { type: 'string', description: 'Sector or theme query (e.g., "AI data center", "Semiconductors")' },
+      limit: { type: 'number', description: 'Max companies to include (optional, default 12)' },
+    },
+    handler: async (args: any) => {
+      const query = args.query as string;
+      const limit = Number(args.limit || 12);
+
+      try {
+        let universe: string[] = [];
+        const notes: string[] = [];
+
+        try {
+          const sectorResults = await stockService.getStocksBySector(query);
+          universe = (sectorResults.results || []).map((item: any) => item.symbol).filter(Boolean).slice(0, limit);
+          if (universe.length > 0) {
+            notes.push(`Universe built from sector screening for "${query}".`);
+          }
+        } catch (error: any) {
+          notes.push(`Sector screening unavailable: ${error.message}`);
+        }
+
+        if (universe.length === 0) {
+          const searchResults = await stockService.searchCompanies(query);
+          universe = (searchResults.results || []).map((item: any) => item.symbol).filter(Boolean).slice(0, limit);
+          if (universe.length > 0) {
+            notes.push(`Universe built from multi-source search for "${query}".`);
+          }
+        }
+
+        if (universe.length === 0) {
+          const newsResults = await stockService.searchNews(query, 14);
+          const headlines = (newsResults.articles || []).map((a: any) => a.title || '').filter(Boolean).slice(0, 10);
+          notes.push(`News scan headlines: ${headlines.join('; ') || 'N/A'}`);
+        }
+
+        const items = [] as any[];
+        for (const symbol of universe) {
+          const [price, overview, basicFinancials, analystRatings, priceTargets, newsSentiment] = await Promise.all([
+            stockService.getStockPrice(symbol),
+            stockService.getCompanyOverview(symbol),
+            stockService.getBasicFinancials(symbol),
+            stockService.getAnalystRatings(symbol),
+            stockService.getPriceTargets(symbol),
+            stockService.getNewsSentiment(symbol),
+          ]);
+          items.push({ symbol, price, overview, basicFinancials, analystRatings, priceTargets, newsSentiment });
+        }
+
+        const content = buildSectorReport({
+          query,
+          generatedAt: new Date().toISOString(),
+          universe,
+          items,
+          notes,
+        });
+        const saved = await saveReport(content, `${query}-sector-report`);
+        return {
+          success: true,
+          data: { content, ...saved },
+          message: `Saved sector report to ${saved.filePath}`,
+        };
+      } catch (error: any) {
+        return { success: false, error: error.message };
+      }
+    },
+  });
+
   return [
     searchStockTool,
     getCurrentPriceTool,
     getPriceHistoryTool,
     getCompanyOverviewTool,
+    getBasicFinancialsTool,
     getInsiderTradingTool,
     getAnalystRatingsTool,
+    getAnalystRecommendationsTool,
+    getPriceTargetsTool,
+    getPeersTool,
     getEarningsHistoryTool,
     getIncomeStatementTool,
     getBalanceSheetTool,
     getCashFlowTool,
     getSectorPerformanceTool,
     getStocksBySectorTool,
+    screenStocksTool,
     getTopGainersLosersTool,
     getNewsSentimentTool,
+    getCompanyNewsTool,
+    searchNewsTool,
+    searchCompaniesTool,
+    generateStockReportTool,
+    generateSectorReportTool,
   ];
 }

@@ -1,7 +1,8 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useId } from 'react';
 import ReactMarkdown from 'react-markdown';
+import mermaid from 'mermaid';
 
 interface Message {
   role: 'user' | 'assistant';
@@ -13,6 +14,34 @@ interface ModelOption {
   value: string;
   label: string;
   rateLimitTier?: string;
+}
+
+function MermaidBlock({ chart }: { chart: string }) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const chartId = useId();
+
+  useEffect(() => {
+    let cancelled = false;
+    mermaid.initialize({ startOnLoad: false });
+    mermaid
+      .render(`mermaid-${chartId}`, chart)
+      .then(({ svg }) => {
+        if (!cancelled && containerRef.current) {
+          containerRef.current.innerHTML = svg;
+        }
+      })
+      .catch(() => {
+        if (!cancelled && containerRef.current) {
+          containerRef.current.textContent = 'Chart rendering failed.';
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [chart, chartId]);
+
+  return <div ref={containerRef} className="my-4" />;
 }
 
 const DEFAULT_MODEL = 'openai/gpt-4.1';
@@ -29,6 +58,10 @@ export default function ChatInterface() {
   ]);
   const [modelsLoading, setModelsLoading] = useState(true);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const [reportPreview, setReportPreview] = useState<string | null>(null);
+  const [reportTitle, setReportTitle] = useState<string | null>(null);
+  const [reportLoading, setReportLoading] = useState(false);
+  const [reportUrl, setReportUrl] = useState<string | null>(null);
 
   // Fetch the live model catalog on mount
   useEffect(() => {
@@ -110,26 +143,52 @@ export default function ChatInterface() {
   };
 
   const exampleQuestions = [
-    "What is Apple's competitive moat?",
-    "Show me insider trading data for NVDA",
-    "What are the top AI stocks?",
-    "Show me the latest news sentiment for Tesla",
-    "Show me quarterly results for MSFT",
-    "What are today's top gainers?",
+    'Generate a full stock report for NVDA',
+    'Generate a sector report for AI data center stocks',
+    'Compare peers for AMD with valuation and targets',
+    'Show me analyst rating trends for MSFT',
+    'What are today’s top gainers and losers?',
   ];
 
+  const reportLinks = Array.from(
+    new Set(
+      messages
+        .filter((message) => message.role === 'assistant')
+        .flatMap((message) => message.content.match(/\/api\/reports\/[a-z0-9-]+-[0-9T\-]+\.md/gi) || [])
+    )
+  );
+
+  const handleReportClick = async (link: string) => {
+    setReportLoading(true);
+    setReportUrl(link);
+    try {
+      const response = await fetch(link);
+      const content = await response.text();
+      setReportPreview(content);
+      setReportTitle(link.split('/').pop() || 'Report');
+    } catch (error) {
+      setReportPreview('Unable to load report preview.');
+      setReportTitle(link.split('/').pop() || 'Report');
+    } finally {
+      setReportLoading(false);
+    }
+  };
+
   return (
-    <div className="flex flex-col h-screen max-w-5xl mx-auto p-4">
-      {/* Header */}
-      <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6 mb-4">
-        <h1 className="text-3xl font-bold text-gray-800 dark:text-white mb-2">
-          📊 Stock Information Assistant
-        </h1>
-        <p className="text-gray-600 dark:text-gray-300">
-          Powered by GitHub Models API — Real-time US stock data from Alpha Vantage
-        </p>
-        <div className="mt-3 flex items-center gap-3">
-          <label htmlFor="model-select" className="text-sm text-gray-600 dark:text-gray-400">AI Model:</label>
+    <div className="flex flex-col h-screen max-w-6xl mx-auto p-4 gap-4">
+      <div className="flex items-center justify-between bg-white dark:bg-gray-900 rounded-2xl shadow-sm p-6">
+        <div>
+          <h1 className="text-3xl font-semibold text-gray-900 dark:text-white">
+            Research Console
+          </h1>
+          <p className="text-sm text-gray-500 dark:text-gray-300">
+            Institutional-grade stock research with real-time data and report artifacts.
+          </p>
+        </div>
+        <div className="flex items-center gap-3">
+          <label htmlFor="model-select" className="text-sm text-gray-500 dark:text-gray-400">
+            Model
+          </label>
           <select
             id="model-select"
             value={model}
@@ -138,7 +197,7 @@ export default function ChatInterface() {
               setSessionId(null);
             }}
             disabled={modelsLoading}
-            className="text-sm px-3 py-1.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-60"
+            className="text-sm px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-60"
           >
             {modelsLoading ? (
               <option>Loading models…</option>
@@ -148,45 +207,70 @@ export default function ChatInterface() {
               ))
             )}
           </select>
-          <span className="text-xs text-gray-400 dark:text-gray-500 max-w-xs">
-            The selected model runs your queries via <a href="https://github.com/marketplace/models" target="_blank" rel="noopener noreferrer" className="underline hover:text-blue-500">GitHub Models API</a>
-          </span>
-        </div>
-        <div className="mt-4 flex flex-wrap gap-2">
-          {messages.length === 0 && exampleQuestions.map((question, idx) => (
-            <button
-              key={idx}
-              onClick={() => setInput(question)}
-              className="text-sm bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 px-3 py-1 rounded-full hover:bg-blue-200 dark:hover:bg-blue-800 transition-colors"
-            >
-              {question}
-            </button>
-          ))}
         </div>
       </div>
 
-      {/* Messages */}
-      <div className="flex-1 bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6 overflow-y-auto mb-4">
-        {messages.length === 0 ? (
-          <div className="text-center text-gray-500 dark:text-gray-400 mt-8">
-            <div className="text-6xl mb-4">💬</div>
-            <h2 className="text-xl font-semibold mb-2">Start a conversation</h2>
-            <p className="mb-4">Ask me about:</p>
-            <ul className="text-left max-w-md mx-auto space-y-2">
-              <li>• Current stock prices and live quotes</li>
-              <li>• Price history (daily, weekly, monthly)</li>
-              <li>• Company fundamentals (EPS, PE, market cap, margins, beta)</li>
-              <li>• EPS history with beat/miss analysis</li>
-              <li>• Financial statements (income, balance sheet, cash flow)</li>
-              <li>• Insider ownership %, institutional holdings, short interest</li>
-              <li>• Analyst ratings (Strong Buy/Buy/Hold/Sell) + target prices</li>
-              <li>• News headlines with AI sentiment scores</li>
-              <li>• Sector performance and themed stock lists</li>
-              <li>• Competitive moat and in-depth research analysis</li>
+      <div className="grid grid-cols-1 lg:grid-cols-[320px_1fr] gap-4 flex-1">
+        <aside className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm p-6 flex flex-col gap-6">
+          <div>
+            <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wide">Research Playbooks</h2>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {exampleQuestions.map((question, idx) => (
+                <button
+                  key={idx}
+                  onClick={() => setInput(question)}
+                  className="text-xs bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-200 px-3 py-1.5 rounded-full hover:bg-blue-100 dark:hover:bg-blue-800 transition-colors"
+                >
+                  {question}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wide">Artifacts</h2>
+            <div className="mt-3 space-y-2 text-sm">
+              {reportLinks.length === 0 ? (
+                <p className="text-gray-500 dark:text-gray-400">
+                  No reports saved yet. Ask for a report to generate an artifact.
+                </p>
+              ) : (
+                reportLinks.map((link) => (
+                  <button
+                    key={link}
+                    type="button"
+                    onClick={() => handleReportClick(link)}
+                    className="block w-full text-left truncate rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-2 text-blue-600 dark:text-blue-300 hover:bg-blue-50 dark:hover:bg-blue-900/30"
+                  >
+                    {link.split('/').pop()}
+                  </button>
+                ))
+              )}
+            </div>
+          </div>
+
+
+          <div>
+            <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wide">Coverage Checklist</h2>
+            <ul className="mt-3 text-sm text-gray-600 dark:text-gray-400 space-y-2">
+              <li>• Price, EPS, and revenue trends</li>
+              <li>• Margin and valuation charts</li>
+              <li>• Analyst targets and rating trends</li>
+              <li>• Peer comps and sector screens</li>
+              <li>• News and sentiment signals</li>
             </ul>
           </div>
-        ) : (
-          <div className="space-y-4">
+        </aside>
+
+        <section className="flex flex-col bg-white dark:bg-gray-900 rounded-2xl shadow-sm p-6 overflow-y-auto">
+          {messages.length === 0 ? (
+            <div className="text-center text-gray-500 dark:text-gray-400 mt-10">
+              <div className="text-5xl mb-4">📑</div>
+              <h2 className="text-xl font-semibold mb-2">Start a research session</h2>
+              <p className="mb-4">Ask for a report or drill into a specific metric.</p>
+            </div>
+          ) : (
+            <div className="space-y-4">
             {messages.map((message, index) => (
               <div
                 key={index}
@@ -213,7 +297,23 @@ export default function ChatInterface() {
                   </div>
                   {message.role === 'assistant' ? (
                     <div className="prose prose-sm dark:prose-invert max-w-none">
-                      <ReactMarkdown>{message.content}</ReactMarkdown>
+                      <ReactMarkdown
+                        components={{
+                          code({ inline, className, children, ...props }) {
+                            const match = /language-(\w+)/.exec(className || '');
+                            if (!inline && match?.[1] === 'mermaid') {
+                              return <MermaidBlock chart={String(children).trim()} />;
+                            }
+                            return (
+                              <code className={className} {...props}>
+                                {children}
+                              </code>
+                            );
+                          },
+                        }}
+                      >
+                        {message.content}
+                      </ReactMarkdown>
                     </div>
                   ) : (
                     <div className="whitespace-pre-wrap">{message.content}</div>
@@ -238,36 +338,96 @@ export default function ChatInterface() {
                 </div>
               </div>
             )}
-            <div ref={messagesEndRef} />
-          </div>
-        )}
-      </div>
+              <div ref={messagesEndRef} />
+            </div>
+          )}
 
-      {/* Input */}
-      <form onSubmit={handleSubmit} className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-4">
-        {error && (
-          <div className="mb-2 text-sm text-red-600 dark:text-red-400">
-            ⚠️ {error}
-          </div>
-        )}
-        <div className="flex gap-2">
-          <input
-            type="text"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder="Ask about any US stock..."
-            className="flex-1 px-4 py-3 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-            disabled={isLoading}
-          />
-          <button
-            type="submit"
-            disabled={isLoading || !input.trim()}
-            className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors font-semibold"
-          >
-            {isLoading ? 'Sending...' : 'Send'}
-          </button>
-        </div>
-      </form>
+          <form onSubmit={handleSubmit} className="mt-6">
+            {error && (
+              <div className="mb-2 text-sm text-red-600 dark:text-red-400">
+                ⚠️ {error}
+              </div>
+            )}
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                placeholder="Ask for a stock report, sector analysis, or deep-dive metric..."
+                className="flex-1 px-4 py-3 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                disabled={isLoading}
+              />
+              <button
+                type="submit"
+                disabled={isLoading || !input.trim()}
+                className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors font-semibold"
+              >
+                {isLoading ? 'Thinking...' : 'Send'}
+              </button>
+            </div>
+          </form>
+        </section>
+      </div>
     </div>
+    {reportPreview && (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6">
+        <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-xl max-w-5xl w-full max-h-[90vh] overflow-hidden flex flex-col">
+          <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200 dark:border-gray-700">
+            <div>
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
+                {reportTitle || 'Report'}
+              </h3>
+              <p className="text-xs text-gray-500 dark:text-gray-400">Research report preview</p>
+            </div>
+            <div className="flex items-center gap-3">
+              {reportUrl && (
+                <a
+                  href={reportUrl}
+                  className="text-sm px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 text-blue-600 dark:text-blue-300 hover:bg-blue-50 dark:hover:bg-blue-900/30"
+                >
+                  Download
+                </a>
+              )}
+              <button
+                type="button"
+                onClick={() => {
+                  setReportPreview(null);
+                  setReportTitle(null);
+                  setReportUrl(null);
+                }}
+                className="text-sm text-gray-500 hover:text-gray-700 dark:text-gray-300"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+          <div className="px-6 py-4 overflow-y-auto">
+            {reportLoading ? (
+              <p className="text-sm text-gray-500 dark:text-gray-400">Loading report…</p>
+            ) : (
+              <div className="prose dark:prose-invert max-w-none">
+                <ReactMarkdown
+                  components={{
+                    code({ inline, className, children, ...props }) {
+                      const match = /language-(\w+)/.exec(className || '');
+                      if (!inline && match?.[1] === 'mermaid') {
+                        return <MermaidBlock chart={String(children).trim()} />;
+                      }
+                      return (
+                        <code className={className} {...props}>
+                          {children}
+                        </code>
+                      );
+                    },
+                  }}
+                >
+                  {reportPreview}
+                </ReactMarkdown>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    )}
   );
 }

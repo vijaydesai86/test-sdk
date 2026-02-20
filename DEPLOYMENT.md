@@ -45,10 +45,25 @@ Name: GITHUB_TOKEN
 Value: ghp_... (paste your token from Step 1)
 ```
 
-**Optional (for real-time stock data):**
+**Required (for real-time stock data and research):**
 ```
 Name: ALPHA_VANTAGE_API_KEY
 Value: your_alpha_vantage_key
+```
+
+```
+Name: FMP_API_KEY
+Value: your_fmp_key
+```
+
+```
+Name: FINNHUB_API_KEY
+Value: your_finnhub_key
+```
+
+```
+Name: NEWSAPI_KEY
+Value: your_newsapi_key
 ```
 
 Get a free Alpha Vantage key at: https://www.alphavantage.co/support/#api-key
@@ -156,7 +171,10 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `GITHUB_TOKEN` | Yes (Vercel) | GitHub Personal Access Token to use your Copilot subscription |
-| `ALPHA_VANTAGE_API_KEY` | Yes | Your Alpha Vantage API key for real-time stock data. Get free at https://www.alphavantage.co/support/#api-key |
+| `ALPHA_VANTAGE_API_KEY` | Yes | Alpha Vantage API key for prices and financials. Get free at https://www.alphavantage.co/support/#api-key |
+| `FMP_API_KEY` | Yes | Financial Modeling Prep key for screening/search. Get free at https://financialmodelingprep.com/developer/docs/ |
+| `FINNHUB_API_KEY` | Yes | Finnhub key for analyst ratings, peers, and sentiment. Get free at https://finnhub.io/ |
+| `NEWSAPI_KEY` | Yes | NewsAPI key for broader market news. Get free at https://newsapi.org/ |
 
 ## Support
 

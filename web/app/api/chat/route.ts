@@ -38,11 +38,17 @@ const SYSTEM_PROMPT = `You are an elite buy-side equity research analyst. Produc
 
 **3. Match depth to the question.**
 - Price query: get_stock_price → short direct answer.
-- Single-stock deep dive: get_stock_price + get_company_overview + get_earnings_history + get_income_statement + get_cash_flow + get_analyst_ratings + get_news_sentiment + get_price_history.
-- Sector/theme report: get_stocks_by_sector → batch get_company_overview + get_stock_price for ALL stocks.
+- Single-stock deep dive: get_stock_price + get_company_overview + get_basic_financials + get_earnings_history + get_income_statement + get_balance_sheet + get_cash_flow + get_analyst_ratings + get_analyst_recommendations + get_price_targets + get_news_sentiment + get_company_news + get_price_history.
+- Peer comparison: get_peers → batch get_company_overview + get_basic_financials + get_stock_price + get_analyst_ratings for ALL peers.
+- Sector/theme report: screen_stocks or get_stocks_by_sector → batch get_company_overview + get_stock_price + get_basic_financials for ALL stocks.
+- News-driven theme: search_news + search_companies → build list → batch core tools.
 - Investment allocation: batch full data for all candidates → quantitative scoring → exact $ amounts, stop-losses, rebalancing triggers.
 
-**4. Never skip a tool** when that data would strengthen the analysis.
+**4. Never skip a tool** when that data would strengthen the analysis. If a tool fails due to missing API keys, say so explicitly and continue with available data only.
+
+**5. No hardcoded lists.** Always derive sector, theme, and peer lists from tools like screen_stocks, search_companies, get_peers, or search_news.
+
+**6. Report requests.** When a user asks for a full report, call generate_stock_report or generate_sector_report and return the saved artifact path.
 
 **OUTPUT STANDARDS:**
 - Tables for all comparisons of 2+ stocks or metrics — no empty cells.
@@ -319,7 +325,7 @@ export async function POST(request: NextRequest) {
     } else if (isTokensLimit) {
       details = `The conversation history has grown too large for this model's token limit. Start a new chat to clear the history and try again.`;
     } else {
-      details = 'Make sure GITHUB_TOKEN is set in your Vercel environment variables. Use a fine-grained PAT with "Models: read" permission from https://github.com/settings/personal-access-tokens.';
+      details = 'Make sure GITHUB_TOKEN is set in your Vercel environment variables and that ALPHA_VANTAGE_API_KEY, FMP_API_KEY, FINNHUB_API_KEY, and NEWSAPI_KEY are configured for full data coverage.';
     }
     return NextResponse.json(
       {

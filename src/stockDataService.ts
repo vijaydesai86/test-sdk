@@ -4,17 +4,25 @@ export interface StockDataService {
   getStockPrice(symbol: string): Promise<any>;
   getPriceHistory(symbol: string, range?: string): Promise<any>;
   getCompanyOverview(symbol: string): Promise<any>;
+  getBasicFinancials(symbol: string): Promise<any>;
   getInsiderTrading(symbol: string): Promise<any>;
   getAnalystRatings(symbol: string): Promise<any>;
+  getAnalystRecommendations(symbol: string): Promise<any>;
+  getPriceTargets(symbol: string): Promise<any>;
+  getPeers(symbol: string): Promise<any>;
   searchStock(query: string): Promise<any>;
+  searchCompanies(query: string): Promise<any>;
   getEarningsHistory(symbol: string): Promise<any>;
   getIncomeStatement(symbol: string): Promise<any>;
   getBalanceSheet(symbol: string): Promise<any>;
   getCashFlow(symbol: string): Promise<any>;
   getSectorPerformance(): Promise<any>;
   getStocksBySector(sector: string): Promise<any>;
+  screenStocks(filters: Record<string, string | number | undefined>): Promise<any>;
   getTopGainersLosers(): Promise<any>;
   getNewsSentiment(symbol: string): Promise<any>;
+  getCompanyNews(symbol: string, days?: number): Promise<any>;
+  searchNews(query: string, days?: number): Promise<any>;
 }
 
 /**
@@ -24,32 +32,189 @@ export interface StockDataService {
 export class AlphaVantageService implements StockDataService {
   private apiKey: string;
   private baseUrl = 'https://www.alphavantage.co/query';
+  private finnhubApiKey?: string;
+  private fmpApiKey?: string;
+  private newsApiKey?: string;
+  private finnhubBaseUrl = 'https://finnhub.io/api/v1';
+  private fmpBaseUrl = 'https://financialmodelingprep.com/api/v3';
+  private newsApiBaseUrl = 'https://newsapi.org/v2';
+  private cache = new Map<string, { expiresAt: number; data: any }>();
+  private lastRequestAt = new Map<string, number>();
+  private minIntervals = {
+    alphavantage: Number(process.env.ALPHA_VANTAGE_MIN_INTERVAL_MS || 12000),
+    finnhub: Number(process.env.FINNHUB_MIN_INTERVAL_MS || 1000),
+    fmp: Number(process.env.FMP_MIN_INTERVAL_MS || 1000),
+    newsapi: Number(process.env.NEWSAPI_MIN_INTERVAL_MS || 1000),
+  };
 
   constructor(apiKey?: string) {
     this.apiKey = apiKey || process.env.ALPHA_VANTAGE_API_KEY || 'demo';
+    this.finnhubApiKey = process.env.FINNHUB_API_KEY;
+    this.fmpApiKey = process.env.FMP_API_KEY;
+    this.newsApiKey = process.env.NEWSAPI_KEY;
   }
 
-  private async makeRequest(params: Record<string, string>): Promise<any> {
-    try {
-      const response = await axios.get(this.baseUrl, {
-        params: {
-          ...params,
-          apikey: this.apiKey,
-        },
-        timeout: 10000,
-      });
-      return response.data;
-    } catch (error: any) {
-      console.error('API request failed:', error.message);
-      throw new Error(`Failed to fetch data: ${error.message}`);
+  private buildCacheKey(prefix: string, params: Record<string, string>): string {
+    const sorted: Record<string, string> = {};
+    Object.keys(params).sort().forEach((key) => {
+      sorted[key] = params[key];
+    });
+    return `${prefix}:${JSON.stringify(sorted)}`;
+  }
+
+  private async throttle(provider: string, minIntervalMs: number): Promise<void> {
+    if (minIntervalMs <= 0) return;
+    const last = this.lastRequestAt.get(provider) || 0;
+    const now = Date.now();
+    const wait = minIntervalMs - (now - last);
+    if (wait > 0) {
+      await new Promise((resolve) => setTimeout(resolve, wait));
     }
+    this.lastRequestAt.set(provider, Date.now());
+  }
+
+  private async fetchWithCache(
+    cacheKey: string,
+    ttlMs: number,
+    fetcher: () => Promise<any>
+  ): Promise<any> {
+    if (ttlMs > 0) {
+      const cached = this.cache.get(cacheKey);
+      if (cached && cached.expiresAt > Date.now()) {
+        return cached.data;
+      }
+    }
+
+    const data = await fetcher();
+    if (ttlMs > 0) {
+      this.cache.set(cacheKey, { expiresAt: Date.now() + ttlMs, data });
+    }
+    return data;
+  }
+
+  private async makeRequest(
+    params: Record<string, string>,
+    options: { ttlMs?: number; cacheKey?: string } = {}
+  ): Promise<any> {
+    const cacheKey = options.cacheKey || this.buildCacheKey('alphavantage', params);
+    const ttlMs = options.ttlMs || 0;
+
+    return this.fetchWithCache(cacheKey, ttlMs, async () => {
+      await this.throttle('alphavantage', this.minIntervals.alphavantage);
+      try {
+        const response = await axios.get(this.baseUrl, {
+          params: {
+            ...params,
+            apikey: this.apiKey,
+          },
+          timeout: 10000,
+        });
+        return response.data;
+      } catch (error: any) {
+        console.error('API request failed:', error.message);
+        throw new Error(`Failed to fetch data: ${error.message}`);
+      }
+    });
+  }
+
+  private async makeFinnhubRequest(
+    path: string,
+    params: Record<string, string> = {},
+    options: { ttlMs?: number; cacheKey?: string } = {}
+  ): Promise<any> {
+    if (!this.finnhubApiKey) {
+      throw new Error('FINNHUB_API_KEY is required for this request');
+    }
+    const cacheKey = options.cacheKey || this.buildCacheKey(`finnhub:${path}`, params);
+    const ttlMs = options.ttlMs || 0;
+
+    return this.fetchWithCache(cacheKey, ttlMs, async () => {
+      await this.throttle('finnhub', this.minIntervals.finnhub);
+      try {
+        const response = await axios.get(`${this.finnhubBaseUrl}${path}`, {
+          params: {
+            ...params,
+            token: this.finnhubApiKey,
+          },
+          timeout: 10000,
+        });
+        return response.data;
+      } catch (error: any) {
+        console.error('Finnhub API request failed:', error.message);
+        throw new Error(`Finnhub request failed: ${error.message}`);
+      }
+    });
+  }
+
+  private async makeFmpRequest(
+    path: string,
+    params: Record<string, string> = {},
+    options: { ttlMs?: number; cacheKey?: string } = {}
+  ): Promise<any> {
+    if (!this.fmpApiKey) {
+      throw new Error('FMP_API_KEY is required for this request');
+    }
+    const cacheKey = options.cacheKey || this.buildCacheKey(`fmp:${path}`, params);
+    const ttlMs = options.ttlMs || 0;
+
+    return this.fetchWithCache(cacheKey, ttlMs, async () => {
+      await this.throttle('fmp', this.minIntervals.fmp);
+      try {
+        const response = await axios.get(`${this.fmpBaseUrl}${path}`, {
+          params: {
+            ...params,
+            apikey: this.fmpApiKey,
+          },
+          timeout: 10000,
+        });
+        return response.data;
+      } catch (error: any) {
+        console.error('FMP API request failed:', error.message);
+        throw new Error(`FMP request failed: ${error.message}`);
+      }
+    });
+  }
+
+  private async makeNewsApiRequest(
+    params: Record<string, string>,
+    options: { ttlMs?: number; cacheKey?: string } = {}
+  ): Promise<any> {
+    if (!this.newsApiKey) {
+      throw new Error('NEWSAPI_KEY is required for this request');
+    }
+    const cacheKey = options.cacheKey || this.buildCacheKey('newsapi:everything', params);
+    const ttlMs = options.ttlMs || 0;
+
+    return this.fetchWithCache(cacheKey, ttlMs, async () => {
+      await this.throttle('newsapi', this.minIntervals.newsapi);
+      try {
+        const response = await axios.get(`${this.newsApiBaseUrl}/everything`, {
+          params: {
+            ...params,
+            apiKey: this.newsApiKey,
+          },
+          timeout: 10000,
+        });
+        return response.data;
+      } catch (error: any) {
+        console.error('NewsAPI request failed:', error.message);
+        throw new Error(`NewsAPI request failed: ${error.message}`);
+      }
+    });
+  }
+
+  private formatDate(date: Date): string {
+    return date.toISOString().split('T')[0];
   }
 
   async getStockPrice(symbol: string): Promise<any> {
-    const data = await this.makeRequest({
-      function: 'GLOBAL_QUOTE',
-      symbol: symbol.toUpperCase(),
-    });
+    const data = await this.makeRequest(
+      {
+        function: 'GLOBAL_QUOTE',
+        symbol: symbol.toUpperCase(),
+      },
+      { ttlMs: 30000 }
+    );
 
     if (data['Global Quote']) {
       const quote = data['Global Quote'];
@@ -70,10 +235,13 @@ export class AlphaVantageService implements StockDataService {
     if (range === 'weekly') functionName = 'TIME_SERIES_WEEKLY';
     if (range === 'monthly') functionName = 'TIME_SERIES_MONTHLY';
 
-    const data = await this.makeRequest({
-      function: functionName,
-      symbol: symbol.toUpperCase(),
-    });
+    const data = await this.makeRequest(
+      {
+        function: functionName,
+        symbol: symbol.toUpperCase(),
+      },
+      { ttlMs: 60 * 60 * 1000 }
+    );
 
     // Parse the time series data
     const timeSeriesKey = Object.keys(data).find(key => key.includes('Time Series'));
@@ -96,10 +264,13 @@ export class AlphaVantageService implements StockDataService {
   }
 
   async getCompanyOverview(symbol: string): Promise<any> {
-    const data = await this.makeRequest({
-      function: 'OVERVIEW',
-      symbol: symbol.toUpperCase(),
-    });
+    const data = await this.makeRequest(
+      {
+        function: 'OVERVIEW',
+        symbol: symbol.toUpperCase(),
+      },
+      { ttlMs: 6 * 60 * 60 * 1000 }
+    );
 
     if (data.Symbol) {
       return {
@@ -150,11 +321,34 @@ export class AlphaVantageService implements StockDataService {
     throw new Error('Unable to fetch company overview');
   }
 
+  async getBasicFinancials(symbol: string): Promise<any> {
+    const data = await this.makeFinnhubRequest(
+      '/stock/metric',
+      {
+        symbol: symbol.toUpperCase(),
+        metric: 'all',
+      },
+      { ttlMs: 6 * 60 * 60 * 1000 }
+    );
+
+    if (data && (data.metric || data.series)) {
+      return {
+        symbol: symbol.toUpperCase(),
+        metric: data.metric || {},
+        series: data.series || {},
+      };
+    }
+    throw new Error('Unable to fetch basic financials');
+  }
+
   async getInsiderTrading(symbol: string): Promise<any> {
-    const overviewData = await this.makeRequest({
-      function: 'OVERVIEW',
-      symbol: symbol.toUpperCase(),
-    });
+    const overviewData = await this.makeRequest(
+      {
+        function: 'OVERVIEW',
+        symbol: symbol.toUpperCase(),
+      },
+      { ttlMs: 6 * 60 * 60 * 1000 }
+    );
 
     const result: any = {
       symbol: symbol.toUpperCase(),
@@ -171,7 +365,7 @@ export class AlphaVantageService implements StockDataService {
       const txnData = await this.makeRequest({
         function: 'INSIDER_TRANSACTIONS',
         symbol: symbol.toUpperCase(),
-      });
+      }, { ttlMs: 6 * 60 * 60 * 1000 });
       if (txnData.data && Array.isArray(txnData.data) && txnData.data.length > 0) {
         result.recentTransactions = txnData.data.slice(0, 15).map((t: any) => ({
           transactionDate: t.transaction_date,
@@ -191,10 +385,13 @@ export class AlphaVantageService implements StockDataService {
   }
 
   async getAnalystRatings(symbol: string): Promise<any> {
-    const data = await this.makeRequest({
-      function: 'OVERVIEW',
-      symbol: symbol.toUpperCase(),
-    });
+    const data = await this.makeRequest(
+      {
+        function: 'OVERVIEW',
+        symbol: symbol.toUpperCase(),
+      },
+      { ttlMs: 6 * 60 * 60 * 1000 }
+    );
 
     return {
       symbol: symbol.toUpperCase(),
@@ -211,30 +408,151 @@ export class AlphaVantageService implements StockDataService {
     };
   }
 
-  async searchStock(query: string): Promise<any> {
-    const data = await this.makeRequest({
-      function: 'SYMBOL_SEARCH',
-      keywords: query,
-    });
+  async getAnalystRecommendations(symbol: string): Promise<any> {
+    const data = await this.makeFinnhubRequest(
+      '/stock/recommendation',
+      {
+        symbol: symbol.toUpperCase(),
+      },
+      { ttlMs: 60 * 60 * 1000 }
+    );
 
-    if (data.bestMatches) {
-      const matches = data.bestMatches.slice(0, 5).map((match: any) => ({
+    if (Array.isArray(data)) {
+      return {
+        symbol: symbol.toUpperCase(),
+        recommendations: data.slice(0, 12),
+      };
+    }
+    throw new Error('Unable to fetch analyst recommendations');
+  }
+
+  async getPriceTargets(symbol: string): Promise<any> {
+    const data = await this.makeFinnhubRequest(
+      '/stock/price-target',
+      {
+        symbol: symbol.toUpperCase(),
+      },
+      { ttlMs: 60 * 60 * 1000 }
+    );
+
+    if (data && Object.keys(data).length > 0) {
+      return {
+        symbol: symbol.toUpperCase(),
+        ...data,
+      };
+    }
+    throw new Error('Unable to fetch price targets');
+  }
+
+  async getPeers(symbol: string): Promise<any> {
+    const data = await this.makeFinnhubRequest(
+      '/stock/peers',
+      {
+        symbol: symbol.toUpperCase(),
+      },
+      { ttlMs: 6 * 60 * 60 * 1000 }
+    );
+
+    if (Array.isArray(data)) {
+      return {
+        symbol: symbol.toUpperCase(),
+        peers: data,
+      };
+    }
+    throw new Error('Unable to fetch peers');
+  }
+
+  async searchStock(query: string): Promise<any> {
+    const [searchResults, alphaResults] = await Promise.all([
+      this.searchCompanies(query),
+      this.makeRequest(
+        {
+          function: 'SYMBOL_SEARCH',
+          keywords: query,
+        },
+        { ttlMs: 60 * 60 * 1000 }
+      ).catch(() => null),
+    ]);
+
+    const alphaMatches = alphaResults?.bestMatches || [];
+    const combined = [
+      ...(searchResults.results || []),
+      ...alphaMatches.map((match: any) => ({
         symbol: match['1. symbol'],
         name: match['2. name'],
         type: match['3. type'],
         region: match['4. region'],
         currency: match['8. currency'],
-      }));
-      return { results: matches };
+        source: 'alphavantage',
+      })),
+    ];
+
+    const seen = new Set<string>();
+    const results = combined.filter((item) => {
+      if (!item.symbol) return false;
+      const key = item.symbol.toUpperCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+    if (results.length > 0) {
+      return { results };
     }
     throw new Error('Unable to search stocks');
   }
 
-  async getEarningsHistory(symbol: string): Promise<any> {
-    const data = await this.makeRequest({
-      function: 'EARNINGS',
-      symbol: symbol.toUpperCase(),
+  async searchCompanies(query: string): Promise<any> {
+    const [fmpResults, finnhubResults] = await Promise.all([
+      this.fmpApiKey
+        ? this.makeFmpRequest('/search', { query, limit: '10' }, { ttlMs: 60 * 60 * 1000 })
+        : Promise.resolve([]),
+      this.finnhubApiKey
+        ? this.makeFinnhubRequest('/search', { q: query }, { ttlMs: 60 * 60 * 1000 })
+        : Promise.resolve({ result: [] }),
+    ]);
+
+    const fmp = Array.isArray(fmpResults)
+      ? fmpResults.map((item: any) => ({
+        symbol: item.symbol,
+        name: item.name,
+        exchange: item.exchangeShortName,
+        type: item.type,
+        source: 'fmp',
+      }))
+      : [];
+
+    const finnhub = Array.isArray(finnhubResults?.result)
+      ? finnhubResults.result.map((item: any) => ({
+        symbol: item.symbol,
+        name: item.description,
+        exchange: item.exchange,
+        type: item.type,
+        source: 'finnhub',
+      }))
+      : [];
+
+    const combined = [...fmp, ...finnhub];
+    const seen = new Set<string>();
+    const results = combined.filter((item) => {
+      if (!item.symbol) return false;
+      const key = item.symbol.toUpperCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
     });
+
+    return { results };
+  }
+
+  async getEarningsHistory(symbol: string): Promise<any> {
+    const data = await this.makeRequest(
+      {
+        function: 'EARNINGS',
+        symbol: symbol.toUpperCase(),
+      },
+      { ttlMs: 6 * 60 * 60 * 1000 }
+    );
 
     if (data.quarterlyEarnings) {
       return {
@@ -256,10 +574,13 @@ export class AlphaVantageService implements StockDataService {
   }
 
   async getIncomeStatement(symbol: string): Promise<any> {
-    const data = await this.makeRequest({
-      function: 'INCOME_STATEMENT',
-      symbol: symbol.toUpperCase(),
-    });
+    const data = await this.makeRequest(
+      {
+        function: 'INCOME_STATEMENT',
+        symbol: symbol.toUpperCase(),
+      },
+      { ttlMs: 6 * 60 * 60 * 1000 }
+    );
 
     if (data.quarterlyReports) {
       return {
@@ -286,10 +607,13 @@ export class AlphaVantageService implements StockDataService {
   }
 
   async getBalanceSheet(symbol: string): Promise<any> {
-    const data = await this.makeRequest({
-      function: 'BALANCE_SHEET',
-      symbol: symbol.toUpperCase(),
-    });
+    const data = await this.makeRequest(
+      {
+        function: 'BALANCE_SHEET',
+        symbol: symbol.toUpperCase(),
+      },
+      { ttlMs: 6 * 60 * 60 * 1000 }
+    );
 
     if (data.quarterlyReports) {
       return {
@@ -308,10 +632,13 @@ export class AlphaVantageService implements StockDataService {
   }
 
   async getCashFlow(symbol: string): Promise<any> {
-    const data = await this.makeRequest({
-      function: 'CASH_FLOW',
-      symbol: symbol.toUpperCase(),
-    });
+    const data = await this.makeRequest(
+      {
+        function: 'CASH_FLOW',
+        symbol: symbol.toUpperCase(),
+      },
+      { ttlMs: 6 * 60 * 60 * 1000 }
+    );
 
     if (data.quarterlyReports) {
       return {
@@ -331,9 +658,12 @@ export class AlphaVantageService implements StockDataService {
   }
 
   async getSectorPerformance(): Promise<any> {
-    const data = await this.makeRequest({
-      function: 'SECTOR',
-    });
+    const data = await this.makeRequest(
+      {
+        function: 'SECTOR',
+      },
+      { ttlMs: 15 * 60 * 1000 }
+    );
 
     return {
       realTimePerformance: data['Rank A: Real-Time Performance'] || {},
@@ -347,13 +677,35 @@ export class AlphaVantageService implements StockDataService {
   }
 
   async getStocksBySector(sector: string): Promise<any> {
-    return getStocksBySectorData(sector);
+    return this.screenStocks({ sector, limit: 20 });
+  }
+
+  async screenStocks(filters: Record<string, string | number | undefined>): Promise<any> {
+    const params: Record<string, string> = {};
+    Object.entries(filters).forEach(([key, value]) => {
+      if (value !== undefined && value !== '') {
+        params[key] = String(value);
+      }
+    });
+
+    const data = await this.makeFmpRequest('/stock-screener', params, { ttlMs: 15 * 60 * 1000 });
+
+    if (Array.isArray(data)) {
+      return {
+        filters,
+        results: data,
+      };
+    }
+    throw new Error('Unable to screen stocks');
   }
 
   async getTopGainersLosers(): Promise<any> {
-    const data = await this.makeRequest({
-      function: 'TOP_GAINERS_LOSERS',
-    });
+    const data = await this.makeRequest(
+      {
+        function: 'TOP_GAINERS_LOSERS',
+      },
+      { ttlMs: 5 * 60 * 1000 }
+    );
 
     return {
       topGainers: (data.top_gainers || []).slice(0, 10).map((s: any) => ({
@@ -381,215 +733,78 @@ export class AlphaVantageService implements StockDataService {
   }
 
   async getNewsSentiment(symbol: string): Promise<any> {
-    const data = await this.makeRequest({
-      function: 'NEWS_SENTIMENT',
-      tickers: symbol.toUpperCase(),
-      limit: '10',
-    });
+    const data = await this.makeFinnhubRequest(
+      '/news-sentiment',
+      {
+        symbol: symbol.toUpperCase(),
+      },
+      { ttlMs: 10 * 60 * 1000 }
+    );
 
-    if (data.feed) {
+    if (data && Object.keys(data).length > 0) {
       return {
         symbol: symbol.toUpperCase(),
-        sentimentScoreDefinition: 'Bearish: x <= -0.35, Somewhat-Bearish: -0.35 < x <= -0.15, Neutral: -0.15 < x < 0.15, Somewhat-Bullish: 0.15 <= x < 0.35, Bullish: x >= 0.35',
-        articles: data.feed.slice(0, 10).map((article: any) => {
-          const tickerSentiment = (article.ticker_sentiment || []).find(
-            (t: any) => t.ticker === symbol.toUpperCase()
-          );
-          return {
-            title: article.title,
-            source: article.source,
-            publishedAt: article.time_published,
-            summary: article.summary,
-            overallSentimentScore: article.overall_sentiment_score,
-            overallSentimentLabel: article.overall_sentiment_label,
-            tickerSentimentScore: tickerSentiment?.ticker_sentiment_score || 'N/A',
-            tickerSentimentLabel: tickerSentiment?.ticker_sentiment_label || 'N/A',
-            tickerRelevanceScore: tickerSentiment?.relevance_score || 'N/A',
-            url: article.url,
-          };
-        }),
+        sentiment: data,
       };
     }
     throw new Error('Unable to fetch news sentiment');
   }
-}
 
-/**
- * Curated sector/theme stock lists (real company data)
- */
-function getStocksBySectorData(sector: string): any {
-  const sectorLower = sector.toLowerCase();
+  async getCompanyNews(symbol: string, days: number = 30): Promise<any> {
+    const toDate = new Date();
+    const fromDate = new Date();
+    fromDate.setDate(toDate.getDate() - days);
 
-  const sectorMap: Record<string, { name: string; stocks: { symbol: string; name: string; description: string }[] }> = {
-    ai: {
-      name: 'Artificial Intelligence',
-      stocks: [
-        { symbol: 'NVDA', name: 'NVIDIA Corp', description: 'AI GPU leader, dominant in training and inference chips' },
-        { symbol: 'MSFT', name: 'Microsoft Corp', description: 'Azure AI, Copilot, OpenAI partnership' },
-        { symbol: 'GOOGL', name: 'Alphabet Inc', description: 'Google AI, DeepMind, Gemini models' },
-        { symbol: 'META', name: 'Meta Platforms', description: 'LLaMA open-source AI models, AI-powered ads' },
-        { symbol: 'AMZN', name: 'Amazon.com', description: 'AWS AI services, Bedrock, Alexa AI' },
-        { symbol: 'PLTR', name: 'Palantir Technologies', description: 'AI-powered data analytics for government and enterprise' },
-        { symbol: 'CRM', name: 'Salesforce', description: 'Einstein AI, Agentforce AI platform' },
-        { symbol: 'IBM', name: 'IBM', description: 'Watson AI, enterprise AI solutions' },
-        { symbol: 'SNOW', name: 'Snowflake', description: 'AI-powered data cloud platform' },
-        { symbol: 'AI', name: 'C3.ai', description: 'Enterprise AI software platform' },
-        { symbol: 'PATH', name: 'UiPath', description: 'AI-powered robotic process automation' },
-        { symbol: 'UPST', name: 'Upstart Holdings', description: 'AI lending platform' },
-      ],
-    },
-    semiconductor: {
-      name: 'Semiconductors',
-      stocks: [
-        { symbol: 'NVDA', name: 'NVIDIA Corp', description: 'GPU leader for AI, gaming, data centers' },
-        { symbol: 'AMD', name: 'Advanced Micro Devices', description: 'CPUs and GPUs for data centers and gaming' },
-        { symbol: 'INTC', name: 'Intel Corp', description: 'CPU manufacturer, foundry services' },
-        { symbol: 'TSM', name: 'Taiwan Semiconductor', description: 'World\'s largest chip foundry' },
-        { symbol: 'AVGO', name: 'Broadcom Inc', description: 'Networking, broadband, and enterprise chips' },
-        { symbol: 'QCOM', name: 'Qualcomm', description: 'Mobile SoCs, 5G modems, automotive chips' },
-        { symbol: 'TXN', name: 'Texas Instruments', description: 'Analog and embedded semiconductors' },
-        { symbol: 'MU', name: 'Micron Technology', description: 'DRAM and NAND memory chips' },
-        { symbol: 'MRVL', name: 'Marvell Technology', description: 'Data infrastructure semiconductors' },
-        { symbol: 'ASML', name: 'ASML Holding', description: 'EUV lithography machines for chip manufacturing' },
-        { symbol: 'LRCX', name: 'Lam Research', description: 'Semiconductor manufacturing equipment' },
-        { symbol: 'AMAT', name: 'Applied Materials', description: 'Semiconductor equipment and services' },
-        { symbol: 'ARM', name: 'Arm Holdings', description: 'Chip architecture and IP licensing' },
-      ],
-    },
-    'data center': {
-      name: 'Data Centers',
-      stocks: [
-        { symbol: 'EQIX', name: 'Equinix', description: 'Largest data center REIT globally' },
-        { symbol: 'DLR', name: 'Digital Realty', description: 'Data center REIT with global presence' },
-        { symbol: 'AMT', name: 'American Tower', description: 'Infrastructure REIT including data centers' },
-        { symbol: 'NVDA', name: 'NVIDIA Corp', description: 'AI GPU infrastructure for data centers' },
-        { symbol: 'AMZN', name: 'Amazon (AWS)', description: 'Largest cloud infrastructure provider' },
-        { symbol: 'MSFT', name: 'Microsoft (Azure)', description: 'Second-largest cloud provider' },
-        { symbol: 'GOOGL', name: 'Alphabet (GCP)', description: 'Third-largest cloud provider' },
-        { symbol: 'VRT', name: 'Vertiv Holdings', description: 'Data center power and cooling infrastructure' },
-        { symbol: 'DELL', name: 'Dell Technologies', description: 'Servers and storage for data centers' },
-        { symbol: 'HPE', name: 'Hewlett Packard Enterprise', description: 'Enterprise servers and networking' },
-      ],
-    },
-    'ai data center': {
-      name: 'AI Data Center Infrastructure',
-      stocks: [
-        { symbol: 'NVDA', name: 'NVIDIA Corp', description: 'AI GPU leader, Blackwell and Hopper platforms' },
-        { symbol: 'EQIX', name: 'Equinix', description: 'Data center REIT expanding AI capacity' },
-        { symbol: 'VRT', name: 'Vertiv Holdings', description: 'Power and cooling for AI data centers' },
-        { symbol: 'DELL', name: 'Dell Technologies', description: 'AI-optimized servers (PowerEdge)' },
-        { symbol: 'SMCI', name: 'Super Micro Computer', description: 'AI server platforms and GPU racks' },
-        { symbol: 'ANET', name: 'Arista Networks', description: 'High-speed networking for AI clusters' },
-        { symbol: 'DLR', name: 'Digital Realty', description: 'AI-ready data center facilities' },
-        { symbol: 'ETN', name: 'Eaton Corp', description: 'Power management for data centers' },
-        { symbol: 'FLNC', name: 'Fluence Energy', description: 'Energy storage for data centers' },
-      ],
-    },
-    pharma: {
-      name: 'Pharmaceuticals & Biotech',
-      stocks: [
-        { symbol: 'LLY', name: 'Eli Lilly', description: 'Diabetes (Mounjaro), obesity drugs, Alzheimer\'s' },
-        { symbol: 'JNJ', name: 'Johnson & Johnson', description: 'Diversified pharma, medical devices' },
-        { symbol: 'UNH', name: 'UnitedHealth Group', description: 'Health insurance and Optum services' },
-        { symbol: 'ABBV', name: 'AbbVie', description: 'Immunology (Humira/Skyrizi), oncology' },
-        { symbol: 'MRK', name: 'Merck & Co', description: 'Oncology (Keytruda), vaccines' },
-        { symbol: 'PFE', name: 'Pfizer', description: 'Vaccines, oncology, rare disease' },
-        { symbol: 'NVO', name: 'Novo Nordisk', description: 'Diabetes and obesity treatments (Ozempic, Wegovy)' },
-        { symbol: 'TMO', name: 'Thermo Fisher Scientific', description: 'Life sciences tools and diagnostics' },
-        { symbol: 'AMGN', name: 'Amgen', description: 'Biotechnology, biosimilars' },
-        { symbol: 'GILD', name: 'Gilead Sciences', description: 'Antiviral treatments, oncology' },
-        { symbol: 'BMY', name: 'Bristol-Myers Squibb', description: 'Oncology, cardiovascular, immunology' },
-        { symbol: 'REGN', name: 'Regeneron Pharmaceuticals', description: 'Antibody therapies, eye care' },
-      ],
-    },
-    cybersecurity: {
-      name: 'Cybersecurity',
-      stocks: [
-        { symbol: 'CRWD', name: 'CrowdStrike', description: 'Endpoint security, cloud security platform' },
-        { symbol: 'PANW', name: 'Palo Alto Networks', description: 'Network security, cloud security' },
-        { symbol: 'FTNT', name: 'Fortinet', description: 'Network security appliances and services' },
-        { symbol: 'ZS', name: 'Zscaler', description: 'Cloud-based zero trust security' },
-        { symbol: 'S', name: 'SentinelOne', description: 'AI-powered autonomous cybersecurity' },
-        { symbol: 'OKTA', name: 'Okta', description: 'Identity and access management' },
-        { symbol: 'NET', name: 'Cloudflare', description: 'Web security and CDN services' },
-        { symbol: 'CYBR', name: 'CyberArk Software', description: 'Privileged access management' },
-      ],
-    },
-    cloud: {
-      name: 'Cloud Computing',
-      stocks: [
-        { symbol: 'AMZN', name: 'Amazon (AWS)', description: 'Market-leading cloud infrastructure' },
-        { symbol: 'MSFT', name: 'Microsoft (Azure)', description: 'Enterprise cloud, AI cloud services' },
-        { symbol: 'GOOGL', name: 'Alphabet (GCP)', description: 'Cloud platform, BigQuery, Vertex AI' },
-        { symbol: 'CRM', name: 'Salesforce', description: 'Cloud-based CRM platform' },
-        { symbol: 'NOW', name: 'ServiceNow', description: 'Cloud-based IT service management' },
-        { symbol: 'SNOW', name: 'Snowflake', description: 'Cloud data warehousing platform' },
-        { symbol: 'WDAY', name: 'Workday', description: 'Cloud-based HR and finance software' },
-        { symbol: 'DDOG', name: 'Datadog', description: 'Cloud monitoring and analytics' },
-        { symbol: 'MDB', name: 'MongoDB', description: 'Cloud database platform' },
-        { symbol: 'NET', name: 'Cloudflare', description: 'Edge cloud platform and CDN' },
-      ],
-    },
-    ev: {
-      name: 'Electric Vehicles',
-      stocks: [
-        { symbol: 'TSLA', name: 'Tesla', description: 'EV leader, energy storage, autonomous driving' },
-        { symbol: 'RIVN', name: 'Rivian Automotive', description: 'Electric trucks and SUVs' },
-        { symbol: 'LCID', name: 'Lucid Group', description: 'Luxury electric sedans and SUVs' },
-        { symbol: 'NIO', name: 'NIO Inc', description: 'Chinese premium EVs with battery swap' },
-        { symbol: 'LI', name: 'Li Auto', description: 'Chinese extended-range EVs' },
-        { symbol: 'F', name: 'Ford Motor', description: 'F-150 Lightning, Mustang Mach-E' },
-        { symbol: 'GM', name: 'General Motors', description: 'Ultium platform, GMC Hummer EV' },
-        { symbol: 'XPEV', name: 'XPeng', description: 'Chinese smart EVs' },
-      ],
-    },
-    fintech: {
-      name: 'Financial Technology',
-      stocks: [
-        { symbol: 'V', name: 'Visa', description: 'Global payments network' },
-        { symbol: 'MA', name: 'Mastercard', description: 'Global payments technology' },
-        { symbol: 'PYPL', name: 'PayPal', description: 'Digital payments and commerce platform' },
-        { symbol: 'SQ', name: 'Block (Square)', description: 'Commerce ecosystem, Cash App, Bitcoin' },
-        { symbol: 'AFRM', name: 'Affirm Holdings', description: 'Buy-now-pay-later platform' },
-        { symbol: 'SOFI', name: 'SoFi Technologies', description: 'Digital banking and fintech platform' },
-        { symbol: 'COIN', name: 'Coinbase', description: 'Cryptocurrency exchange platform' },
-        { symbol: 'FIS', name: 'Fidelity National Info', description: 'Financial services technology' },
-      ],
-    },
-    renewable: {
-      name: 'Renewable Energy',
-      stocks: [
-        { symbol: 'ENPH', name: 'Enphase Energy', description: 'Solar microinverters and energy management' },
-        { symbol: 'SEDG', name: 'SolarEdge Technologies', description: 'Solar power optimization' },
-        { symbol: 'FSLR', name: 'First Solar', description: 'Thin-film solar modules manufacturer' },
-        { symbol: 'NEE', name: 'NextEra Energy', description: 'Largest renewable energy generator' },
-        { symbol: 'PLUG', name: 'Plug Power', description: 'Hydrogen fuel cell solutions' },
-        { symbol: 'BE', name: 'Bloom Energy', description: 'Solid-oxide fuel cells for clean energy' },
-        { symbol: 'RUN', name: 'Sunrun', description: 'Residential solar and battery storage' },
-        { symbol: 'DQ', name: 'Daqo New Energy', description: 'Polysilicon for solar panels' },
-      ],
-    },
-  };
+    const data = await this.makeFinnhubRequest(
+      '/company-news',
+      {
+        symbol: symbol.toUpperCase(),
+        from: this.formatDate(fromDate),
+        to: this.formatDate(toDate),
+      },
+      { ttlMs: 10 * 60 * 1000 }
+    );
 
-  let matchedSector = null;
-  for (const [key, value] of Object.entries(sectorMap)) {
-    if (sectorLower.includes(key) || key.includes(sectorLower)) {
-      matchedSector = value;
-      break;
+    if (Array.isArray(data)) {
+      return {
+        symbol: symbol.toUpperCase(),
+        articles: data.slice(0, 20),
+      };
     }
+    throw new Error('Unable to fetch company news');
   }
 
-  if (matchedSector) {
-    return {
-      sector: matchedSector.name,
-      stockCount: matchedSector.stocks.length,
-      stocks: matchedSector.stocks,
-    };
-  }
+  async searchNews(query: string, days: number = 30): Promise<any> {
+    const toDate = new Date();
+    const fromDate = new Date();
+    fromDate.setDate(toDate.getDate() - days);
 
-  return {
-    sector: sector,
-    message: `No curated list found for "${sector}". Available sectors/themes: ${Object.entries(sectorMap).map(([k, v]) => `${k} (${v.name})`).join(', ')}`,
-    availableSectors: Object.keys(sectorMap),
-  };
+    const data = await this.makeNewsApiRequest(
+      {
+        q: query,
+        from: this.formatDate(fromDate),
+        to: this.formatDate(toDate),
+        language: 'en',
+        sortBy: 'publishedAt',
+        pageSize: '20',
+      },
+      { ttlMs: 10 * 60 * 1000 }
+    );
+
+    if (data?.articles) {
+      return {
+        query,
+        totalResults: data.totalResults,
+        articles: data.articles.map((article: any) => ({
+          source: article.source?.name,
+          author: article.author,
+          title: article.title,
+          description: article.description,
+          url: article.url,
+          publishedAt: article.publishedAt,
+        })),
+      };
+    }
+    throw new Error('Unable to fetch news articles');
+  }
 }
