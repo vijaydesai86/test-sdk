@@ -5,6 +5,9 @@ import { AlphaVantageService, StockDataService } from '@/app/lib/stockDataServic
 // GitHub Models API — new endpoint (azure endpoint deprecated Oct 2025)
 // Works with PATs from github.com/settings/personal-access-tokens (models:read scope)
 const GITHUB_MODELS_URL = 'https://models.github.ai/inference/chat/completions';
+const OPENAI_PROXY_BASE_URL =
+  process.env.OPENAI_PROXY_BASE_URL ||
+  'https://openai-api-proxy.geo.arm.com/api/providers/openai/v1';
 const DEFAULT_MODEL = process.env.COPILOT_MODEL || 'openai/gpt-4.1';
 // Allow enough rounds for multi-stock research. With parallel batching, each round
 // can execute dozens of tool calls simultaneously — so 30 rounds is ample even for
@@ -219,9 +222,52 @@ async function callGitHubModelsAPI(
   return response.json();
 }
 
+async function callOpenAIProxyAPI(
+  messages: ChatMessage[],
+  proxyKey: string,
+  model: string
+): Promise<any> {
+  const response = await fetch(`${OPENAI_PROXY_BASE_URL}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${proxyKey}`,
+    },
+    body: JSON.stringify({
+      model,
+      messages,
+      tools: getToolDefinitions(),
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error(`OpenAI Proxy API ${response.status}: ${errorText}`);
+    if (response.status === 401 || response.status === 403) {
+      throw new Error(
+        'OpenAI Proxy authentication failed. ' +
+        'Make sure OPENAI_API_KEY is set and valid for your network zone.'
+      );
+    }
+    if (response.status === 429) {
+      const err = new Error('Rate limit reached for this model.') as Error & { statusCode: number };
+      err.statusCode = 429;
+      throw err;
+    }
+    if (response.status === 413) {
+      const err = new Error('Request too large for this model.') as Error & { statusCode: number };
+      err.statusCode = 413;
+      throw err;
+    }
+    throw new Error(`OpenAI Proxy API error (${response.status}): ${errorText}`);
+  }
+
+  return response.json();
+}
+
 export async function POST(request: NextRequest) {
   try {
-    const { message, sessionId, model } = await request.json();
+    const { message, sessionId, model, provider } = await request.json();
 
     if (!message) {
       return NextResponse.json(
@@ -232,15 +278,7 @@ export async function POST(request: NextRequest) {
 
     // Check if GitHub token is available
     const githubToken = process.env.GITHUB_TOKEN || process.env.GH_TOKEN || process.env.COPILOT_GITHUB_TOKEN;
-    if (!githubToken) {
-      return NextResponse.json(
-        {
-          error: 'GitHub token not configured',
-          details: 'Please set GITHUB_TOKEN environment variable in Vercel. Get a personal access token at: https://github.com/settings/personal-access-tokens — this uses your existing GitHub Copilot subscription.',
-        },
-        { status: 503 }
-      );
-    }
+    const proxyKey = process.env.OPENAI_API_KEY || process.env.OPENAI_TOKEN;
 
     // Initialize stock service (always uses real Alpha Vantage API)
     const alphaVantageKey = process.env.ALPHA_VANTAGE_API_KEY;
@@ -278,7 +316,30 @@ export async function POST(request: NextRequest) {
 
     while (rounds < MAX_TOOL_ROUNDS) {
       rounds++;
-      const result = await callGitHubModelsAPI(conversationMessages, githubToken, model || DEFAULT_MODEL);
+      let result: any;
+      if (provider === 'openai-proxy') {
+        if (!proxyKey) {
+          return NextResponse.json(
+            {
+              error: 'OpenAI proxy key not configured',
+              details: 'Please set OPENAI_API_KEY in your Vercel environment variables.',
+            },
+            { status: 503 }
+          );
+        }
+        result = await callOpenAIProxyAPI(conversationMessages, proxyKey, model || DEFAULT_MODEL);
+      } else {
+        if (!githubToken) {
+          return NextResponse.json(
+            {
+              error: 'GitHub token not configured',
+              details: 'Please set GITHUB_TOKEN environment variable in Vercel. Get a personal access token at: https://github.com/settings/personal-access-tokens — this uses your existing GitHub Copilot subscription.',
+            },
+            { status: 503 }
+          );
+        }
+        result = await callGitHubModelsAPI(conversationMessages, githubToken, model || DEFAULT_MODEL);
+      }
       const choice = result.choices?.[0];
 
       if (!choice) {
@@ -326,6 +387,7 @@ export async function POST(request: NextRequest) {
       response: assistantContent || "I apologize, but I couldn't generate a response. Please try again.",
       sessionId: currentSessionId,
       model: model || DEFAULT_MODEL,
+      provider: provider || 'github',
     });
   } catch (error: any) {
     console.error('Chat API error:', error);

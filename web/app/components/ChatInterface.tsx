@@ -16,6 +16,14 @@ interface ModelOption {
   rateLimitTier?: string;
 }
 
+interface ProviderOption {
+  id: 'github' | 'openai-proxy';
+  label: string;
+  available: boolean;
+  details?: string;
+  models: ModelOption[];
+}
+
 function MermaidBlock({ chart }: { chart: string }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartId = useId();
@@ -58,6 +66,8 @@ export default function ChatInterface() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [model, setModel] = useState(DEFAULT_MODEL);
+  const [provider, setProvider] = useState<ProviderOption['id']>('github');
+  const [availableProviders, setAvailableProviders] = useState<ProviderOption[]>([]);
   const [availableModels, setAvailableModels] = useState<ModelOption[]>([
     { value: DEFAULT_MODEL, label: 'GPT-4.1', rateLimitTier: 'high' },
   ]);
@@ -71,15 +81,17 @@ export default function ChatInterface() {
 
   // Fetch the live model catalog on mount
   useEffect(() => {
-    fetch('/api/models')
+    fetch('/api/providers')
       .then((res) => res.json())
-      .then((models: ModelOption[]) => {
-        if (Array.isArray(models) && models.length > 0) {
-          setAvailableModels(models);
-          // Keep the current model if it's in the new list; otherwise use the first one
-          if (!models.find((m) => m.value === model)) {
-            setModel(models[0].value);
-          }
+      .then((payload: { providers?: ProviderOption[] }) => {
+        if (!payload.providers || payload.providers.length === 0) return;
+        setAvailableProviders(payload.providers);
+        const defaultProvider = payload.providers.find((item) => item.available) || payload.providers[0];
+        setProvider(defaultProvider.id);
+        const nextModels = defaultProvider.models || [];
+        setAvailableModels(nextModels);
+        if (nextModels.length > 0 && !nextModels.find((m) => m.value === model)) {
+          setModel(nextModels[0].value);
         }
       })
       .catch(() => {
@@ -116,6 +128,7 @@ export default function ChatInterface() {
           message: userMessage,
           sessionId,
           model,
+          provider,
         }),
       });
 
@@ -222,6 +235,37 @@ export default function ChatInterface() {
           </p>
         </div>
         <div className="flex items-center gap-3">
+          <label htmlFor="provider-select" className="text-sm text-gray-500 dark:text-gray-400">
+            Provider
+          </label>
+          <select
+            id="provider-select"
+            value={provider}
+            onChange={(e) => {
+              const nextProvider = e.target.value as ProviderOption['id'];
+              setProvider(nextProvider);
+              setSessionId(null);
+              const selected = availableProviders.find((item) => item.id === nextProvider);
+              const nextModels = selected?.models || [];
+              setAvailableModels(nextModels);
+              if (nextModels.length > 0) {
+                const current = nextModels.find((m) => m.value === model);
+                setModel(current ? current.value : nextModels[0].value);
+              }
+            }}
+            disabled={modelsLoading}
+            className="text-sm px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-60"
+          >
+            {modelsLoading ? (
+              <option>Loading providers…</option>
+            ) : (
+              availableProviders.map((item) => (
+                <option key={item.id} value={item.id} disabled={!item.available}>
+                  {item.label}{item.available ? '' : ' (missing key)'}
+                </option>
+              ))
+            )}
+          </select>
           <label htmlFor="model-select" className="text-sm text-gray-500 dark:text-gray-400">
             Model
           </label>
