@@ -2,10 +2,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getToolDefinitions, executeTool } from '@/app/lib/stockTools';
 import { AlphaVantageService, StockDataService } from '@/app/lib/stockDataService';
 
-// GitHub Models API — works with PATs from github.com/settings/personal-access-tokens
-// Copilot subscribers get higher rate limits automatically
-const GITHUB_MODELS_URL = 'https://models.inference.ai.azure.com/chat/completions';
-const DEFAULT_MODEL = process.env.COPILOT_MODEL || 'gpt-4.1';
+// GitHub Models API — new endpoint (azure endpoint deprecated Oct 2025)
+// Works with PATs from github.com/settings/personal-access-tokens (models:read scope)
+const GITHUB_MODELS_URL = 'https://models.github.ai/inference/chat/completions';
+const DEFAULT_MODEL = process.env.COPILOT_MODEL || 'openai/gpt-4.1';
 // Allow enough rounds for multi-stock research. With parallel batching, each round
 // can execute dozens of tool calls simultaneously — so 30 rounds is ample even for
 // 20-stock reports (typically: 1 sector list + 2-3 batch rounds + 1 write round).
@@ -121,13 +121,7 @@ DATA & FORMATTING STANDARDS
 /**
  * Call the GitHub Models API using your GitHub PAT directly.
  * No token exchange needed — works with fine-grained PATs from
- * https://github.com/settings/personal-access-tokens
-
-
-/**
- * Call the GitHub Models API using your GitHub PAT directly.
- * No token exchange needed — works with fine-grained PATs from
- * https://github.com/settings/personal-access-tokens
+ * https://github.com/settings/personal-access-tokens (models:read permission)
  */
 async function callGitHubModelsAPI(
   messages: ChatMessage[],
@@ -186,11 +180,26 @@ async function callGitHubModelsAPI(
         }
       }
       const err = new Error(
-        `GitHub Models API rate limit reached (429).${waitMsg} ` +
-        RATE_LIMIT_GUIDANCE
+        `Rate limit reached for this model.${waitMsg}`
       ) as Error & { statusCode: number };
       err.statusCode = 429;
       throw err;
+    }
+    if (response.status === 400) {
+      let errorCode = '';
+      try {
+        const errorJson = JSON.parse(errorText);
+        errorCode = errorJson?.error?.code || '';
+      } catch {
+        // ignore JSON parse errors
+      }
+      if (errorCode === 'unknown_model' || errorCode === 'model_not_found') {
+        const err = new Error(
+          'Model not found. Please select a different model from the dropdown.'
+        ) as Error & { statusCode: number };
+        err.statusCode = 400;
+        throw err;
+      }
     }
     throw new Error(`GitHub Models API error (${response.status}): ${errorText}`);
   }
@@ -298,10 +307,16 @@ export async function POST(request: NextRequest) {
   } catch (error: any) {
     console.error('Chat API error:', error);
     const isRateLimit = error.statusCode === 429;
-    const statusCode = isRateLimit ? 429 : 500;
-    const details = isRateLimit
-      ? RATE_LIMIT_GUIDANCE
-      : 'Make sure GITHUB_TOKEN is set in your Vercel environment variables. Use a classic PAT from https://github.com/settings/tokens (no scopes needed), or a fine-grained PAT with "Models" read permission from https://github.com/settings/personal-access-tokens.';
+    const isUnknownModel = error.statusCode === 400;
+    const statusCode = isRateLimit ? 429 : isUnknownModel ? 400 : 500;
+    let details: string;
+    if (isRateLimit) {
+      details = RATE_LIMIT_GUIDANCE;
+    } else if (isUnknownModel) {
+      details = 'Open the model dropdown and choose a different model. The model list is fetched live from the GitHub Models catalog.';
+    } else {
+      details = 'Make sure GITHUB_TOKEN is set in your Vercel environment variables. Use a fine-grained PAT with "Models: read" permission from https://github.com/settings/personal-access-tokens.';
+    }
     return NextResponse.json(
       {
         error: error.message || 'Failed to process message',
