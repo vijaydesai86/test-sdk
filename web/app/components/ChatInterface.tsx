@@ -97,7 +97,10 @@ export default function ChatInterface() {
       const data = await response.json();
 
       if (!response.ok) {
-        throw new Error(data.error || 'Failed to get response');
+        const message = data.details
+          ? `${data.error || 'Failed to get response'} — ${data.details}`
+          : data.error || 'Failed to get response';
+        throw new Error(message);
       }
 
       setSessionId(data.sessionId);
@@ -111,7 +114,7 @@ export default function ChatInterface() {
         ...prev,
         {
           role: 'assistant',
-          content: `Error: ${err.message}. Please make sure GITHUB_TOKEN environment variable is configured in Vercel.`,
+          content: `Error: ${err.message}`,
         },
       ]);
     } finally {

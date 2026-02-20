@@ -11,6 +11,10 @@ const DEFAULT_MODEL = process.env.COPILOT_MODEL || 'gpt-4.1';
 // 20-stock reports (typically: 1 sector list + 2-3 batch rounds + 1 write round).
 const MAX_TOOL_ROUNDS = 30;
 
+const RATE_LIMIT_GUIDANCE =
+  'The free tier allows 50 requests per day per model. ' +
+  'Try switching to a different model from the dropdown, or try again tomorrow.';
+
 // Vercel: allow up to 5 minutes for deep research requests
 export const maxDuration = 300;
 
@@ -163,6 +167,31 @@ async function callGitHubModelsAPI(
         `API response: ${errorText}`
       );
     }
+    if (response.status === 429) {
+      let waitSeconds: number | undefined;
+      try {
+        const errorJson = JSON.parse(errorText);
+        const msg: string = errorJson?.error?.message || '';
+        const match = msg.match(/wait (\d+) seconds/i);
+        if (match) waitSeconds = parseInt(match[1], 10);
+      } catch {
+        // ignore JSON parse errors
+      }
+      let waitMsg = '';
+      if (waitSeconds !== undefined) {
+        if (waitSeconds < 3600) {
+          waitMsg = ` Please wait approximately ${Math.ceil(waitSeconds / 60)} minute(s) before retrying.`;
+        } else {
+          waitMsg = ` Please wait approximately ${Math.ceil(waitSeconds / 3600)} hour(s) before retrying.`;
+        }
+      }
+      const err = new Error(
+        `GitHub Models API rate limit reached (429).${waitMsg} ` +
+        RATE_LIMIT_GUIDANCE
+      ) as Error & { statusCode: number };
+      err.statusCode = 429;
+      throw err;
+    }
     throw new Error(`GitHub Models API error (${response.status}): ${errorText}`);
   }
 
@@ -268,12 +297,17 @@ export async function POST(request: NextRequest) {
     });
   } catch (error: any) {
     console.error('Chat API error:', error);
+    const isRateLimit = error.statusCode === 429;
+    const statusCode = isRateLimit ? 429 : 500;
+    const details = isRateLimit
+      ? RATE_LIMIT_GUIDANCE
+      : 'Make sure GITHUB_TOKEN is set in your Vercel environment variables. Use a classic PAT from https://github.com/settings/tokens (no scopes needed), or a fine-grained PAT with "Models" read permission from https://github.com/settings/personal-access-tokens.';
     return NextResponse.json(
       {
         error: error.message || 'Failed to process message',
-        details: 'Make sure GITHUB_TOKEN is set in your Vercel environment variables. Use a classic PAT from https://github.com/settings/tokens (no scopes needed), or a fine-grained PAT with "Models" read permission from https://github.com/settings/personal-access-tokens.',
+        details,
       },
-      { status: 500 }
+      { status: statusCode }
     );
   }
 }
