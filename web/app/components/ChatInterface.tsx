@@ -49,7 +49,7 @@ const TOOL_CALL_WARNING =
   'Model returned tool calls as plain text. Switch to a tool-calling model from the dropdown.';
 const isToolCallText = (content: string) =>
   /"name"\s*:\s*"functions\./.test(content) || /"arguments"\s*:\s*\{/.test(content);
-const SAMPLE_REPORT_LINK = '/api/reports/nvda-2025-01-01T00-00-00.md';
+const SAMPLE_REPORT_LINK = '/reports/nvda-sample.md';
 
 export default function ChatInterface() {
   const [messages, setMessages] = useState<Message[]>([]);

@@ -77,18 +77,7 @@ export async function GET() {
         label: m.name as string,
         rateLimitTier: m.rate_limit_tier as string,
       }));
-    if (models.length === 0) {
-      return NextResponse.json(SAFE_DEFAULT);
-    }
-
-    const merged = [...models];
-    for (const fallback of SAFE_DEFAULT) {
-      if (!merged.some((model) => model.value === fallback.value)) {
-        merged.push(fallback);
-      }
-    }
-
-    return NextResponse.json(merged);
+    return NextResponse.json(models.length > 0 ? models : SAFE_DEFAULT);
   } catch (err) {
     console.error('Failed to fetch GitHub Models catalog:', err);
     return NextResponse.json(SAFE_DEFAULT);
