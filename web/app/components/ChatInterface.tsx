@@ -25,7 +25,7 @@ export default function ChatInterface() {
   const [error, setError] = useState<string | null>(null);
   const [model, setModel] = useState(DEFAULT_MODEL);
   const [availableModels, setAvailableModels] = useState<ModelOption[]>([
-    { value: DEFAULT_MODEL, label: 'GPT-4.1 (Recommended)', rateLimitTier: 'high' },
+    { value: DEFAULT_MODEL, label: 'GPT-4.1', rateLimitTier: 'high' },
   ]);
   const [modelsLoading, setModelsLoading] = useState(true);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -49,6 +49,14 @@ export default function ChatInterface() {
       .finally(() => setModelsLoading(false));
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  };
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -129,11 +137,16 @@ export default function ChatInterface() {
               setModel(e.target.value);
               setSessionId(null);
             }}
-            className="text-sm px-3 py-1.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+            disabled={modelsLoading}
+            className="text-sm px-3 py-1.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-60"
           >
-            {availableModels.map((m) => (
-              <option key={m.value} value={m.value}>{m.label}</option>
-            ))}
+            {modelsLoading ? (
+              <option>Loading models…</option>
+            ) : (
+              availableModels.map((m) => (
+                <option key={m.value} value={m.value}>{m.label}</option>
+              ))
+            )}
           </select>
           <span className="text-xs text-gray-400 dark:text-gray-500 max-w-xs">
             The selected model runs your queries via <a href="https://github.com/marketplace/models" target="_blank" rel="noopener noreferrer" className="underline hover:text-blue-500">GitHub Models API</a>

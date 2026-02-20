@@ -2,15 +2,11 @@ import { NextResponse } from 'next/server';
 
 const GITHUB_MODELS_CATALOG_URL = 'https://models.github.ai/catalog/models';
 
-// Curated fallback list of confirmed tool-calling capable models when the
-// catalog API is unavailable (e.g., GITHUB_TOKEN not yet configured).
-const FALLBACK_MODELS = [
-  { value: 'openai/gpt-4.1', label: 'GPT-4.1 (Recommended)', rateLimitTier: 'high' },
-  { value: 'openai/gpt-4.1-mini', label: 'GPT-4.1 Mini', rateLimitTier: 'high' },
-  { value: 'openai/gpt-4.1-nano', label: 'GPT-4.1 Nano', rateLimitTier: 'high' },
-  { value: 'openai/gpt-4o', label: 'GPT-4o', rateLimitTier: 'low' },
-  { value: 'openai/gpt-4o-mini', label: 'GPT-4o Mini', rateLimitTier: 'high' },
-  { value: 'openai/o3-mini', label: 'o3-mini (Reasoning)', rateLimitTier: 'low' },
+// Single confirmed safe default — explicitly shown in the official GitHub
+// REST API docs example response. Used only when the live catalog cannot be
+// reached so the app doesn't show a completely empty dropdown.
+const SAFE_DEFAULT = [
+  { value: 'openai/gpt-4.1', label: 'GPT-4.1', rateLimitTier: 'high' },
 ];
 
 export async function GET() {
@@ -20,7 +16,7 @@ export async function GET() {
     process.env.COPILOT_GITHUB_TOKEN;
 
   if (!githubToken) {
-    return NextResponse.json(FALLBACK_MODELS);
+    return NextResponse.json(SAFE_DEFAULT);
   }
 
   try {
@@ -30,30 +26,30 @@ export async function GET() {
         Accept: 'application/vnd.github+json',
         'X-GitHub-Api-Version': '2022-11-28',
       },
-      // Cache the catalog for 1 hour to avoid hammering the API on every page load
-      next: { revalidate: 3600 },
     });
 
     if (!response.ok) {
       console.error(`GitHub Models catalog fetch failed: ${response.status}`);
-      return NextResponse.json(FALLBACK_MODELS);
+      return NextResponse.json(SAFE_DEFAULT);
     }
 
     const catalog: any[] = await response.json();
 
-    // Only surface models that support tool-calling, since the stock assistant
-    // relies on it for all data fetching.
+    // Exclude embedding-only models — they don't support chat completions.
+    // Every other model the catalog returns is guaranteed to exist and be
+    // reachable, so we surface all of them (OpenAI, Anthropic, Google, xAI,
+    // Qwen, Mistral, …) without any additional filtering.
     const models = catalog
-      .filter((m: any) => Array.isArray(m.capabilities) && m.capabilities.includes('tool-calling'))
+      .filter((m: any) => m.rate_limit_tier !== 'embedding')
       .map((m: any) => ({
         value: m.id as string,
         label: m.name as string,
         rateLimitTier: (m.rate_limit_tier as string) || 'low',
       }));
 
-    return NextResponse.json(models.length > 0 ? models : FALLBACK_MODELS);
+    return NextResponse.json(models.length > 0 ? models : SAFE_DEFAULT);
   } catch (err) {
     console.error('Failed to fetch GitHub Models catalog:', err);
-    return NextResponse.json(FALLBACK_MODELS);
+    return NextResponse.json(SAFE_DEFAULT);
   }
 }
