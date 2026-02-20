@@ -36,30 +36,23 @@ export async function GET() {
 
     const catalog: any[] = await response.json();
 
-    // Three filters applied together:
+    // Three filters:
+    // 1. Publisher: only OpenAI, Anthropic, Google
+    // 2. Capability: tool-calling required (the assistant calls tools on every request)
+    // 3. Exclude superseded models: gpt-4o / gpt-4o-mini are replaced by gpt-4.1 / gpt-4.1-mini
     //
-    // 1. Publisher: only OpenAI, Anthropic, Google — the three providers the
-    //    app is intended to use. Excludes Mistral, Llama, DeepSeek, Cohere, etc.
-    //
-    // 2. Rate limit tier: only 'high' and 'low' — these are the two standard
-    //    GitHub Models tiers that allow 8,000 input tokens on all Copilot plans
-    //    (Pro / Business / Enterprise). All special tiers (gpt-5, gpt-5-mini,
-    //    gpt-5-nano, gpt-5-chat, o1, o3, o3-mini, o4-mini, DeepSeek-R1, etc.)
-    //    have a hard 4,000 input token limit on every plan — this app's system
-    //    prompt + tool definitions alone consume ~5,500 tokens, so those models
-    //    will always return 413 regardless of subscription level.
-    //
-    // 3. Capability: only models that advertise 'tool-calling' — the stock
-    //    assistant calls tools on every request and won't work without it.
+    // No rate_limit_tier filter — the system prompt and tool definitions have been
+    // shortened to ~2,200 tokens total so all models (including gpt-5 at 4,000 input
+    // token limit) now have enough headroom for typical queries.
     const ALLOWED_PUBLISHERS = new Set(['openai', 'anthropic', 'google']);
-    const USABLE_TIERS       = new Set(['high', 'low']);
+    const SUPERSEDED_IDS     = new Set(['openai/gpt-4o', 'openai/gpt-4o-mini']);
 
     const models = catalog
       .filter((m: any) => {
         const publisher = (m.id as string).split('/')[0];
         return (
           ALLOWED_PUBLISHERS.has(publisher) &&
-          USABLE_TIERS.has(m.rate_limit_tier) &&
+          !SUPERSEDED_IDS.has(m.id as string) &&
           Array.isArray(m.capabilities) &&
           m.capabilities.includes('tool-calling')
         );
