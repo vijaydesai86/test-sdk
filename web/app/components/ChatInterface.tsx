@@ -67,6 +67,7 @@ export default function ChatInterface() {
   const [reportTitle, setReportTitle] = useState<string | null>(null);
   const [reportLoading, setReportLoading] = useState(false);
   const [reportUrl, setReportUrl] = useState<string | null>(null);
+  const [deletedReports, setDeletedReports] = useState<Set<string>>(new Set());
 
   // Fetch the live model catalog on mount
   useEffect(() => {
@@ -166,7 +167,7 @@ export default function ChatInterface() {
         .filter((message) => message.role === 'assistant')
         .flatMap((message) => message.content.match(/\/api\/reports\/[a-z0-9-]+-[0-9T\-]+\.md/gi) || [])
     )
-  );
+  ).filter((link) => !deletedReports.has(link));
 
   const handleReportClick = async (link: string) => {
     setReportLoading(true);
@@ -181,6 +182,26 @@ export default function ChatInterface() {
       setReportTitle(link.split('/').pop() || 'Report');
     } finally {
       setReportLoading(false);
+    }
+  };
+
+  const handleReportDelete = async (link: string) => {
+    setError(null);
+    try {
+      const response = await fetch(link, { method: 'DELETE' });
+      const data = await response.json();
+      if (!response.ok) {
+        const message = data.error || 'Failed to delete report';
+        throw new Error(message);
+      }
+      setDeletedReports((prev) => new Set(prev).add(link));
+      if (reportUrl === link) {
+        setReportUrl(null);
+        setReportPreview(null);
+        setReportTitle(null);
+      }
+    } catch (err: any) {
+      setError(err.message || 'Failed to delete report');
     }
   };
 
@@ -256,14 +277,25 @@ export default function ChatInterface() {
                 </div>
               ) : (
                 reportLinks.map((link) => (
-                  <button
+                  <div
                     key={link}
-                    type="button"
-                    onClick={() => handleReportClick(link)}
-                    className="block w-full text-left truncate rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-2 text-blue-600 dark:text-blue-300 hover:bg-blue-50 dark:hover:bg-blue-900/30"
+                    className="flex items-center gap-2 rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-2"
                   >
-                    {link.split('/').pop()}
-                  </button>
+                    <button
+                      type="button"
+                      onClick={() => handleReportClick(link)}
+                      className="flex-1 text-left truncate text-blue-600 dark:text-blue-300 hover:underline"
+                    >
+                      {link.split('/').pop()}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleReportDelete(link)}
+                      className="text-xs text-gray-500 hover:text-red-500"
+                    >
+                      Delete
+                    </button>
+                  </div>
                 ))
               )}
             </div>

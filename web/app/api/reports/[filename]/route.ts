@@ -31,3 +31,28 @@ export async function GET(
     return NextResponse.json({ error: 'Report not found' }, { status: 404 });
   }
 }
+
+export async function DELETE(
+  _request: NextRequest,
+  { params }: { params: Promise<{ filename: string }> }
+) {
+  const { filename } = await params;
+  if (!filename || !/^[a-z0-9-]+-[0-9T\-]+\.md$/i.test(filename)) {
+    return NextResponse.json({ error: 'Invalid report filename' }, { status: 400 });
+  }
+
+  const resolved = path.resolve(REPORTS_DIR, filename);
+  if (!resolved.startsWith(path.resolve(REPORTS_DIR))) {
+    return NextResponse.json({ error: 'Invalid path' }, { status: 400 });
+  }
+
+  try {
+    await fs.unlink(resolved);
+    return NextResponse.json({ success: true });
+  } catch (error: any) {
+    if (error?.code === 'ENOENT') {
+      return NextResponse.json({ error: 'Report not found' }, { status: 404 });
+    }
+    return NextResponse.json({ error: 'Failed to delete report' }, { status: 500 });
+  }
+}
