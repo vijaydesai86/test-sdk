@@ -1,13 +1,8 @@
 import { NextResponse } from 'next/server';
 
-const GITHUB_MODELS_CATALOG_URL = 'https://models.github.ai/catalog/models';
-const GITHUB_MODELS_INFERENCE_URL = 'https://models.github.ai/inference/chat/completions';
-
-// Allow up to 30 s so parallel probing can complete before Vercel times out.
-export const maxDuration = 30;
-
-const PROBE_TIMEOUT_MS = 6000;          // per-model probe timeout
-const VERIFIED_MODELS_CACHE_MS = 30 * 60 * 1000; // 30 minutes
+// Copilot API — the only endpoint reachable via GITHUB_TOKEN
+const COPILOT_MODELS_URL = 'https://api.githubcopilot.com/models';
+const CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes
 
 interface ModelOption {
   value: string;
@@ -15,177 +10,133 @@ interface ModelOption {
   rateLimitTier: string;
 }
 
-// "Auto" virtual option — server picks the best working model automatically.
 const AUTO_OPTION: ModelOption = {
   value: 'auto',
   label: '✨ Auto (Recommended)',
   rateLimitTier: 'auto',
 };
 
-// Fallback used only when the live catalog is unreachable.
-// IDs here are confirmed-working from the existing codebase; only those that
-// meet minimum version requirements (Claude 4.5+, GPT-5+, any Gemini) are kept.
-const FALLBACK_MODELS: ModelOption[] = [
-  AUTO_OPTION,
-  { value: 'anthropic/claude-sonnet-4-6', label: 'Claude Sonnet 4.6', rateLimitTier: 'low' },
-  { value: 'google/gemini-3-flash',       label: 'Gemini 3 Flash',    rateLimitTier: 'low' },
+// Confirmed-working fallback used ONLY when the catalog endpoint is unreachable.
+// IDs and names verified via live API call in this environment.
+const HARD_FALLBACK: ModelOption[] = [
+  { value: 'claude-opus-4.6',   label: 'Claude Opus 4.6',   rateLimitTier: 'low' },
+  { value: 'claude-sonnet-4.6', label: 'Claude Sonnet 4.6', rateLimitTier: 'low' },
+  { value: 'gemini-2.5-pro',    label: 'Gemini 2.5 Pro',    rateLimitTier: 'low' },
 ];
 
-// Cache verified-working models for 30 minutes to avoid probing on every page load.
-let workingModelsCache: ModelOption[] | null = null;
-let workingModelsCacheExpiry = 0;
+// Module-level cache (warm Vercel invocations reuse it).
+let cachedModels: ModelOption[] | null = null;
+let cacheExpiry = 0;
 
 /**
- * Returns true only for:
- * - OpenAI: GPT-5 and above (not GPT-4.x, o1, o3, etc.)
- *   Handles: gpt-5, gpt-5.1, gpt-5.2, gpt-5-turbo, gpt-52, …
- * - Anthropic: Claude 4.5 and above (not Claude 3.x or 4.0–4.4)
- *   Handles: claude-sonnet-4-5, claude-opus-5-0, claude-sonnet-5-0-20261001,
- *             claude-5, claude-opus-5, claude-5-sonnet, …
- * - Google: Any Gemini model (all generations welcome)
+ * Version gate — applied to bare model IDs (no vendor prefix) from the
+ * Copilot API.  IDs use dots: claude-opus-4.6, gpt-5-mini, gemini-2.5-pro
+ *
+ * Include:
+ *   Claude  >= 4.5  (claude-{tier}-{major}.{minor}, major>4 OR major=4,minor>=5)
+ *   GPT     >= 5    (gpt-5-*, but NOT bare "gpt-5" and NOT any "*codex*")
+ *   Gemini  any     (gemini-*)
+ *
+ * Exclude: gpt-4.x, o1, o3, claude-sonnet-4 (4.0), claude-3-*, codex variants
  */
-function meetsVersionRequirement(modelId: string): boolean {
-  const id = modelId.toLowerCase();
+function qualifies(model: {
+  id: string;
+  model_picker_enabled: boolean;
+  capabilities: { supports: { tool_calls: boolean } };
+}): boolean {
+  // Must be user-picker enabled and support tool calls
+  if (!model.model_picker_enabled) return false;
+  if (!model.capabilities?.supports?.tool_calls) return false;
 
-  if (id.startsWith('openai/')) {
-    // Match gpt-{N} where N is the first numeric segment (handles gpt-5, gpt-5.1, gpt-5-turbo, gpt-52 …)
-    const m = id.match(/^openai\/gpt-(\d+)/);
-    return m ? parseInt(m[1]) >= 5 : false;
+  const id = model.id.toLowerCase();
+
+  // Claude: claude-{tier}-{major}.{minor}
+  const claudeMatch = id.match(/^claude-[a-z]+-(\d+)\.(\d+)/);
+  if (claudeMatch) {
+    const maj = parseInt(claudeMatch[1]);
+    const min = parseInt(claudeMatch[2]);
+    return maj > 4 || (maj === 4 && min >= 5);
+  }
+  // Claude bare major: claude-{tier}-{major} e.g. claude-opus-5 (future)
+  const claudeBare = id.match(/^claude-[a-z]+-(\d+)$/);
+  if (claudeBare) return parseInt(claudeBare[1]) >= 5;
+
+  // GPT: gpt-{N}...  must be >=5, not bare "gpt-5", not codex variants
+  if (id.startsWith('gpt-')) {
+    if (id.includes('codex')) return false;  // codex models need a different endpoint
+    if (id === 'gpt-5') return false;        // bare gpt-5 returns "not supported" on /chat/completions
+    const gptMatch = id.match(/^gpt-(\d+)/);
+    return !!gptMatch && parseInt(gptMatch[1]) >= 5;
   }
 
-  if (id.startsWith('anthropic/')) {
-    const path = id.replace('anthropic/', '');
-
-    // ── New tier-first naming: claude-{tier}-{major}[-{minor}[-{suffix}]]
-    //    e.g. claude-sonnet-4-5, claude-opus-5-0, claude-sonnet-5-0-20261001
-    const tierFirst = path.match(/^claude-[a-z]+-(\d+)(?:-(\d+))?/);
-    if (tierFirst) {
-      const major = parseInt(tierFirst[1]);
-      const minor = tierFirst[2] !== undefined ? parseInt(tierFirst[2]) : 0;
-      return major > 4 || (major === 4 && minor >= 5);
-    }
-
-    // ── New major-first naming: claude-{major}[-{tier}[-{suffix}]]
-    //    e.g. claude-5, claude-5-sonnet, claude-5-opus-20261001
-    const majorFirst = path.match(/^claude-(\d+)(?:-[a-z]+)?/);
-    if (majorFirst) {
-      return parseInt(majorFirst[1]) >= 5;
-    }
-
-    // ── Old naming: claude-{major}-{minor}-{tier}  e.g. claude-3-5-sonnet — excluded
-    return false;
-  }
-
-  if (id.startsWith('google/')) {
-    return id.includes('gemini');
-  }
+  // Gemini: all generations — confirmed working with tool calls
+  if (id.startsWith('gemini-')) return true;
 
   return false;
 }
 
-/**
- * Sends a minimal 1-token probe to the inference API to verify the model is
- * actually accessible with this token.
- *
- * 200  → working
- * 429  → rate-limited but accessible (still include in dropdown)
- * 400/403/404 → model unavailable / no access → exclude
- */
-async function probeModel(modelId: string, token: string): Promise<boolean> {
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
-    const res = await fetch(GITHUB_MODELS_INFERENCE_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({
-        model: modelId,
-        messages: [{ role: 'user', content: 'hi' }],
-        max_tokens: 1,
-      }),
-      signal: controller.signal,
-    });
-    clearTimeout(timeoutId);
-    // 200 OK or 429 rate-limited both mean the model is accessible.
-    return res.ok || res.status === 429;
-  } catch {
-    return false;
-  }
+/** Higher score = shown first in dropdown / chosen by Auto. */
+function rank(id: string): number {
+  const s = id.toLowerCase();
+  if (s.includes('opus'))                                              return 100;
+  if (s.includes('sonnet'))                                            return  90;
+  if (s.startsWith('gpt-5') && !s.includes('mini'))                  return  85;
+  if (s.includes('gemini') && (s.includes('pro') || s.includes('ultra'))) return 80;
+  if (s.includes('gpt-5'))                                             return  75; // gpt-5-mini etc.
+  if (s.includes('haiku'))                                             return  70;
+  if (s.includes('gemini') && s.includes('flash'))                    return  65;
+  if (s.includes('gemini'))                                            return  72;
+  return 50;
 }
 
 export async function GET() {
-  const githubToken =
+  if (cachedModels && Date.now() < cacheExpiry) {
+    return NextResponse.json([AUTO_OPTION, ...cachedModels]);
+  }
+
+  const token =
     process.env.GITHUB_TOKEN ||
     process.env.GH_TOKEN ||
     process.env.COPILOT_GITHUB_TOKEN;
 
-  if (!githubToken) {
-    return NextResponse.json(FALLBACK_MODELS);
-  }
-
-  // Return cached result if still fresh.
-  if (workingModelsCache && Date.now() < workingModelsCacheExpiry) {
-    return NextResponse.json(workingModelsCache);
+  if (!token) {
+    return NextResponse.json([AUTO_OPTION, ...HARD_FALLBACK]);
   }
 
   try {
-    // 1. Fetch the live model catalog.
-    const catalogRes = await fetch(GITHUB_MODELS_CATALOG_URL, {
+    const res = await fetch(COPILOT_MODELS_URL, {
       headers: {
-        Authorization: `Bearer ${githubToken}`,
-        Accept: 'application/vnd.github+json',
-        'X-GitHub-Api-Version': '2022-11-28',
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/json',
       },
+      cache: 'no-store',
     });
 
-    if (!catalogRes.ok) {
-      console.error(`GitHub Models catalog fetch failed: ${catalogRes.status}`);
-      return NextResponse.json(FALLBACK_MODELS);
+    if (!res.ok) {
+      console.error(`[models] catalog HTTP ${res.status}`);
+      return NextResponse.json([AUTO_OPTION, ...HARD_FALLBACK]);
     }
 
-    const catalog: any[] = await catalogRes.json();
+    const json = await res.json();
+    const catalog: any[] = json.data ?? json; // handles {data:[...]} and plain array
 
-    // 2. Filter to qualifying models (version + tool-calling capability).
-    const candidates = catalog.filter((m: any) => {
-      const id = (m.id as string) || '';
-      return (
-        meetsVersionRequirement(id) &&
-        Array.isArray(m.capabilities) &&
-        m.capabilities.includes('tool-calling')
-      );
-    });
-
-    // 3. Probe all candidates in parallel to verify actual accessibility.
-    const probeResults = await Promise.all(
-      candidates.map(async (m: any) => ({
-        model: m,
-        accessible: await probeModel(m.id as string, githubToken),
-      }))
-    );
-
-    const verified: ModelOption[] = probeResults
-      .filter(({ accessible }) => accessible)
-      .map(({ model: m }) => ({
+    const models: ModelOption[] = catalog
+      .filter((m: any) => qualifies(m))
+      .map((m: any): ModelOption => ({
         value: m.id as string,
-        label: m.name as string,
-        rateLimitTier: (m.rate_limit_tier as string) || 'low',
-      }));
+        label: (m.name || m.id) as string,
+        rateLimitTier: 'standard',
+      }))
+      .sort((a, b) => rank(b.value) - rank(a.value));
 
-    const result: ModelOption[] = [
-      AUTO_OPTION,
-      ...(verified.length > 0 ? verified : FALLBACK_MODELS.slice(1)),
-    ];
+    const list = models.length > 0 ? models : HARD_FALLBACK;
+    cachedModels = list;
+    cacheExpiry = Date.now() + CACHE_TTL_MS;
 
-    // Cache for 30 minutes.
-    workingModelsCache = result;
-    workingModelsCacheExpiry = Date.now() + VERIFIED_MODELS_CACHE_MS;
-
-    return NextResponse.json(result);
+    console.log('[models] loaded:', list.map(m => m.value).join(', '));
+    return NextResponse.json([AUTO_OPTION, ...list]);
   } catch (err) {
-    console.error('Failed to build verified model list:', err);
-    return NextResponse.json(FALLBACK_MODELS);
+    console.error('[models] error:', err);
+    return NextResponse.json([AUTO_OPTION, ...HARD_FALLBACK]);
   }
 }
