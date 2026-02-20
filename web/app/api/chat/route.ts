@@ -119,10 +119,62 @@ DATA & FORMATTING STANDARDS
 `;
 
 /**
- * Call the GitHub Models API using your GitHub PAT directly.
- * No token exchange needed — works with fine-grained PATs from
- * https://github.com/settings/personal-access-tokens (models:read permission)
+ * Trim conversation history to prevent token limit errors (413) on subsequent turns.
+ *
+ * The app's fixed overhead per request is ~5,500 tokens (system prompt + tool
+ * definitions). High/Low tier models allow 8,000 input tokens, leaving only
+ * ~2,500 tokens for conversation history. A single deep-research turn accumulates
+ * many tool result messages that can far exceed this budget.
+ *
+ * Strategy: keep the system message + only the most recent complete exchange
+ * (the final user message and its final assistant reply). All intermediate tool
+ * call/result messages from previous turns are dropped — they were only needed
+ * during that turn's reasoning loop and have no value in later turns.
  */
+function trimHistory(messages: ChatMessage[]): ChatMessage[] {
+  if (messages.length === 0) return messages;
+
+  const system = messages[0]; // always index 0
+
+  // Collect complete exchanges: each exchange = one user message + everything
+  // after it until (but not including) the next user message.
+  const exchanges: ChatMessage[][] = [];
+  let current: ChatMessage[] = [];
+
+  for (let i = 1; i < messages.length; i++) {
+    if (messages[i].role === 'user' && current.length > 0) {
+      exchanges.push(current);
+      current = [];
+    }
+    current.push(messages[i]);
+  }
+  if (current.length > 0) exchanges.push(current);
+
+  if (exchanges.length === 0) return messages;
+
+  // From each exchange, keep only the final assistant text reply (drop intermediate
+  // tool_calls and tool results — they balloon in size and are not needed later).
+  const compactExchange = (exchange: ChatMessage[]): ChatMessage[] => {
+    const userMsg = exchange[0]; // the user message that started this exchange
+    // Find the final assistant message (no tool_calls — the actual text response)
+    const finalAssistant = [...exchange].reverse().find(
+      (m) => m.role === 'assistant' && !m.tool_calls?.length
+    );
+    if (finalAssistant) return [userMsg, finalAssistant];
+    // If no clean final assistant message yet (in-progress exchange), keep as-is
+    return exchange;
+  };
+
+  // Keep the last 2 complete exchanges (so there's some conversation context)
+  // plus the current in-progress exchange (last one) in full.
+  const keepExchanges = exchanges.slice(-2);
+  const compacted = keepExchanges.flatMap((ex, idx) =>
+    // Compact all but the last exchange (which is currently being processed)
+    idx < keepExchanges.length - 1 ? compactExchange(ex) : ex
+  );
+
+  return [system, ...compacted];
+}
 async function callGitHubModelsAPI(
   messages: ChatMessage[],
   githubToken: string,
@@ -252,10 +304,15 @@ export async function POST(request: NextRequest) {
 
     // Get or create conversation history
     let conversationMessages: ChatMessage[] = sessionId ? sessions.get(sessionId) || [] : [];
-    let currentSessionId = sessionId || Math.random().toString(36).substring(7);
+    const currentSessionId = sessionId || Math.random().toString(36).substring(7);
 
     if (conversationMessages.length === 0) {
       conversationMessages.push({ role: 'system', content: SYSTEM_PROMPT });
+    } else {
+      // Trim accumulated tool messages from previous turns to stay within
+      // the model's input token limit (8,000 tokens for high/low tier models,
+      // minus ~5,500 tokens of fixed overhead = only ~2,500 tokens for history).
+      conversationMessages = trimHistory(conversationMessages);
     }
 
     // Add user message
