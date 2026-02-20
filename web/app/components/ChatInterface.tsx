@@ -15,7 +15,7 @@ interface ModelOption {
   rateLimitTier?: string;
 }
 
-const DEFAULT_MODEL = 'openai/gpt-4.1';
+const DEFAULT_MODEL = 'auto';
 
 export default function ChatInterface() {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -25,7 +25,7 @@ export default function ChatInterface() {
   const [error, setError] = useState<string | null>(null);
   const [model, setModel] = useState(DEFAULT_MODEL);
   const [availableModels, setAvailableModels] = useState<ModelOption[]>([
-    { value: DEFAULT_MODEL, label: 'GPT-4.1', rateLimitTier: 'high' },
+    { value: 'auto', label: '✨ Auto (Recommended)', rateLimitTier: 'auto' },
   ]);
   const [modelsLoading, setModelsLoading] = useState(true);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -37,8 +37,9 @@ export default function ChatInterface() {
       .then((models: ModelOption[]) => {
         if (Array.isArray(models) && models.length > 0) {
           setAvailableModels(models);
-          // Keep the current model if it's in the new list; otherwise use the first one
-          if (!models.find((m) => m.value === model)) {
+          // Keep "auto" if present; otherwise fall back to the first model in the list
+          const hasAuto = models.some((m) => m.value === 'auto');
+          if (!hasAuto && !models.find((m) => m.value === model)) {
             setModel(models[0].value);
           }
         }

@@ -5,11 +5,93 @@ import { AlphaVantageService, StockDataService } from '@/app/lib/stockDataServic
 // GitHub Models API — new endpoint (azure endpoint deprecated Oct 2025)
 // Works with PATs from github.com/settings/personal-access-tokens (models:read scope)
 const GITHUB_MODELS_URL = 'https://models.github.ai/inference/chat/completions';
-const DEFAULT_MODEL = process.env.COPILOT_MODEL || 'openai/gpt-4.1';
 // Allow enough rounds for multi-stock research. With parallel batching, each round
 // can execute dozens of tool calls simultaneously — so 30 rounds is ample even for
 // 20-stock reports (typically: 1 sector list + 2-3 batch rounds + 1 write round).
 const MAX_TOOL_ROUNDS = 30;
+const PROBE_TIMEOUT_MS = 6000;           // must match models/route.ts
+const AUTO_MODEL_CACHE_MS = 5 * 60 * 1000; // 5 minutes
+
+// Ordered preference list for "auto" mode.
+// The first model that the token can actually reach wins.
+// Broad enough to include future sub-versions (5.1, 5.2 …) because the catalog
+// will contain those IDs and the probe will confirm access.
+const AUTO_MODEL_PREFERENCE = [
+  'anthropic/claude-sonnet-4-5',
+  'anthropic/claude-sonnet-4-6',
+  'anthropic/claude-opus-4-5',
+  'openai/gpt-5',
+  'google/gemini-2.5-pro',
+  'google/gemini-2.5-flash',
+  'google/gemini-2.0-flash',
+];
+
+// Cache the probed auto model for 5 minutes.
+let cachedAutoModel: string | null = null;
+let autoModelCacheExpiry = 0;
+
+/**
+ * Sends a minimal 1-token probe to the inference API to verify the model
+ * is truly accessible with this token (not just listed in the catalog).
+ * Returns true for 200 (OK) and 429 (rate-limited but accessible).
+ */
+async function probeInferenceModel(modelId: string, token: string): Promise<boolean> {
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
+    const res = await fetch(GITHUB_MODELS_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        model: modelId,
+        messages: [{ role: 'user', content: 'hi' }],
+        max_tokens: 1,
+      }),
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+    return res.ok || res.status === 429;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Probes all preference models in parallel and returns the highest-priority
+ * one that is actually accessible.  Result is cached for 5 minutes.
+ */
+async function resolveAutoModel(githubToken: string): Promise<string> {
+  const now = Date.now();
+  if (cachedAutoModel && now < autoModelCacheExpiry) return cachedAutoModel;
+
+  const results = await Promise.all(
+    AUTO_MODEL_PREFERENCE.map(async (modelId, index) => ({
+      modelId,
+      index,
+      ok: await probeInferenceModel(modelId, githubToken),
+    }))
+  );
+
+  const best = results
+    .filter((r) => r.ok)
+    .sort((a, b) => a.index - b.index)[0];
+
+  if (best) {
+    cachedAutoModel = best.modelId;
+    autoModelCacheExpiry = now + AUTO_MODEL_CACHE_MS;
+    return best.modelId;
+  }
+
+  // None of the preference models were reachable — fall back and warn.
+  console.warn(
+    'resolveAutoModel: no preference model was reachable; falling back to',
+    AUTO_MODEL_PREFERENCE[0]
+  );
+  return AUTO_MODEL_PREFERENCE[0];
+}
 
 const RATE_LIMIT_GUIDANCE =
   'This model allows 50 requests per day. ' +
@@ -239,6 +321,12 @@ export async function POST(request: NextRequest) {
     }
     const stockService: StockDataService = new AlphaVantageService(alphaVantageKey);
 
+    // Resolve "auto" to the best available model; otherwise use the requested model.
+    const requestedModel = model || 'auto';
+    const resolvedModel = requestedModel === 'auto'
+      ? await resolveAutoModel(githubToken)
+      : requestedModel;
+
     // Get or create conversation history
     let conversationMessages: ChatMessage[] = sessionId ? sessions.get(sessionId) || [] : [];
     const currentSessionId = sessionId || Math.random().toString(36).substring(7);
@@ -261,7 +349,7 @@ export async function POST(request: NextRequest) {
 
     while (rounds < MAX_TOOL_ROUNDS) {
       rounds++;
-      const result = await callGitHubModelsAPI(conversationMessages, githubToken, model || DEFAULT_MODEL);
+      const result = await callGitHubModelsAPI(conversationMessages, githubToken, resolvedModel);
       const choice = result.choices?.[0];
 
       if (!choice) {
@@ -303,7 +391,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       response: assistantContent || "I apologize, but I couldn't generate a response. Please try again.",
       sessionId: currentSessionId,
-      model: model || DEFAULT_MODEL,
+      model: resolvedModel,
     });
   } catch (error: any) {
     console.error('Chat API error:', error);

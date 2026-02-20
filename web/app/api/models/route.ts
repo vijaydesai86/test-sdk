@@ -1,14 +1,121 @@
 import { NextResponse } from 'next/server';
 
 const GITHUB_MODELS_CATALOG_URL = 'https://models.github.ai/catalog/models';
+const GITHUB_MODELS_INFERENCE_URL = 'https://models.github.ai/inference/chat/completions';
 
-// Safe fallback used only when the live catalog is unreachable.
-// Contains one confirmed-working model per supported provider.
-const SAFE_DEFAULT = [
-  { value: 'openai/gpt-4.1',              label: 'OpenAI GPT-4.1',        rateLimitTier: 'high' },
-  { value: 'anthropic/claude-sonnet-4-6', label: 'Claude Sonnet 4.6',     rateLimitTier: 'low'  },
-  { value: 'google/gemini-3-flash',       label: 'Gemini 3 Flash',        rateLimitTier: 'low'  },
+// Allow up to 30 s so parallel probing can complete before Vercel times out.
+export const maxDuration = 30;
+
+const PROBE_TIMEOUT_MS = 6000;          // per-model probe timeout
+const VERIFIED_MODELS_CACHE_MS = 30 * 60 * 1000; // 30 minutes
+
+interface ModelOption {
+  value: string;
+  label: string;
+  rateLimitTier: string;
+}
+
+// "Auto" virtual option — server picks the best working model automatically.
+const AUTO_OPTION: ModelOption = {
+  value: 'auto',
+  label: '✨ Auto (Recommended)',
+  rateLimitTier: 'auto',
+};
+
+// Fallback used only when the live catalog is unreachable.
+// Only models meeting minimum version requirements.
+const FALLBACK_MODELS: ModelOption[] = [
+  AUTO_OPTION,
+  { value: 'anthropic/claude-sonnet-4-5', label: 'Claude Sonnet 4.5', rateLimitTier: 'low' },
+  { value: 'anthropic/claude-sonnet-4-6', label: 'Claude Sonnet 4.6', rateLimitTier: 'low' },
+  { value: 'google/gemini-2.5-pro',       label: 'Gemini 2.5 Pro',    rateLimitTier: 'low' },
+  { value: 'google/gemini-2.5-flash',     label: 'Gemini 2.5 Flash',  rateLimitTier: 'low' },
 ];
+
+// Cache verified-working models for 30 minutes to avoid probing on every page load.
+let workingModelsCache: ModelOption[] | null = null;
+let workingModelsCacheExpiry = 0;
+
+/**
+ * Returns true only for:
+ * - OpenAI: GPT-5 and above (not GPT-4.x, o1, o3, etc.)
+ *   Handles: gpt-5, gpt-5.1, gpt-5.2, gpt-5-turbo, gpt-52, …
+ * - Anthropic: Claude 4.5 and above (not Claude 3.x or 4.0–4.4)
+ *   Handles: claude-sonnet-4-5, claude-opus-5-0, claude-sonnet-5-0-20261001,
+ *             claude-5, claude-opus-5, claude-5-sonnet, …
+ * - Google: Any Gemini model (all generations welcome)
+ */
+function meetsVersionRequirement(modelId: string): boolean {
+  const id = modelId.toLowerCase();
+
+  if (id.startsWith('openai/')) {
+    // Match gpt-{N} where N is the first numeric segment (handles gpt-5, gpt-5.1, gpt-5-turbo, gpt-52 …)
+    const m = id.match(/^openai\/gpt-(\d+)/);
+    return m ? parseInt(m[1]) >= 5 : false;
+  }
+
+  if (id.startsWith('anthropic/')) {
+    const path = id.replace('anthropic/', '');
+
+    // ── New tier-first naming: claude-{tier}-{major}[-{minor}[-{suffix}]]
+    //    e.g. claude-sonnet-4-5, claude-opus-5-0, claude-sonnet-5-0-20261001
+    const tierFirst = path.match(/^claude-[a-z]+-(\d+)(?:-(\d+))?/);
+    if (tierFirst) {
+      const major = parseInt(tierFirst[1]);
+      const minor = tierFirst[2] !== undefined ? parseInt(tierFirst[2]) : 0;
+      return major > 4 || (major === 4 && minor >= 5);
+    }
+
+    // ── New major-first naming: claude-{major}[-{tier}[-{suffix}]]
+    //    e.g. claude-5, claude-5-sonnet, claude-5-opus-20261001
+    const majorFirst = path.match(/^claude-(\d+)(?:-[a-z]+)?/);
+    if (majorFirst) {
+      return parseInt(majorFirst[1]) >= 5;
+    }
+
+    // ── Old naming: claude-{major}-{minor}-{tier}  e.g. claude-3-5-sonnet — excluded
+    return false;
+  }
+
+  if (id.startsWith('google/')) {
+    return id.includes('gemini');
+  }
+
+  return false;
+}
+
+/**
+ * Sends a minimal 1-token probe to the inference API to verify the model is
+ * actually accessible with this token.
+ *
+ * 200  → working
+ * 429  → rate-limited but accessible (still include in dropdown)
+ * 400/403/404 → model unavailable / no access → exclude
+ */
+async function probeModel(modelId: string, token: string): Promise<boolean> {
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
+    const res = await fetch(GITHUB_MODELS_INFERENCE_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        model: modelId,
+        messages: [{ role: 'user', content: 'hi' }],
+        max_tokens: 1,
+      }),
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+    // 200 OK or 429 rate-limited both mean the model is accessible.
+    return res.ok || res.status === 429;
+  } catch {
+    return false;
+  }
+}
 
 export async function GET() {
   const githubToken =
@@ -17,11 +124,17 @@ export async function GET() {
     process.env.COPILOT_GITHUB_TOKEN;
 
   if (!githubToken) {
-    return NextResponse.json(SAFE_DEFAULT);
+    return NextResponse.json(FALLBACK_MODELS);
+  }
+
+  // Return cached result if still fresh.
+  if (workingModelsCache && Date.now() < workingModelsCacheExpiry) {
+    return NextResponse.json(workingModelsCache);
   }
 
   try {
-    const response = await fetch(GITHUB_MODELS_CATALOG_URL, {
+    // 1. Fetch the live model catalog.
+    const catalogRes = await fetch(GITHUB_MODELS_CATALOG_URL, {
       headers: {
         Authorization: `Bearer ${githubToken}`,
         Accept: 'application/vnd.github+json',
@@ -29,43 +142,51 @@ export async function GET() {
       },
     });
 
-    if (!response.ok) {
-      console.error(`GitHub Models catalog fetch failed: ${response.status}`);
-      return NextResponse.json(SAFE_DEFAULT);
+    if (!catalogRes.ok) {
+      console.error(`GitHub Models catalog fetch failed: ${catalogRes.status}`);
+      return NextResponse.json(FALLBACK_MODELS);
     }
 
-    const catalog: any[] = await response.json();
+    const catalog: any[] = await catalogRes.json();
 
-    // Three filters:
-    // 1. Publisher: only OpenAI, Anthropic, Google
-    // 2. Capability: tool-calling required (the assistant calls tools on every request)
-    // 3. Exclude superseded models: gpt-4o / gpt-4o-mini are replaced by gpt-4.1 / gpt-4.1-mini
-    //
-    // No rate_limit_tier filter — the system prompt and tool definitions have been
-    // shortened to ~2,200 tokens total so all models (including gpt-5 at 4,000 input
-    // token limit) now have enough headroom for typical queries.
-    const ALLOWED_PUBLISHERS = new Set(['openai', 'anthropic', 'google']);
-    const SUPERSEDED_IDS     = new Set(['openai/gpt-4o', 'openai/gpt-4o-mini']);
+    // 2. Filter to qualifying models (version + tool-calling capability).
+    const candidates = catalog.filter((m: any) => {
+      const id = (m.id as string) || '';
+      return (
+        meetsVersionRequirement(id) &&
+        Array.isArray(m.capabilities) &&
+        m.capabilities.includes('tool-calling')
+      );
+    });
 
-    const models = catalog
-      .filter((m: any) => {
-        const publisher = (m.id as string).split('/')[0];
-        return (
-          ALLOWED_PUBLISHERS.has(publisher) &&
-          !SUPERSEDED_IDS.has(m.id as string) &&
-          Array.isArray(m.capabilities) &&
-          m.capabilities.includes('tool-calling')
-        );
-      })
-      .map((m: any) => ({
+    // 3. Probe all candidates in parallel to verify actual accessibility.
+    const probeResults = await Promise.all(
+      candidates.map(async (m: any) => ({
+        model: m,
+        accessible: await probeModel(m.id as string, githubToken),
+      }))
+    );
+
+    const verified: ModelOption[] = probeResults
+      .filter(({ accessible }) => accessible)
+      .map(({ model: m }) => ({
         value: m.id as string,
         label: m.name as string,
-        rateLimitTier: m.rate_limit_tier as string,
+        rateLimitTier: (m.rate_limit_tier as string) || 'low',
       }));
 
-    return NextResponse.json(models.length > 0 ? models : SAFE_DEFAULT);
+    const result: ModelOption[] = [
+      AUTO_OPTION,
+      ...(verified.length > 0 ? verified : FALLBACK_MODELS.slice(1)),
+    ];
+
+    // Cache for 30 minutes.
+    workingModelsCache = result;
+    workingModelsCacheExpiry = Date.now() + VERIFIED_MODELS_CACHE_MS;
+
+    return NextResponse.json(result);
   } catch (err) {
-    console.error('Failed to fetch GitHub Models catalog:', err);
-    return NextResponse.json(SAFE_DEFAULT);
+    console.error('Failed to build verified model list:', err);
+    return NextResponse.json(FALLBACK_MODELS);
   }
 }
