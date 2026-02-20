@@ -266,8 +266,11 @@ async function callOpenAIProxyAPI(
 }
 
 export async function POST(request: NextRequest) {
+  let provider: string | undefined;
   try {
-    const { message, sessionId, model, provider } = await request.json();
+    const body = await request.json();
+    const { message, sessionId, model } = body;
+    provider = body.provider;
 
     if (!message) {
       return NextResponse.json(
@@ -413,6 +416,10 @@ export async function POST(request: NextRequest) {
       details = `The conversation history has grown too large for this model's token limit. Start a new chat to clear the history and try again.`;
     } else if (isToolCallText) {
       details = 'This model returned tool calls as plain text. Switch to a tool-calling model from the dropdown (for example, GPT-4.1 or Claude Sonnet).';
+    } else if (provider === 'openai-proxy') {
+      details =
+        'Make sure OPENAI_API_KEY is set in your Vercel environment variables, and that the proxy URL is reachable from this deployment. ' +
+        'If you see TLS errors, install Arm root certificates for the runtime environment.';
     } else {
       details = 'Make sure GITHUB_TOKEN is set in your Vercel environment variables and that ALPHA_VANTAGE_API_KEY, FMP_API_KEY, FINNHUB_API_KEY, and NEWSAPI_KEY are configured for full data coverage.';
     }
