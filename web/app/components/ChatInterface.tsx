@@ -175,7 +175,8 @@ export default function ChatInterface() {
   };
 
   return (
-    <div className="flex flex-col h-screen max-w-6xl mx-auto p-4 gap-4">
+    <>
+      <div className="flex flex-col h-screen max-w-6xl mx-auto p-4 gap-4">
       <div className="flex items-center justify-between bg-white dark:bg-gray-900 rounded-2xl shadow-sm p-6">
         <div>
           <h1 className="text-3xl font-semibold text-gray-900 dark:text-white">
@@ -368,9 +369,9 @@ export default function ChatInterface() {
           </form>
         </section>
       </div>
-    </div>
-    {reportPreview && (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6">
+      </div>
+      {reportPreview && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6">
         <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-xl max-w-5xl w-full max-h-[90vh] overflow-hidden flex flex-col">
           <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200 dark:border-gray-700">
             <div>
@@ -427,7 +428,8 @@ export default function ChatInterface() {
             )}
           </div>
         </div>
-      </div>
-    )}
+        </div>
+      )}
+    </>
   );
 }
