@@ -23,13 +23,12 @@ const AUTO_OPTION: ModelOption = {
 };
 
 // Fallback used only when the live catalog is unreachable.
-// Only models meeting minimum version requirements.
+// IDs here are confirmed-working from the existing codebase; only those that
+// meet minimum version requirements (Claude 4.5+, GPT-5+, any Gemini) are kept.
 const FALLBACK_MODELS: ModelOption[] = [
   AUTO_OPTION,
-  { value: 'anthropic/claude-sonnet-4-5', label: 'Claude Sonnet 4.5', rateLimitTier: 'low' },
   { value: 'anthropic/claude-sonnet-4-6', label: 'Claude Sonnet 4.6', rateLimitTier: 'low' },
-  { value: 'google/gemini-2.5-pro',       label: 'Gemini 2.5 Pro',    rateLimitTier: 'low' },
-  { value: 'google/gemini-2.5-flash',     label: 'Gemini 2.5 Flash',  rateLimitTier: 'low' },
+  { value: 'google/gemini-3-flash',       label: 'Gemini 3 Flash',    rateLimitTier: 'low' },
 ];
 
 // Cache verified-working models for 30 minutes to avoid probing on every page load.

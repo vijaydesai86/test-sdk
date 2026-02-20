@@ -13,17 +13,25 @@ const PROBE_TIMEOUT_MS = 6000;           // must match models/route.ts
 const AUTO_MODEL_CACHE_MS = 5 * 60 * 1000; // 5 minutes
 
 // Ordered preference list for "auto" mode.
-// The first model that the token can actually reach wins.
-// Broad enough to include future sub-versions (5.1, 5.2 …) because the catalog
-// will contain those IDs and the probe will confirm access.
+// The two confirmed-working IDs (from this repo's own history) come first.
+// The rest are plausible newer IDs that the probe will verify at runtime.
+// Most-capable models are listed before less-capable ones of the same provider.
 const AUTO_MODEL_PREFERENCE = [
-  'anthropic/claude-sonnet-4-5',
-  'anthropic/claude-sonnet-4-6',
+  // Confirmed working (from repo history)
+  'anthropic/claude-sonnet-4-6',   // Claude Sonnet 4.6 — confirmed
+  'google/gemini-3-flash',          // Gemini 3 Flash    — confirmed
+  // Likely present: higher-tier / newer Claude
+  'anthropic/claude-opus-4-6',
   'anthropic/claude-opus-4-5',
+  'anthropic/claude-sonnet-4-5',
+  // Likely present: OpenAI GPT-5 family
+  'openai/gpt-5.2',
+  'openai/gpt-5.1',
   'openai/gpt-5',
+  // Likely present: newer Gemini
+  'google/gemini-3-pro',
   'google/gemini-2.5-pro',
   'google/gemini-2.5-flash',
-  'google/gemini-2.0-flash',
 ];
 
 // Cache the probed auto model for 5 minutes.
