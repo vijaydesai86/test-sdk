@@ -1,14 +1,14 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import path from 'path';
 import { promises as fs } from 'fs';
 
 const REPORTS_DIR = process.env.REPORTS_DIR || (process.env.VERCEL ? '/tmp/reports' : 'reports');
 
 export async function GET(
-  _request: Request,
-  { params }: { params: { filename: string } }
+  _request: NextRequest,
+  { params }: { params: Promise<{ filename: string }> }
 ) {
-  const filename = params.filename;
+  const { filename } = await params;
   if (!filename || !/^[a-z0-9-]+-[0-9T\-]+\.md$/i.test(filename)) {
     return NextResponse.json({ error: 'Invalid report filename' }, { status: 400 });
   }
