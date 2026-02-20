@@ -409,9 +409,9 @@ export default function ChatInterface() {
               <div className="prose dark:prose-invert max-w-none">
                 <ReactMarkdown
                   components={{
-                    code({ inline, className, children, ...props }) {
+                    code({ className, children, ...props }) {
                       const match = /language-(\w+)/.exec(className || '');
-                      if (!inline && match?.[1] === 'mermaid') {
+                      if (match?.[1] === 'mermaid') {
                         return <MermaidBlock chart={String(children).trim()} />;
                       }
                       return (
