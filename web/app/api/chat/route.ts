@@ -2,14 +2,89 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getToolDefinitions, executeTool } from '@/app/lib/stockTools';
 import { AlphaVantageService, StockDataService } from '@/app/lib/stockDataService';
 
-// GitHub Models API — new endpoint (azure endpoint deprecated Oct 2025)
-// Works with PATs from github.com/settings/personal-access-tokens (models:read scope)
-const GITHUB_MODELS_URL = 'https://models.github.ai/inference/chat/completions';
-const DEFAULT_MODEL = process.env.COPILOT_MODEL || 'openai/gpt-4.1';
-// Allow enough rounds for multi-stock research. With parallel batching, each round
-// can execute dozens of tool calls simultaneously — so 30 rounds is ample even for
-// 20-stock reports (typically: 1 sector list + 2-3 batch rounds + 1 write round).
-const MAX_TOOL_ROUNDS = 30;
+const COPILOT_CHAT_URL  = 'https://api.githubcopilot.com/chat/completions';
+const COPILOT_MODELS_URL = 'https://api.githubcopilot.com/models';
+const MAX_TOOL_ROUNDS   = 30;
+const AUTO_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+// ─── Auto-model resolution ────────────────────────────────────────────────────
+// Uses the real Copilot models API (api.githubcopilot.com/models).
+// Model IDs have NO vendor prefix and use dots: claude-opus-4.6, gpt-5-mini.
+
+let cachedAutoModel: string | null = null;
+let autoModelCacheExpiry = 0;
+
+/** Mirrors qualifies() in models/route.ts exactly. */
+function qualifiesForAuto(model: {
+  id: string;
+  model_picker_enabled: boolean;
+  capabilities: { supports: { tool_calls: boolean } };
+}): boolean {
+  if (!model.model_picker_enabled) return false;
+  if (!model.capabilities?.supports?.tool_calls) return false;
+  const id = model.id.toLowerCase();
+  const claudeMatch = id.match(/^claude-[a-z]+-(\d+)\.(\d+)/);
+  if (claudeMatch) {
+    const maj = parseInt(claudeMatch[1]), min = parseInt(claudeMatch[2]);
+    return maj > 4 || (maj === 4 && min >= 5);
+  }
+  const claudeBare = id.match(/^claude-[a-z]+-(\d+)$/);
+  if (claudeBare) return parseInt(claudeBare[1]) >= 5;
+  if (id.startsWith('gpt-')) {
+    if (id.includes('codex') || id === 'gpt-5') return false;
+    const m = id.match(/^gpt-(\d+)/);
+    return !!m && parseInt(m[1]) >= 5;
+  }
+  if (id.startsWith('gemini-')) return true;
+  return false;
+}
+
+/** Higher = more capable / preferred. */
+function modelRank(id: string): number {
+  const s = id.toLowerCase();
+  if (s.includes('opus'))                                              return 100;
+  if (s.includes('sonnet'))                                            return  90;
+  if (s.startsWith('gpt-5') && !s.includes('mini'))                  return  85;
+  if (s.includes('gemini') && (s.includes('pro') || s.includes('ultra'))) return 80;
+  if (s.includes('gpt-5'))                                             return  75;
+  if (s.includes('haiku'))                                             return  70;
+  if (s.includes('gemini'))                                            return  68;
+  return 50;
+}
+
+// Confirmed-working fallback (verified by live API call in this repo).
+const AUTO_FALLBACK = 'claude-sonnet-4.6';
+
+async function resolveAutoModel(token: string): Promise<string> {
+  const now = Date.now();
+  if (cachedAutoModel && now < autoModelCacheExpiry) return cachedAutoModel;
+
+  try {
+    const res = await fetch(COPILOT_MODELS_URL, {
+      headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+      cache: 'no-store',
+    });
+    if (res.ok) {
+      const json = await res.json();
+      const catalog: any[] = json.data ?? json;
+      const best = catalog
+        .filter((m: any) => qualifiesForAuto(m))
+        .sort((a: any, b: any) => modelRank(b.id) - modelRank(a.id))[0];
+      if (best) {
+        cachedAutoModel = best.id;
+        autoModelCacheExpiry = now + AUTO_CACHE_TTL_MS;
+        console.log('[auto] resolved to:', best.id);
+        return best.id;
+      }
+    }
+  } catch (err) {
+    console.error('[auto] models API error:', err);
+  }
+
+  console.warn('[auto] falling back to:', AUTO_FALLBACK);
+  return AUTO_FALLBACK;
+}
+// ─────────────────────────────────────────────────────────────────────────────
 
 const RATE_LIMIT_GUIDANCE =
   'This model allows 50 requests per day. ' +
@@ -112,12 +187,12 @@ function trimHistory(messages: ChatMessage[]): ChatMessage[] {
 
   return [system, ...compacted];
 }
-async function callGitHubModelsAPI(
+async function callCopilotAPI(
   messages: ChatMessage[],
   githubToken: string,
   model: string
 ): Promise<any> {
-  const response = await fetch(GITHUB_MODELS_URL, {
+  const response = await fetch(COPILOT_CHAT_URL, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -239,6 +314,12 @@ export async function POST(request: NextRequest) {
     }
     const stockService: StockDataService = new AlphaVantageService(alphaVantageKey);
 
+    // Resolve "auto" to the best available model; otherwise use the requested model.
+    const requestedModel = model || 'auto';
+    const resolvedModel = requestedModel === 'auto'
+      ? await resolveAutoModel(githubToken)
+      : requestedModel;
+
     // Get or create conversation history
     let conversationMessages: ChatMessage[] = sessionId ? sessions.get(sessionId) || [] : [];
     const currentSessionId = sessionId || Math.random().toString(36).substring(7);
@@ -261,16 +342,29 @@ export async function POST(request: NextRequest) {
 
     while (rounds < MAX_TOOL_ROUNDS) {
       rounds++;
-      const result = await callGitHubModelsAPI(conversationMessages, githubToken, model || DEFAULT_MODEL);
-      const choice = result.choices?.[0];
+      const result = await callCopilotAPI(conversationMessages, githubToken, resolvedModel);
+      const choices: any[] = result.choices ?? [];
 
-      if (!choice) {
+      if (choices.length === 0) {
         throw new Error('No response from the model');
       }
 
-      const assistantMessage = choice.message;
+      // Some models (e.g. claude-sonnet-4.6) return multiple choices:
+      // one with content and a separate one with tool_calls.
+      // Merge them into a single assistant message so the conversation
+      // history remains well-formed for subsequent turns.
+      const contentParts = choices
+        .map((c: any) => c.message?.content)
+        .filter((c: any) => typeof c === 'string' && c.length > 0);
+      const allToolCalls = choices.flatMap((c: any) => c.message?.tool_calls ?? []);
 
-      // Add assistant message to conversation
+      const assistantMessage: ChatMessage = {
+        role: 'assistant',
+        content: contentParts.length > 0 ? contentParts.join('') : null,
+        ...(allToolCalls.length > 0 ? { tool_calls: allToolCalls } : {}),
+      };
+
+      // Add merged assistant message to conversation
       conversationMessages.push(assistantMessage);
 
       // If the model wants to call tools, execute all of them in parallel
@@ -303,7 +397,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       response: assistantContent || "I apologize, but I couldn't generate a response. Please try again.",
       sessionId: currentSessionId,
-      model: model || DEFAULT_MODEL,
+      model: resolvedModel,
     });
   } catch (error: any) {
     console.error('Chat API error:', error);

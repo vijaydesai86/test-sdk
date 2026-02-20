@@ -1,71 +1,142 @@
 import { NextResponse } from 'next/server';
 
-const GITHUB_MODELS_CATALOG_URL = 'https://models.github.ai/catalog/models';
+// Copilot API — the only endpoint reachable via GITHUB_TOKEN
+const COPILOT_MODELS_URL = 'https://api.githubcopilot.com/models';
+const CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes
 
-// Safe fallback used only when the live catalog is unreachable.
-// Contains one confirmed-working model per supported provider.
-const SAFE_DEFAULT = [
-  { value: 'openai/gpt-4.1',              label: 'OpenAI GPT-4.1',        rateLimitTier: 'high' },
-  { value: 'anthropic/claude-sonnet-4-6', label: 'Claude Sonnet 4.6',     rateLimitTier: 'low'  },
-  { value: 'google/gemini-3-flash',       label: 'Gemini 3 Flash',        rateLimitTier: 'low'  },
+interface ModelOption {
+  value: string;
+  label: string;
+  rateLimitTier: string;
+}
+
+const AUTO_OPTION: ModelOption = {
+  value: 'auto',
+  label: '✨ Auto (Recommended)',
+  rateLimitTier: 'auto',
+};
+
+// Confirmed-working fallback used ONLY when the catalog endpoint is unreachable.
+// IDs and names verified via live API call in this environment.
+const HARD_FALLBACK: ModelOption[] = [
+  { value: 'claude-opus-4.6',   label: 'Claude Opus 4.6',   rateLimitTier: 'low' },
+  { value: 'claude-sonnet-4.6', label: 'Claude Sonnet 4.6', rateLimitTier: 'low' },
+  { value: 'gemini-2.5-pro',    label: 'Gemini 2.5 Pro',    rateLimitTier: 'low' },
 ];
 
+// Module-level cache (warm Vercel invocations reuse it).
+let cachedModels: ModelOption[] | null = null;
+let cacheExpiry = 0;
+
+/**
+ * Version gate — applied to bare model IDs (no vendor prefix) from the
+ * Copilot API.  IDs use dots: claude-opus-4.6, gpt-5-mini, gemini-2.5-pro
+ *
+ * Include:
+ *   Claude  >= 4.5  (claude-{tier}-{major}.{minor}, major>4 OR major=4,minor>=5)
+ *   GPT     >= 5    (gpt-5-*, but NOT bare "gpt-5" and NOT any "*codex*")
+ *   Gemini  any     (gemini-*)
+ *
+ * Exclude: gpt-4.x, o1, o3, claude-sonnet-4 (4.0), claude-3-*, codex variants
+ */
+function qualifies(model: {
+  id: string;
+  model_picker_enabled: boolean;
+  capabilities: { supports: { tool_calls: boolean } };
+}): boolean {
+  // Must be user-picker enabled and support tool calls
+  if (!model.model_picker_enabled) return false;
+  if (!model.capabilities?.supports?.tool_calls) return false;
+
+  const id = model.id.toLowerCase();
+
+  // Claude: claude-{tier}-{major}.{minor}
+  const claudeMatch = id.match(/^claude-[a-z]+-(\d+)\.(\d+)/);
+  if (claudeMatch) {
+    const maj = parseInt(claudeMatch[1]);
+    const min = parseInt(claudeMatch[2]);
+    return maj > 4 || (maj === 4 && min >= 5);
+  }
+  // Claude bare major: claude-{tier}-{major} e.g. claude-opus-5 (future)
+  const claudeBare = id.match(/^claude-[a-z]+-(\d+)$/);
+  if (claudeBare) return parseInt(claudeBare[1]) >= 5;
+
+  // GPT: gpt-{N}...  must be >=5, not bare "gpt-5", not codex variants
+  if (id.startsWith('gpt-')) {
+    if (id.includes('codex')) return false;  // codex models need a different endpoint
+    if (id === 'gpt-5') return false;        // bare gpt-5 returns "not supported" on /chat/completions
+    const gptMatch = id.match(/^gpt-(\d+)/);
+    return !!gptMatch && parseInt(gptMatch[1]) >= 5;
+  }
+
+  // Gemini: all generations — confirmed working with tool calls
+  if (id.startsWith('gemini-')) return true;
+
+  return false;
+}
+
+/** Higher score = shown first in dropdown / chosen by Auto. */
+function rank(id: string): number {
+  const s = id.toLowerCase();
+  if (s.includes('opus'))                                              return 100;
+  if (s.includes('sonnet'))                                            return  90;
+  if (s.startsWith('gpt-5') && !s.includes('mini'))                  return  85;
+  if (s.includes('gemini') && (s.includes('pro') || s.includes('ultra'))) return 80;
+  if (s.includes('gpt-5'))                                             return  75; // gpt-5-mini etc.
+  if (s.includes('haiku'))                                             return  70;
+  if (s.includes('gemini') && s.includes('flash'))                    return  65;
+  if (s.includes('gemini'))                                            return  72;
+  return 50;
+}
+
 export async function GET() {
-  const githubToken =
+  if (cachedModels && Date.now() < cacheExpiry) {
+    return NextResponse.json([AUTO_OPTION, ...cachedModels]);
+  }
+
+  const token =
     process.env.GITHUB_TOKEN ||
     process.env.GH_TOKEN ||
     process.env.COPILOT_GITHUB_TOKEN;
 
-  if (!githubToken) {
-    return NextResponse.json(SAFE_DEFAULT);
+  if (!token) {
+    return NextResponse.json([AUTO_OPTION, ...HARD_FALLBACK]);
   }
 
   try {
-    const response = await fetch(GITHUB_MODELS_CATALOG_URL, {
+    const res = await fetch(COPILOT_MODELS_URL, {
       headers: {
-        Authorization: `Bearer ${githubToken}`,
-        Accept: 'application/vnd.github+json',
-        'X-GitHub-Api-Version': '2022-11-28',
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/json',
       },
+      cache: 'no-store',
     });
 
-    if (!response.ok) {
-      console.error(`GitHub Models catalog fetch failed: ${response.status}`);
-      return NextResponse.json(SAFE_DEFAULT);
+    if (!res.ok) {
+      console.error(`[models] catalog HTTP ${res.status}`);
+      return NextResponse.json([AUTO_OPTION, ...HARD_FALLBACK]);
     }
 
-    const catalog: any[] = await response.json();
+    const json = await res.json();
+    const catalog: any[] = json.data ?? json; // handles {data:[...]} and plain array
 
-    // Three filters:
-    // 1. Publisher: only OpenAI, Anthropic, Google
-    // 2. Capability: tool-calling required (the assistant calls tools on every request)
-    // 3. Exclude superseded models: gpt-4o / gpt-4o-mini are replaced by gpt-4.1 / gpt-4.1-mini
-    //
-    // No rate_limit_tier filter — the system prompt and tool definitions have been
-    // shortened to ~2,200 tokens total so all models (including gpt-5 at 4,000 input
-    // token limit) now have enough headroom for typical queries.
-    const ALLOWED_PUBLISHERS = new Set(['openai', 'anthropic', 'google']);
-    const SUPERSEDED_IDS     = new Set(['openai/gpt-4o', 'openai/gpt-4o-mini']);
-
-    const models = catalog
-      .filter((m: any) => {
-        const publisher = (m.id as string).split('/')[0];
-        return (
-          ALLOWED_PUBLISHERS.has(publisher) &&
-          !SUPERSEDED_IDS.has(m.id as string) &&
-          Array.isArray(m.capabilities) &&
-          m.capabilities.includes('tool-calling')
-        );
-      })
-      .map((m: any) => ({
+    const models: ModelOption[] = catalog
+      .filter((m: any) => qualifies(m))
+      .map((m: any): ModelOption => ({
         value: m.id as string,
-        label: m.name as string,
-        rateLimitTier: m.rate_limit_tier as string,
-      }));
+        label: (m.name || m.id) as string,
+        rateLimitTier: 'standard',
+      }))
+      .sort((a, b) => rank(b.value) - rank(a.value));
 
-    return NextResponse.json(models.length > 0 ? models : SAFE_DEFAULT);
+    const list = models.length > 0 ? models : HARD_FALLBACK;
+    cachedModels = list;
+    cacheExpiry = Date.now() + CACHE_TTL_MS;
+
+    console.log('[models] loaded:', list.map(m => m.value).join(', '));
+    return NextResponse.json([AUTO_OPTION, ...list]);
   } catch (err) {
-    console.error('Failed to fetch GitHub Models catalog:', err);
-    return NextResponse.json(SAFE_DEFAULT);
+    console.error('[models] error:', err);
+    return NextResponse.json([AUTO_OPTION, ...HARD_FALLBACK]);
   }
 }
