@@ -12,7 +12,7 @@ const DEFAULT_MODEL = process.env.COPILOT_MODEL || 'openai/gpt-4.1';
 const MAX_TOOL_ROUNDS = 30;
 
 const RATE_LIMIT_GUIDANCE =
-  'The free tier allows 50 requests per day per model. ' +
+  'This model allows 50 requests per day. ' +
   'Try switching to a different model from the dropdown, or try again tomorrow.';
 
 // Vercel: allow up to 5 minutes for deep research requests
@@ -202,20 +202,11 @@ async function callGitHubModelsAPI(
       }
     }
     if (response.status === 413) {
-      let errorCode = '';
-      try {
-        const errorJson = JSON.parse(errorText);
-        errorCode = errorJson?.error?.code || '';
-      } catch {
-        // ignore JSON parse errors
-      }
-      if (errorCode === 'tokens_limit_reached') {
-        const err = new Error(
-          'Request too large for this model.'
-        ) as Error & { statusCode: number };
-        err.statusCode = 413;
-        throw err;
-      }
+      const err = new Error(
+        'Request too large for this model.'
+      ) as Error & { statusCode: number };
+      err.statusCode = 413;
+      throw err;
     }
     throw new Error(`GitHub Models API error (${response.status}): ${errorText}`);
   }
@@ -332,7 +323,7 @@ export async function POST(request: NextRequest) {
     } else if (isUnknownModel) {
       details = 'Open the model dropdown and choose a different model. The model list is fetched live from the GitHub Models catalog.';
     } else if (isTokensLimit) {
-      details = 'The conversation history is too long for this model\'s token limit. Start a new chat, or switch to a model with a larger context window (e.g. GPT-5.3-Codex or Claude Opus 4.6).';
+      details = `The conversation or system context is too large for this model's token limit. Start a new chat, or switch to GPT-4.1 or a Claude model which support larger inputs.`;
     } else {
       details = 'Make sure GITHUB_TOKEN is set in your Vercel environment variables. Use a fine-grained PAT with "Models: read" permission from https://github.com/settings/personal-access-tokens.';
     }
