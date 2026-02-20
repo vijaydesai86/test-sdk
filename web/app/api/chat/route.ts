@@ -201,6 +201,22 @@ async function callGitHubModelsAPI(
         throw err;
       }
     }
+    if (response.status === 413) {
+      let errorCode = '';
+      try {
+        const errorJson = JSON.parse(errorText);
+        errorCode = errorJson?.error?.code || '';
+      } catch {
+        // ignore JSON parse errors
+      }
+      if (errorCode === 'tokens_limit_reached') {
+        const err = new Error(
+          'Request too large for this model.'
+        ) as Error & { statusCode: number };
+        err.statusCode = 413;
+        throw err;
+      }
+    }
     throw new Error(`GitHub Models API error (${response.status}): ${errorText}`);
   }
 
@@ -308,12 +324,15 @@ export async function POST(request: NextRequest) {
     console.error('Chat API error:', error);
     const isRateLimit = error.statusCode === 429;
     const isUnknownModel = error.statusCode === 400;
-    const statusCode = isRateLimit ? 429 : isUnknownModel ? 400 : 500;
+    const isTokensLimit = error.statusCode === 413;
+    const statusCode = isRateLimit ? 429 : isUnknownModel ? 400 : isTokensLimit ? 413 : 500;
     let details: string;
     if (isRateLimit) {
       details = RATE_LIMIT_GUIDANCE;
     } else if (isUnknownModel) {
       details = 'Open the model dropdown and choose a different model. The model list is fetched live from the GitHub Models catalog.';
+    } else if (isTokensLimit) {
+      details = 'The conversation history is too long for this model\'s token limit. Start a new chat, or switch to a model with a larger context window (e.g. GPT-5.3-Codex or Claude Opus 4.6).';
     } else {
       details = 'Make sure GITHUB_TOKEN is set in your Vercel environment variables. Use a fine-grained PAT with "Models: read" permission from https://github.com/settings/personal-access-tokens.';
     }

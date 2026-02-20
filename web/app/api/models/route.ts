@@ -35,12 +35,13 @@ export async function GET() {
 
     const catalog: any[] = await response.json();
 
-    // Exclude embedding-only models — they don't support chat completions.
-    // Every other model the catalog returns is guaranteed to exist and be
-    // reachable, so we surface all of them (OpenAI, Anthropic, Google, xAI,
-    // Qwen, Mistral, …) without any additional filtering.
+    // Filter to only models that support tool-calling — the stock assistant
+    // calls multiple tools on every request, so models without this capability
+    // won't work. This also naturally limits the dropdown to a useful subset
+    // (GPT-5.x, Claude 4.x, Gemini 3.x, etc.) instead of every model in the
+    // marketplace (embedding models, image-gen models, tiny instruct models…).
     const models = catalog
-      .filter((m: any) => m.rate_limit_tier !== 'embedding')
+      .filter((m: any) => Array.isArray(m.capabilities) && m.capabilities.includes('tool-calling'))
       .map((m: any) => ({
         value: m.id as string,
         label: m.name as string,
