@@ -45,6 +45,10 @@ function MermaidBlock({ chart }: { chart: string }) {
 }
 
 const DEFAULT_MODEL = 'openai/gpt-4.1';
+const TOOL_CALL_WARNING =
+  'Model returned tool calls as plain text. Switch to a tool-calling model from the dropdown.';
+const isToolCallText = (content: string) =>
+  /"name"\s*:\s*"functions\./.test(content) || /"arguments"\s*:\s*\{/.test(content);
 
 export default function ChatInterface() {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -123,10 +127,15 @@ export default function ChatInterface() {
         throw new Error(message);
       }
 
+      const responseText = typeof data.response === 'string' ? data.response : '';
+      const assistantText = isToolCallText(responseText) ? TOOL_CALL_WARNING : responseText;
+      if (isToolCallText(responseText)) {
+        setError(TOOL_CALL_WARNING);
+      }
       setSessionId(data.sessionId);
       setMessages((prev) => [
         ...prev,
-        { role: 'assistant', content: data.response, model: data.model },
+        { role: 'assistant', content: assistantText, model: data.model },
       ]);
     } catch (err: any) {
       setError(err.message);

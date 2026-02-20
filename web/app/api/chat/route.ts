@@ -74,7 +74,7 @@ const SYSTEM_PROMPT = `You are an elite buy-side equity research analyst. Produc
  * call/result messages from previous turns are dropped — they were only needed
  * during that turn's reasoning loop and have no value in later turns.
  */
-function trimHistory(messages: ChatMessage[]): ChatMessage[] {
+function trimHistory(messages: ChatMessage[], maxExchanges = 2): ChatMessage[] {
   if (messages.length === 0) return messages;
 
   const system = messages[0]; // always index 0
@@ -110,13 +110,23 @@ function trimHistory(messages: ChatMessage[]): ChatMessage[] {
 
   // Keep the last 2 complete exchanges (so there's some conversation context)
   // plus the current in-progress exchange (last one) in full.
-  const keepExchanges = exchanges.slice(-2);
+  const keepExchanges = exchanges.slice(-maxExchanges);
   const compacted = keepExchanges.flatMap((ex, idx) =>
     // Compact all but the last exchange (which is currently being processed)
     idx < keepExchanges.length - 1 ? compactExchange(ex) : ex
   );
 
   return [system, ...compacted];
+}
+
+function isSmallContextModel(model?: string | null): boolean {
+  if (!model) return false;
+  return /mini|flash|gpt-5/i.test(model);
+}
+
+function isToolCallLike(content: string | null | undefined): boolean {
+  if (!content) return false;
+  return /"name"\s*:\s*"functions\./.test(content) || /"arguments"\s*:\s*\{/.test(content);
 }
 async function callGitHubModelsAPI(
   messages: ChatMessage[],
@@ -255,7 +265,8 @@ export async function POST(request: NextRequest) {
       // Trim accumulated tool messages from previous turns to stay within
       // the model's input token limit (8,000 tokens for high/low tier models,
       // minus ~5,500 tokens of fixed overhead = only ~2,500 tokens for history).
-      conversationMessages = trimHistory(conversationMessages);
+      const maxExchanges = isSmallContextModel(model) ? 1 : 2;
+      conversationMessages = trimHistory(conversationMessages, maxExchanges);
     }
 
     // Add user message
@@ -300,6 +311,11 @@ export async function POST(request: NextRequest) {
 
       // No tool calls — we have the final response
       assistantContent = assistantMessage.content;
+      if (isToolCallLike(assistantContent)) {
+        const err = new Error('Model returned tool calls as plain text.') as Error & { statusCode: number };
+        err.statusCode = 422;
+        throw err;
+      }
       break;
     }
 
@@ -316,7 +332,16 @@ export async function POST(request: NextRequest) {
     const isRateLimit = error.statusCode === 429;
     const isUnknownModel = error.statusCode === 400;
     const isTokensLimit = error.statusCode === 413;
-    const statusCode = isRateLimit ? 429 : isUnknownModel ? 400 : isTokensLimit ? 413 : 500;
+    const isToolCallText = error.statusCode === 422;
+    const statusCode = isRateLimit
+      ? 429
+      : isUnknownModel
+      ? 400
+      : isTokensLimit
+      ? 413
+      : isToolCallText
+      ? 422
+      : 500;
     let details: string;
     if (isRateLimit) {
       details = RATE_LIMIT_GUIDANCE;
@@ -324,6 +349,8 @@ export async function POST(request: NextRequest) {
       details = 'Open the model dropdown and choose a different model. The model list is fetched live from the GitHub Models catalog.';
     } else if (isTokensLimit) {
       details = `The conversation history has grown too large for this model's token limit. Start a new chat to clear the history and try again.`;
+    } else if (isToolCallText) {
+      details = 'This model returned tool calls as plain text. Switch to a tool-calling model from the dropdown (for example, GPT-4.1 or Claude Sonnet).';
     } else {
       details = 'Make sure GITHUB_TOKEN is set in your Vercel environment variables and that ALPHA_VANTAGE_API_KEY, FMP_API_KEY, FINNHUB_API_KEY, and NEWSAPI_KEY are configured for full data coverage.';
     }

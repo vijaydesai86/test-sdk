@@ -46,7 +46,11 @@ export async function GET() {
     // shortened to ~2,200 tokens total so all models (including gpt-5 at 4,000 input
     // token limit) now have enough headroom for typical queries.
     const ALLOWED_PUBLISHERS = new Set(['openai', 'anthropic', 'google']);
-    const SUPERSEDED_IDS     = new Set(['openai/gpt-4o', 'openai/gpt-4o-mini']);
+    const SUPERSEDED_IDS     = new Set([
+      'openai/gpt-4o',
+      'openai/gpt-4o-mini',
+      'openai/gpt-5-chat',
+    ]);
     const MAX_MODELS = 8;
 
     const getModelDate = (model: any) => {
@@ -73,8 +77,18 @@ export async function GET() {
         label: m.name as string,
         rateLimitTier: m.rate_limit_tier as string,
       }));
+    if (models.length === 0) {
+      return NextResponse.json(SAFE_DEFAULT);
+    }
 
-    return NextResponse.json(models.length > 0 ? models : SAFE_DEFAULT);
+    const merged = [...models];
+    for (const fallback of SAFE_DEFAULT) {
+      if (!merged.some((model) => model.value === fallback.value)) {
+        merged.push(fallback);
+      }
+    }
+
+    return NextResponse.json(merged);
   } catch (err) {
     console.error('Failed to fetch GitHub Models catalog:', err);
     return NextResponse.json(SAFE_DEFAULT);
