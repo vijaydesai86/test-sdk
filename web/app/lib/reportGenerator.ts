@@ -305,9 +305,9 @@ function computeScorecard(data: StockReportData) {
     valuation,
     momentum,
     moat,
-  };
+  } satisfies Record<'growth' | 'profitability' | 'valuation' | 'momentum' | 'moat', number | null>;
 
-  const weights: Record<string, number> = {
+  const weights: Record<keyof typeof components, number> = {
     growth: 0.25,
     profitability: 0.2,
     valuation: 0.2,
@@ -315,9 +315,9 @@ function computeScorecard(data: StockReportData) {
     moat: 0.2,
   };
 
-  const available = Object.entries(components)
-    .filter(([, value]) => value !== null)
-    .map(([key]) => key);
+  const available = (Object.keys(components) as Array<keyof typeof components>).filter(
+    (key) => components[key] !== null
+  );
 
   const totalWeight = available.reduce((sum, key) => sum + weights[key], 0);
   const composite = available.reduce((sum, key) => sum + (components[key] as number) * (weights[key] / totalWeight), 0);
