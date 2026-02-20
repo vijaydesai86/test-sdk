@@ -97,11 +97,10 @@ export default function ChatInterface() {
     scrollToBottom();
   }, [messages]);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!input.trim() || isLoading) return;
+  const sendPrompt = async (prompt: string) => {
+    if (!prompt.trim() || isLoading) return;
 
-    const userMessage = input.trim();
+    const userMessage = prompt.trim();
     setInput('');
     setError(null);
     setMessages((prev) => [...prev, { role: 'user', content: userMessage }]);
@@ -151,6 +150,11 @@ export default function ChatInterface() {
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await sendPrompt(input);
   };
 
   const exampleQuestions = [
@@ -247,10 +251,10 @@ export default function ChatInterface() {
           <div>
             <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wide">Research Playbooks</h2>
             <div className="mt-3 flex flex-wrap gap-2">
-              {exampleQuestions.map((question, idx) => (
+              {exampleQuestions.map((question) => (
                 <button
-                  key={idx}
-                  onClick={() => setInput(question)}
+                  key={question}
+                  onClick={() => sendPrompt(question)}
                   className="text-xs bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-200 px-3 py-1.5 rounded-full hover:bg-blue-100 dark:hover:bg-blue-800 transition-colors"
                 >
                   {question}
