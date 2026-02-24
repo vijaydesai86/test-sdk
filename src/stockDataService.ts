@@ -55,7 +55,8 @@ export class AlphaVantageService implements StockDataService {
     this.fmpApiKey = process.env.FMP_API_KEY;
     this.newsApiKey = process.env.NEWSAPI_KEY;
     this.fmpEnabled = process.env.FMP_DISABLED !== 'true';
-    this.alphaOnly = process.env.USE_ALPHA_ONLY === 'true';
+    this.alphaOnly = process.env.USE_ALPHA_ONLY === 'true'
+      || (!this.finnhubApiKey && !this.fmpApiKey && !this.newsApiKey);
   }
 
   private buildCacheKey(prefix: string, params: Record<string, string>): string {

@@ -41,7 +41,7 @@ export class AlphaVantageService implements StockDataService {
   private cache = new Map<string, { expiresAt: number; data: any }>();
   private lastRequestAt = new Map<string, number>();
   private fmpEnabled = process.env.ENABLE_FMP !== 'false';
-  private alphaOnly = process.env.USE_ALPHA_ONLY === 'true';
+  private alphaOnly = false;
   private minIntervals = {
     alphavantage: Number(process.env.ALPHA_VANTAGE_MIN_INTERVAL_MS || 12000),
     finnhub: Number(process.env.FINNHUB_MIN_INTERVAL_MS || 1000),
@@ -54,6 +54,8 @@ export class AlphaVantageService implements StockDataService {
     this.finnhubApiKey = process.env.FINNHUB_API_KEY;
     this.fmpApiKey = process.env.FMP_API_KEY;
     this.newsApiKey = process.env.NEWSAPI_KEY;
+    this.alphaOnly = process.env.USE_ALPHA_ONLY === 'true'
+      || (!this.finnhubApiKey && !this.fmpApiKey && !this.newsApiKey);
   }
 
   private buildCacheKey(prefix: string, params: Record<string, string>): string {

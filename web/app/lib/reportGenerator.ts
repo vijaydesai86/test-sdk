@@ -559,33 +559,13 @@ export function buildStockReport(data: StockReportData): string {
 
 export function buildSectorReport(data: SectorReportData): string {
   const header = `# Sector/Thematic Report: ${data.query}`;
-  const table = buildPeerTable(data.items);
-  const notes = data.notes?.length ? data.notes.map((n) => `- ${n}`).join('\n') : 'N/A';
-  const marketCaps = data.items
-    .map((item) => toNumber(item.overview?.marketCapitalization))
-    .filter((value): value is number => value !== null);
-  const peRatios = data.items
-    .map((item) => toNumber(item.overview?.peRatio ?? item.basicFinancials?.metric?.peBasicExclExtraTTM))
-    .filter((value): value is number => value !== null);
-  const prices = data.items
-    .map((item) => toNumber(item.price?.price))
-    .filter((value): value is number => value !== null);
-  const targetUpside = data.items
-    .map((item) => {
-      const price = toNumber(item.price?.price);
-      const target = toNumber(item.priceTargets?.targetMean || item.analystRatings?.analystTargetPrice);
-      if (!price || !target) return null;
-      return ((target - price) / price) * 100;
-    })
-    .filter((value): value is number => value !== null);
-  const averageValue = (values: number[]) =>
-    values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
-  const medianValue = (values: number[]) => {
-    if (values.length === 0) return null;
-    const sorted = [...values].sort((a, b) => a - b);
-    const mid = Math.floor(sorted.length / 2);
-    return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
-  };
+  const notes = data.notes?.length ? data.notes.map((n) => `- ${n}`).join('\n') : '';
+  const stopwords = new Set(['stocks', 'stock', 'sector', 'theme', 'report', 'the', 'and', 'for', 'of', 'in']);
+  const terms = data.query
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter((token) => token && !stopwords.has(token));
 
   const scored = data.items.map((item) => {
     const scoreData: StockReportData = {
@@ -607,117 +587,120 @@ export function buildSectorReport(data: SectorReportData): string {
       companyNews: undefined,
     };
     const scorecard = computeScorecard(scoreData);
-    return { symbol: item.symbol, score: scorecard.composite };
+    return { item, score: scorecard.composite };
   });
 
-  const scoreTable = scored
-    .filter((row) => row.score !== null)
-    .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
-    .map((row) => `| ${row.symbol} | ${row.score?.toFixed(1)} |`);
+  const inclusionRows = data.items.map((item) => {
+    const name = item.overview?.name || item.symbol;
+    const text = [
+      item.overview?.name,
+      item.overview?.sector,
+      item.overview?.industry,
+      item.overview?.description,
+    ]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase();
+    const matched = terms.filter((term) => text.includes(term));
+    const reason = matched.length
+      ? `Matched terms: ${Array.from(new Set(matched)).join(', ')}`
+      : 'Matched via symbol search';
+    return `| ${name} (${item.symbol}) | ${reason} |`;
+  });
+  const inclusionSection = inclusionRows.length
+    ? ['| Company (Ticker) | Why Included |', '|---|---|', ...inclusionRows].join('\n')
+    : '_No companies matched the query._';
 
-  const scoreSection = scoreTable.length
-    ? ['| Symbol | Composite Score |', '|---|---:|', ...scoreTable].join('\n')
-    : '_Score data unavailable_';
+  const overviewRows = data.items.map((item) => {
+    const name = item.overview?.name || item.symbol;
+    const description = item.overview?.description || '';
+    const firstSentence = description.split('. ').shift();
+    const role = firstSentence ? `${firstSentence}.` : (item.overview?.industry || item.overview?.sector || 'Overview unavailable');
+    const price = toNumber(item.price?.price);
+    const eps = toNumber(item.basicFinancials?.metric?.epsTTM ?? item.overview?.eps);
+    const pe = toNumber(item.overview?.peRatio ?? item.basicFinancials?.metric?.peBasicExclExtraTTM);
+    return [
+      `${name} (${item.symbol})`,
+      role,
+      price === null ? 'N/A' : price.toFixed(2),
+      eps === null ? 'N/A' : eps.toFixed(2),
+      pe === null ? 'N/A' : pe.toFixed(1),
+    ].join(' | ');
+  });
+  const overviewSection = overviewRows.length
+    ? ['| Company (Ticker) | Role in Sector | Price | EPS | P/E |', '|---|---|---:|---:|---:|', ...overviewRows.map((row) => `| ${row} |`)].join('\n')
+    : '_Company overview unavailable._';
 
-  const marketCapSeries = data.items
-    .map((item) => ({
-      symbol: item.symbol,
-      value: toNumber(item.overview?.marketCapitalization),
-    }))
-    .filter((item) => item.value !== null)
-    .map((item) => ({ symbol: item.symbol, value: item.value as number }));
+  const dependencyRows = data.items.map((item) => {
+    const name = item.overview?.name || item.symbol;
+    const industry = item.overview?.industry;
+    const sector = item.overview?.sector;
+    const dependency = industry || sector
+      ? `Industry: ${industry || 'N/A'}; Sector: ${sector || 'N/A'}`
+      : 'Dependency data unavailable';
+    return `| ${name} (${item.symbol}) | ${dependency} |`;
+  });
+  const dependencySection = dependencyRows.length
+    ? ['| Company (Ticker) | Dependencies |', '|---|---|', ...dependencyRows].join('\n')
+    : '_Dependency data unavailable._';
 
-  const peSeries = data.items
-    .map((item) => ({
-      symbol: item.symbol,
-      value: toNumber(item.overview?.peRatio ?? item.basicFinancials?.metric?.peBasicExclExtraTTM),
-    }))
-    .filter((item) => item.value !== null)
-    .map((item) => ({ symbol: item.symbol, value: item.value as number }));
+  const analystRows = data.items.map((item) => {
+    const name = item.overview?.name || item.symbol;
+    const ratings = item.analystRatings || item.overview || {};
+    const rating = `SB ${ratings.strongBuy ?? ratings.analystRatingStrongBuy ?? 0} / B ${ratings.buy ?? ratings.analystRatingBuy ?? 0} / H ${ratings.hold ?? ratings.analystRatingHold ?? 0} / S ${ratings.sell ?? ratings.analystRatingSell ?? 0} / SS ${ratings.strongSell ?? ratings.analystRatingStrongSell ?? 0}`;
+    const target = toNumber(item.priceTargets?.targetMean || item.analystRatings?.analystTargetPrice);
+    const price = toNumber(item.price?.price);
+    const upside = price && target ? `${(((target - price) / price) * 100).toFixed(1)}%` : 'N/A';
+    return [
+      `${name} (${item.symbol})`,
+      rating,
+      target === null ? 'N/A' : target.toFixed(2),
+      upside,
+    ].join(' | ');
+  });
+  const analystSection = analystRows.length
+    ? ['| Company (Ticker) | Analyst Ratings | Target Mean | Upside |', '|---|---|---:|---:|', ...analystRows.map((row) => `| ${row} |`)].join('\n')
+    : '_Analyst data unavailable._';
 
-  const priceSeries = data.items
-    .map((item) => ({
-      symbol: item.symbol,
-      value: toNumber(item.price?.price),
-    }))
-    .filter((item) => item.value !== null)
-    .map((item) => ({ symbol: item.symbol, value: item.value as number }));
+  const scoredSorted = scored.filter((row) => row.score !== null).sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+  const scoreCount = scoredSorted.length;
+  const recommendationRows = scored.map((row) => {
+    const name = row.item.overview?.name || row.item.symbol;
+    if (row.score === null || scoreCount === 0) {
+      return `| ${name} (${row.item.symbol}) | N/A | N/A | Insufficient data |`;
+    }
+    const rank = scoredSorted.findIndex((sorted) => sorted.item.symbol === row.item.symbol) + 1;
+    const percentile = scoreCount > 1 ? 1 - (rank - 1) / (scoreCount - 1) : 1;
+    const recommendation = percentile >= 0.67
+      ? 'Overweight'
+      : percentile >= 0.34
+        ? 'Neutral'
+        : 'Underweight';
+    return `| ${name} (${row.item.symbol}) | ${row.score.toFixed(1)} | ${rank} | ${recommendation} |`;
+  });
+  const recommendationSection = recommendationRows.length
+    ? ['| Company (Ticker) | Score | Rank | Recommendation |', '|---|---:|---:|---|', ...recommendationRows].join('\n')
+    : '_Recommendations unavailable._';
 
-  const marketCapChart = buildBarChart('Market Cap', 'Market Cap', marketCapSeries);
-  const peChart = buildBarChart('P/E Ratio', 'P/E', peSeries);
-  const priceChart = buildBarChart('Price', 'Price', priceSeries);
-  const targetSeries = data.items
-    .map((item) => ({
-      symbol: item.symbol,
-      value: toNumber(item.priceTargets?.targetMean || item.analystRatings?.analystTargetPrice),
-    }))
-    .filter((item) => item.value !== null)
-    .map((item) => ({ symbol: item.symbol, value: item.value as number }));
-  const targetChart = buildBarChart('Analyst Target Mean', 'Price', targetSeries);
-
-  const upsideRows = data.items
-    .map((item) => {
-      const price = toNumber(item.price?.price);
-      const target = toNumber(item.priceTargets?.targetMean || item.analystRatings?.analystTargetPrice);
-      if (!price || !target) return null;
-      return {
-        symbol: item.symbol,
-        upside: ((target - price) / price) * 100,
-      };
-    })
-    .filter((row): row is { symbol: string; upside: number } => row !== null)
-    .sort((a, b) => b.upside - a.upside)
-    .slice(0, 5);
-
-  const upsideSection = upsideRows.length
-    ? [
-        '| Symbol | Target Upside |',
-        '|---|---:|',
-        ...upsideRows.map((row) => `| ${row.symbol} | ${row.upside.toFixed(1)}% |`),
-      ].join('\n')
-    : '_Target upside data unavailable_';
-
-  const overviewSection = [
-    `Universe Size: ${data.universe.length}`,
-    `Median Market Cap: ${medianValue(marketCaps)?.toFixed(0) ?? 'N/A'}`,
-    `Average P/E: ${averageValue(peRatios)?.toFixed(1) ?? 'N/A'}`,
-    `Average Price: ${averageValue(prices)?.toFixed(2) ?? 'N/A'}`,
-    `Average Target Upside: ${averageValue(targetUpside)?.toFixed(1) ?? 'N/A'}%`,
-  ].join('\n');
-
-  const sections: string[] = [
+  const sections = [
     header,
     `Generated: ${data.generatedAt}`,
-    `Universe: ${data.universe.join(', ') || 'N/A'}`,
-  ];
-
-  if (data.universe.length > 0) {
-    sections.push('## 📌 Universe Snapshot', overviewSection);
-  }
-
-  if (!upsideSection.startsWith('_')) {
-    sections.push('## 🎯 Target Upside Leaders', upsideSection);
-  }
-
-  if (marketCapChart || peChart || priceChart || targetChart) {
-    sections.push('## 📊 Charts');
-    if (marketCapChart) sections.push(marketCapChart);
-    if (peChart) sections.push(peChart);
-    if (priceChart) sections.push(priceChart);
-    if (targetChart) sections.push(targetChart);
-  }
-
-  if (!scoreSection.startsWith('_')) {
-    sections.push('## ✅ Score Ranking', scoreSection);
-  }
-
-  if (table) {
-    sections.push('## 📊 Comparison Table', table);
-  }
-
-  if (notes && notes !== 'N/A') {
-    sections.push('## 🔍 Notes', notes);
-  }
+    '## 🧭 Sector Summary',
+    `- Query: ${data.query}`,
+    `- Universe Size: ${data.universe.length}`,
+    notes ? `- Notes:\n${notes}` : null,
+    '## ✅ Companies Included',
+    inclusionSection,
+    '## 🧾 Company Overview',
+    overviewSection,
+    '## 🔗 Dependencies',
+    dependencySection,
+    '## 🧠 Analyst View',
+    analystSection,
+    '## ✅ Recommendations',
+    recommendationSection,
+    '_Not financial advice. Use this as a starting point for diligence._',
+  ].filter(Boolean) as string[];
 
   return sections.join('\n\n');
 }

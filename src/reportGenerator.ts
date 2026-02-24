@@ -779,29 +779,13 @@ export function buildStockReport(data: StockReportData): string {
 
 export function buildSectorReport(data: SectorReportData): string {
   const header = `# Sector/Thematic Report: ${data.query}`;
-  const notes = data.notes?.length ? data.notes.map((n) => `- ${n}`).join('\n') : 'N/A';
-  const layers = new Map<string, string>();
-  data.items.forEach((item) => {
-    layers.set(item.symbol, deriveLayer(item));
-  });
-
-  const marketCaps = data.items
-    .map((item) => toNumber(item.overview?.marketCapitalization))
-    .filter((value): value is number => value !== null);
-  const peRatios = data.items
-    .map((item) => toNumber(item.overview?.peRatio ?? item.basicFinancials?.metric?.peBasicExclExtraTTM))
-    .filter((value): value is number => value !== null);
-  const targetUpside = data.items
-    .map((item) => getTargetUpside(item))
-    .filter((value): value is number => value !== null);
-  const averageValue = (values: number[]) =>
-    values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
-  const medianValue = (values: number[]) => {
-    if (values.length === 0) return null;
-    const sorted = [...values].sort((a, b) => a - b);
-    const mid = Math.floor(sorted.length / 2);
-    return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
-  };
+  const notes = data.notes?.length ? data.notes.map((n) => `- ${n}`).join('\n') : '';
+  const stopwords = new Set(['stocks', 'stock', 'sector', 'theme', 'report', 'the', 'and', 'for', 'of', 'in']);
+  const terms = data.query
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter((token) => token && !stopwords.has(token));
 
   const scored = data.items.map((item) => {
     const scoreData: StockReportData = {
@@ -826,136 +810,115 @@ export function buildSectorReport(data: SectorReportData): string {
     return { item, score: scorecard.composite };
   });
 
-  const scoreTable = scored
-    .filter((row) => row.score !== null)
-    .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
-    .map((row) => {
-      const upside = getTargetUpside(row.item);
-      return [
-        row.item.symbol,
-        row.score?.toFixed(1) ?? 'N/A',
-        formatPercent(getRevenueGrowth(row.item)),
-        formatPercent(getEpsGrowth(row.item)),
-        upside === null ? 'N/A' : `${upside.toFixed(1)}%`,
-        formatRatingSummary(row.item),
-      ].join(' | ');
-    });
-
-  const scoreSection = scoreTable.length
-    ? [
-        '| Symbol | Score | Rev Growth | EPS Growth | Target Upside | Analyst Ratings |',
-        '|---|---:|---:|---:|---:|---|',
-        ...scoreTable.map((row) => `| ${row} |`),
-      ].join('\n')
-    : '_Score data unavailable_';
-
-  const layerGroups = Array.from(layers.entries()).reduce<Record<string, string[]>>((acc, [symbol, layer]) => {
-    if (!acc[layer]) acc[layer] = [];
-    acc[layer].push(symbol);
-    return acc;
-  }, {});
-
-  const layerSection = Object.entries(layerGroups)
-    .map(([layer, symbols]) => `- ${layer}: ${symbols.join(', ')}`)
-    .join('\n');
-
-  const growthLeaders = data.items
-    .map((item) => ({ symbol: item.symbol, value: getRevenueGrowth(item) }))
-    .filter((row): row is { symbol: string; value: number } => row.value !== null)
-    .sort((a, b) => b.value - a.value)
-    .slice(0, 5)
-    .map((row) => `| ${row.symbol} | ${row.value.toFixed(1)}% |`);
-  const growthSection = growthLeaders.length
-    ? ['| Symbol | Revenue Growth |', '|---|---:|', ...growthLeaders].join('\n')
-    : '_Revenue growth data unavailable_';
-
-  const epsGrowthLeaders = data.items
-    .map((item) => ({ symbol: item.symbol, value: getEpsGrowth(item) }))
-    .filter((row): row is { symbol: string; value: number } => row.value !== null)
-    .sort((a, b) => b.value - a.value)
-    .slice(0, 5)
-    .map((row) => `| ${row.symbol} | ${row.value.toFixed(1)}% |`);
-  const epsGrowthSection = epsGrowthLeaders.length
-    ? ['| Symbol | EPS Growth |', '|---|---:|', ...epsGrowthLeaders].join('\n')
-    : '_EPS growth data unavailable_';
-
-  const allocationCandidates = scored
-    .filter((row) => row.score !== null)
-    .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
-    .slice(0, 8);
-  const allocationTotal = allocationCandidates.reduce((sum, row) => sum + (row.score ?? 0), 0);
-  const allocationRows = allocationCandidates.map((row) => {
-    const weight = allocationTotal > 0 ? ((row.score ?? 0) / allocationTotal) * 100 : 0;
-    return `| ${row.item.symbol} | ${row.score?.toFixed(1) ?? 'N/A'} | ${weight.toFixed(1)}% |`;
+  const inclusionRows = data.items.map((item) => {
+    const name = item.overview?.name || item.symbol;
+    const text = [
+      item.overview?.name,
+      item.overview?.sector,
+      item.overview?.industry,
+      item.overview?.description,
+    ]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase();
+    const matched = terms.filter((term) => text.includes(term));
+    const reason = matched.length
+      ? `Matched terms: ${Array.from(new Set(matched)).join(', ')}`
+      : 'Matched via symbol search';
+    return `| ${name} (${item.symbol}) | ${reason} |`;
   });
-  const allocationSection = allocationRows.length
-    ? ['| Symbol | Score | Indicative Weight |', '|---|---:|---:|', ...allocationRows].join('\n')
-    : '_Allocation data unavailable_';
+  const inclusionSection = inclusionRows.length
+    ? ['| Company (Ticker) | Why Included |', '|---|---|', ...inclusionRows].join('\n')
+    : '_No companies matched the query._';
 
-  const averageUpside = averageValue(targetUpside);
-  const snapshotSection = [
-    `Universe Size: ${data.universe.length}`,
-    `Median Market Cap: ${formatMarketCap(medianValue(marketCaps))}`,
-    `Average P/E: ${averageValue(peRatios)?.toFixed(1) ?? 'N/A'}`,
-    `Average Target Upside: ${averageUpside === null ? 'N/A' : `${averageUpside.toFixed(1)}%`}`,
-  ].join('\n');
+  const overviewRows = data.items.map((item) => {
+    const name = item.overview?.name || item.symbol;
+    const description = item.overview?.description || '';
+    const firstSentence = description.split('. ').shift();
+    const role = firstSentence ? `${firstSentence}.` : (item.overview?.industry || item.overview?.sector || 'Overview unavailable');
+    const price = formatNumber(item.price?.price, 2);
+    const eps = getEpsValue(item);
+    const pe = toNumber(item.overview?.peRatio ?? item.basicFinancials?.metric?.peBasicExclExtraTTM);
+    return [
+      `${name} (${item.symbol})`,
+      role,
+      price,
+      eps === null ? 'N/A' : eps.toFixed(2),
+      pe === null ? 'N/A' : pe.toFixed(1),
+    ].join(' | ');
+  });
+  const overviewSection = overviewRows.length
+    ? ['| Company (Ticker) | Role in Sector | Price | EPS | P/E |', '|---|---|---:|---:|---:|', ...overviewRows.map((row) => `| ${row} |`)].join('\n')
+    : '_Company overview unavailable._';
 
-  const metricsTable = buildSectorMetricsTable(data.items, layers);
-  const sentimentTable = buildSectorSentimentTable(data.items);
-  const keyTakeaways = buildKeyTakeaways(data.items, scored);
-  const newsHighlights = buildNewsHighlights(data.items, 2);
+  const dependencyRows = data.items.map((item) => {
+    const name = item.overview?.name || item.symbol;
+    const industry = item.overview?.industry;
+    const sector = item.overview?.sector;
+    const dependency = industry || sector
+      ? `Industry: ${industry || 'N/A'}; Sector: ${sector || 'N/A'}`
+      : 'Dependency data unavailable';
+    return `| ${name} (${item.symbol}) | ${dependency} |`;
+  });
+  const dependencySection = dependencyRows.length
+    ? ['| Company (Ticker) | Dependencies |', '|---|---|', ...dependencyRows].join('\n')
+    : '_Dependency data unavailable._';
 
-  const sections: string[] = [
+  const analystRows = data.items.map((item) => {
+    const name = item.overview?.name || item.symbol;
+    const rating = formatRatingSummary(item);
+    const target = formatNumber(item.priceTargets?.targetMean || item.analystRatings?.analystTargetPrice, 2);
+    const upside = getTargetUpside(item);
+    return [
+      `${name} (${item.symbol})`,
+      rating,
+      target,
+      upside === null ? 'N/A' : `${upside.toFixed(1)}%`,
+    ].join(' | ');
+  });
+  const analystSection = analystRows.length
+    ? ['| Company (Ticker) | Analyst Ratings | Target Mean | Upside |', '|---|---|---:|---:|', ...analystRows.map((row) => `| ${row} |`)].join('\n')
+    : '_Analyst data unavailable._';
+
+  const scoredSorted = scored.filter((row) => row.score !== null).sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+  const scoreCount = scoredSorted.length;
+  const recommendationRows = scored.map((row) => {
+    const name = row.item.overview?.name || row.item.symbol;
+    if (row.score === null || scoreCount === 0) {
+      return `| ${name} (${row.item.symbol}) | N/A | N/A | Insufficient data |`;
+    }
+    const rank = scoredSorted.findIndex((sorted) => sorted.item.symbol === row.item.symbol) + 1;
+    const percentile = scoreCount > 1 ? 1 - (rank - 1) / (scoreCount - 1) : 1;
+    const recommendation = percentile >= 0.67
+      ? 'Overweight'
+      : percentile >= 0.34
+        ? 'Neutral'
+        : 'Underweight';
+    return `| ${name} (${row.item.symbol}) | ${row.score.toFixed(1)} | ${rank} | ${recommendation} |`;
+  });
+  const recommendationSection = recommendationRows.length
+    ? ['| Company (Ticker) | Score | Rank | Recommendation |', '|---|---:|---:|---|', ...recommendationRows].join('\n')
+    : '_Recommendations unavailable._';
+
+  const sections = [
     header,
     `Generated: ${data.generatedAt}`,
-    `Universe: ${data.universe.join(', ') || 'N/A'}`,
-  ];
-
-  if (keyTakeaways !== 'N/A') {
-    sections.push('## ✨ Executive Summary', keyTakeaways);
-  }
-
-  if (layerSection) {
-    sections.push('## 🧭 Layer Map', layerSection);
-  }
-
-  if (data.universe.length > 0) {
-    sections.push('## 📌 Universe Snapshot', snapshotSection);
-  }
-
-  if (!growthSection.startsWith('_')) {
-    sections.push('## 🚀 Growth Leaders', growthSection);
-  }
-
-  if (!epsGrowthSection.startsWith('_')) {
-    sections.push('## ⚡ EPS Growth Leaders', epsGrowthSection);
-  }
-
-  if (!scoreSection.startsWith('_')) {
-    sections.push('## ⭐ Score-Based Picks', scoreSection);
-  }
-
-  if (!allocationSection.startsWith('_')) {
-    sections.push('## 💼 Indicative Allocation (Illustrative Only)', allocationSection);
-  }
-
-  if (metricsTable) {
-    sections.push('## 📊 Company Metrics', metricsTable);
-  }
-
-  if (sentimentTable && !sentimentTable.includes('N/A')) {
-    sections.push('## 🧾 Analyst Sentiment & Valuation', sentimentTable);
-  }
-
-  if (newsHighlights !== 'N/A') {
-    sections.push('## 📰 News Highlights', newsHighlights);
-  }
-
-  if (notes && notes !== 'N/A') {
-    sections.push('## 🔍 Notes', notes);
-  }
-
-  sections.push('_Not financial advice. Use this as a starting point for diligence._');
+    '## 🧭 Sector Summary',
+    `- Query: ${data.query}`,
+    `- Universe Size: ${data.universe.length}`,
+    notes ? `- Notes:\n${notes}` : null,
+    '## ✅ Companies Included',
+    inclusionSection,
+    '## 🧾 Company Overview',
+    overviewSection,
+    '## 🔗 Dependencies',
+    dependencySection,
+    '## 🧠 Analyst View',
+    analystSection,
+    '## ✅ Recommendations',
+    recommendationSection,
+    '_Not financial advice. Use this as a starting point for diligence._',
+  ].filter(Boolean) as string[];
 
   return sections.join('\n\n');
 }
