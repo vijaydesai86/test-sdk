@@ -5,6 +5,19 @@ import { buildSectorReport, buildStockReport, saveReport } from './reportGenerat
  * OpenAI-compatible tool definitions for stock information
  */
 export function getToolDefinitions() {
+  return buildToolDefinitions();
+}
+
+export function getToolDefinitionsByName(toolNames?: string[]) {
+  const definitions = buildToolDefinitions();
+  if (!toolNames || toolNames.length === 0) {
+    return definitions;
+  }
+  const allowList = new Set(toolNames);
+  return definitions.filter((tool) => allowList.has(tool.function.name));
+}
+
+function buildToolDefinitions() {
   return [
     {
       type: 'function' as const,

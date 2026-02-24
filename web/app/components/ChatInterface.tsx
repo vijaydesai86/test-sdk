@@ -8,6 +8,11 @@ interface Message {
   role: 'user' | 'assistant';
   content: string;
   model?: string;
+  stats?: {
+    rounds: number;
+    toolCalls: number;
+    toolsProvided: number;
+  };
 }
 
 interface ModelOption {
@@ -149,7 +154,12 @@ export default function ChatInterface() {
       setSessionId(data.sessionId);
       setMessages((prev) => [
         ...prev,
-        { role: 'assistant', content: assistantText, model: data.model },
+        {
+          role: 'assistant',
+          content: assistantText,
+          model: data.model,
+          stats: data.stats,
+        },
       ]);
     } catch (err: any) {
       setError(err.message);
@@ -392,6 +402,11 @@ export default function ChatInterface() {
                     {message.role === 'assistant' && message.model && (
                       <span className="text-xs px-2 py-0.5 rounded-full bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 font-mono">
                         {message.model}
+                      </span>
+                    )}
+                    {message.role === 'assistant' && message.stats && (
+                      <span className="text-[10px] text-gray-500 dark:text-gray-300">
+                        Calls: {message.stats.rounds} · Tools: {message.stats.toolCalls}
                       </span>
                     )}
                   </div>

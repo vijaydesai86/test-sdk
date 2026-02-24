@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getToolDefinitions, executeTool } from '@/app/lib/stockTools';
+import { getToolDefinitionsByName, executeTool } from '@/app/lib/stockTools';
 import { AlphaVantageService, StockDataService } from '@/app/lib/stockDataService';
 
 // GitHub Models API — new endpoint (azure endpoint deprecated Oct 2025)
@@ -63,6 +63,16 @@ const SYSTEM_PROMPT = `You are an elite buy-side equity research analyst. Produc
 - Cite "Source: Alpha Vantage" after data-heavy sections.
 - Length matches request: price query = 2–3 lines; full sector report = 2,000+ words.
 `;
+
+const COMPACT_SYSTEM_PROMPT = `You are a buy-side equity research analyst.
+
+Rules:
+- Fetch data via tools before stating facts.
+- Batch tool calls in a single round.
+- Use tables for comparisons and show calculations.
+- Return report paths when asked for reports.
+
+Keep answers concise unless the user requests depth.`;
 
 /**
  * Trim conversation history to prevent token limit errors (413) on subsequent turns.
@@ -131,10 +141,76 @@ function isToolCallLike(content: string | null | undefined): boolean {
   if (!content) return false;
   return /"name"\s*:\s*"functions\./.test(content) || /"arguments"\s*:\s*\{/.test(content);
 }
+
+const DEFAULT_TOOL_NAMES = [
+  'search_stock',
+  'get_stock_price',
+  'get_company_overview',
+  'get_basic_financials',
+  'get_analyst_ratings',
+];
+
+function selectToolNames(message: string) {
+  const text = message.toLowerCase();
+  const selected = new Set(DEFAULT_TOOL_NAMES);
+
+  if (text.includes('report')) {
+    selected.add('generate_stock_report');
+    selected.add('generate_sector_report');
+  }
+
+  if (text.includes('sector') || text.includes('theme') || text.includes('screen')) {
+    selected.add('screen_stocks');
+    selected.add('get_stocks_by_sector');
+    selected.add('get_sector_performance');
+    selected.add('search_companies');
+  }
+
+  if (text.includes('peer') || text.includes('compare')) {
+    selected.add('get_peers');
+  }
+
+  if (text.includes('price') || text.includes('quote') || text.includes('trend')) {
+    selected.add('get_price_history');
+  }
+
+  if (text.includes('news') || text.includes('sentiment')) {
+    selected.add('get_news_sentiment');
+    selected.add('get_company_news');
+    selected.add('search_news');
+  }
+
+  if (text.includes('earnings')) {
+    selected.add('get_earnings_history');
+  }
+
+  if (text.includes('income')) {
+    selected.add('get_income_statement');
+  }
+
+  if (text.includes('balance')) {
+    selected.add('get_balance_sheet');
+  }
+
+  if (text.includes('cash flow')) {
+    selected.add('get_cash_flow');
+  }
+
+  if (text.includes('insider')) {
+    selected.add('get_insider_trading');
+  }
+
+  if (text.includes('top gainers') || text.includes('losers') || text.includes('most active')) {
+    selected.add('get_top_gainers_losers');
+  }
+
+  return Array.from(selected);
+}
 async function callGitHubModelsAPI(
   messages: ChatMessage[],
   githubToken: string,
-  model: string
+  model: string,
+  tools: ReturnType<typeof getToolDefinitionsByName>
 ): Promise<any> {
   const response = await fetch(GITHUB_MODELS_URL, {
     method: 'POST',
@@ -145,7 +221,7 @@ async function callGitHubModelsAPI(
     body: JSON.stringify({
       model,
       messages,
-      tools: getToolDefinitions(),
+      tools,
     }),
   });
 
@@ -225,7 +301,8 @@ async function callGitHubModelsAPI(
 async function callOpenAIProxyAPI(
   messages: ChatMessage[],
   proxyKey: string,
-  model: string
+  model: string,
+  tools: ReturnType<typeof getToolDefinitionsByName>
 ): Promise<any> {
   const response = await fetch(`${OPENAI_PROXY_BASE_URL}/chat/completions`, {
     method: 'POST',
@@ -236,7 +313,7 @@ async function callOpenAIProxyAPI(
     body: JSON.stringify({
       model,
       messages,
-      tools: getToolDefinitions(),
+      tools,
     }),
   });
 
@@ -300,8 +377,11 @@ export async function POST(request: NextRequest) {
     let conversationMessages: ChatMessage[] = sessionId ? sessions.get(sessionId) || [] : [];
     const currentSessionId = sessionId || Math.random().toString(36).substring(7);
 
+    const systemPrompt = process.env.USE_FULL_SYSTEM_PROMPT === 'true'
+      ? SYSTEM_PROMPT
+      : COMPACT_SYSTEM_PROMPT;
     if (conversationMessages.length === 0) {
-      conversationMessages.push({ role: 'system', content: SYSTEM_PROMPT });
+      conversationMessages.push({ role: 'system', content: systemPrompt });
     } else {
       // Trim accumulated tool messages from previous turns to stay within
       // the model's input token limit (8,000 tokens for high/low tier models,
@@ -313,8 +393,12 @@ export async function POST(request: NextRequest) {
     // Add user message
     conversationMessages.push({ role: 'user', content: message });
 
+    const toolNames = selectToolNames(message);
+    const toolDefinitions = getToolDefinitionsByName(toolNames);
+
     // Call the Copilot API with tool-calling loop
     let rounds = 0;
+    let totalToolCalls = 0;
     let assistantContent: string | null = null;
 
     while (rounds < MAX_TOOL_ROUNDS) {
@@ -330,7 +414,7 @@ export async function POST(request: NextRequest) {
             { status: 503 }
           );
         }
-        result = await callOpenAIProxyAPI(conversationMessages, proxyKey, model || DEFAULT_MODEL);
+        result = await callOpenAIProxyAPI(conversationMessages, proxyKey, model || DEFAULT_MODEL, toolDefinitions);
       } else {
         if (!githubToken) {
           return NextResponse.json(
@@ -341,7 +425,7 @@ export async function POST(request: NextRequest) {
             { status: 503 }
           );
         }
-        result = await callGitHubModelsAPI(conversationMessages, githubToken, model || DEFAULT_MODEL);
+        result = await callGitHubModelsAPI(conversationMessages, githubToken, model || DEFAULT_MODEL, toolDefinitions);
       }
       const choice = result.choices?.[0];
 
@@ -356,6 +440,7 @@ export async function POST(request: NextRequest) {
 
       // If the model wants to call tools, execute all of them in parallel
       if (assistantMessage.tool_calls && assistantMessage.tool_calls.length > 0) {
+        totalToolCalls += assistantMessage.tool_calls.length;
         const toolResults = await Promise.all(
           assistantMessage.tool_calls.map(async (toolCall: { id: string; function: { name: string; arguments: string } }) => {
             const toolName = toolCall.function.name;
@@ -386,11 +471,24 @@ export async function POST(request: NextRequest) {
     // Save conversation history
     sessions.set(currentSessionId, conversationMessages);
 
+    console.info('Chat request stats', {
+      provider: provider || 'github',
+      model: model || DEFAULT_MODEL,
+      rounds,
+      toolCalls: totalToolCalls,
+      toolsProvided: toolDefinitions.length,
+    });
+
     return NextResponse.json({
       response: assistantContent || "I apologize, but I couldn't generate a response. Please try again.",
       sessionId: currentSessionId,
       model: model || DEFAULT_MODEL,
       provider: provider || 'github',
+      stats: {
+        rounds,
+        toolCalls: totalToolCalls,
+        toolsProvided: toolDefinitions.length,
+      },
     });
   } catch (error: any) {
     console.error('Chat API error:', error);
