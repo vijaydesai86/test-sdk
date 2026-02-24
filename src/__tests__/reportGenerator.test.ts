@@ -17,7 +17,7 @@ describe('reportGenerator', () => {
     });
 
     expect(report).toContain('# AAPL Comprehensive Equity Research Report');
-    expect(report).toContain('```mermaid');
+    expect(report).toContain('```chart');
     expect(report).toContain('Analyst Target Distribution');
     expect(report).toContain('Composite Score');
     expect(report).toContain('Moat');
@@ -36,7 +36,7 @@ describe('reportGenerator', () => {
     });
 
     expect(report).toContain('## 📊 Charts');
-    expect(report).toContain('```mermaid');
+    expect(report).toContain('```chart');
     expect(report).toContain('Analyst Target Mean');
     expect(report).toContain('Score Ranking');
   });

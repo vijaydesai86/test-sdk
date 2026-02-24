@@ -45,91 +45,159 @@ const DEFAULT_REPORTS_DIR =
   process.env.REPORTS_DIR || (process.env.VERCEL ? '/tmp/reports' : 'reports');
 
 function formatDateLabel(date: string): string {
-  return date.slice(0, 10);
+  const parsed = new Date(date);
+  if (Number.isNaN(parsed.getTime())) {
+    return date.slice(0, 10);
+  }
+  return new Intl.DateTimeFormat('en-US', {
+    month: 'short',
+    day: '2-digit',
+  }).format(parsed);
+}
+
+function downsample<T>(items: T[], maxPoints: number): T[] {
+  if (items.length <= maxPoints) return items;
+  const result: T[] = [];
+  const step = (items.length - 1) / (maxPoints - 1);
+  for (let i = 0; i < maxPoints; i += 1) {
+    result.push(items[Math.round(i * step)]);
+  }
+  return result;
+}
+
+function formatChartNumber(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  if (Math.abs(value) >= 1000) {
+    return Number(value.toFixed(0));
+  }
+  return Number(value.toFixed(2));
 }
 
 function buildPriceChart(prices: PricePoint[] = []): string {
   if (prices.length === 0) return '';
-  const series = [...prices].slice(0, 20).reverse();
+  const series = downsample([...prices].slice(0, 30).reverse(), 12);
   const labels = series.map((p) => formatDateLabel(p.date));
-  const values = series.map((p) => Number(p.close));
+  const values = series.map((p) => formatChartNumber(Number(p.close)));
+  const filtered = filterSeries(labels, values);
+  if (filtered.labels.length === 0) return '';
 
-  return [
-    '```mermaid',
-    'xychart-beta',
-    '  title "Price History"',
-    `  x-axis [${labels.join(', ')}]`,
-    `  y-axis "Price"`,
-    `  line [${values.join(', ')}]`,
-    '```',
-  ].join('\n');
+  return buildChartBlock({
+    title: { text: 'Price History', left: 'center' },
+    tooltip: { trigger: 'axis' },
+    grid: { left: 40, right: 20, top: 50, bottom: 40 },
+    xAxis: { type: 'category', data: filtered.labels },
+    yAxis: { type: 'value', scale: true },
+    series: [
+      {
+        name: 'Close',
+        type: 'line',
+        smooth: true,
+        symbol: 'circle',
+        symbolSize: 6,
+        areaStyle: { opacity: 0.2 },
+        data: filtered.values,
+      },
+    ],
+  });
 }
 
 function buildEpsChart(earnings: EarningsPoint[] = []): string {
   if (earnings.length === 0) return '';
-  const series = [...earnings].slice(0, 12).reverse();
+  const series = downsample([...earnings].slice(0, 16).reverse(), 12);
   const labels = series.map((e) => formatDateLabel(e.fiscalQuarter));
-  const values = series.map((e) => Number(e.reportedEPS));
+  const values = series.map((e) => formatChartNumber(Number(e.reportedEPS)));
+  const filtered = filterSeries(labels, values);
+  if (filtered.labels.length === 0) return '';
 
-  return [
-    '```mermaid',
-    'xychart-beta',
-    '  title "Quarterly EPS"',
-    `  x-axis [${labels.join(', ')}]`,
-    '  y-axis "EPS"',
-    `  line [${values.join(', ')}]`,
-    '```',
-  ].join('\n');
+  return buildChartBlock({
+    title: { text: 'Quarterly EPS', left: 'center' },
+    tooltip: { trigger: 'axis' },
+    grid: { left: 40, right: 20, top: 50, bottom: 40 },
+    xAxis: { type: 'category', data: filtered.labels },
+    yAxis: { type: 'value', scale: true },
+    series: [
+      {
+        name: 'EPS',
+        type: 'line',
+        smooth: true,
+        symbol: 'circle',
+        symbolSize: 6,
+        data: filtered.values,
+      },
+    ],
+  });
 }
 
 function buildRevenueChart(incomeStatement?: any): string {
   const reports = incomeStatement?.quarterlyReports || incomeStatement?.annualReports || [];
   if (!Array.isArray(reports) || reports.length === 0) return '';
-  const series = reports.slice(0, 8).reverse();
+  const series = downsample(reports.slice(0, 12).reverse(), 8);
   const labels = series.map((r: any) => formatDateLabel(r.fiscalQuarter || r.fiscalYear || r.fiscalDateEnding || ''));
-  const values = series.map((r: any) => Number(r.totalRevenue));
+  const values = series.map((r: any) => formatChartNumber(Number(r.totalRevenue)));
+  const filtered = filterSeries(labels, values);
 
-  if (values.every((v) => Number.isNaN(v))) return '';
+  if (filtered.values.length === 0) return '';
 
-  return [
-    '```mermaid',
-    'xychart-beta',
-    '  title "Revenue Trend"',
-    `  x-axis [${labels.join(', ')}]`,
-    '  y-axis "Revenue"',
-    `  bar [${values.join(', ')}]`,
-    '```',
-  ].join('\n');
+  return buildChartBlock({
+    title: { text: 'Revenue Trend', left: 'center' },
+    tooltip: { trigger: 'axis' },
+    grid: { left: 40, right: 20, top: 50, bottom: 40 },
+    xAxis: { type: 'category', data: filtered.labels },
+    yAxis: { type: 'value', scale: true },
+    series: [
+      {
+        name: 'Revenue',
+        type: 'bar',
+        data: filtered.values,
+        barMaxWidth: 32,
+      },
+    ],
+  });
 }
 
 function buildMarginChart(incomeStatement?: any): string {
   const reports = incomeStatement?.quarterlyReports || incomeStatement?.annualReports || [];
   if (!Array.isArray(reports) || reports.length === 0) return '';
-  const series = reports.slice(0, 8).reverse();
+  const series = downsample(reports.slice(0, 12).reverse(), 8);
   const labels = series.map((r: any) => formatDateLabel(r.fiscalQuarter || r.fiscalYear || r.fiscalDateEnding || ''));
   const grossMargins = series.map((r: any) => {
     const revenue = Number(r.totalRevenue);
     const gross = Number(r.grossProfit);
     if (!revenue || Number.isNaN(revenue) || Number.isNaN(gross)) return 0;
-    return Number(((gross / revenue) * 100).toFixed(2));
+    return formatChartNumber((gross / revenue) * 100);
   });
   const operatingMargins = series.map((r: any) => {
     const revenue = Number(r.totalRevenue);
     const operating = Number(r.operatingIncome);
     if (!revenue || Number.isNaN(revenue) || Number.isNaN(operating)) return 0;
-    return Number(((operating / revenue) * 100).toFixed(2));
+    return formatChartNumber((operating / revenue) * 100);
   });
+  const grossFiltered = filterSeries(labels, grossMargins);
+  const operatingFiltered = filterSeries(labels, operatingMargins);
+  if (grossFiltered.labels.length === 0 && operatingFiltered.labels.length === 0) return '';
 
-  return [
-    '```mermaid',
-    'xychart-beta',
-    '  title "Margin Trends"',
-    `  x-axis [${labels.join(', ')}]`,
-    '  y-axis "Margin %"',
-    `  line [${grossMargins.join(', ')}]`,
-    `  line [${operatingMargins.join(', ')}]`,
-    '```',
-  ].join('\n');
+  return buildChartBlock({
+    title: { text: 'Margin Trends', left: 'center' },
+    tooltip: { trigger: 'axis' },
+    grid: { left: 40, right: 20, top: 50, bottom: 40 },
+    xAxis: { type: 'category', data: labels },
+    yAxis: { type: 'value', axisLabel: { formatter: '{value}%' } },
+    series: [
+      {
+        name: 'Gross Margin',
+        type: 'line',
+        smooth: true,
+        data: grossMargins,
+      },
+      {
+        name: 'Operating Margin',
+        type: 'line',
+        smooth: true,
+        data: operatingMargins,
+      },
+    ],
+    legend: { bottom: 0 },
+  });
 }
 
 function buildPeerTable(items: SectorReportItem[]): string {
@@ -164,17 +232,40 @@ function buildTargetDistribution(priceTargets?: any): string {
 
 function buildBarChart(title: string, label: string, items: { symbol: string; value: number }[]): string {
   if (items.length === 0) return '';
-  const labels = items.map((item) => item.symbol).join(', ');
-  const values = items.map((item) => item.value).join(', ');
-  return [
-    '```mermaid',
-    'xychart-beta',
-    `  title "${title}"`,
-    `  x-axis [${labels}]`,
-    `  y-axis "${label}"`,
-    `  bar [${values}]`,
-    '```',
-  ].join('\n');
+  const labels = items.map((item) => item.symbol);
+  const values = items.map((item) => formatChartNumber(item.value));
+  const filtered = filterSeries(labels, values);
+  if (filtered.labels.length === 0) return '';
+
+  return buildChartBlock({
+    title: { text: title, left: 'center' },
+    tooltip: { trigger: 'axis' },
+    grid: { left: 40, right: 20, top: 50, bottom: 40 },
+    xAxis: { type: 'category', data: filtered.labels },
+    yAxis: { type: 'value', scale: true, name: label },
+    series: [
+      {
+        name: label,
+        type: 'bar',
+        data: filtered.values,
+        barMaxWidth: 32,
+      },
+    ],
+  });
+}
+
+function buildChartBlock(option: Record<string, any>): string {
+  return ['```chart', JSON.stringify(option, null, 2), '```'].join('\n');
+}
+
+function filterSeries(labels: string[], values: number[]) {
+  return labels.reduce<{ labels: string[]; values: number[] }>((acc, label, index) => {
+    const value = values[index];
+    if (!Number.isFinite(value)) return acc;
+    acc.labels.push(label);
+    acc.values.push(value);
+    return acc;
+  }, { labels: [], values: [] });
 }
 
 function toNumber(value: unknown): number | null {

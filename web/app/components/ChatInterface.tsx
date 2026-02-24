@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect, useId } from 'react';
 import ReactMarkdown from 'react-markdown';
 import mermaid from 'mermaid';
+import * as echarts from 'echarts';
 
 interface Message {
   role: 'user' | 'assistant';
@@ -41,7 +42,19 @@ function MermaidBlock({ chart }: { chart: string }) {
 
   useEffect(() => {
     let cancelled = false;
-    mermaid.initialize({ startOnLoad: false });
+    mermaid.initialize({
+      startOnLoad: false,
+      theme: 'base',
+      themeVariables: {
+        fontFamily: 'Inter, system-ui, -apple-system, Segoe UI, sans-serif',
+        primaryColor: '#6366f1',
+        primaryTextColor: '#0f172a',
+        lineColor: '#4f46e5',
+        tertiaryColor: '#eef2ff',
+        axisTextColor: '#334155',
+        gridColor: '#e2e8f0',
+      },
+    });
     mermaid
       .render(`mermaid-${chartId}`, chart)
       .then(({ svg }) => {
@@ -61,6 +74,24 @@ function MermaidBlock({ chart }: { chart: string }) {
   }, [chart, chartId]);
 
   return <div ref={containerRef} className="my-4" />;
+}
+
+function ChartBlock({ option }: { option: Record<string, any> }) {
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+    const instance = echarts.init(containerRef.current, undefined, { renderer: 'canvas' });
+    instance.setOption(option, { notMerge: true });
+    const handleResize = () => instance.resize();
+    window.addEventListener('resize', handleResize);
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      instance.dispose();
+    };
+  }, [option]);
+
+  return <div ref={containerRef} className="my-4 w-full" style={{ height: '320px' }} />;
 }
 
 const DEFAULT_MODEL = 'openai/gpt-4.1';
@@ -488,6 +519,18 @@ export default function ChatInterface() {
                             if (match?.[1] === 'mermaid') {
                               return <MermaidBlock chart={String(children).trim()} />;
                             }
+                            if (match?.[1] === 'chart' || match?.[1] === 'echarts') {
+                              try {
+                                const option = JSON.parse(String(children));
+                                return <ChartBlock option={option} />;
+                              } catch {
+                                return (
+                                  <code className={className} {...props}>
+                                    {children}
+                                  </code>
+                                );
+                              }
+                            }
                             return (
                               <code className={className} {...props}>
                                 {children}
@@ -596,6 +639,18 @@ export default function ChatInterface() {
                       const match = /language-(\w+)/.exec(className || '');
                       if (match?.[1] === 'mermaid') {
                         return <MermaidBlock chart={String(children).trim()} />;
+                      }
+                      if (match?.[1] === 'chart' || match?.[1] === 'echarts') {
+                        try {
+                          const option = JSON.parse(String(children));
+                          return <ChartBlock option={option} />;
+                        } catch {
+                          return (
+                            <code className={className} {...props}>
+                              {children}
+                            </code>
+                          );
+                        }
                       }
                       return (
                         <code className={className} {...props}>

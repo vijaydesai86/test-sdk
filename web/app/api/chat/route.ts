@@ -9,10 +9,22 @@ const OPENAI_PROXY_BASE_URL =
   process.env.OPENAI_PROXY_BASE_URL ||
   'https://openai-api-proxy.geo.arm.com/api/providers/openai/v1';
 const DEFAULT_MODEL = process.env.COPILOT_MODEL || 'openai/gpt-4.1';
+const FALLBACK_MODEL = process.env.COPILOT_FALLBACK_MODEL || DEFAULT_MODEL;
+const AUTO_DOWNGRADE_GPT5 = process.env.AUTO_DOWNGRADE_GPT5 !== 'false';
+const DEFAULT_FALLBACK_MODELS = [
+  DEFAULT_MODEL,
+  'anthropic/claude-sonnet-4-6',
+  'google/gemini-3-flash',
+];
 // Allow enough rounds for multi-stock research. With parallel batching, each round
 // can execute dozens of tool calls simultaneously — so 30 rounds is ample even for
 // 20-stock reports (typically: 1 sector list + 2-3 batch rounds + 1 write round).
 const MAX_TOOL_ROUNDS = 30;
+const MAX_HISTORY_MESSAGE_CHARS = 4000;
+const TOOL_RESULT_MAX_DEPTH = 3;
+const TOOL_RESULT_MAX_ARRAY = 12;
+const TOOL_RESULT_MAX_KEYS = 40;
+const TOOL_RESULT_MAX_STRING = 500;
 
 const RATE_LIMIT_GUIDANCE =
   'This model allows 50 requests per day. ' +
@@ -116,9 +128,9 @@ function trimHistory(messages: ChatMessage[], maxExchanges = 2): ChatMessage[] {
     const finalAssistant = [...exchange].reverse().find(
       (m) => m.role === 'assistant' && !m.tool_calls?.length
     );
-    if (finalAssistant) return [userMsg, finalAssistant];
+    if (finalAssistant) return [userMsg, truncateMessageContent(finalAssistant)];
     // If no clean final assistant message yet (in-progress exchange), keep as-is
-    return exchange;
+    return exchange.map(truncateMessageContent);
   };
 
   // Keep the last 2 complete exchanges (so there's some conversation context)
@@ -129,7 +141,41 @@ function trimHistory(messages: ChatMessage[], maxExchanges = 2): ChatMessage[] {
     idx < keepExchanges.length - 1 ? compactExchange(ex) : ex
   );
 
-  return [system, ...compacted];
+  return [system, ...compacted.map(truncateMessageContent)];
+}
+
+function truncateMessageContent(message: ChatMessage): ChatMessage {
+  if (!message.content || message.content.length <= MAX_HISTORY_MESSAGE_CHARS) {
+    return message;
+  }
+  return {
+    ...message,
+    content: `${message.content.slice(0, MAX_HISTORY_MESSAGE_CHARS)}… [truncated]`,
+  };
+}
+
+function compactToolPayload(value: any, depth = 0): any {
+  if (value === null || value === undefined) return value;
+  if (typeof value === 'string') {
+    if (value.length <= TOOL_RESULT_MAX_STRING) return value;
+    return `${value.slice(0, TOOL_RESULT_MAX_STRING)}… [truncated]`;
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') return value;
+  if (Array.isArray(value)) {
+    const sliced = value.slice(0, TOOL_RESULT_MAX_ARRAY);
+    return sliced.map((item) => compactToolPayload(item, depth + 1));
+  }
+  if (typeof value === 'object') {
+    if (depth >= TOOL_RESULT_MAX_DEPTH) {
+      return '[truncated]';
+    }
+    const entries = Object.entries(value).slice(0, TOOL_RESULT_MAX_KEYS);
+    return entries.reduce<Record<string, any>>((acc, [key, val]) => {
+      acc[key] = compactToolPayload(val, depth + 1);
+      return acc;
+    }, {});
+  }
+  return value;
 }
 
 function isSmallContextModel(model?: string | null): boolean {
@@ -160,6 +206,119 @@ function parseReportRequest(message: string) {
   }
 
   return null;
+}
+
+function parseAnalystTrendsRequest(message: string) {
+  const match = message.match(/analyst\s+(?:rating|recommendation)?\s*trends?\s+for\s+([a-zA-Z]{1,6})/i)
+    || message.match(/([a-zA-Z]{1,6})\s+analyst\s+(?:rating|recommendation)?\s*trends?/i);
+  if (match) {
+    return { symbol: match[1].toUpperCase() };
+  }
+  return null;
+}
+
+function parseSymbolAfterKeyword(message: string, keyword: string) {
+  const regex = new RegExp(`${keyword}\\s+(?:for|of|on)?\\s*([a-zA-Z]{1,6})`, 'i');
+  const match = message.match(regex);
+  if (match) {
+    return { symbol: match[1].toUpperCase() };
+  }
+  return null;
+}
+
+function parseSearchRequest(message: string) {
+  const match = message.match(/search\s+stock\s+(?:for\s+)?(.+)/i);
+  if (match) return { query: match[1].trim() };
+  const matchAlt = message.match(/find\s+stock\s+(?:for\s+)?(.+)/i);
+  if (matchAlt) return { query: matchAlt[1].trim() };
+  return null;
+}
+
+function parseNewsRequest(message: string) {
+  const match = message.match(/news\s+(?:for|on)\s+([a-zA-Z]{1,6})/i);
+  if (match) return { symbol: match[1].toUpperCase() };
+  return null;
+}
+
+function parseSectorRequest(message: string) {
+  const match = message.match(/sector\s+performance/i);
+  if (match) return { type: 'performance' as const };
+  const matchAlt = message.match(/stocks\s+in\s+([a-zA-Z\s&-]+)/i);
+  if (matchAlt) return { type: 'stocks' as const, sector: matchAlt[1].trim() };
+  return null;
+}
+
+async function handleDirectToolResponse(
+  toolName: string,
+  args: Record<string, any>,
+  stockService: StockDataService,
+  message: string,
+  sessionId?: string | null,
+  systemPrompt?: string
+) {
+  const currentSessionId = sessionId || Math.random().toString(36).substring(7);
+  let conversationMessages: ChatMessage[] = sessionId ? sessions.get(sessionId) || [] : [];
+  if (conversationMessages.length === 0) {
+    conversationMessages.push({ role: 'system', content: systemPrompt || COMPACT_SYSTEM_PROMPT });
+  }
+  conversationMessages.push({ role: 'user', content: message });
+
+  const toolResult = await executeTool(toolName, args, stockService);
+  if (!toolResult.success) {
+    return NextResponse.json(
+      { error: toolResult.error || toolResult.message || 'Request failed' },
+      { status: 500 }
+    );
+  }
+
+  const responseText = JSON.stringify(toolResult.data, null, 2);
+  conversationMessages.push({ role: 'assistant', content: responseText });
+  sessions.set(currentSessionId, conversationMessages);
+
+  return NextResponse.json({
+    response: responseText,
+    sessionId: currentSessionId,
+    model: DEFAULT_MODEL,
+    provider: 'direct',
+    stats: {
+      rounds: 0,
+      toolCalls: 1,
+      toolsProvided: 0,
+    },
+  });
+}
+
+function buildFallbackModels(requestedModel: string): string[] {
+  const fromEnv = (process.env.COPILOT_FALLBACK_MODELS || '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const base = fromEnv.length > 0 ? fromEnv : DEFAULT_FALLBACK_MODELS;
+  const combined = [requestedModel, ...base, FALLBACK_MODEL];
+  return Array.from(new Set(combined.filter(Boolean)));
+}
+
+function formatAnalystTrendResponse(symbol: string, recommendations: any[], ratings?: any): string {
+  const rows = recommendations
+    .map((rec) => {
+      const period = rec.period || rec.date || 'N/A';
+      return `| ${period} | ${rec.strongBuy ?? 'N/A'} | ${rec.buy ?? 'N/A'} | ${rec.hold ?? 'N/A'} | ${rec.sell ?? 'N/A'} | ${rec.strongSell ?? 'N/A'} |`;
+    });
+
+  const table = rows.length
+    ? ['| Period | Strong Buy | Buy | Hold | Sell | Strong Sell |', '|---|---:|---:|---:|---:|---:|', ...rows].join('\n')
+    : '_No analyst trend data available._';
+
+  const snapshot = ratings
+    ? `**Latest Snapshot:** Strong Buy ${ratings.strongBuy ?? 'N/A'} · Buy ${ratings.buy ?? 'N/A'} · Hold ${ratings.hold ?? 'N/A'} · Sell ${ratings.sell ?? 'N/A'} · Strong Sell ${ratings.strongSell ?? 'N/A'} · Target ${ratings.analystTargetPrice ?? 'N/A'}`
+    : '';
+
+  return [
+    `## 📈 Analyst Rating Trends — ${symbol}`,
+    snapshot,
+    table,
+    'Source: Finnhub',
+  ].filter(Boolean).join('\n\n');
 }
 
 const DEFAULT_TOOL_NAMES = [
@@ -216,6 +375,14 @@ function selectToolNames(message: string) {
 
   if (text.includes('price') || text.includes('quote') || text.includes('trend')) {
     selected.add('get_price_history');
+  }
+
+  if (text.includes('analyst') || text.includes('rating') || text.includes('recommendation')) {
+    selected.add('get_analyst_ratings');
+    selected.add('get_analyst_recommendations');
+    if (text.includes('target')) {
+      selected.add('get_price_targets');
+    }
   }
 
   if (text.includes('news') || text.includes('sentiment')) {
@@ -474,11 +641,147 @@ export async function POST(request: NextRequest) {
       });
     }
 
+    const topMovers = message.toLowerCase().includes('top gainers') ||
+      message.toLowerCase().includes('top losers') ||
+      message.toLowerCase().includes('most active');
+    if (topMovers) {
+      return handleDirectToolResponse('get_top_gainers_losers', {}, stockService, message, sessionId);
+    }
+
+    const sectorRequest = parseSectorRequest(message);
+    if (sectorRequest?.type === 'performance') {
+      return handleDirectToolResponse('get_sector_performance', {}, stockService, message, sessionId);
+    }
+    if (sectorRequest?.type === 'stocks' && sectorRequest.sector) {
+      return handleDirectToolResponse('get_stocks_by_sector', { sector: sectorRequest.sector }, stockService, message, sessionId);
+    }
+
+    const searchRequest = parseSearchRequest(message);
+    if (searchRequest) {
+      return handleDirectToolResponse('search_stock', { query: searchRequest.query }, stockService, message, sessionId);
+    }
+
+    const newsRequest = parseNewsRequest(message);
+    if (newsRequest) {
+      return handleDirectToolResponse('get_company_news', { symbol: newsRequest.symbol, days: 14 }, stockService, message, sessionId);
+    }
+
+    const sentiment = parseSymbolAfterKeyword(message, 'sentiment');
+    if (sentiment) {
+      return handleDirectToolResponse('get_news_sentiment', { symbol: sentiment.symbol }, stockService, message, sessionId);
+    }
+
+    const symbolPrice = parseSymbolAfterKeyword(message, 'price') || parseSymbolAfterKeyword(message, 'quote');
+    if (symbolPrice) {
+      return handleDirectToolResponse('get_stock_price', { symbol: symbolPrice.symbol }, stockService, message, sessionId);
+    }
+
+    const priceHistory = parseSymbolAfterKeyword(message, 'history') || parseSymbolAfterKeyword(message, 'trend');
+    if (priceHistory) {
+      return handleDirectToolResponse('get_price_history', { symbol: priceHistory.symbol, range: 'daily' }, stockService, message, sessionId);
+    }
+
+    const overview = parseSymbolAfterKeyword(message, 'overview') || parseSymbolAfterKeyword(message, 'fundamentals');
+    if (overview) {
+      return handleDirectToolResponse('get_company_overview', { symbol: overview.symbol }, stockService, message, sessionId);
+    }
+
+    const basicFinancials = parseSymbolAfterKeyword(message, 'ratios') || parseSymbolAfterKeyword(message, 'financials');
+    if (basicFinancials) {
+      return handleDirectToolResponse('get_basic_financials', { symbol: basicFinancials.symbol }, stockService, message, sessionId);
+    }
+
+    const earnings = parseSymbolAfterKeyword(message, 'earnings') || parseSymbolAfterKeyword(message, 'eps');
+    if (earnings) {
+      return handleDirectToolResponse('get_earnings_history', { symbol: earnings.symbol }, stockService, message, sessionId);
+    }
+
+    const income = parseSymbolAfterKeyword(message, 'income');
+    if (income) {
+      return handleDirectToolResponse('get_income_statement', { symbol: income.symbol }, stockService, message, sessionId);
+    }
+
+    const balance = parseSymbolAfterKeyword(message, 'balance');
+    if (balance) {
+      return handleDirectToolResponse('get_balance_sheet', { symbol: balance.symbol }, stockService, message, sessionId);
+    }
+
+    const cashFlow = parseSymbolAfterKeyword(message, 'cash flow');
+    if (cashFlow) {
+      return handleDirectToolResponse('get_cash_flow', { symbol: cashFlow.symbol }, stockService, message, sessionId);
+    }
+
+    const insider = parseSymbolAfterKeyword(message, 'insider');
+    if (insider) {
+      return handleDirectToolResponse('get_insider_trading', { symbol: insider.symbol }, stockService, message, sessionId);
+    }
+
+    const analystRatings = parseSymbolAfterKeyword(message, 'analyst ratings') || parseSymbolAfterKeyword(message, 'ratings');
+    if (analystRatings) {
+      return handleDirectToolResponse('get_analyst_ratings', { symbol: analystRatings.symbol }, stockService, message, sessionId);
+    }
+
+    const priceTargets = parseSymbolAfterKeyword(message, 'price targets') || parseSymbolAfterKeyword(message, 'targets');
+    if (priceTargets) {
+      return handleDirectToolResponse('get_price_targets', { symbol: priceTargets.symbol }, stockService, message, sessionId);
+    }
+
+    const peers = parseSymbolAfterKeyword(message, 'peers') || parseSymbolAfterKeyword(message, 'peer');
+    if (peers) {
+      return handleDirectToolResponse('get_peers', { symbol: peers.symbol }, stockService, message, sessionId);
+    }
+
+    const analystTrendRequest = parseAnalystTrendsRequest(message);
+    if (analystTrendRequest) {
+      const currentSessionId = sessionId || Math.random().toString(36).substring(7);
+      let conversationMessages: ChatMessage[] = sessionId ? sessions.get(sessionId) || [] : [];
+      if (conversationMessages.length === 0) {
+        conversationMessages.push({ role: 'system', content: COMPACT_SYSTEM_PROMPT });
+      }
+      conversationMessages.push({ role: 'user', content: message });
+
+      const [trendResult, ratingsResult] = await Promise.all([
+        executeTool('get_analyst_recommendations', { symbol: analystTrendRequest.symbol }, stockService),
+        executeTool('get_analyst_ratings', { symbol: analystTrendRequest.symbol }, stockService),
+      ]);
+
+      if (!trendResult.success) {
+        return NextResponse.json(
+          { error: trendResult.error || trendResult.message || 'Analyst trends unavailable' },
+          { status: 500 }
+        );
+      }
+
+      const recommendations = trendResult.data?.recommendations || [];
+      const responseText = formatAnalystTrendResponse(
+        analystTrendRequest.symbol,
+        recommendations,
+        ratingsResult.success ? ratingsResult.data : undefined
+      );
+
+      conversationMessages.push({ role: 'assistant', content: responseText });
+      sessions.set(currentSessionId, conversationMessages);
+
+      return NextResponse.json({
+        response: responseText,
+        sessionId: currentSessionId,
+        model: model || DEFAULT_MODEL,
+        provider: provider || 'github',
+        stats: {
+          rounds: 0,
+          toolCalls: 2,
+          toolsProvided: 0,
+        },
+      });
+    }
+
     // Get or create conversation history
     let conversationMessages: ChatMessage[] = sessionId ? sessions.get(sessionId) || [] : [];
     const currentSessionId = sessionId || Math.random().toString(36).substring(7);
 
-    const systemPrompt = process.env.USE_FULL_SYSTEM_PROMPT === 'true'
+    const requestedModel = model || DEFAULT_MODEL;
+    const preferCompactPrompt = isSmallContextModel(requestedModel);
+    const systemPrompt = process.env.USE_FULL_SYSTEM_PROMPT === 'true' && !preferCompactPrompt
       ? SYSTEM_PROMPT
       : COMPACT_SYSTEM_PROMPT;
     if (conversationMessages.length === 0) {
@@ -504,32 +807,75 @@ export async function POST(request: NextRequest) {
     let rounds = 0;
     let totalToolCalls = 0;
     let assistantContent: string | null = null;
+    let activeModel = requestedModel;
+    let activeProvider = provider || 'github';
+    if (AUTO_DOWNGRADE_GPT5 && /gpt-5/i.test(activeModel) && activeProvider === 'github') {
+      activeModel = DEFAULT_MODEL;
+    }
+    let toolDefinitionsUsed = toolDefinitions;
+    const fallbackModels = buildFallbackModels(activeModel);
+    let fallbackIndex = Math.max(0, fallbackModels.findIndex((item) => item === activeModel));
+
+    const callProvider = async (
+      messages: ChatMessage[],
+      providerId: 'github' | 'openai-proxy',
+      modelId: string,
+      tools: ReturnType<typeof getToolDefinitionsByName>
+    ) => {
+      if (providerId === 'openai-proxy') {
+        if (!proxyKey) {
+          const err = new Error('OpenAI proxy key not configured') as Error & { statusCode: number };
+          err.statusCode = 503;
+          throw err;
+        }
+        return callOpenAIProxyAPI(messages, proxyKey, modelId, tools);
+      }
+      if (!githubToken) {
+        const err = new Error('GitHub token not configured') as Error & { statusCode: number };
+        err.statusCode = 503;
+        throw err;
+      }
+      return callGitHubModelsAPI(messages, githubToken, modelId, tools);
+    };
 
     while (rounds < MAX_TOOL_ROUNDS) {
       rounds++;
       let result: any;
-      if (provider === 'openai-proxy') {
-        if (!proxyKey) {
-          return NextResponse.json(
-            {
-              error: 'OpenAI proxy key not configured',
-              details: 'Please set OPENAI_API_KEY in your Vercel environment variables.',
-            },
-            { status: 503 }
-          );
+      let attempt = 0;
+      let retryMessages = conversationMessages;
+      let retryTools = toolDefinitions;
+      while (attempt < 2) {
+        try {
+          result = await callProvider(retryMessages, activeProvider, activeModel, retryTools);
+          toolDefinitionsUsed = retryTools;
+          break;
+        } catch (error: any) {
+          const isRateLimit = error?.statusCode === 429;
+          const isTokensLimit = error?.statusCode === 413;
+          if (attempt === 0 && isRateLimit) {
+            if (fallbackIndex < fallbackModels.length - 1) {
+              fallbackIndex += 1;
+              activeModel = fallbackModels[fallbackIndex];
+              attempt++;
+              continue;
+            }
+            if (activeProvider !== 'openai-proxy' && proxyKey) {
+              activeProvider = 'openai-proxy';
+              attempt++;
+              continue;
+            }
+          }
+          if (attempt === 0 && isTokensLimit) {
+            retryMessages = [
+              { role: 'system', content: COMPACT_SYSTEM_PROMPT },
+              { role: 'user', content: message },
+            ];
+            retryTools = getToolDefinitionsByName(selectToolNames(message).toolNames).slice(0, MAX_TOOLS_NON_REPORT);
+            attempt++;
+            continue;
+          }
+          throw error;
         }
-        result = await callOpenAIProxyAPI(conversationMessages, proxyKey, model || DEFAULT_MODEL, toolDefinitions);
-      } else {
-        if (!githubToken) {
-          return NextResponse.json(
-            {
-              error: 'GitHub token not configured',
-              details: 'Please set GITHUB_TOKEN environment variable in Vercel. Get a personal access token at: https://github.com/settings/personal-access-tokens — this uses your existing GitHub Copilot subscription.',
-            },
-            { status: 503 }
-          );
-        }
-        result = await callGitHubModelsAPI(conversationMessages, githubToken, model || DEFAULT_MODEL, toolDefinitions);
       }
       const choice = result.choices?.[0];
 
@@ -553,7 +899,7 @@ export async function POST(request: NextRequest) {
             return {
               role: 'tool' as const,
               tool_call_id: toolCall.id,
-              content: JSON.stringify(toolResult),
+              content: JSON.stringify(compactToolPayload(toolResult)),
             };
           })
         );
@@ -576,22 +922,22 @@ export async function POST(request: NextRequest) {
     sessions.set(currentSessionId, conversationMessages);
 
     console.info('Chat request stats', {
-      provider: provider || 'github',
-      model: model || DEFAULT_MODEL,
+      provider: activeProvider,
+      model: activeModel,
       rounds,
       toolCalls: totalToolCalls,
-      toolsProvided: toolDefinitions.length,
+      toolsProvided: toolDefinitionsUsed.length,
     });
 
     return NextResponse.json({
       response: assistantContent || "I apologize, but I couldn't generate a response. Please try again.",
       sessionId: currentSessionId,
-      model: model || DEFAULT_MODEL,
-      provider: provider || 'github',
+      model: activeModel,
+      provider: activeProvider,
       stats: {
         rounds,
         toolCalls: totalToolCalls,
-        toolsProvided: toolDefinitions.length,
+        toolsProvided: toolDefinitionsUsed.length,
       },
     });
   } catch (error: any) {
@@ -600,7 +946,8 @@ export async function POST(request: NextRequest) {
     const isUnknownModel = error.statusCode === 400;
     const isTokensLimit = error.statusCode === 413;
     const isToolCallText = error.statusCode === 422;
-    const statusCode = isRateLimit
+    const isMissingKey = error.statusCode === 503;
+    const statusCode = error.statusCode || (isRateLimit
       ? 429
       : isUnknownModel
       ? 400
@@ -608,7 +955,7 @@ export async function POST(request: NextRequest) {
       ? 413
       : isToolCallText
       ? 422
-      : 500;
+      : 500);
     let details: string;
     if (isRateLimit) {
       details = RATE_LIMIT_GUIDANCE;
@@ -618,6 +965,11 @@ export async function POST(request: NextRequest) {
       details = `The conversation history has grown too large for this model's token limit. Start a new chat to clear the history and try again.`;
     } else if (isToolCallText) {
       details = 'This model returned tool calls as plain text. Switch to a tool-calling model from the dropdown (for example, GPT-4.1 or Claude Sonnet).';
+    } else if (isMissingKey) {
+      details =
+        error.message === 'OpenAI proxy key not configured'
+          ? 'Please set OPENAI_API_KEY in your Vercel environment variables.'
+          : 'Please set GITHUB_TOKEN in your Vercel environment variables. Get a personal access token at: https://github.com/settings/personal-access-tokens — this uses your existing GitHub Copilot subscription.';
     } else if (provider === 'openai-proxy') {
       details =
         'Make sure OPENAI_API_KEY is set in your Vercel environment variables, and that the proxy URL is reachable from this deployment. ' +
