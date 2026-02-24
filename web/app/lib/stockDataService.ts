@@ -598,12 +598,18 @@ export class AlphaVantageService implements StockDataService {
       const region = String(item.region || '').toLowerCase();
       const currency = String(item.currency || '').toUpperCase();
       const exchange = String(item.exchange || '').toUpperCase();
+      const type = String(item.type || '').toLowerCase();
+      if (type && !type.includes('equity')) return false;
       return region.includes('united states')
         || currency === 'USD'
         || ['NYSE', 'NASDAQ', 'AMEX'].some((label) => exchange.includes(label));
     });
 
-    return { results: usResults.length ? usResults : results };
+    const filtered = usResults.length ? usResults : results.filter((item) => {
+      const type = String(item.type || '').toLowerCase();
+      return !type || type.includes('equity');
+    });
+    return { results: filtered };
   }
 
   async searchCompanies(query: string): Promise<any> {

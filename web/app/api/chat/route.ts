@@ -381,7 +381,7 @@ async function handleAnalystTrendRequest(
   message: string,
   sessionId?: string | null
 ) {
-  if (process.env.USE_ALPHA_ONLY === 'true') {
+  if (process.env.USE_ALPHA_ONLY === 'true' || !process.env.FINNHUB_API_KEY) {
     return NextResponse.json(
       { error: 'Analyst rating trends are unavailable in Alpha-only mode.' },
       { status: 501 }
