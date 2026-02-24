@@ -209,6 +209,30 @@ export class AlphaVantageService implements StockDataService {
     return date.toISOString().split('T')[0];
   }
 
+  private buildBasicFinancialsFallback(overview: any): any {
+    if (!overview) return null;
+    const revenue = Number(overview.revenueTTM);
+    const grossProfit = Number(overview.grossProfitTTM);
+    const grossMarginTTM = Number.isFinite(revenue) && revenue !== 0 && Number.isFinite(grossProfit)
+      ? grossProfit / revenue
+      : overview.profitMargin;
+
+    return {
+      symbol: overview.symbol || overview.Symbol,
+      metric: {
+        peBasicExclExtraTTM: overview.peRatio,
+        epsTTM: overview.eps,
+        revenueGrowthTTM: overview.quarterlyRevenueGrowth,
+        epsGrowthTTM: overview.quarterlyEarningsGrowth,
+        grossMarginTTM,
+        operatingMarginTTM: overview.operatingMargin,
+        roeTTM: overview.returnOnEquity,
+        revenuePerShareTTM: overview.revenuePerShare,
+      },
+      series: {},
+    };
+  }
+
   async getStockPrice(symbol: string): Promise<any> {
     const data = await this.makeRequest(
       {
@@ -366,23 +390,30 @@ export class AlphaVantageService implements StockDataService {
   }
 
   async getBasicFinancials(symbol: string): Promise<any> {
-    const data = await this.makeFinnhubRequest(
-      '/stock/metric',
-      {
-        symbol: symbol.toUpperCase(),
-        metric: 'all',
-      },
-      { ttlMs: 6 * 60 * 60 * 1000 }
-    );
+    try {
+      const data = await this.makeFinnhubRequest(
+        '/stock/metric',
+        {
+          symbol: symbol.toUpperCase(),
+          metric: 'all',
+        },
+        { ttlMs: 6 * 60 * 60 * 1000 }
+      );
 
-    if (data && (data.metric || data.series)) {
-      return {
-        symbol: symbol.toUpperCase(),
-        metric: data.metric || {},
-        series: data.series || {},
-      };
+      if (data && (data.metric || data.series)) {
+        return {
+          symbol: symbol.toUpperCase(),
+          metric: data.metric || {},
+          series: data.series || {},
+        };
+      }
+    } catch {
     }
-    throw new Error('Unable to fetch basic financials');
+
+    const overview = await this.getCompanyOverview(symbol).catch(() => null);
+    const fallback = this.buildBasicFinancialsFallback(overview);
+    if (fallback) return fallback;
+    return { symbol: symbol.toUpperCase(), metric: {}, series: {} };
   }
 
   async getInsiderTrading(symbol: string): Promise<any> {
@@ -471,39 +502,60 @@ export class AlphaVantageService implements StockDataService {
   }
 
   async getPriceTargets(symbol: string): Promise<any> {
-    const data = await this.makeFinnhubRequest(
-      '/stock/price-target',
-      {
-        symbol: symbol.toUpperCase(),
-      },
-      { ttlMs: 60 * 60 * 1000 }
-    );
+    try {
+      const data = await this.makeFinnhubRequest(
+        '/stock/price-target',
+        {
+          symbol: symbol.toUpperCase(),
+        },
+        { ttlMs: 60 * 60 * 1000 }
+      );
 
-    if (data && Object.keys(data).length > 0) {
-      return {
-        symbol: symbol.toUpperCase(),
-        ...data,
-      };
+      if (data && Object.keys(data).length > 0) {
+        return {
+          symbol: symbol.toUpperCase(),
+          ...data,
+        };
+      }
+    } catch {
     }
-    throw new Error('Unable to fetch price targets');
+
+    const overview = await this.getCompanyOverview(symbol).catch(() => null);
+    return {
+      symbol: symbol.toUpperCase(),
+      targetMean: overview?.analystTargetPrice ?? null,
+    };
   }
 
   async getPeers(symbol: string): Promise<any> {
-    const data = await this.makeFinnhubRequest(
-      '/stock/peers',
-      {
-        symbol: symbol.toUpperCase(),
-      },
-      { ttlMs: 6 * 60 * 60 * 1000 }
-    );
+    try {
+      const data = await this.makeFinnhubRequest(
+        '/stock/peers',
+        {
+          symbol: symbol.toUpperCase(),
+        },
+        { ttlMs: 6 * 60 * 60 * 1000 }
+      );
 
-    if (Array.isArray(data)) {
-      return {
-        symbol: symbol.toUpperCase(),
-        peers: data,
-      };
+      if (Array.isArray(data)) {
+        return {
+          symbol: symbol.toUpperCase(),
+          peers: data,
+        };
+      }
+    } catch {
     }
-    throw new Error('Unable to fetch peers');
+
+    const overview = await this.getCompanyOverview(symbol).catch(() => null);
+    const query = overview?.industry || overview?.sector || overview?.name || symbol;
+    const fallback = await this.searchStock(query).catch(() => ({ results: [] }));
+    const peers = (fallback.results || [])
+      .map((item: any) => item.symbol)
+      .filter(Boolean);
+    return {
+      symbol: symbol.toUpperCase(),
+      peers,
+    };
   }
 
   async searchStock(query: string): Promise<any> {

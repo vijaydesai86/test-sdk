@@ -6,6 +6,30 @@ import { buildSectorReport, buildStockReport, buildPeerReport, saveReport } from
  * Create stock information tools for GitHub Copilot SDK
  */
 export function createStockTools(stockService: StockDataService) {
+  const curatedSectorUniverses = [
+    {
+      label: 'AI data centers',
+      keywords: [
+        'ai data center',
+        'ai datacenter',
+        'ai data centre',
+        'data center ai',
+        'datacenter ai',
+        'data centres ai',
+        'data centers ai',
+        'data center',
+        'datacenter',
+        'data centre',
+      ],
+      symbols: ['NVDA', 'AMD', 'AVGO', 'ANET', 'MRVL', 'SMCI', 'VRT', 'EQIX', 'DLR', 'IRM'],
+    },
+  ];
+
+  const getCuratedUniverse = (query: string) => {
+    const normalized = query.toLowerCase();
+    return curatedSectorUniverses.find((entry) => entry.keywords.some((keyword) => normalized.includes(keyword)));
+  };
+
   const searchStockTool = defineTool('search_stock', {
     description: 'Search for US stock symbols by company name or ticker.',
     parameters: {
@@ -529,6 +553,14 @@ export function createStockTools(stockService: StockDataService) {
           universe = (searchResults.results || []).map((item: any) => item.symbol).filter(Boolean).slice(0, limit);
           if (universe.length > 0) {
             notes.push(`Universe built from Alpha Vantage symbol search for "${query}".`);
+          }
+        }
+
+        if (universe.length === 0) {
+          const curated = getCuratedUniverse(query);
+          if (curated) {
+            universe = curated.symbols.slice(0, limit);
+            notes.push(`Universe built from curated list for "${curated.label}".`);
           }
         }
 

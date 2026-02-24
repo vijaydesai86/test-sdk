@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect, useId } from 'react';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import mermaid from 'mermaid';
 import * as echarts from 'echarts';
 
@@ -513,6 +514,7 @@ export default function ChatInterface() {
                   {message.role === 'assistant' ? (
                     <div className="prose prose-sm dark:prose-invert max-w-none">
                       <ReactMarkdown
+                        remarkPlugins={[remarkGfm]}
                         components={{
                           code({ className, children, ...props }) {
                             const match = /language-(\w+)/.exec(className || '');

@@ -480,6 +480,40 @@ function formatRatingsResponse(data: any) {
   ].join('\n');
 }
 
+function formatMoversTable(title: string, rows: any[]) {
+  if (!rows || rows.length === 0) {
+    return [`### ${title}`, '_No data available._'].join('\n');
+  }
+  const tableRows = rows.map((row) => [
+    row.ticker ?? 'N/A',
+    row.price ?? 'N/A',
+    row.changeAmount ?? 'N/A',
+    row.changePercentage ?? 'N/A',
+    row.volume ?? 'N/A',
+  ].join(' | '));
+
+  return [
+    `### ${title}`,
+    '| Ticker | Price | Change | Change % | Volume |',
+    '|---|---:|---:|---:|---:|',
+    ...tableRows.map((row) => `| ${row} |`),
+  ].join('\n');
+}
+
+function formatTopMoversResponse(data: any, limit = 10) {
+  if (!data) return '_No movers data available._';
+  const topGainers = Array.isArray(data.topGainers) ? data.topGainers.slice(0, limit) : [];
+  const topLosers = Array.isArray(data.topLosers) ? data.topLosers.slice(0, limit) : [];
+  const mostActive = Array.isArray(data.mostActive) ? data.mostActive.slice(0, limit) : [];
+
+  return [
+    '## 📈 Market Movers',
+    formatMoversTable('Top Gainers', topGainers),
+    formatMoversTable('Top Losers', topLosers),
+    formatMoversTable('Most Active', mostActive),
+  ].join('\n\n');
+}
+
 async function handlePeerComparison(
   symbol: string,
   stockService: StockDataService,
@@ -892,7 +926,16 @@ export async function POST(request: NextRequest) {
       lowerMessage.includes('top losers') ||
       lowerMessage.includes('most active');
     if (topMovers) {
-      return handleDirectToolResponse('get_top_gainers_losers', {}, stockService, message, sessionId);
+      const limit = parseLimitFromMessage(message, 10);
+      return handleDirectToolResponse(
+        'get_top_gainers_losers',
+        {},
+        stockService,
+        message,
+        sessionId,
+        undefined,
+        (data) => formatTopMoversResponse(data, limit)
+      );
     }
 
     const sectorRequest = parseSectorRequest(message);
