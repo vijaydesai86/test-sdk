@@ -50,6 +50,41 @@ export function createStockTools(stockService: StockDataService) {
     return universe;
   };
 
+  const expandUniverseFromTopMovers = async (query: string, limit: number, notes: string[]) => {
+    try {
+      const movers = await stockService.getTopGainersLosers();
+      const candidates = Array.from(new Set([
+        ...(movers.topGainers || []).map((item: any) => item.ticker),
+        ...(movers.topLosers || []).map((item: any) => item.ticker),
+        ...(movers.mostActive || []).map((item: any) => item.ticker),
+      ].filter(Boolean)));
+      const terms = buildSearchQueries(query).map((term) => term.toLowerCase());
+      const matches: string[] = [];
+      for (const symbol of candidates.slice(0, 20)) {
+        const overview = await stockService.getCompanyOverview(symbol).catch(() => null);
+        const text = [
+          overview?.name,
+          overview?.sector,
+          overview?.industry,
+          overview?.description,
+        ]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase();
+        if (text && terms.some((term) => text.includes(term))) {
+          matches.push(symbol);
+        }
+        if (matches.length >= limit) break;
+      }
+      if (matches.length > 0) {
+        notes.push(`Universe built from top movers filtered by "${query}".`);
+      }
+      return matches.slice(0, limit);
+    } catch {
+      return [];
+    }
+  };
+
   const searchStockTool = defineTool('search_stock', {
     description: 'Search for US stock symbols by company name or ticker.',
     parameters: {
@@ -578,6 +613,10 @@ export function createStockTools(stockService: StockDataService) {
 
         if (universe.length === 0) {
           universe = await expandUniverseFromQuery(query, limit, notes);
+        }
+
+        if (universe.length === 0) {
+          universe = await expandUniverseFromTopMovers(query, limit, notes);
         }
 
         if (universe.length === 0) {

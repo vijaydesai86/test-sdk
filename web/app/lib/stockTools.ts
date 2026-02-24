@@ -66,6 +66,46 @@ const expandUniverseFromQuery = async (
   return universe;
 };
 
+const expandUniverseFromTopMovers = async (
+  query: string,
+  limit: number,
+  notes: string[],
+  stockService: StockDataService
+) => {
+  try {
+    const movers = await stockService.getTopGainersLosers();
+    const candidates = Array.from(new Set([
+      ...(movers.topGainers || []).map((item: any) => item.ticker),
+      ...(movers.topLosers || []).map((item: any) => item.ticker),
+      ...(movers.mostActive || []).map((item: any) => item.ticker),
+    ].filter(Boolean)));
+    const terms = buildSearchQueries(query).map((term) => term.toLowerCase());
+    const matches: string[] = [];
+    for (const symbol of candidates.slice(0, 20)) {
+      const overview = await stockService.getCompanyOverview(symbol).catch(() => null);
+      const text = [
+        overview?.name,
+        overview?.sector,
+        overview?.industry,
+        overview?.description,
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      if (text && terms.some((term) => text.includes(term))) {
+        matches.push(symbol);
+      }
+      if (matches.length >= limit) break;
+    }
+    if (matches.length > 0) {
+      notes.push(`Universe built from top movers filtered by "${query}".`);
+    }
+    return matches.slice(0, limit);
+  } catch {
+    return [];
+  }
+};
+
 function buildToolDefinitions() {
   return [
     {
@@ -761,6 +801,10 @@ export async function executeTool(
 
         if (universe.length === 0) {
           universe = await expandUniverseFromQuery(query, limit, notes, stockService);
+        }
+
+        if (universe.length === 0) {
+          universe = await expandUniverseFromTopMovers(query, limit, notes, stockService);
         }
 
         if (universe.length === 0) {

@@ -597,7 +597,7 @@ export class AlphaVantageService implements StockDataService {
     if (results.length > 0) {
       return { results };
     }
-    throw new Error('Unable to search stocks');
+    return { results: [] };
   }
 
   async searchCompanies(query: string): Promise<any> {
