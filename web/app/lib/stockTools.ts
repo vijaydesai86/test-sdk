@@ -671,73 +671,63 @@ export async function executeTool(
         const symbol = args.symbol || '';
         const range = args.range || '5y';
         const notes: string[] = [];
+        let rateLimitHit = false;
+        const isRateLimit = (message: string) =>
+          message.includes('frequency') || message.includes('Thank you for using Alpha Vantage');
         const safeFetch = async <T>(label: string, request: Promise<T>) => {
+          if (rateLimitHit) return undefined as T;
           try {
             return await request;
           } catch (error: any) {
             const message = error?.message || 'Unavailable';
+            if (isRateLimit(message)) {
+              rateLimitHit = true;
+              notes.push('Alpha Vantage rate limit reached; remaining sections skipped.');
+              return undefined as T;
+            }
             if (!message.includes('Alpha-only mode')) {
               notes.push(`${label}: ${message}`);
             }
             return undefined as T;
           }
         };
-        const optionalFetch = async <T>(request: Promise<T>) => {
-          try {
-            return await request;
-          } catch {
-            return undefined as T;
-          }
+        const buildBasicFinancialsFallback = (overview: any) => {
+          if (!overview) return undefined;
+          const revenue = Number(overview.revenueTTM);
+          const grossProfit = Number(overview.grossProfitTTM);
+          const grossMarginTTM = Number.isFinite(revenue) && revenue !== 0 && Number.isFinite(grossProfit)
+            ? grossProfit / revenue
+            : Number(overview.profitMargin) || null;
+          return {
+            symbol: overview.symbol,
+            metric: {
+              peBasicExclExtraTTM: overview.peRatio,
+              epsTTM: overview.eps,
+              revenueGrowthTTM: overview.quarterlyRevenueGrowth,
+              epsGrowthTTM: overview.quarterlyEarningsGrowth,
+              grossMarginTTM,
+              operatingMarginTTM: overview.operatingMargin,
+              roeTTM: overview.returnOnEquity,
+              revenuePerShareTTM: overview.revenuePerShare,
+            },
+            series: {},
+          };
         };
 
         const price = await safeFetch('Price', stockService.getStockPrice(symbol));
-        const priceHistory = await safeFetch('Price history', stockService.getPriceHistory(symbol, range));
         const companyOverview = await safeFetch('Company overview', stockService.getCompanyOverview(symbol));
-        const basicFinancials = await safeFetch('Basic financials', stockService.getBasicFinancials(symbol));
+        const basicFinancials = companyOverview ? buildBasicFinancialsFallback(companyOverview) : undefined;
+        const priceHistory = await safeFetch('Price history', stockService.getPriceHistory(symbol, range));
         const earningsHistory = await safeFetch('Earnings history', stockService.getEarningsHistory(symbol));
-        const incomeStatement = await safeFetch('Income statement', stockService.getIncomeStatement(symbol));
-        const balanceSheet = await safeFetch('Balance sheet', stockService.getBalanceSheet(symbol));
-        const cashFlow = await safeFetch('Cash flow', stockService.getCashFlow(symbol));
-
-        const [
-          analystRatings,
-          analystRecommendations,
-          priceTargetsRaw,
-          peers,
-          newsSentimentRaw,
-          companyNewsRaw,
-        ] = await Promise.all([
-          safeFetch('Analyst ratings', stockService.getAnalystRatings(symbol)),
-          safeFetch('Analyst recommendations', stockService.getAnalystRecommendations(symbol)),
-          optionalFetch(stockService.getPriceTargets(symbol)),
-          safeFetch('Peers', stockService.getPeers(symbol)),
-          optionalFetch(stockService.getNewsSentiment(symbol)),
-          optionalFetch(stockService.getCompanyNews(symbol, 30)),
-        ]);
-
-        const priceTargets = priceTargetsRaw || (companyOverview?.analystTargetPrice
-          ? {
-              targetMean: companyOverview.analystTargetPrice,
-              targetMedian: companyOverview.analystTargetPrice,
-              targetHigh: companyOverview.analystTargetPrice,
-              targetLow: companyOverview.analystTargetPrice,
-            }
-          : undefined);
-        if (!priceTargets) {
-          notes.push('Price targets: Unavailable');
-        }
-
-        const newsSentiment = newsSentimentRaw;
-        if (!newsSentiment) {
-          notes.push('News sentiment: Unavailable');
-        }
-
-        const companyNews = companyNewsRaw || (await optionalFetch(
-          stockService.searchNews(symbol, 14)
-        ));
-        if (!companyNews) {
-          notes.push('Company news: Unavailable');
-        }
+        const incomeStatement = undefined;
+        const balanceSheet = undefined;
+        const cashFlow = undefined;
+        const analystRatings = undefined;
+        const analystRecommendations = undefined;
+        const priceTargets = undefined;
+        const peers = undefined;
+        const newsSentiment = undefined;
+        const companyNews = undefined;
 
         const reportBody = buildStockReport({
           symbol: symbol.toUpperCase(),

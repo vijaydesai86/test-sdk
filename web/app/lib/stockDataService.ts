@@ -103,7 +103,17 @@ export class AlphaVantageService implements StockDataService {
           },
           timeout: 10000,
         });
-        return response.data;
+        const data = response.data;
+        if (data?.Note) {
+          throw new Error(data.Note);
+        }
+        if (data?.Information) {
+          throw new Error(data.Information);
+        }
+        if (data?.['Error Message']) {
+          throw new Error(data['Error Message']);
+        }
+        return data;
       } catch (error: any) {
         console.error('API request failed:', error.message);
         throw new Error(`Failed to fetch data: ${error.message}`);

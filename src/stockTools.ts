@@ -463,39 +463,64 @@ export function createStockTools(stockService: StockDataService) {
       const { symbol } = args;
       const range = args.range || '5y';
       try {
-        const [
-          price,
-          priceHistory,
-          companyOverview,
-          basicFinancials,
-          earningsHistory,
-          incomeStatement,
-          balanceSheet,
-          cashFlow,
-          analystRatings,
-          analystRecommendations,
-          priceTargets,
-          peers,
-          newsSentiment,
-          companyNews,
-        ] = await Promise.all([
-          stockService.getStockPrice(symbol),
-          stockService.getPriceHistory(symbol, range),
-          stockService.getCompanyOverview(symbol),
-          stockService.getBasicFinancials(symbol).catch(() => null),
-          stockService.getEarningsHistory(symbol).catch(() => null),
-          stockService.getIncomeStatement(symbol).catch(() => null),
-          stockService.getBalanceSheet(symbol).catch(() => null),
-          stockService.getCashFlow(symbol).catch(() => null),
-          stockService.getAnalystRatings(symbol).catch(() => null),
-          stockService.getAnalystRecommendations(symbol).catch(() => null),
-          stockService.getPriceTargets(symbol).catch(() => null),
-          stockService.getPeers(symbol).catch(() => null),
-          stockService.getNewsSentiment(symbol).catch(() => null),
-          stockService.getCompanyNews(symbol, 30).catch(() => null),
-        ]);
+        const notes: string[] = [];
+        let rateLimitHit = false;
+        const isRateLimit = (message: string) =>
+          message.includes('frequency') || message.includes('Thank you for using Alpha Vantage');
+        const safeFetch = async <T>(label: string, request: Promise<T>) => {
+          if (rateLimitHit) return undefined as T;
+          try {
+            return await request;
+          } catch (error: any) {
+            const message = error?.message || 'Unavailable';
+            if (isRateLimit(message)) {
+              rateLimitHit = true;
+              notes.push('Alpha Vantage rate limit reached; remaining sections skipped.');
+              return undefined as T;
+            }
+            notes.push(`${label}: ${message}`);
+            return undefined as T;
+          }
+        };
+        const buildBasicFinancialsFallback = (overview: any) => {
+          if (!overview) return undefined;
+          const revenue = Number(overview.revenueTTM);
+          const grossProfit = Number(overview.grossProfitTTM);
+          const grossMarginTTM = Number.isFinite(revenue) && revenue !== 0 && Number.isFinite(grossProfit)
+            ? grossProfit / revenue
+            : Number(overview.profitMargin) || null;
+          return {
+            symbol: overview.symbol,
+            metric: {
+              peBasicExclExtraTTM: overview.peRatio,
+              epsTTM: overview.eps,
+              revenueGrowthTTM: overview.quarterlyRevenueGrowth,
+              epsGrowthTTM: overview.quarterlyEarningsGrowth,
+              grossMarginTTM,
+              operatingMarginTTM: overview.operatingMargin,
+              roeTTM: overview.returnOnEquity,
+              revenuePerShareTTM: overview.revenuePerShare,
+            },
+            series: {},
+          };
+        };
 
-        const content = buildStockReport({
+        const price = await safeFetch('Price', stockService.getStockPrice(symbol));
+        const companyOverview = await safeFetch('Company overview', stockService.getCompanyOverview(symbol));
+        const basicFinancials = companyOverview ? buildBasicFinancialsFallback(companyOverview) : undefined;
+        const priceHistory = await safeFetch('Price history', stockService.getPriceHistory(symbol, range));
+        const earningsHistory = await safeFetch('Earnings history', stockService.getEarningsHistory(symbol));
+        const incomeStatement = undefined;
+        const balanceSheet = undefined;
+        const cashFlow = undefined;
+        const analystRatings = undefined;
+        const analystRecommendations = undefined;
+        const priceTargets = undefined;
+        const peers = undefined;
+        const newsSentiment = undefined;
+        const companyNews = undefined;
+
+        const reportBody = buildStockReport({
           symbol: symbol.toUpperCase(),
           generatedAt: new Date().toISOString(),
           price,
@@ -513,6 +538,12 @@ export function createStockTools(stockService: StockDataService) {
           newsSentiment,
           companyNews,
         });
+        const content = notes.length
+          ? reportBody.replace(
+              '## 📊 Snapshot',
+              `## ⚠️ Data Gaps\n${notes.map((item) => `- ${item}`).join('\n')}\n\n## 📊 Snapshot`
+            )
+          : reportBody;
         const saved = await saveReport(content, `${symbol}-stock-report`);
         return {
           success: true,

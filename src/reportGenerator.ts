@@ -742,13 +742,14 @@ export function buildStockReport(data: StockReportData): string {
     sections.push('## 💰 Financials', ...financialLines);
   }
 
-  const analystTarget = data.priceTargets?.targetMean || data.analystRatings?.analystTargetPrice;
+  const analystTarget = toNumber(data.priceTargets?.targetMean || data.analystRatings?.analystTargetPrice);
   const hasRatings = [data.analystRatings?.strongBuy, data.analystRatings?.buy, data.analystRatings?.hold]
-    .some((value) => value !== undefined && value !== null && value !== 'N/A');
-  if (analystTarget || hasRatings || targetChart) {
+    .map((value) => toNumber(value))
+    .some((value) => value !== null);
+  if (analystTarget !== null || hasRatings || targetChart) {
     sections.push('## 🧠 Analyst View');
-    if (analystTarget) {
-      sections.push(`- Target Mean: ${analystTarget}`);
+    if (analystTarget !== null) {
+      sections.push(`- Target Mean: ${analystTarget.toFixed(2)}`);
     }
     if (hasRatings) {
       sections.push(`- Ratings: Strong Buy ${data.analystRatings?.strongBuy || 'Unavailable'} / Buy ${data.analystRatings?.buy || 'Unavailable'} / Hold ${data.analystRatings?.hold || 'Unavailable'}`);
