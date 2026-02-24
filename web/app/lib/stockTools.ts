@@ -1,5 +1,5 @@
 import { StockDataService } from './stockDataService';
-import { buildSectorReport, buildStockReport, saveReport } from './reportGenerator';
+import { buildSectorReport, buildStockReport, buildPeerReport, saveReport } from './reportGenerator';
 
 /**
  * OpenAI-compatible tool definitions for stock information
@@ -51,12 +51,12 @@ function buildToolDefinitions() {
       type: 'function' as const,
       function: {
         name: 'get_price_history',
-        description: 'Get up to 30 OHLCV data points (daily/weekly/monthly) for trend and technical analysis.',
+        description: 'Get OHLCV data points for trend and technical analysis. Range supports daily/weekly/monthly or 1w, 1m, 3m, 6m, 1y, 3y, 5y, max.',
         parameters: {
           type: 'object',
           properties: {
             symbol: { type: 'string', description: 'Ticker symbol (e.g. AAPL)' },
-            range: { type: 'string', description: '"daily", "weekly", or "monthly". Default: "daily"' },
+            range: { type: 'string', description: '"daily", "weekly", "monthly", "1w", "1m", "3m", "6m", "1y", "3y", "5y", "max". Default: "daily"' },
           },
           required: ['symbol'],
         },
@@ -339,6 +339,7 @@ function buildToolDefinitions() {
           type: 'object',
           properties: {
             symbol: { type: 'string', description: 'Ticker symbol (e.g. AAPL)' },
+            range: { type: 'string', description: 'Price history range for charts (e.g., "1y", "3y", "5y", "max"). Default is "5y"' },
           },
           required: ['symbol'],
         },
@@ -356,6 +357,22 @@ function buildToolDefinitions() {
             limit: { type: 'number', description: 'Max companies to include (optional, default 12)' },
           },
           required: ['query'],
+        },
+      },
+    },
+    {
+      type: 'function' as const,
+      function: {
+        name: 'generate_peer_report',
+        description: 'Generate a comprehensive peer comparison report and save it as a markdown artifact.',
+        parameters: {
+          type: 'object',
+          properties: {
+            symbol: { type: 'string', description: 'Ticker symbol (e.g. AMD)' },
+            limit: { type: 'number', description: 'Max peers to include (optional, default 8)' },
+            range: { type: 'string', description: 'Price history range for charts (e.g., "1y", "3y", "5y", "max"). Default is "5y"' },
+          },
+          required: ['symbol'],
         },
       },
     },
@@ -550,6 +567,7 @@ export async function executeTool(
       }
       case 'generate_stock_report': {
         const symbol = args.symbol || '';
+        const range = args.range || '5y';
         const notes: string[] = [];
         const safeFetch = async <T>(label: string, request: Promise<T>) => {
           try {
@@ -571,7 +589,7 @@ export async function executeTool(
         };
 
         const price = await safeFetch('Price', stockService.getStockPrice(symbol));
-        const priceHistory = await safeFetch('Price history', stockService.getPriceHistory(symbol, 'daily'));
+        const priceHistory = await safeFetch('Price history', stockService.getPriceHistory(symbol, range));
         const companyOverview = await safeFetch('Company overview', stockService.getCompanyOverview(symbol));
         const basicFinancials = await safeFetch('Basic financials', stockService.getBasicFinancials(symbol));
         const earningsHistory = await safeFetch('Earnings history', stockService.getEarningsHistory(symbol));
@@ -711,6 +729,63 @@ export async function executeTool(
           success: true,
           data: { content, ...saved, downloadUrl: `/api/reports/${saved.filename}` },
           message: `Saved sector report to ${saved.filePath}`,
+        };
+      }
+      case 'generate_peer_report': {
+        const symbol = args.symbol || '';
+        const range = args.range || '5y';
+        const limit = Number(args.limit || 8);
+        const notes: string[] = [];
+
+        let peerSymbols: string[] = [];
+        try {
+          const peers = await stockService.getPeers(symbol);
+          peerSymbols = (peers.peers || []).filter((peer: string) => peer && peer !== symbol).slice(0, limit);
+        } catch (error: any) {
+          notes.push(`Peers unavailable via Finnhub: ${error.message}`);
+          try {
+            const search = await stockService.searchStock(symbol);
+            peerSymbols = (search.results || []).map((item: any) => item.symbol).filter(Boolean).slice(0, limit);
+          } catch (searchError: any) {
+            notes.push(`Peer fallback unavailable: ${searchError.message}`);
+          }
+        }
+
+        const universe = [symbol.toUpperCase(), ...peerSymbols].slice(0, limit + 1);
+        const items = await Promise.all(
+          universe.map(async (ticker) => {
+            const [price, overview, basicFinancials, priceTargets, priceHistory] = await Promise.all([
+              stockService.getStockPrice(ticker),
+              stockService.getCompanyOverview(ticker),
+              stockService.getBasicFinancials(ticker),
+              stockService.getPriceTargets(ticker),
+              stockService.getPriceHistory(ticker, range),
+            ]);
+            return { symbol: ticker, price, overview, basicFinancials, priceTargets, priceHistory };
+          })
+        );
+
+        const reportBody = buildPeerReport({
+          symbol: symbol.toUpperCase(),
+          generatedAt: new Date().toISOString(),
+          range,
+          universe,
+          items,
+          notes,
+        });
+
+        const content = notes.length
+          ? reportBody.replace(
+              '## 📌 Universe Snapshot',
+              `## ⚠️ Data Gaps\n${notes.map((item) => `- ${item}`).join('\n')}\n\n## 📌 Universe Snapshot`
+            )
+          : reportBody;
+
+        const saved = await saveReport(content, `${symbol}-peer-report`);
+        return {
+          success: true,
+          data: { content, ...saved, downloadUrl: `/api/reports/${saved.filename}` },
+          message: `Saved peer report to ${saved.filePath}`,
         };
       }
       default:

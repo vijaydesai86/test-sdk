@@ -1,6 +1,6 @@
 import { defineTool } from '@github/copilot-sdk';
 import { StockDataService } from './stockDataService';
-import { buildSectorReport, buildStockReport, saveReport } from './reportGenerator';
+import { buildSectorReport, buildStockReport, buildPeerReport, saveReport } from './reportGenerator';
 
 /**
  * Create stock information tools for GitHub Copilot SDK
@@ -42,10 +42,10 @@ export function createStockTools(stockService: StockDataService) {
   });
 
   const getPriceHistoryTool = defineTool('get_price_history', {
-    description: 'Get historical price data for a US stock. Returns up to 30 data points of open, high, low, close, and volume.',
+    description: 'Get historical price data for a US stock. Range supports daily/weekly/monthly or 1w, 1m, 3m, 6m, 1y, 3y, 5y, max.',
     parameters: {
       symbol: { type: 'string', description: 'Stock ticker symbol (e.g., "AAPL", "MSFT")' },
-      range: { type: 'string', description: 'Time range: "daily", "weekly", or "monthly". Default is "daily"' },
+      range: { type: 'string', description: 'Time range: "daily", "weekly", "monthly", "1w", "1m", "3m", "6m", "1y", "3y", "5y", "max". Default is "daily"' },
     },
     handler: async (args: any) => {
       const { symbol, range } = args;
@@ -365,9 +365,11 @@ export function createStockTools(stockService: StockDataService) {
     description: 'Generate a comprehensive stock research report and save it as a markdown artifact.',
     parameters: {
       symbol: { type: 'string', description: 'Stock ticker symbol (e.g., "AAPL")' },
+      range: { type: 'string', description: 'Price history range for charts (e.g., "1y", "3y", "5y", "max"). Default is "5y"' },
     },
     handler: async (args: any) => {
       const { symbol } = args;
+      const range = args.range || '5y';
       try {
         const [
           price,
@@ -386,7 +388,7 @@ export function createStockTools(stockService: StockDataService) {
           companyNews,
         ] = await Promise.all([
           stockService.getStockPrice(symbol),
-          stockService.getPriceHistory(symbol, 'daily'),
+          stockService.getPriceHistory(symbol, range),
           stockService.getCompanyOverview(symbol),
           stockService.getBasicFinancials(symbol),
           stockService.getEarningsHistory(symbol),
@@ -428,6 +430,65 @@ export function createStockTools(stockService: StockDataService) {
       } catch (error: any) {
         return { success: false, error: error.message };
       }
+    },
+  });
+
+  const generatePeerReportTool = defineTool('generate_peer_report', {
+    description: 'Generate a comprehensive peer comparison report and save it as a markdown artifact.',
+    parameters: {
+      symbol: { type: 'string', description: 'Stock ticker symbol (e.g., "AMD")' },
+      limit: { type: 'number', description: 'Max peers to include (optional, default 8)' },
+      range: { type: 'string', description: 'Price history range for charts (e.g., "1y", "3y", "5y", "max"). Default is "5y"' },
+    },
+    handler: async (args: any) => {
+      const symbol = args.symbol as string;
+      const range = args.range || '5y';
+      const limit = Number(args.limit || 8);
+      const notes: string[] = [];
+
+      let peerSymbols: string[] = [];
+      try {
+        const peers = await stockService.getPeers(symbol);
+        peerSymbols = (peers.peers || []).filter((peer: string) => peer && peer !== symbol).slice(0, limit);
+      } catch (error: any) {
+        notes.push(`Peers unavailable via Finnhub: ${error.message}`);
+        try {
+          const search = await stockService.searchStock(symbol);
+          peerSymbols = (search.results || []).map((item: any) => item.symbol).filter(Boolean).slice(0, limit);
+        } catch (searchError: any) {
+          notes.push(`Peer fallback unavailable: ${searchError.message}`);
+        }
+      }
+
+      const universe = [symbol.toUpperCase(), ...peerSymbols].slice(0, limit + 1);
+      const items = await Promise.all(
+        universe.map(async (ticker) => {
+          const [price, overview, basicFinancials, priceTargets, priceHistory] = await Promise.all([
+            stockService.getStockPrice(ticker),
+            stockService.getCompanyOverview(ticker),
+            stockService.getBasicFinancials(ticker),
+            stockService.getPriceTargets(ticker),
+            stockService.getPriceHistory(ticker, range),
+          ]);
+          return { symbol: ticker, price, overview, basicFinancials, priceTargets, priceHistory };
+        })
+      );
+
+      const content = buildPeerReport({
+        symbol: symbol.toUpperCase(),
+        generatedAt: new Date().toISOString(),
+        range,
+        universe,
+        items,
+        notes,
+      });
+
+      const saved = await saveReport(content, `${symbol}-peer-report`);
+      return {
+        success: true,
+        data: { content, ...saved },
+        message: `Saved peer report to ${saved.filePath}`,
+      };
     },
   });
 
@@ -525,6 +586,7 @@ export function createStockTools(stockService: StockDataService) {
     searchNewsTool,
     searchCompaniesTool,
     generateStockReportTool,
+    generatePeerReportTool,
     generateSectorReportTool,
   ];
 }

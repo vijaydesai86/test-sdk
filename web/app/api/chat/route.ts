@@ -228,6 +228,11 @@ function parseAnalystTrendsRequest(message: string) {
   return null;
 }
 
+function parseTimeframe(message: string) {
+  const match = message.match(/\b(1w|1m|3m|6m|1y|3y|5y|max)\b/i);
+  return match ? match[1].toLowerCase() : null;
+}
+
 function parseSymbolAfterKeyword(message: string, keyword: string) {
   const regex = new RegExp(`${keyword}\\s+(?:for|of|on)?\\s*([a-zA-Z]{1,6})`, 'i');
   const match = message.match(regex);
@@ -337,7 +342,14 @@ async function handleDirectToolResponse(
     );
   }
 
-  const responseText = format ? format(toolResult.data) : JSON.stringify(toolResult.data, null, 2);
+  const downloadUrl = toolResult.data?.downloadUrl as string | undefined;
+  const filename = toolResult.data?.filename as string | undefined;
+  const content = toolResult.data?.content as string | undefined;
+  const responseText = downloadUrl
+    ? `Report generated: ${downloadUrl}`
+    : format
+    ? format(toolResult.data)
+    : JSON.stringify(toolResult.data, null, 2);
   conversationMessages.push({ role: 'assistant', content: responseText });
   sessions.set(currentSessionId, conversationMessages);
 
@@ -346,6 +358,7 @@ async function handleDirectToolResponse(
     sessionId: currentSessionId,
     model: DEFAULT_MODEL,
     provider: 'direct',
+    report: filename && content ? { filename, content, downloadUrl } : null,
     stats: {
       rounds: 0,
       toolCalls: 1,
@@ -570,6 +583,7 @@ const REPORT_TOOL_NAMES = [
   'get_insider_trading',
   'generate_stock_report',
   'generate_sector_report',
+  'generate_peer_report',
 ];
 
 const MAX_TOOLS_NON_REPORT = 10;
@@ -807,6 +821,7 @@ export async function POST(request: NextRequest) {
     const stockService: StockDataService = new AlphaVantageService(alphaVantageKey);
 
     const reportRequest = parseReportRequest(message);
+    const timeframe = parseTimeframe(message);
     if (reportRequest) {
       const currentSessionId = sessionId || Math.random().toString(36).substring(7);
       let conversationMessages: ChatMessage[] = sessionId ? sessions.get(sessionId) || [] : [];
@@ -820,7 +835,7 @@ export async function POST(request: NextRequest) {
       conversationMessages.push({ role: 'user', content: message });
 
       const toolResult = reportRequest.type === 'stock'
-        ? await executeTool('generate_stock_report', { symbol: reportRequest.symbol }, stockService)
+        ? await executeTool('generate_stock_report', { symbol: reportRequest.symbol, range: timeframe || '5y' }, stockService)
         : await executeTool('generate_sector_report', { query: reportRequest.query }, stockService);
 
       if (!toolResult.success) {
@@ -883,7 +898,13 @@ export async function POST(request: NextRequest) {
     if (lowerMessage.includes('compare') || lowerMessage.includes('peers')) {
       const compareSymbol = await resolveSymbolFromMessage(message, stockService);
       if (compareSymbol) {
-        return handlePeerComparison(compareSymbol, stockService, message, sessionId);
+        return handleDirectToolResponse(
+          'generate_peer_report',
+          { symbol: compareSymbol, range: timeframe || '5y', limit: 8 },
+          stockService,
+          message,
+          sessionId
+        );
       }
     }
 
@@ -942,9 +963,10 @@ export async function POST(request: NextRequest) {
     }
 
     const priceHistory = parseSymbolAfterKeyword(message, 'history') || parseSymbolAfterKeyword(message, 'trend');
+    const historyRange = timeframe || '5y';
     const historySymbol = priceHistory?.symbol || inferredSymbol;
     if (historySymbol && (priceHistory || lowerMessage.includes('history') || lowerMessage.includes('trend'))) {
-      return handleDirectToolResponse('get_price_history', { symbol: historySymbol, range: 'daily' }, stockService, message, sessionId);
+      return handleDirectToolResponse('get_price_history', { symbol: historySymbol, range: historyRange }, stockService, message, sessionId);
     }
 
     const overview = parseSymbolAfterKeyword(message, 'overview') || parseSymbolAfterKeyword(message, 'fundamentals');

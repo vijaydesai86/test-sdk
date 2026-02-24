@@ -41,6 +41,24 @@ export interface SectorReportData {
   notes?: string[];
 }
 
+export interface PeerReportItem {
+  symbol: string;
+  price?: any;
+  overview?: any;
+  basicFinancials?: any;
+  priceTargets?: any;
+  priceHistory?: { prices?: PricePoint[] };
+}
+
+export interface PeerReportData {
+  symbol: string;
+  generatedAt: string;
+  range: string;
+  universe: string[];
+  items: PeerReportItem[];
+  notes?: string[];
+}
+
 const DEFAULT_REPORTS_DIR = process.env.REPORTS_DIR || 'reports';
 
 function formatDateLabel(date: string): string {
@@ -74,7 +92,7 @@ function formatChartNumber(value: number): number {
 
 function buildPriceChart(prices: PricePoint[] = []): string {
   if (prices.length === 0) return '';
-  const series = downsample([...prices].slice(0, 30).reverse(), 12);
+  const series = downsample([...prices].reverse(), 60);
   const labels = series.map((p) => formatDateLabel(p.date));
   const values = series.map((p) => formatChartNumber(Number(p.close)));
   const filtered = filterSeries(labels, values);
@@ -102,7 +120,7 @@ function buildPriceChart(prices: PricePoint[] = []): string {
 
 function buildEpsChart(earnings: EarningsPoint[] = []): string {
   if (earnings.length === 0) return '';
-  const series = downsample([...earnings].slice(0, 16).reverse(), 12);
+  const series = downsample([...earnings].reverse(), 20);
   const labels = series.map((e) => formatDateLabel(e.fiscalQuarter));
   const values = series.map((e) => formatChartNumber(Number(e.reportedEPS)));
   const filtered = filterSeries(labels, values);
@@ -250,6 +268,45 @@ function buildBarChart(title: string, label: string, items: { symbol: string; va
         barMaxWidth: 32,
       },
     ],
+  });
+}
+
+function buildPerformanceChart(items: PeerReportItem[], title: string): string {
+  const series = items
+    .map((item) => {
+      const prices = item.priceHistory?.prices || [];
+      if (prices.length < 2) return null;
+      const sorted = [...prices].sort((a, b) => a.date.localeCompare(b.date));
+      const base = toNumber(sorted[0].close);
+      if (!base) return null;
+      const sampled = downsample(sorted, 60);
+      return {
+        name: item.symbol,
+        data: sampled.map((point) => {
+          const value = toNumber(point.close);
+          if (!value) return null;
+          return [formatDateLabel(point.date), Number(((value / base) * 100).toFixed(2))];
+        }).filter((row): row is [string, number] => row !== null),
+      };
+    })
+    .filter((row): row is { name: string; data: [string, number][] } => row !== null && row.data.length > 0);
+
+  if (series.length === 0) return '';
+
+  return buildChartBlock({
+    title: { text: title, left: 'center' },
+    tooltip: { trigger: 'axis' },
+    grid: { left: 40, right: 20, top: 50, bottom: 40 },
+    xAxis: { type: 'category' },
+    yAxis: { type: 'value', name: 'Index (Base=100)' },
+    legend: { bottom: 0 },
+    series: series.map((row) => ({
+      name: row.name,
+      type: 'line',
+      smooth: true,
+      showSymbol: false,
+      data: row.data,
+    })),
   });
 }
 
@@ -634,4 +691,62 @@ export async function saveReport(content: string, title: string, directory = DEF
   await fs.writeFile(filePath, content, 'utf8');
 
   return { filePath, filename };
+}
+
+export function buildPeerReport(data: PeerReportData): string {
+  const header = `# Peer Comparison Report: ${data.symbol}`;
+  const rows = data.items.map((item) => {
+    const price = item.price?.price ?? 'N/A';
+    const marketCap = item.overview?.marketCapitalization ?? 'N/A';
+    const pe = item.overview?.peRatio ?? item.basicFinancials?.metric?.peBasicExclExtraTTM ?? 'N/A';
+    const target = item.priceTargets?.targetMean ?? item.overview?.analystTargetPrice ?? 'N/A';
+    const priceValue = toNumber(price);
+    const targetValue = toNumber(target);
+    const upside = priceValue && targetValue
+      ? `${(((targetValue - priceValue) / priceValue) * 100).toFixed(1)}%`
+      : 'N/A';
+    return `| ${item.symbol} | ${price} | ${marketCap} | ${pe} | ${target} | ${upside} |`;
+  });
+
+  const table = [
+    '| Symbol | Price | Market Cap | P/E | Target Mean | Upside |',
+    '|---|---:|---:|---:|---:|---:|',
+    ...rows,
+  ].join('\n');
+
+  const performanceChart = buildPerformanceChart(data.items, `Price Performance (${data.range.toUpperCase()})`);
+  const valuationSeries = data.items
+    .map((item) => ({
+      symbol: item.symbol,
+      value: toNumber(item.overview?.peRatio ?? item.basicFinancials?.metric?.peBasicExclExtraTTM),
+    }))
+    .filter((item) => item.value !== null)
+    .map((item) => ({ symbol: item.symbol, value: item.value as number }));
+  const valuationChart = buildBarChart('Valuation (P/E)', 'P/E', valuationSeries);
+  const targetSeries = data.items
+    .map((item) => ({
+      symbol: item.symbol,
+      value: toNumber(item.priceTargets?.targetMean || item.overview?.analystTargetPrice),
+    }))
+    .filter((item) => item.value !== null)
+    .map((item) => ({ symbol: item.symbol, value: item.value as number }));
+  const targetChart = buildBarChart('Target Mean', 'Price', targetSeries);
+  const notes = data.notes?.length ? data.notes.map((note) => `- ${note}`).join('\n') : 'N/A';
+
+  return [
+    header,
+    `Generated: ${data.generatedAt}`,
+    `Universe: ${data.universe.join(', ') || 'N/A'}`,
+    '## 📌 Overview',
+    `Range: ${data.range.toUpperCase()}`,
+    '## 📊 Price Performance',
+    performanceChart || '_Price performance unavailable_',
+    '## 📊 Valuation & Targets',
+    valuationChart || '_Valuation chart unavailable_',
+    targetChart || '_Target chart unavailable_',
+    '## 🔍 Comparison Table',
+    table,
+    '## 📝 Notes',
+    notes,
+  ].join('\n\n');
 }

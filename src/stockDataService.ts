@@ -231,14 +231,47 @@ export class AlphaVantageService implements StockDataService {
   }
 
   async getPriceHistory(symbol: string, range: string = 'daily'): Promise<any> {
-    let functionName = 'TIME_SERIES_DAILY';
-    if (range === 'weekly') functionName = 'TIME_SERIES_WEEKLY';
-    if (range === 'monthly') functionName = 'TIME_SERIES_MONTHLY';
+    const now = new Date();
+    const normalizedRange = range.toLowerCase();
+    const rangeConfig = (() => {
+      if (['1w', '1week', 'week'].includes(normalizedRange)) {
+        return { functionName: 'TIME_SERIES_DAILY', outputsize: 'compact', days: 7 };
+      }
+      if (['1m', '1month', 'month'].includes(normalizedRange)) {
+        return { functionName: 'TIME_SERIES_DAILY', outputsize: 'compact', days: 30 };
+      }
+      if (['3m', '3month', 'quarter'].includes(normalizedRange)) {
+        return { functionName: 'TIME_SERIES_DAILY', outputsize: 'compact', days: 90 };
+      }
+      if (['6m', '6month'].includes(normalizedRange)) {
+        return { functionName: 'TIME_SERIES_DAILY', outputsize: 'compact', days: 180 };
+      }
+      if (['1y', '1year', 'year'].includes(normalizedRange)) {
+        return { functionName: 'TIME_SERIES_WEEKLY', outputsize: 'full', days: 365 };
+      }
+      if (['3y', '3year'].includes(normalizedRange)) {
+        return { functionName: 'TIME_SERIES_WEEKLY', outputsize: 'full', days: 365 * 3 };
+      }
+      if (['5y', '5year'].includes(normalizedRange)) {
+        return { functionName: 'TIME_SERIES_WEEKLY', outputsize: 'full', days: 365 * 5 };
+      }
+      if (['max', 'all'].includes(normalizedRange)) {
+        return { functionName: 'TIME_SERIES_MONTHLY', outputsize: 'full', days: null };
+      }
+      if (normalizedRange === 'weekly') {
+        return { functionName: 'TIME_SERIES_WEEKLY', outputsize: 'full', days: null };
+      }
+      if (normalizedRange === 'monthly') {
+        return { functionName: 'TIME_SERIES_MONTHLY', outputsize: 'full', days: null };
+      }
+      return { functionName: 'TIME_SERIES_DAILY', outputsize: 'compact', days: null };
+    })();
 
     const data = await this.makeRequest(
       {
-        function: functionName,
+        function: rangeConfig.functionName,
         symbol: symbol.toUpperCase(),
+        outputsize: rangeConfig.outputsize,
       },
       { ttlMs: 60 * 60 * 1000 }
     );
@@ -247,14 +280,23 @@ export class AlphaVantageService implements StockDataService {
     const timeSeriesKey = Object.keys(data).find(key => key.includes('Time Series'));
     if (timeSeriesKey) {
       const timeSeries = data[timeSeriesKey];
-      const prices = Object.entries(timeSeries).slice(0, 30).map(([date, values]: [string, any]) => ({
-        date,
-        open: values['1. open'],
-        high: values['2. high'],
-        low: values['3. low'],
-        close: values['4. close'],
-        volume: values['5. volume'],
-      }));
+      const cutoff = rangeConfig.days
+        ? new Date(now.getTime() - rangeConfig.days * 24 * 60 * 60 * 1000)
+        : null;
+      const prices = Object.entries(timeSeries)
+        .filter(([date]) => {
+          if (!cutoff) return true;
+          const parsed = new Date(date);
+          return !Number.isNaN(parsed.getTime()) && parsed >= cutoff;
+        })
+        .map(([date, values]: [string, any]) => ({
+          date,
+          open: values['1. open'],
+          high: values['2. high'],
+          low: values['3. low'],
+          close: values['4. close'],
+          volume: values['5. volume'],
+        }));
       return {
         symbol: symbol.toUpperCase(),
         prices,
