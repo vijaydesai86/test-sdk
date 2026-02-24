@@ -774,7 +774,7 @@ export async function executeTool(
       }
       case 'generate_sector_report': {
         const query = args.query || '';
-        const limit = Math.min(Number(args.limit || 12), 6);
+        const limit = Math.min(Number(args.limit || 12), 10);
         const notes: string[] = [];
 
         let universe: string[] = [];

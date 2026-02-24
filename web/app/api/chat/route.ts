@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getToolDefinitionsByName, executeTool } from '@/app/lib/stockTools';
+import { createReportJob, updateReportJob } from '@/app/lib/reportJobs';
 import { AlphaVantageService, StockDataService } from '@/app/lib/stockDataService';
 
 // GitHub Models API — new endpoint (azure endpoint deprecated Oct 2025)
@@ -817,9 +818,49 @@ export async function POST(request: NextRequest) {
 
       conversationMessages.push({ role: 'user', content: message });
 
-      const toolResult = reportRequest.type === 'stock'
-        ? await executeTool('generate_stock_report', { symbol: reportRequest.symbol, range: timeframe || '5y' }, stockService)
-        : await executeTool('generate_sector_report', { query: reportRequest.query }, stockService);
+      if (reportRequest.type === 'sector') {
+        const job = createReportJob('sector');
+        setTimeout(() => {
+          void (async () => {
+            updateReportJob(job.id, { status: 'running' });
+            const toolResult = await executeTool('generate_sector_report', { query: reportRequest.query }, stockService);
+            if (!toolResult.success) {
+              updateReportJob(job.id, { status: 'failed', error: toolResult.error || toolResult.message || 'Report failed' });
+              return;
+            }
+            const filename = toolResult.data?.filename as string | undefined;
+            const downloadUrl = toolResult.data?.downloadUrl as string | undefined;
+            updateReportJob(job.id, {
+              status: 'completed',
+              filename,
+              downloadUrl,
+            });
+          })();
+        }, 0);
+
+        conversationMessages.push({ role: 'assistant', content: `Report generation started. Job ID: ${job.id}` });
+        sessions.set(currentSessionId, conversationMessages);
+
+        return NextResponse.json({
+          response: `Report generation started. Job ID: ${job.id}`,
+          jobId: job.id,
+          sessionId: currentSessionId,
+          model: model || DEFAULT_MODEL,
+          provider: provider || 'github',
+          report: { jobId: job.id, status: 'pending' },
+          stats: {
+            rounds: 0,
+            toolCalls: 1,
+            toolsProvided: 0,
+          },
+        });
+      }
+
+      const toolResult = await executeTool(
+        'generate_stock_report',
+        { symbol: reportRequest.symbol, range: timeframe || '5y' },
+        stockService
+      );
 
       if (!toolResult.success) {
         return NextResponse.json(
