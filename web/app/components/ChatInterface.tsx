@@ -15,6 +15,12 @@ interface Message {
   };
 }
 
+interface ReportItem {
+  filename: string;
+  content?: string;
+  downloadUrl?: string;
+}
+
 interface ModelOption {
   value: string;
   label: string;
@@ -83,6 +89,7 @@ export default function ChatInterface() {
   const [reportLoading, setReportLoading] = useState(false);
   const [reportUrl, setReportUrl] = useState<string | null>(null);
   const [deletedReports, setDeletedReports] = useState<Set<string>>(new Set());
+  const [savedReports, setSavedReports] = useState<ReportItem[]>([]);
 
   // Fetch the live model catalog on mount
   useEffect(() => {
@@ -161,6 +168,20 @@ export default function ChatInterface() {
           stats: data.stats,
         },
       ]);
+      if (data.report?.filename && data.report?.content) {
+        setSavedReports((prev) => {
+          const existing = prev.find((item) => item.filename === data.report.filename);
+          if (existing) return prev;
+          return [
+            ...prev,
+            {
+              filename: data.report.filename,
+              content: data.report.content,
+              downloadUrl: data.report.downloadUrl,
+            },
+          ];
+        });
+      }
     } catch (err: any) {
       setError(err.message);
       setMessages((prev) => [
@@ -196,33 +217,56 @@ export default function ChatInterface() {
     )
   ).filter((link) => !deletedReports.has(link));
 
-  const handleReportClick = async (link: string) => {
+  const reportItems: ReportItem[] = [
+    ...savedReports,
+    ...reportLinks
+      .map((link) => ({
+        filename: link.split('/').pop() || link,
+        downloadUrl: link,
+      }))
+      .filter((item) => !savedReports.find((saved) => saved.filename === item.filename)),
+  ];
+
+  const handleReportClick = async (item: ReportItem) => {
     setReportLoading(true);
-    setReportUrl(link);
+    setReportUrl(item.downloadUrl || null);
     try {
-      const response = await fetch(link);
+      if (item.content) {
+        setReportPreview(item.content);
+        setReportTitle(item.filename);
+        return;
+      }
+      if (!item.downloadUrl) {
+        setReportPreview('Unable to load report preview.');
+        setReportTitle(item.filename || 'Report');
+        return;
+      }
+      const response = await fetch(item.downloadUrl);
       const content = await response.text();
       setReportPreview(content);
-      setReportTitle(link.split('/').pop() || 'Report');
+      setReportTitle(item.filename || 'Report');
     } catch (error) {
       setReportPreview('Unable to load report preview.');
-      setReportTitle(link.split('/').pop() || 'Report');
+      setReportTitle(item.filename || 'Report');
     } finally {
       setReportLoading(false);
     }
   };
 
-  const handleReportDelete = async (link: string) => {
+  const handleReportDelete = async (item: ReportItem) => {
     setError(null);
     try {
-      const response = await fetch(link, { method: 'DELETE' });
-      const data = await response.json();
-      if (!response.ok) {
-        const message = data.error || 'Failed to delete report';
-        throw new Error(message);
+      if (item.downloadUrl) {
+        const response = await fetch(item.downloadUrl, { method: 'DELETE' });
+        const data = await response.json();
+        if (!response.ok) {
+          const message = data.error || 'Failed to delete report';
+          throw new Error(message);
+        }
       }
-      setDeletedReports((prev) => new Set(prev).add(link));
-      if (reportUrl === link) {
+      setDeletedReports((prev) => new Set(prev).add(item.downloadUrl || item.filename));
+      setSavedReports((prev) => prev.filter((saved) => saved.filename !== item.filename));
+      if (reportUrl === item.downloadUrl) {
         setReportUrl(null);
         setReportPreview(null);
         setReportTitle(null);
@@ -320,35 +364,35 @@ export default function ChatInterface() {
           <div>
             <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wide">Artifacts</h2>
             <div className="mt-3 space-y-2 text-sm">
-              {reportLinks.length === 0 ? (
+              {reportItems.length === 0 ? (
                 <div className="space-y-2">
                   <p className="text-gray-500 dark:text-gray-400">
                     No reports saved yet. Ask for a report to generate an artifact.
                   </p>
                   <button
                     type="button"
-                    onClick={() => handleReportClick(SAMPLE_REPORT_LINK)}
+                    onClick={() => handleReportClick({ filename: 'nvda-sample.md', downloadUrl: SAMPLE_REPORT_LINK })}
                     className="block w-full text-left truncate rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-2 text-blue-600 dark:text-blue-300 hover:bg-blue-50 dark:hover:bg-blue-900/30"
                   >
                     Sample NVDA report (mock data)
                   </button>
                 </div>
               ) : (
-                reportLinks.map((link) => (
+                reportItems.map((item) => (
                   <div
-                    key={link}
+                    key={item.filename}
                     className="flex items-center gap-2 rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-2"
                   >
                     <button
                       type="button"
-                      onClick={() => handleReportClick(link)}
+                      onClick={() => handleReportClick(item)}
                       className="flex-1 text-left truncate text-blue-600 dark:text-blue-300 hover:underline"
                     >
-                      {link.split('/').pop()}
+                      {item.filename}
                     </button>
                     <button
                       type="button"
-                      onClick={() => handleReportDelete(link)}
+                      onClick={() => handleReportDelete(item)}
                       className="text-xs text-gray-500 hover:text-red-500"
                     >
                       Delete

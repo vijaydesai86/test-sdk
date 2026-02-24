@@ -442,6 +442,8 @@ export async function POST(request: NextRequest) {
       }
 
       const downloadUrl = toolResult.data?.downloadUrl;
+      const filename = toolResult.data?.filename as string | undefined;
+      const content = toolResult.data?.content as string | undefined;
       const responseText = downloadUrl
         ? `Report generated: ${downloadUrl}`
         : 'Report generated.';
@@ -463,6 +465,7 @@ export async function POST(request: NextRequest) {
         sessionId: currentSessionId,
         model: model || DEFAULT_MODEL,
         provider: provider || 'github',
+        report: filename && content ? { filename, content, downloadUrl } : null,
         stats: {
           rounds: 0,
           toolCalls: 1,
