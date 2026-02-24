@@ -253,6 +253,24 @@ export default function ChatInterface() {
     }
   };
 
+  const handleReportDownload = (item: ReportItem) => {
+    if (!item.content) {
+      if (item.downloadUrl) {
+        window.open(item.downloadUrl, '_blank');
+      }
+      return;
+    }
+    const blob = new Blob([item.content], { type: 'text/markdown;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = item.filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  };
+
   const handleReportDelete = async (item: ReportItem) => {
     setError(null);
     try {
@@ -389,6 +407,13 @@ export default function ChatInterface() {
                       className="flex-1 text-left truncate text-blue-600 dark:text-blue-300 hover:underline"
                     >
                       {item.filename}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleReportDownload(item)}
+                      className="text-xs text-blue-600 hover:text-blue-800"
+                    >
+                      Download
                     </button>
                     <button
                       type="button"
