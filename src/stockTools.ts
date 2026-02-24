@@ -33,7 +33,7 @@ export function createStockTools(stockService: StockDataService) {
       }
     }
     const unique = Array.from(new Set([query, ...phrases].filter(Boolean)));
-    return unique.slice(0, 8);
+    return unique.slice(0, 4);
   };
 
   const expandUniverseFromQuery = async (query: string, limit: number, notes: string[]) => {
@@ -54,22 +54,15 @@ export function createStockTools(stockService: StockDataService) {
     });
     const candidates = (usItems.length ? usItems : uniqueItems).slice(0, Math.max(limit * 2, 10));
     const terms = buildSearchQueries(query).map((term) => term.toLowerCase());
-    const matches = await Promise.all(
-      candidates.map(async (item) => {
-        const overview = await stockService.getCompanyOverview(item.symbol).catch(() => null);
-        const text = [
-          item.name,
-          overview?.name,
-          overview?.sector,
-          overview?.industry,
-          overview?.description,
-        ]
+    const matches = candidates
+      .filter((item) => {
+        const text = [item.name, item.symbol]
           .filter(Boolean)
           .join(' ')
           .toLowerCase();
-        return text && terms.some((term) => text.includes(term)) ? item.symbol : null;
+        return text && terms.some((term) => text.includes(term));
       })
-    );
+      .map((item) => item.symbol);
     const universe = Array.from(new Set(matches.filter(Boolean))) as string[];
     if (universe.length > 0) {
       notes.push(`Universe built from keyword-filtered search for "${query}".`);
@@ -90,27 +83,10 @@ export function createStockTools(stockService: StockDataService) {
         ...(movers.topLosers || []).map((item: any) => item.ticker),
         ...(movers.mostActive || []).map((item: any) => item.ticker),
       ].filter(Boolean)));
-      const terms = buildSearchQueries(query).map((term) => term.toLowerCase());
-      const matches: string[] = [];
-      for (const symbol of candidates.slice(0, 20)) {
-        const overview = await stockService.getCompanyOverview(symbol).catch(() => null);
-        const text = [
-          overview?.name,
-          overview?.sector,
-          overview?.industry,
-          overview?.description,
-        ]
-          .filter(Boolean)
-          .join(' ')
-          .toLowerCase();
-        if (text && terms.some((term) => text.includes(term))) {
-          matches.push(symbol);
-        }
-        if (matches.length >= limit) break;
-      }
-      if (matches.length > 0) {
-        notes.push(`Universe built from top movers filtered by "${query}".`);
-        return matches.slice(0, limit);
+      const trimmed = candidates.slice(0, limit);
+      if (trimmed.length > 0) {
+        notes.push(`Universe built from top movers due to limited matches for "${query}".`);
+        return trimmed;
       }
       if (candidates.length > 0) {
         notes.push(`Universe built from top movers due to limited matches for "${query}".`);
@@ -616,7 +592,7 @@ export function createStockTools(stockService: StockDataService) {
     },
     handler: async (args: any) => {
       const query = args.query as string;
-      const limit = Number(args.limit || 12);
+      const limit = Math.min(Number(args.limit || 12), 8);
 
       try {
         let universe: string[] = [];
@@ -664,16 +640,16 @@ export function createStockTools(stockService: StockDataService) {
 
         const items = [] as any[];
         for (const symbol of universe) {
-          const [price, overview, basicFinancials, analystRatings, priceTargets, newsSentiment, companyNews] = await Promise.all([
+          const [price, overview, basicFinancials] = await Promise.all([
             stockService.getStockPrice(symbol).catch(() => null),
             stockService.getCompanyOverview(symbol).catch(() => null),
             stockService.getBasicFinancials(symbol).catch(() => null),
-            stockService.getAnalystRatings(symbol).catch(() => null),
-            stockService.getPriceTargets(symbol).catch(() => null),
-            stockService.getNewsSentiment(symbol).catch(() => null),
-            stockService.getCompanyNews(symbol, 14).catch(() => null),
           ]);
-          items.push({ symbol, price, overview, basicFinancials, analystRatings, priceTargets, newsSentiment, companyNews });
+          const analystRatings = overview ? { ...overview } : null;
+          const priceTargets = overview?.analystTargetPrice
+            ? { targetMean: overview.analystTargetPrice }
+            : null;
+          items.push({ symbol, price, overview, basicFinancials, analystRatings, priceTargets });
         }
 
         const content = buildSectorReport({
