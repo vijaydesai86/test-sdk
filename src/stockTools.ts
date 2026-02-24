@@ -535,7 +535,7 @@ export function createStockTools(stockService: StockDataService) {
     handler: async (args: any) => {
       const symbol = args.symbol as string;
       const range = args.range || '5y';
-      const limit = Number(args.limit || 8);
+      const limit = Math.min(Number(args.limit || 6), 6);
       const notes: string[] = [];
 
       let peerSymbols: string[] = [];

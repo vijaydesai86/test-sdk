@@ -380,14 +380,21 @@ export class AlphaVantageService implements StockDataService {
 
   async getPeers(symbol: string): Promise<any> {
     const overview = await this.getCompanyOverview(symbol).catch(() => null);
-    const query = overview?.industry || overview?.sector || overview?.name || symbol;
-    const fallback = await this.searchStock(query).catch(() => ({ results: [] }));
-    const peers = (fallback.results || [])
+    const rawQueries = [overview?.industry, overview?.sector, overview?.name, symbol]
+      .filter(Boolean)
+      .map((value) => String(value).trim())
+      .filter(Boolean);
+    const queries = Array.from(new Set(rawQueries)).slice(0, 2);
+    const results = await Promise.all(
+      queries.map((query) => this.searchStock(query).catch(() => ({ results: [] })))
+    );
+    const peers = results
+      .flatMap((result) => result.results || [])
       .map((item: any) => item.symbol)
       .filter(Boolean);
     return {
       symbol: symbol.toUpperCase(),
-      peers,
+      peers: Array.from(new Set(peers)),
     };
   }
 

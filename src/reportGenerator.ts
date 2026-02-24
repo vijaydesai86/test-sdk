@@ -1044,24 +1044,68 @@ export function buildPeerReport(data: PeerReportData): string {
 
   const snapshotRows = data.items.map((item) => {
     const name = item.overview?.name || item.symbol;
-    const price = formatNumber(item.price?.price, 2);
-    const marketCap = formatMarketCap(item.overview?.marketCapitalization);
-    const eps = getEpsValue(item);
-    const pe = toNumber(item.overview?.peRatio ?? item.basicFinancials?.metric?.peBasicExclExtraTTM);
-    const target = formatNumber(item.priceTargets?.targetMean ?? item.overview?.analystTargetPrice, 2);
-    const upside = getTargetUpside(item);
-    return [
-      `${name} (${item.symbol})`,
-      price,
-      marketCap,
-      eps === null ? 'N/A' : eps.toFixed(2),
-      pe === null ? 'N/A' : pe.toFixed(1),
-      target,
-      upside === null ? 'N/A' : `${upside.toFixed(1)}%`,
-    ].join(' | ');
+    return {
+      name: `${name} (${item.symbol})`,
+      price: toNumber(item.price?.price),
+      marketCap: item.overview?.marketCapitalization ?? null,
+      eps: getEpsValue(item),
+      pe: toNumber(item.overview?.peRatio ?? item.basicFinancials?.metric?.peBasicExclExtraTTM),
+      target: toNumber(item.priceTargets?.targetMean ?? item.overview?.analystTargetPrice),
+      upside: getTargetUpside(item),
+    };
   });
+  const snapshotColumns = [
+    {
+      key: 'price',
+      label: 'Price',
+      format: (row: any) => (row.price === null ? null : row.price.toFixed(2)),
+      optional: true,
+    },
+    {
+      key: 'marketCap',
+      label: 'Market Cap',
+      format: (row: any) => (row.marketCap === null ? null : formatMarketCap(row.marketCap)),
+      optional: true,
+    },
+    {
+      key: 'eps',
+      label: 'EPS',
+      format: (row: any) => (row.eps === null ? null : row.eps.toFixed(2)),
+      optional: true,
+    },
+    {
+      key: 'pe',
+      label: 'P/E',
+      format: (row: any) => (row.pe === null ? null : row.pe.toFixed(1)),
+      optional: true,
+    },
+    {
+      key: 'target',
+      label: 'Target Mean',
+      format: (row: any) => (row.target === null ? null : row.target.toFixed(2)),
+      optional: true,
+    },
+    {
+      key: 'upside',
+      label: 'Upside',
+      format: (row: any) => (row.upside === null ? null : `${row.upside.toFixed(1)}%`),
+      optional: true,
+    },
+  ];
+  const activeSnapshotColumns = snapshotColumns.filter((column: any) => {
+    if (!column.optional) return true;
+    return snapshotRows.some((row: any) => column.format(row) !== null);
+  });
+  const snapshotHeader = ['Company (Ticker)', ...activeSnapshotColumns.map((column: any) => column.label)];
   const snapshotSection = snapshotRows.length
-    ? ['| Company (Ticker) | Price | Market Cap | EPS | P/E | Target Mean | Upside |', '|---|---:|---:|---:|---:|---:|---:|', ...snapshotRows.map((row) => `| ${row} |`)].join('\n')
+    ? [
+        `| ${snapshotHeader.join(' | ')} |`,
+        `| ${snapshotHeader.map(() => '---').join(' | ')} |`,
+        ...snapshotRows.map((row) => {
+          const values = activeSnapshotColumns.map((column: any) => column.format(row) ?? 'Unavailable');
+          return `| ${[row.name, ...values].join(' | ')} |`;
+        }),
+      ].join('\n')
     : '_Peer snapshot unavailable._';
 
   const roleRows = data.items.map((item) => {
@@ -1077,26 +1121,48 @@ export function buildPeerReport(data: PeerReportData): string {
 
   const analystRows = data.items.map((item) => {
     const name = item.overview?.name || item.symbol;
-    const rating = formatRatingSummary(item);
-    const target = formatNumber(item.priceTargets?.targetMean ?? item.overview?.analystTargetPrice, 2);
-    const upside = getTargetUpside(item);
-    return [
-      `${name} (${item.symbol})`,
+    const ratings = item.overview || {};
+    const counts = [
+      toNumber(ratings.analystRatingStrongBuy),
+      toNumber(ratings.analystRatingBuy),
+      toNumber(ratings.analystRatingHold),
+      toNumber(ratings.analystRatingSell),
+      toNumber(ratings.analystRatingStrongSell),
+    ];
+    const hasRatings = counts.some((value) => value !== null);
+    const rating = hasRatings
+      ? `SB ${counts[0] ?? 0} / B ${counts[1] ?? 0} / H ${counts[2] ?? 0} / S ${counts[3] ?? 0} / SS ${counts[4] ?? 0}`
+      : null;
+    const target = toNumber(item.priceTargets?.targetMean ?? item.overview?.analystTargetPrice);
+    const price = toNumber(item.price?.price);
+    const upside = price && target ? ((target - price) / price) * 100 : null;
+    return {
+      name: `${name} (${item.symbol})`,
       rating,
       target,
-      upside === null ? 'N/A' : `${upside.toFixed(1)}%`,
-    ].join(' | ');
+      upside,
+    };
   });
-  const analystSection = analystRows.length
-    ? ['| Company (Ticker) | Analyst Ratings | Target Mean | Upside |', '|---|---|---:|---:|', ...analystRows.map((row) => `| ${row} |`)].join('\n')
-    : '_Analyst data unavailable._';
+  const hasAnalystData = analystRows.some((row) => row.rating || row.target !== null);
+  const analystSection = hasAnalystData
+    ? [
+        '| Company (Ticker) | Analyst Ratings | Target Mean | Upside |',
+        '|---|---|---:|---:|',
+        ...analystRows.map((row) => {
+          const rating = row.rating ?? 'Unavailable';
+          const target = row.target === null ? 'Unavailable' : row.target.toFixed(2);
+          const upside = row.upside === null ? 'Unavailable' : `${row.upside.toFixed(1)}%`;
+          return `| ${row.name} | ${rating} | ${target} | ${upside} |`;
+        }),
+      ].join('\n')
+    : '_Analyst ratings are not provided by Alpha Vantage for this peer set._';
 
   const scoredSorted = scored.filter((row) => row.score !== null).sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
   const scoreCount = scoredSorted.length;
   const recommendationRows = scored.map((row) => {
     const name = row.item.overview?.name || row.item.symbol;
     if (row.score === null || scoreCount === 0) {
-      return `| ${name} (${row.item.symbol}) | N/A | N/A | Insufficient data |`;
+      return `| ${name} (${row.item.symbol}) | Unavailable | Unavailable | Insufficient data |`;
     }
     const rank = scoredSorted.findIndex((sorted) => sorted.item.symbol === row.item.symbol) + 1;
     const percentile = scoreCount > 1 ? 1 - (rank - 1) / (scoreCount - 1) : 1;
@@ -1111,10 +1177,11 @@ export function buildPeerReport(data: PeerReportData): string {
     ? ['| Company (Ticker) | Score | Rank | Recommendation |', '|---|---:|---:|---|', ...recommendationRows].join('\n')
     : '_Recommendations unavailable._';
 
+  const universeList = data.items.map((item) => `${item.overview?.name || item.symbol} (${item.symbol})`).join(', ');
   const sections = [
     header,
     `Generated: ${data.generatedAt}`,
-    `Universe: ${data.items.map((item) => `${item.overview?.name || item.symbol} (${item.symbol})`).join(', ') || 'N/A'}`,
+    `Universe: ${universeList || 'Unavailable'}`,
     '## ✅ Companies Included',
     inclusionSection,
     '## 🧾 Company Snapshot',

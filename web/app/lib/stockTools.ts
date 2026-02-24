@@ -837,7 +837,8 @@ export async function executeTool(
       case 'generate_peer_report': {
         const symbol = args.symbol || '';
         const range = args.range || '5y';
-        const limit = Number(args.limit || 8);
+        const defaultLimit = process.env.VERCEL ? 4 : 6;
+        const limit = Math.min(Number(args.limit || defaultLimit), defaultLimit);
         const notes: string[] = [];
 
         let peerSymbols: string[] = [];
