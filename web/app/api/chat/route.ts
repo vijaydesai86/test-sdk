@@ -226,6 +226,60 @@ function parseSymbolAfterKeyword(message: string, keyword: string) {
   return null;
 }
 
+function extractTicker(message: string) {
+  const ignore = new Set(['EPS', 'PE', 'ETF', 'USD', 'AI', 'IPO', 'NAV']);
+  const matches = message.match(/\$?([A-Z]{1,6})\b/g) || [];
+  for (const raw of matches) {
+    const symbol = raw.replace('$', '').toUpperCase();
+    if (!ignore.has(symbol)) {
+      return symbol;
+    }
+  }
+  return null;
+}
+
+function extractQuery(message: string) {
+  const cleaned = message
+    .replace(/\b(show|me|the|price|quote|stock|shares|trend|history|for|of|on|in|report|analyst|rating|recommendation|target|news|sentiment|fundamentals|overview|financials|ratios|earnings|eps|income|balance|cash\s*flow|insider|peers|compare|top|gainers|losers|most|active|today|latest|sector|screen|search|company|companies)\b/gi, ' ')
+    .replace(/[^a-zA-Z&.\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return cleaned || message.trim();
+}
+
+async function resolveSymbolFromMessage(message: string, stockService: StockDataService) {
+  const ticker = extractTicker(message);
+  if (ticker) return ticker;
+  const query = extractQuery(message);
+  try {
+    const search = await stockService.searchStock(query);
+    const symbol = search?.results?.[0]?.symbol;
+    return symbol ? symbol.toUpperCase() : null;
+  } catch {
+    return null;
+  }
+}
+
+function parseMarketCapFilter(message: string) {
+  const match = message.match(/(market cap|mcap)\s+(over|above|greater than)\s+\$?(\d+(?:\.\d+)?)\s*([mbt])?/i);
+  const matchLow = message.match(/(market cap|mcap)\s+(under|below|less than)\s+\$?(\d+(?:\.\d+)?)\s*([mbt])?/i);
+  const scale = (value: number, suffix?: string) => {
+    if (!suffix) return value;
+    if (suffix.toLowerCase() === 'm') return value * 1e6;
+    if (suffix.toLowerCase() === 'b') return value * 1e9;
+    if (suffix.toLowerCase() === 't') return value * 1e12;
+    return value;
+  };
+  const filters: Record<string, number> = {};
+  if (match) {
+    filters.marketCapMoreThan = scale(Number(match[3]), match[4]);
+  }
+  if (matchLow) {
+    filters.marketCapLowerThan = scale(Number(matchLow[3]), matchLow[4]);
+  }
+  return filters;
+}
+
 function parseSearchRequest(message: string) {
   const match = message.match(/search\s+stock\s+(?:for\s+)?(.+)/i);
   if (match) return { query: match[1].trim() };
@@ -254,7 +308,8 @@ async function handleDirectToolResponse(
   stockService: StockDataService,
   message: string,
   sessionId?: string | null,
-  systemPrompt?: string
+  systemPrompt?: string,
+  format?: (data: any) => string
 ) {
   const currentSessionId = sessionId || Math.random().toString(36).substring(7);
   let conversationMessages: ChatMessage[] = sessionId ? sessions.get(sessionId) || [] : [];
@@ -271,7 +326,7 @@ async function handleDirectToolResponse(
     );
   }
 
-  const responseText = JSON.stringify(toolResult.data, null, 2);
+  const responseText = format ? format(toolResult.data) : JSON.stringify(toolResult.data, null, 2);
   conversationMessages.push({ role: 'assistant', content: responseText });
   sessions.set(currentSessionId, conversationMessages);
 
@@ -283,6 +338,54 @@ async function handleDirectToolResponse(
     stats: {
       rounds: 0,
       toolCalls: 1,
+      toolsProvided: 0,
+    },
+  });
+}
+
+async function handleAnalystTrendRequest(
+  symbol: string,
+  stockService: StockDataService,
+  message: string,
+  sessionId?: string | null
+) {
+  const currentSessionId = sessionId || Math.random().toString(36).substring(7);
+  let conversationMessages: ChatMessage[] = sessionId ? sessions.get(sessionId) || [] : [];
+  if (conversationMessages.length === 0) {
+    conversationMessages.push({ role: 'system', content: COMPACT_SYSTEM_PROMPT });
+  }
+  conversationMessages.push({ role: 'user', content: message });
+
+  const [trendResult, ratingsResult] = await Promise.all([
+    executeTool('get_analyst_recommendations', { symbol }, stockService),
+    executeTool('get_analyst_ratings', { symbol }, stockService),
+  ]);
+
+  if (!trendResult.success) {
+    return NextResponse.json(
+      { error: trendResult.error || trendResult.message || 'Analyst trends unavailable' },
+      { status: 500 }
+    );
+  }
+
+  const recommendations = trendResult.data?.recommendations || [];
+  const responseText = formatAnalystTrendResponse(
+    symbol,
+    recommendations,
+    ratingsResult.success ? ratingsResult.data : undefined
+  );
+
+  conversationMessages.push({ role: 'assistant', content: responseText });
+  sessions.set(currentSessionId, conversationMessages);
+
+  return NextResponse.json({
+    response: responseText,
+    sessionId: currentSessionId,
+    model: DEFAULT_MODEL,
+    provider: 'direct',
+    stats: {
+      rounds: 0,
+      toolCalls: 2,
       toolsProvided: 0,
     },
   });
@@ -319,6 +422,30 @@ function formatAnalystTrendResponse(symbol: string, recommendations: any[], rati
     table,
     'Source: Finnhub',
   ].filter(Boolean).join('\n\n');
+}
+
+function formatPriceResponse(data: any) {
+  if (!data) return '_No price data available._';
+  return [
+    `## 📊 ${data.symbol || ''} Price`,
+    `Price: ${data.price ?? 'N/A'}`,
+    `Change: ${data.change ?? 'N/A'} (${data.changePercent ?? 'N/A'})`,
+    `Volume: ${data.volume ?? 'N/A'}`,
+    `Last Close: ${data.latestTradingDay ?? 'N/A'}`,
+  ].join('\n');
+}
+
+function formatRatingsResponse(data: any) {
+  if (!data) return '_No ratings data available._';
+  return [
+    `## 🧭 Analyst Ratings — ${data.symbol || ''}`,
+    `Strong Buy: ${data.strongBuy ?? 'N/A'}`,
+    `Buy: ${data.buy ?? 'N/A'}`,
+    `Hold: ${data.hold ?? 'N/A'}`,
+    `Sell: ${data.sell ?? 'N/A'}`,
+    `Strong Sell: ${data.strongSell ?? 'N/A'}`,
+    `Target Price: ${data.analystTargetPrice ?? 'N/A'}`,
+  ].join('\n');
 }
 
 const DEFAULT_TOOL_NAMES = [
@@ -641,9 +768,11 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    const topMovers = message.toLowerCase().includes('top gainers') ||
-      message.toLowerCase().includes('top losers') ||
-      message.toLowerCase().includes('most active');
+    const lowerMessage = message.toLowerCase();
+
+    const topMovers = lowerMessage.includes('top gainers') ||
+      lowerMessage.includes('top losers') ||
+      lowerMessage.includes('most active');
     if (topMovers) {
       return handleDirectToolResponse('get_top_gainers_losers', {}, stockService, message, sessionId);
     }
@@ -656,9 +785,30 @@ export async function POST(request: NextRequest) {
       return handleDirectToolResponse('get_stocks_by_sector', { sector: sectorRequest.sector }, stockService, message, sessionId);
     }
 
+    if (lowerMessage.includes('screen')) {
+      const sectorMatch = message.match(/sector\s+([a-zA-Z\s&-]+)/i);
+      const industryMatch = message.match(/industry\s+([a-zA-Z\s&-]+)/i);
+      const filters = {
+        sector: sectorMatch?.[1]?.trim(),
+        industry: industryMatch?.[1]?.trim(),
+        ...parseMarketCapFilter(message),
+      };
+      return handleDirectToolResponse('screen_stocks', filters, stockService, message, sessionId);
+    }
+
     const searchRequest = parseSearchRequest(message);
     if (searchRequest) {
       return handleDirectToolResponse('search_stock', { query: searchRequest.query }, stockService, message, sessionId);
+    }
+
+    if (lowerMessage.includes('search companies')) {
+      const query = extractQuery(message);
+      return handleDirectToolResponse('search_companies', { query }, stockService, message, sessionId);
+    }
+
+    if (lowerMessage.includes('search news') || lowerMessage.includes('news about')) {
+      const query = extractQuery(message);
+      return handleDirectToolResponse('search_news', { query, days: 14 }, stockService, message, sessionId);
     }
 
     const newsRequest = parseNewsRequest(message);
@@ -671,108 +821,93 @@ export async function POST(request: NextRequest) {
       return handleDirectToolResponse('get_news_sentiment', { symbol: sentiment.symbol }, stockService, message, sessionId);
     }
 
+    const shouldResolveSymbol = /(price|quote|history|trend|overview|fundamentals|ratios|financials|earnings|eps|income|balance|cash flow|insider|ratings|target|peer|news|sentiment)/i.test(message);
+    const inferredSymbol = shouldResolveSymbol ? await resolveSymbolFromMessage(message, stockService) : null;
+    if (inferredSymbol && lowerMessage.includes('analyst') && lowerMessage.includes('trend')) {
+      return handleAnalystTrendRequest(inferredSymbol, stockService, message, sessionId);
+    }
+    if (inferredSymbol && lowerMessage.includes('news')) {
+      return handleDirectToolResponse('get_company_news', { symbol: inferredSymbol, days: 14 }, stockService, message, sessionId);
+    }
+    if (inferredSymbol && lowerMessage.includes('sentiment')) {
+      return handleDirectToolResponse('get_news_sentiment', { symbol: inferredSymbol }, stockService, message, sessionId);
+    }
+
     const symbolPrice = parseSymbolAfterKeyword(message, 'price') || parseSymbolAfterKeyword(message, 'quote');
-    if (symbolPrice) {
-      return handleDirectToolResponse('get_stock_price', { symbol: symbolPrice.symbol }, stockService, message, sessionId);
+    const priceSymbol = symbolPrice?.symbol || inferredSymbol;
+    if (priceSymbol && (symbolPrice || lowerMessage.includes('price') || lowerMessage.includes('quote'))) {
+      return handleDirectToolResponse('get_stock_price', { symbol: priceSymbol }, stockService, message, sessionId, undefined, formatPriceResponse);
     }
 
     const priceHistory = parseSymbolAfterKeyword(message, 'history') || parseSymbolAfterKeyword(message, 'trend');
-    if (priceHistory) {
-      return handleDirectToolResponse('get_price_history', { symbol: priceHistory.symbol, range: 'daily' }, stockService, message, sessionId);
+    const historySymbol = priceHistory?.symbol || inferredSymbol;
+    if (historySymbol && (priceHistory || lowerMessage.includes('history') || lowerMessage.includes('trend'))) {
+      return handleDirectToolResponse('get_price_history', { symbol: historySymbol, range: 'daily' }, stockService, message, sessionId);
     }
 
     const overview = parseSymbolAfterKeyword(message, 'overview') || parseSymbolAfterKeyword(message, 'fundamentals');
-    if (overview) {
-      return handleDirectToolResponse('get_company_overview', { symbol: overview.symbol }, stockService, message, sessionId);
+    const overviewSymbol = overview?.symbol || inferredSymbol;
+    if (overviewSymbol && (overview || lowerMessage.includes('overview') || lowerMessage.includes('fundamentals'))) {
+      return handleDirectToolResponse('get_company_overview', { symbol: overviewSymbol }, stockService, message, sessionId);
     }
 
     const basicFinancials = parseSymbolAfterKeyword(message, 'ratios') || parseSymbolAfterKeyword(message, 'financials');
-    if (basicFinancials) {
-      return handleDirectToolResponse('get_basic_financials', { symbol: basicFinancials.symbol }, stockService, message, sessionId);
+    const financialsSymbol = basicFinancials?.symbol || inferredSymbol;
+    if (financialsSymbol && (basicFinancials || lowerMessage.includes('ratios') || lowerMessage.includes('financials'))) {
+      return handleDirectToolResponse('get_basic_financials', { symbol: financialsSymbol }, stockService, message, sessionId);
     }
 
     const earnings = parseSymbolAfterKeyword(message, 'earnings') || parseSymbolAfterKeyword(message, 'eps');
-    if (earnings) {
-      return handleDirectToolResponse('get_earnings_history', { symbol: earnings.symbol }, stockService, message, sessionId);
+    const earningsSymbol = earnings?.symbol || inferredSymbol;
+    if (earningsSymbol && (earnings || lowerMessage.includes('earnings') || lowerMessage.includes('eps'))) {
+      return handleDirectToolResponse('get_earnings_history', { symbol: earningsSymbol }, stockService, message, sessionId);
     }
 
     const income = parseSymbolAfterKeyword(message, 'income');
-    if (income) {
-      return handleDirectToolResponse('get_income_statement', { symbol: income.symbol }, stockService, message, sessionId);
+    const incomeSymbol = income?.symbol || inferredSymbol;
+    if (incomeSymbol && (income || lowerMessage.includes('income'))) {
+      return handleDirectToolResponse('get_income_statement', { symbol: incomeSymbol }, stockService, message, sessionId);
     }
 
     const balance = parseSymbolAfterKeyword(message, 'balance');
-    if (balance) {
-      return handleDirectToolResponse('get_balance_sheet', { symbol: balance.symbol }, stockService, message, sessionId);
+    const balanceSymbol = balance?.symbol || inferredSymbol;
+    if (balanceSymbol && (balance || lowerMessage.includes('balance'))) {
+      return handleDirectToolResponse('get_balance_sheet', { symbol: balanceSymbol }, stockService, message, sessionId);
     }
 
     const cashFlow = parseSymbolAfterKeyword(message, 'cash flow');
-    if (cashFlow) {
-      return handleDirectToolResponse('get_cash_flow', { symbol: cashFlow.symbol }, stockService, message, sessionId);
+    const cashFlowSymbol = cashFlow?.symbol || inferredSymbol;
+    if (cashFlowSymbol && (cashFlow || lowerMessage.includes('cash flow'))) {
+      return handleDirectToolResponse('get_cash_flow', { symbol: cashFlowSymbol }, stockService, message, sessionId);
     }
 
     const insider = parseSymbolAfterKeyword(message, 'insider');
-    if (insider) {
-      return handleDirectToolResponse('get_insider_trading', { symbol: insider.symbol }, stockService, message, sessionId);
+    const insiderSymbol = insider?.symbol || inferredSymbol;
+    if (insiderSymbol && (insider || lowerMessage.includes('insider'))) {
+      return handleDirectToolResponse('get_insider_trading', { symbol: insiderSymbol }, stockService, message, sessionId);
     }
 
     const analystRatings = parseSymbolAfterKeyword(message, 'analyst ratings') || parseSymbolAfterKeyword(message, 'ratings');
-    if (analystRatings) {
-      return handleDirectToolResponse('get_analyst_ratings', { symbol: analystRatings.symbol }, stockService, message, sessionId);
+    const ratingsSymbol = analystRatings?.symbol || inferredSymbol;
+    if (ratingsSymbol && (analystRatings || lowerMessage.includes('ratings'))) {
+      return handleDirectToolResponse('get_analyst_ratings', { symbol: ratingsSymbol }, stockService, message, sessionId, undefined, formatRatingsResponse);
     }
 
     const priceTargets = parseSymbolAfterKeyword(message, 'price targets') || parseSymbolAfterKeyword(message, 'targets');
-    if (priceTargets) {
-      return handleDirectToolResponse('get_price_targets', { symbol: priceTargets.symbol }, stockService, message, sessionId);
+    const targetSymbol = priceTargets?.symbol || inferredSymbol;
+    if (targetSymbol && (priceTargets || lowerMessage.includes('target'))) {
+      return handleDirectToolResponse('get_price_targets', { symbol: targetSymbol }, stockService, message, sessionId);
     }
 
     const peers = parseSymbolAfterKeyword(message, 'peers') || parseSymbolAfterKeyword(message, 'peer');
-    if (peers) {
-      return handleDirectToolResponse('get_peers', { symbol: peers.symbol }, stockService, message, sessionId);
+    const peersSymbol = peers?.symbol || inferredSymbol;
+    if (peersSymbol && (peers || lowerMessage.includes('peer'))) {
+      return handleDirectToolResponse('get_peers', { symbol: peersSymbol }, stockService, message, sessionId);
     }
 
     const analystTrendRequest = parseAnalystTrendsRequest(message);
     if (analystTrendRequest) {
-      const currentSessionId = sessionId || Math.random().toString(36).substring(7);
-      let conversationMessages: ChatMessage[] = sessionId ? sessions.get(sessionId) || [] : [];
-      if (conversationMessages.length === 0) {
-        conversationMessages.push({ role: 'system', content: COMPACT_SYSTEM_PROMPT });
-      }
-      conversationMessages.push({ role: 'user', content: message });
-
-      const [trendResult, ratingsResult] = await Promise.all([
-        executeTool('get_analyst_recommendations', { symbol: analystTrendRequest.symbol }, stockService),
-        executeTool('get_analyst_ratings', { symbol: analystTrendRequest.symbol }, stockService),
-      ]);
-
-      if (!trendResult.success) {
-        return NextResponse.json(
-          { error: trendResult.error || trendResult.message || 'Analyst trends unavailable' },
-          { status: 500 }
-        );
-      }
-
-      const recommendations = trendResult.data?.recommendations || [];
-      const responseText = formatAnalystTrendResponse(
-        analystTrendRequest.symbol,
-        recommendations,
-        ratingsResult.success ? ratingsResult.data : undefined
-      );
-
-      conversationMessages.push({ role: 'assistant', content: responseText });
-      sessions.set(currentSessionId, conversationMessages);
-
-      return NextResponse.json({
-        response: responseText,
-        sessionId: currentSessionId,
-        model: model || DEFAULT_MODEL,
-        provider: provider || 'github',
-        stats: {
-          rounds: 0,
-          toolCalls: 2,
-          toolsProvided: 0,
-        },
-      });
+      return handleAnalystTrendRequest(analystTrendRequest.symbol, stockService, message, sessionId);
     }
 
     // Get or create conversation history
