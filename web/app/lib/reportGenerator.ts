@@ -535,14 +535,18 @@ export function buildStockReport(data: StockReportData): string {
   const headline = `# ${data.symbol} Comprehensive Equity Research Report`;
   const scorecard = computeScorecard(data);
 
+  const snapshotLines = [
+    `- Price: ${data.price?.price || 'Unavailable'} (${data.price?.changePercent || 'Unavailable'})`,
+    `- Market Cap: ${data.companyOverview?.marketCapitalization || 'Unavailable'}`,
+    `- Sector: ${data.companyOverview?.sector || 'Unavailable'}`,
+    `- Industry: ${data.companyOverview?.industry || 'Unavailable'}`,
+  ].filter((line) => !line.endsWith('Unavailable') && !line.includes('(Unavailable)'));
+
   const sections: string[] = [
     headline,
     `Generated: ${data.generatedAt}`,
     '## 📊 Snapshot',
-    `- Price: ${data.price?.price || 'N/A'} (${data.price?.changePercent || 'N/A'})`,
-    `- Market Cap: ${data.companyOverview?.marketCapitalization || 'N/A'}`,
-    `- Sector: ${data.companyOverview?.sector || 'N/A'}`,
-    `- Industry: ${data.companyOverview?.industry || 'N/A'}`,
+    ...(snapshotLines.length ? snapshotLines : ['- Snapshot data unavailable']),
   ];
 
   if (priceChart || epsChart) {
@@ -558,12 +562,12 @@ export function buildStockReport(data: StockReportData): string {
   }
 
   const financialLines = [
-    `- P/E: ${data.companyOverview?.peRatio || data.basicFinancials?.metric?.peBasicExclExtraTTM || 'N/A'}`,
-    `- PEG: ${data.companyOverview?.pegRatio || 'N/A'}`,
-    `- Gross Margin: ${data.basicFinancials?.metric?.grossMarginTTM || 'N/A'}`,
-    `- Operating Margin: ${data.basicFinancials?.metric?.operatingMarginTTM || 'N/A'}`,
-    `- ROE: ${data.basicFinancials?.metric?.roeTTM || 'N/A'}`,
-  ].filter((line) => !line.endsWith('N/A'));
+    `- P/E: ${data.companyOverview?.peRatio || data.basicFinancials?.metric?.peBasicExclExtraTTM || 'Unavailable'}`,
+    `- PEG: ${data.companyOverview?.pegRatio || 'Unavailable'}`,
+    `- Gross Margin: ${data.basicFinancials?.metric?.grossMarginTTM || 'Unavailable'}`,
+    `- Operating Margin: ${data.basicFinancials?.metric?.operatingMarginTTM || 'Unavailable'}`,
+    `- ROE: ${data.basicFinancials?.metric?.roeTTM || 'Unavailable'}`,
+  ].filter((line) => !line.endsWith('Unavailable'));
   if (financialLines.length) {
     sections.push('## 💰 Financials', ...financialLines);
   }
@@ -575,7 +579,7 @@ export function buildStockReport(data: StockReportData): string {
     sections.push('## 🧠 Analyst View');
     if (analystTarget) sections.push(`- Target Mean: ${analystTarget}`);
     if (hasRatings) {
-      sections.push(`- Ratings: Strong Buy ${data.analystRatings?.strongBuy || 'N/A'} / Buy ${data.analystRatings?.buy || 'N/A'} / Hold ${data.analystRatings?.hold || 'N/A'}`);
+      sections.push(`- Ratings: Strong Buy ${data.analystRatings?.strongBuy || 'Unavailable'} / Buy ${data.analystRatings?.buy || 'Unavailable'} / Hold ${data.analystRatings?.hold || 'Unavailable'}`);
     }
     if (targetChart) sections.push(targetChart);
   }
@@ -583,12 +587,12 @@ export function buildStockReport(data: StockReportData): string {
   if (scorecard.composite !== null) {
     sections.push(
       '## ✅ Scorecard',
-      `- Growth: ${scorecard.components.growth?.toFixed(1) ?? 'N/A'} (avg of revenue/EPS growth %)`,
-      `- Profitability: ${scorecard.components.profitability?.toFixed(1) ?? 'N/A'} (avg of gross/operating margin, ROE)`,
-      `- Valuation: ${scorecard.components.valuation?.toFixed(1) ?? 'N/A'} (100 - PE/50*100)`,
-      `- Momentum: ${scorecard.components.momentum?.toFixed(1) ?? 'N/A'}`,
-      `- Moat: ${scorecard.components.moat?.toFixed(1) ?? 'N/A'} (avg of margin stability, pricing power, analyst conviction)`,
-      `- Composite Score: ${scorecard.composite?.toFixed(1) ?? 'N/A'}`,
+      `- Growth: ${scorecard.components.growth?.toFixed(1) ?? 'Unavailable'} (avg of revenue/EPS growth %)`,
+      `- Profitability: ${scorecard.components.profitability?.toFixed(1) ?? 'Unavailable'} (avg of gross/operating margin, ROE)`,
+      `- Valuation: ${scorecard.components.valuation?.toFixed(1) ?? 'Unavailable'} (100 - PE/50*100)`,
+      `- Momentum: ${scorecard.components.momentum?.toFixed(1) ?? 'Unavailable'}`,
+      `- Moat: ${scorecard.components.moat?.toFixed(1) ?? 'Unavailable'} (avg of margin stability, pricing power, analyst conviction)`,
+      `- Composite Score: ${scorecard.composite?.toFixed(1) ?? 'Unavailable'}`,
     );
   }
 
@@ -663,20 +667,52 @@ export function buildSectorReport(data: SectorReportData): string {
     const name = item.overview?.name || item.symbol;
     const description = item.overview?.description || '';
     const firstSentence = description.split('. ').shift();
-    const role = firstSentence ? `${firstSentence}.` : (item.overview?.industry || item.overview?.sector || 'Overview unavailable');
-    const price = toNumber(item.price?.price);
-    const eps = toNumber(item.basicFinancials?.metric?.epsTTM ?? item.overview?.eps);
-    const pe = toNumber(item.overview?.peRatio ?? item.basicFinancials?.metric?.peBasicExclExtraTTM);
-    return [
-      `${name} (${item.symbol})`,
+    const role = firstSentence
+      ? `${firstSentence}.`
+      : (item.overview?.industry || item.overview?.sector || 'Overview unavailable');
+    return {
+      name: `${name} (${item.symbol})`,
       role,
-      price === null ? 'N/A' : price.toFixed(2),
-      eps === null ? 'N/A' : eps.toFixed(2),
-      pe === null ? 'N/A' : pe.toFixed(1),
-    ].join(' | ');
+      price: toNumber(item.price?.price),
+      eps: toNumber(item.basicFinancials?.metric?.epsTTM ?? item.overview?.eps),
+      pe: toNumber(item.overview?.peRatio ?? item.basicFinancials?.metric?.peBasicExclExtraTTM),
+    };
   });
+  const overviewColumns = [
+    { key: 'role', label: 'Role in Sector', format: (row: any) => row.role },
+    {
+      key: 'price',
+      label: 'Price',
+      format: (row: any) => (row.price === null ? null : row.price.toFixed(2)),
+      optional: true,
+    },
+    {
+      key: 'eps',
+      label: 'EPS',
+      format: (row: any) => (row.eps === null ? null : row.eps.toFixed(2)),
+      optional: true,
+    },
+    {
+      key: 'pe',
+      label: 'P/E',
+      format: (row: any) => (row.pe === null ? null : row.pe.toFixed(1)),
+      optional: true,
+    },
+  ];
+  const activeOverviewColumns = overviewColumns.filter((column: any) => {
+    if (!column.optional) return true;
+    return overviewRows.some((row: any) => column.format(row) !== null);
+  });
+  const overviewHeader = ['Company (Ticker)', ...activeOverviewColumns.map((column: any) => column.label)];
   const overviewSection = overviewRows.length
-    ? ['| Company (Ticker) | Role in Sector | Price | EPS | P/E |', '|---|---|---:|---:|---:|', ...overviewRows.map((row) => `| ${row} |`)].join('\n')
+    ? [
+        `| ${overviewHeader.join(' | ')} |`,
+        `| ${overviewHeader.map(() => '---').join(' | ')} |`,
+        ...overviewRows.map((row) => {
+          const values = activeOverviewColumns.map((column: any) => column.format(row) ?? 'Unavailable');
+          return `| ${[row.name, ...values].join(' | ')} |`;
+        }),
+      ].join('\n')
     : '_Company overview unavailable._';
 
   const dependencyRows = data.items.map((item) => {
@@ -684,7 +720,7 @@ export function buildSectorReport(data: SectorReportData): string {
     const industry = item.overview?.industry;
     const sector = item.overview?.sector;
     const dependency = industry || sector
-      ? `Industry: ${industry || 'N/A'}; Sector: ${sector || 'N/A'}`
+      ? `Industry: ${industry || 'Unavailable'}; Sector: ${sector || 'Unavailable'}`
       : 'Dependency data unavailable';
     return `| ${name} (${item.symbol}) | ${dependency} |`;
   });
@@ -695,27 +731,47 @@ export function buildSectorReport(data: SectorReportData): string {
   const analystRows = data.items.map((item) => {
     const name = item.overview?.name || item.symbol;
     const ratings = item.analystRatings || item.overview || {};
-    const rating = `SB ${ratings.strongBuy ?? ratings.analystRatingStrongBuy ?? 0} / B ${ratings.buy ?? ratings.analystRatingBuy ?? 0} / H ${ratings.hold ?? ratings.analystRatingHold ?? 0} / S ${ratings.sell ?? ratings.analystRatingSell ?? 0} / SS ${ratings.strongSell ?? ratings.analystRatingStrongSell ?? 0}`;
-    const target = toNumber(item.priceTargets?.targetMean || item.analystRatings?.analystTargetPrice);
+    const counts = [
+      toNumber(ratings.strongBuy ?? ratings.analystRatingStrongBuy),
+      toNumber(ratings.buy ?? ratings.analystRatingBuy),
+      toNumber(ratings.hold ?? ratings.analystRatingHold),
+      toNumber(ratings.sell ?? ratings.analystRatingSell),
+      toNumber(ratings.strongSell ?? ratings.analystRatingStrongSell),
+    ];
+    const hasRatings = counts.some((value) => value !== null);
+    const rating = hasRatings
+      ? `SB ${counts[0] ?? 0} / B ${counts[1] ?? 0} / H ${counts[2] ?? 0} / S ${counts[3] ?? 0} / SS ${counts[4] ?? 0}`
+      : null;
+    const target = toNumber(item.priceTargets?.targetMean || ratings.analystTargetPrice);
     const price = toNumber(item.price?.price);
-    const upside = price && target ? `${(((target - price) / price) * 100).toFixed(1)}%` : 'N/A';
-    return [
-      `${name} (${item.symbol})`,
+    const upside = price && target ? `${(((target - price) / price) * 100).toFixed(1)}%` : null;
+    return {
+      name: `${name} (${item.symbol})`,
       rating,
-      target === null ? 'N/A' : target.toFixed(2),
+      target,
       upside,
-    ].join(' | ');
+    };
   });
-  const analystSection = analystRows.length
-    ? ['| Company (Ticker) | Analyst Ratings | Target Mean | Upside |', '|---|---|---:|---:|', ...analystRows.map((row) => `| ${row} |`)].join('\n')
-    : '_Analyst data unavailable._';
+  const hasAnalystData = analystRows.some((row) => row.rating || row.target !== null);
+  const analystSection = hasAnalystData
+    ? [
+        '| Company (Ticker) | Analyst Ratings | Target Mean | Upside |',
+        '|---|---|---:|---:|',
+        ...analystRows.map((row) => {
+          const rating = row.rating ?? 'Unavailable';
+          const target = row.target === null ? 'Unavailable' : row.target.toFixed(2);
+          const upside = row.upside ?? 'Unavailable';
+          return `| ${row.name} | ${rating} | ${target} | ${upside} |`;
+        }),
+      ].join('\n')
+    : '_Analyst ratings are not provided by Alpha Vantage for this theme._';
 
   const scoredSorted = scored.filter((row) => row.score !== null).sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
   const scoreCount = scoredSorted.length;
   const recommendationRows = scored.map((row) => {
     const name = row.item.overview?.name || row.item.symbol;
     if (row.score === null || scoreCount === 0) {
-      return `| ${name} (${row.item.symbol}) | N/A | N/A | Insufficient data |`;
+      return `| ${name} (${row.item.symbol}) | Unavailable | Unavailable | Insufficient data |`;
     }
     const rank = scoredSorted.findIndex((sorted) => sorted.item.symbol === row.item.symbol) + 1;
     const percentile = scoreCount > 1 ? 1 - (rank - 1) / (scoreCount - 1) : 1;
@@ -730,12 +786,22 @@ export function buildSectorReport(data: SectorReportData): string {
     ? ['| Company (Ticker) | Score | Rank | Recommendation |', '|---|---:|---:|---|', ...recommendationRows].join('\n')
     : '_Recommendations unavailable._';
 
+  const sectorCounts = data.items.reduce((acc: Record<string, number>, item) => {
+    const sector = item.overview?.sector || 'Uncategorized';
+    acc[sector] = (acc[sector] || 0) + 1;
+    return acc;
+  }, {});
+  const sectorMix = Object.entries(sectorCounts)
+    .map(([sector, count]) => `${sector} (${count})`)
+    .join(', ');
+
   const sections = [
     header,
     `Generated: ${data.generatedAt}`,
     '## 🧭 Sector Summary',
     `- Query: ${data.query}`,
     `- Universe Size: ${data.universe.length}`,
+    sectorMix ? `- Sector Mix: ${sectorMix}` : null,
     notes ? `- Notes:\n${notes}` : null,
     '## ✅ Companies Included',
     inclusionSection,

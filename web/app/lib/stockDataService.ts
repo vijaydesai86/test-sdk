@@ -444,7 +444,7 @@ export class AlphaVantageService implements StockDataService {
   }
 
   async searchCompanies(query: string): Promise<any> {
-    return { results: [] };
+    return this.searchStock(query);
   }
 
   async getEarningsHistory(symbol: string): Promise<any> {

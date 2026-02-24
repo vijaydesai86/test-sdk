@@ -51,19 +51,10 @@ Name: ALPHA_VANTAGE_API_KEY
 Value: your_alpha_vantage_key
 ```
 
+Optional (only if you want to use an OpenAI-compatible proxy instead of GitHub Models):
 ```
-Name: FMP_API_KEY
-Value: your_fmp_key
-```
-
-```
-Name: FINNHUB_API_KEY
-Value: your_finnhub_key
-```
-
-```
-Name: NEWSAPI_KEY
-Value: your_newsapi_key
+Name: OPENAI_API_KEY
+Value: your_openai_key
 ```
 
 Get a free Alpha Vantage key at: https://www.alphavantage.co/support/#api-key
@@ -172,9 +163,7 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 |----------|----------|-------------|
 | `GITHUB_TOKEN` | Yes (Vercel) | GitHub Personal Access Token to use your Copilot subscription |
 | `ALPHA_VANTAGE_API_KEY` | Yes | Alpha Vantage API key for prices and financials. Get free at https://www.alphavantage.co/support/#api-key |
-| `FMP_API_KEY` | Yes | Financial Modeling Prep key for screening/search. Get free at https://financialmodelingprep.com/developer/docs/ |
-| `FINNHUB_API_KEY` | Yes | Finnhub key for analyst ratings, peers, and sentiment. Get free at https://finnhub.io/ |
-| `NEWSAPI_KEY` | Yes | NewsAPI key for broader market news. Get free at https://newsapi.org/ |
+| `OPENAI_API_KEY` | No | Optional proxy key if you want to use an OpenAI-compatible endpoint instead of GitHub Models |
 
 ## Support
 

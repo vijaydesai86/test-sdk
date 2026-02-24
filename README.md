@@ -122,7 +122,7 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) for complete deployment instructions.
 **Key Points:**
 - Set the **Root Directory** to `web`
 - Add `GITHUB_TOKEN` environment variable (uses your Copilot subscription!)
-- Set `ALPHA_VANTAGE_API_KEY`, `FMP_API_KEY`, `FINNHUB_API_KEY`, and `NEWSAPI_KEY` for full data coverage
+- Set `ALPHA_VANTAGE_API_KEY` for real-time market data (Alpha Vantage free tier)
 
 **Note**: The web deployment uses GitHub Copilot SDK with token authentication.
 
@@ -133,6 +133,7 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) for complete deployment instructions.
    - Uses your existing GitHub Copilot subscription
    - No additional cost!
 2. **Alpha Vantage Key** (Required for market data): Get from [Alpha Vantage](https://www.alphavantage.co/support/#api-key)
+3. **OpenAI API Key** (Optional): Set `OPENAI_API_KEY` if you want to route via an OpenAI-compatible proxy instead of GitHub Models
 
 ### For Local Development:
 
@@ -180,14 +181,12 @@ The AI assistant has access to these tools:
 4. **get_company_overview**: Get fundamentals (EPS, PE, margins, sector, description)
 5. **get_basic_financials**: Ratios and metric history (including PE history)
 6. **get_insider_trading**: View insider transactions
-7. **get_analyst_ratings**: See analyst consensus and targets
-8. **get_analyst_recommendations**: Analyst rating trends over time
-9. **get_price_targets**: Analyst price target summary
-10. **get_peers**: Peer tickers for comps
-11. **get_earnings_history**: Quarterly/annual EPS history with beat/miss data
-12. **get_income_statement**: Revenue, profit, EBITDA (quarterly and annual)
-13. **get_balance_sheet**: Assets, liabilities, equity, cash, debt
-14. **get_cash_flow**: Operating cash flow, free cash flow, capex
+7. **get_earnings_history**: Quarterly/annual EPS history with beat/miss data
+8. **get_income_statement**: Revenue, profit, EBITDA (quarterly and annual)
+9. **get_balance_sheet**: Assets, liabilities, equity, cash, debt
+10. **get_cash_flow**: Operating cash flow, free cash flow, capex
+
+_Note: Analyst ratings, price targets, peers, and news tools require premium data sources and return “Unavailable” in Alpha-only mode._
 15. **get_sector_performance**: Real-time sector performance across timeframes
 16. **get_stocks_by_sector**: Sector screening by name
 17. **screen_stocks**: Advanced stock screener filters

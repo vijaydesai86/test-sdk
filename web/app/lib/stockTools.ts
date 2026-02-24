@@ -774,42 +774,20 @@ export async function executeTool(
       }
       case 'generate_sector_report': {
         const query = args.query || '';
-        const limit = Math.min(Number(args.limit || 12), 10);
+        const defaultLimit = process.env.VERCEL ? 3 : 4;
+        const limit = Math.min(Number(args.limit || defaultLimit), defaultLimit);
         const notes: string[] = [];
+        notes.push('Universe limited to the top matches to respect Alpha Vantage free-tier rate limits.');
 
         let universe: string[] = [];
         try {
-          const sectorResults = await stockService.getStocksBySector(query);
-          universe = (sectorResults.results || []).map((item: any) => item.symbol).filter(Boolean).slice(0, limit);
+          const searchResults = await stockService.searchStock(query);
+          universe = (searchResults.results || []).map((item: any) => item.symbol).filter(Boolean).slice(0, limit);
           if (universe.length > 0) {
-            notes.push(`Universe built from sector screening for "${query}".`);
+            notes.push(`Universe built from Alpha Vantage symbol search for "${query}".`);
           }
         } catch (error: any) {
-          notes.push(`Sector screening unavailable: ${error.message}`);
-        }
-
-        if (universe.length === 0) {
-          try {
-            const searchResults = await stockService.searchCompanies(query);
-            universe = (searchResults.results || []).map((item: any) => item.symbol).filter(Boolean).slice(0, limit);
-            if (universe.length > 0) {
-              notes.push(`Universe built from multi-source search for "${query}".`);
-            }
-          } catch (error: any) {
-            notes.push(`Company search unavailable: ${error.message}`);
-          }
-        }
-
-        if (universe.length === 0) {
-          try {
-            const searchResults = await stockService.searchStock(query);
-            universe = (searchResults.results || []).map((item: any) => item.symbol).filter(Boolean).slice(0, limit);
-            if (universe.length > 0) {
-              notes.push(`Universe built from Alpha Vantage symbol search for "${query}".`);
-            }
-          } catch (error: any) {
-            notes.push(`Symbol search unavailable: ${error.message}`);
-          }
+          notes.push(`Symbol search unavailable: ${error.message}`);
         }
 
         if (universe.length === 0) {
@@ -820,24 +798,26 @@ export async function executeTool(
           universe = await expandUniverseFromTopMovers(query, limit, notes, stockService);
         }
 
-        if (universe.length === 0) {
-          const newsResults = await stockService.searchNews(query, 14);
-          const headlines = (newsResults.articles || []).map((a: any) => a.title || '').filter(Boolean).slice(0, 10);
-          notes.push(`News scan headlines: ${headlines.join('; ') || 'N/A'}`);
-        }
-
         const items = [] as any[];
         for (const symbol of universe) {
-          const [price, overview, basicFinancials] = await Promise.all([
-            stockService.getStockPrice(symbol).catch(() => null),
-            stockService.getCompanyOverview(symbol).catch(() => null),
-            stockService.getBasicFinancials(symbol).catch(() => null),
-          ]);
-          const analystRatings = overview ? { ...overview } : null;
-          const priceTargets = overview?.analystTargetPrice
-            ? { targetMean: overview.analystTargetPrice }
-            : null;
-          items.push({ symbol, price, overview, basicFinancials, analystRatings, priceTargets });
+          try {
+            const overview = await stockService.getCompanyOverview(symbol);
+            const price = await stockService.getStockPrice(symbol).catch(() => null);
+            const basicFinancials = await stockService.getBasicFinancials(symbol).catch(() => null);
+            const analystRatings = overview ? { ...overview } : null;
+            const priceTargets = overview?.analystTargetPrice
+              ? { targetMean: overview.analystTargetPrice }
+              : null;
+            items.push({ symbol, price, overview, basicFinancials, analystRatings, priceTargets });
+          } catch (error: any) {
+            const message = error?.message || 'Unknown error';
+            if (message.includes('429')) {
+              notes.push('Alpha Vantage rate limit reached; remaining symbols skipped.');
+              break;
+            }
+            items.push({ symbol, price: null, overview: null, basicFinancials: null, analystRatings: null, priceTargets: null });
+            notes.push(`${symbol}: ${message}`);
+          }
         }
 
         const content = buildSectorReport({

@@ -96,9 +96,6 @@ For CLI:
 # Create .env file in root directory
 cat <<EOF > .env
 ALPHA_VANTAGE_API_KEY=your_key_here
-FMP_API_KEY=your_fmp_key_here
-FINNHUB_API_KEY=your_finnhub_key_here
-NEWSAPI_KEY=your_newsapi_key_here
 EOF
 ```
 
@@ -107,10 +104,9 @@ For Web:
 # Create .env.local file in web directory
 cd web
 cat <<EOF > .env.local
+GITHUB_TOKEN=your_github_token_here
 ALPHA_VANTAGE_API_KEY=your_key_here
-FMP_API_KEY=your_fmp_key_here
-FINNHUB_API_KEY=your_finnhub_key_here
-NEWSAPI_KEY=your_newsapi_key_here
+# Optional: OPENAI_API_KEY=your_openai_key_here
 EOF
 ```
 

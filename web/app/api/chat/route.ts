@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getToolDefinitionsByName, executeTool } from '@/app/lib/stockTools';
-import { createReportJob, updateReportJob } from '@/app/lib/reportJobs';
 import { AlphaVantageService, StockDataService } from '@/app/lib/stockDataService';
 
 // GitHub Models API — new endpoint (azure endpoint deprecated Oct 2025)
@@ -54,15 +53,15 @@ const SYSTEM_PROMPT = `You are an elite buy-side equity research analyst. Produc
 
 **3. Match depth to the question.**
 - Price query: get_stock_price → short direct answer.
-- Single-stock deep dive: get_stock_price + get_company_overview + get_basic_financials + get_earnings_history + get_income_statement + get_balance_sheet + get_cash_flow + get_analyst_ratings + get_analyst_recommendations + get_price_targets + get_news_sentiment + get_company_news + get_price_history.
-- Peer comparison: get_peers → batch get_company_overview + get_basic_financials + get_stock_price + get_analyst_ratings for ALL peers.
-- Sector/theme report: screen_stocks or get_stocks_by_sector → batch get_company_overview + get_stock_price + get_basic_financials for ALL stocks.
-- News-driven theme: search_news + search_companies → build list → batch core tools.
+- Single-stock deep dive: get_stock_price + get_company_overview + get_basic_financials + get_earnings_history + get_income_statement + get_balance_sheet + get_cash_flow + get_price_history.
+- Peer comparison: search_stock for peers → batch get_company_overview + get_basic_financials + get_stock_price.
+- Sector/theme report: search_stock → batch get_company_overview + get_stock_price + get_basic_financials.
+- News-driven theme: not available in Alpha-only mode.
 - Investment allocation: batch full data for all candidates → quantitative scoring → exact $ amounts, stop-losses, rebalancing triggers.
 
 **4. Never skip a tool** when that data would strengthen the analysis. If a tool fails due to missing API keys, say so explicitly and continue with available data only.
 
-**5. No hardcoded lists.** Always derive sector, theme, and peer lists from tools like screen_stocks, search_companies, get_peers, or search_news.
+**5. No hardcoded lists.** Always derive sector, theme, and peer lists from tools like search_stock.
 
 **6. Report requests.** When a user asks for a full report, call generate_stock_report or generate_sector_report and return the saved artifact path.
 
@@ -74,7 +73,7 @@ const SYSTEM_PROMPT = `You are an elite buy-side equity research analyst. Produc
 - Scoring matrix for allocations: Growth 25% / Profitability 20% / Moat 20% / Valuation 20% / Momentum 15%.
 - Numbers: prices 2 decimals, % 1 decimal, large numbers 2 sig figs ($2.3B).
 - Cite "Source: Alpha Vantage" after data-heavy sections.
-- Length matches request: price query = 2–3 lines; full sector report = 2,000+ words.
+- Length matches request: price query = 2–3 lines; full sector report = 1,000+ words.
 `;
 
 const COMPACT_SYSTEM_PROMPT = `You are a buy-side equity research analyst.
@@ -819,35 +818,44 @@ export async function POST(request: NextRequest) {
       conversationMessages.push({ role: 'user', content: message });
 
       if (reportRequest.type === 'sector') {
-        const job = createReportJob('sector');
-        setTimeout(() => {
-          void (async () => {
-            updateReportJob(job.id, { status: 'running' });
-            const toolResult = await executeTool('generate_sector_report', { query: reportRequest.query }, stockService);
-            if (!toolResult.success) {
-              updateReportJob(job.id, { status: 'failed', error: toolResult.error || toolResult.message || 'Report failed' });
-              return;
-            }
-            const filename = toolResult.data?.filename as string | undefined;
-            const downloadUrl = toolResult.data?.downloadUrl as string | undefined;
-            updateReportJob(job.id, {
-              status: 'completed',
-              filename,
-              downloadUrl,
-            });
-          })();
-        }, 0);
+        const toolResult = await executeTool(
+          'generate_sector_report',
+          { query: reportRequest.query },
+          stockService
+        );
 
-        conversationMessages.push({ role: 'assistant', content: `Report generation started. Job ID: ${job.id}` });
+        if (!toolResult.success) {
+          return NextResponse.json(
+            { error: toolResult.error || toolResult.message || 'Report generation failed' },
+            { status: 500 }
+          );
+        }
+
+        const downloadUrl = toolResult.data?.downloadUrl;
+        const filename = toolResult.data?.filename as string | undefined;
+        const content = toolResult.data?.content as string | undefined;
+        const responseText = downloadUrl
+          ? `Report generated: ${downloadUrl}`
+          : 'Report generated.';
+
+        conversationMessages.push({ role: 'assistant', content: responseText });
         sessions.set(currentSessionId, conversationMessages);
 
+        console.info('Chat request stats', {
+          provider: provider || 'github',
+          model: model || DEFAULT_MODEL,
+          rounds: 0,
+          toolCalls: 1,
+          toolsProvided: 0,
+          directReport: reportRequest.type,
+        });
+
         return NextResponse.json({
-          response: `Report generation started. Job ID: ${job.id}`,
-          jobId: job.id,
+          response: responseText,
           sessionId: currentSessionId,
           model: model || DEFAULT_MODEL,
           provider: provider || 'github',
-          report: { jobId: job.id, status: 'pending' },
+          report: filename && content ? { filename, content, downloadUrl } : null,
           stats: {
             rounds: 0,
             toolCalls: 1,

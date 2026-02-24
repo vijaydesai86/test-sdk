@@ -122,7 +122,6 @@ export default function ChatInterface() {
   const [reportUrl, setReportUrl] = useState<string | null>(null);
   const [deletedReports, setDeletedReports] = useState<Set<string>>(new Set());
   const [savedReports, setSavedReports] = useState<ReportItem[]>([]);
-  const pollTimers = useRef<Map<string, number>>(new Map());
 
   // Fetch the live model catalog on mount
   useEffect(() => {
@@ -144,11 +143,6 @@ export default function ChatInterface() {
       })
       .finally(() => setModelsLoading(false));
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  useEffect(() => () => {
-    pollTimers.current.forEach((timer) => window.clearTimeout(timer));
-    pollTimers.current.clear();
   }, []);
 
   const scrollToBottom = () => {
@@ -225,50 +219,6 @@ export default function ChatInterface() {
             },
           ];
         });
-      }
-      if (data.report?.jobId) {
-        const jobId = data.report.jobId as string;
-        const poll = async (attempts = 0) => {
-          if (attempts > 30) return;
-          try {
-            const statusResponse = await fetch(`/api/reports/status/${jobId}`);
-            const statusData = await statusResponse.json();
-            if (statusData.status === 'completed' && statusData.filename && statusData.downloadUrl) {
-              setSavedReports((prev) => {
-                const existing = prev.find((item) => item.filename === statusData.filename);
-                if (existing) return prev;
-                return [
-                  ...prev,
-                  {
-                    filename: statusData.filename,
-                    downloadUrl: statusData.downloadUrl,
-                  },
-                ];
-              });
-              setMessages((prev) => ([
-                ...prev,
-                {
-                  role: 'assistant',
-                  content: `Report ready: ${statusData.downloadUrl}`,
-                  model: data.model,
-                  stats: data.stats,
-                },
-              ]));
-              pollTimers.current.delete(jobId);
-              return;
-            }
-            if (statusData.status === 'failed') {
-              setError(statusData.error || 'Report generation failed');
-              pollTimers.current.delete(jobId);
-              return;
-            }
-          } catch (error) {
-            setError(error instanceof Error ? error.message : 'Failed to check report status');
-          }
-          const timer = window.setTimeout(() => poll(attempts + 1), 2000);
-          pollTimers.current.set(jobId, timer);
-        };
-        poll();
       }
     } catch (err: any) {
       setError(err.message);
