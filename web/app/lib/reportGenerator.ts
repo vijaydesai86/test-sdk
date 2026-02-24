@@ -478,6 +478,31 @@ export function buildSectorReport(data: SectorReportData): string {
   const header = `# Sector/Thematic Report: ${data.query}`;
   const table = buildPeerTable(data.items);
   const notes = data.notes?.length ? data.notes.map((n) => `- ${n}`).join('\n') : 'N/A';
+  const marketCaps = data.items
+    .map((item) => toNumber(item.overview?.marketCapitalization))
+    .filter((value): value is number => value !== null);
+  const peRatios = data.items
+    .map((item) => toNumber(item.overview?.peRatio ?? item.basicFinancials?.metric?.peBasicExclExtraTTM))
+    .filter((value): value is number => value !== null);
+  const prices = data.items
+    .map((item) => toNumber(item.price?.price))
+    .filter((value): value is number => value !== null);
+  const targetUpside = data.items
+    .map((item) => {
+      const price = toNumber(item.price?.price);
+      const target = toNumber(item.priceTargets?.targetMean || item.analystRatings?.analystTargetPrice);
+      if (!price || !target) return null;
+      return ((target - price) / price) * 100;
+    })
+    .filter((value): value is number => value !== null);
+  const averageValue = (values: number[]) =>
+    values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
+  const medianValue = (values: number[]) => {
+    if (values.length === 0) return null;
+    const sorted = [...values].sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
+  };
 
   const scored = data.items.map((item) => {
     const scoreData: StockReportData = {
@@ -547,10 +572,44 @@ export function buildSectorReport(data: SectorReportData): string {
     .map((item) => ({ symbol: item.symbol, value: item.value as number }));
   const targetChart = buildBarChart('Analyst Target Mean', 'Price', targetSeries);
 
+  const upsideRows = data.items
+    .map((item) => {
+      const price = toNumber(item.price?.price);
+      const target = toNumber(item.priceTargets?.targetMean || item.analystRatings?.analystTargetPrice);
+      if (!price || !target) return null;
+      return {
+        symbol: item.symbol,
+        upside: ((target - price) / price) * 100,
+      };
+    })
+    .filter((row): row is { symbol: string; upside: number } => row !== null)
+    .sort((a, b) => b.upside - a.upside)
+    .slice(0, 5);
+
+  const upsideSection = upsideRows.length
+    ? [
+        '| Symbol | Target Upside |',
+        '|---|---:|',
+        ...upsideRows.map((row) => `| ${row.symbol} | ${row.upside.toFixed(1)}% |`),
+      ].join('\n')
+    : '_Target upside data unavailable_';
+
+  const overviewSection = [
+    `Universe Size: ${data.universe.length}`,
+    `Median Market Cap: ${medianValue(marketCaps)?.toFixed(0) ?? 'N/A'}`,
+    `Average P/E: ${averageValue(peRatios)?.toFixed(1) ?? 'N/A'}`,
+    `Average Price: ${averageValue(prices)?.toFixed(2) ?? 'N/A'}`,
+    `Average Target Upside: ${averageValue(targetUpside)?.toFixed(1) ?? 'N/A'}%`,
+  ].join('\n');
+
   return [
     header,
     `Generated: ${data.generatedAt}`,
     `Universe: ${data.universe.join(', ') || 'N/A'}`,
+    '## 📌 Universe Snapshot',
+    overviewSection,
+    '## 🎯 Target Upside Leaders',
+    upsideSection,
     '## 📊 Charts',
     marketCapChart || '_Market cap chart unavailable_',
     peChart || '_P/E chart unavailable_',

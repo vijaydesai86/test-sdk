@@ -211,7 +211,7 @@ function parseReportRequest(message: string) {
     }
   }
 
-  const stockMatch = text.match(/report\s+(?:for|on)\s+([a-zA-Z]{1,6})\b/i);
+  const stockMatch = text.match(/report\s+(?:for|on)\s+([a-zA-Z]{1,6})\s*$/i);
   if (stockMatch) {
     return { type: 'stock' as const, symbol: stockMatch[1].toUpperCase() };
   }
