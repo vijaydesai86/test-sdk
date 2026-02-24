@@ -243,7 +243,6 @@ export default function ChatInterface() {
     'Generate a full stock report for NVDA',
     'Generate a sector report for AI data center stocks',
     'Compare peers for AMD with valuation and targets',
-    'Show me analyst rating trends for MSFT',
     'What are today’s top gainers and losers?',
   ];
 
@@ -471,10 +470,9 @@ export default function ChatInterface() {
             <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wide">Coverage Checklist</h2>
             <ul className="mt-3 text-sm text-gray-600 dark:text-gray-400 space-y-2">
               <li>• Price, EPS, and revenue trends</li>
-              <li>• Margin and valuation charts</li>
-              <li>• Analyst targets and rating trends</li>
-              <li>• Peer comps and sector screens</li>
-              <li>• News and sentiment signals</li>
+              <li>• Margin, valuation, and profitability metrics</li>
+              <li>• Peer comps and sector coverage</li>
+              <li>• Alpha Vantage data coverage</li>
             </ul>
           </div>
         </aside>
