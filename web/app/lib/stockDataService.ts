@@ -40,6 +40,7 @@ export class AlphaVantageService implements StockDataService {
   private newsApiBaseUrl = 'https://newsapi.org/v2';
   private cache = new Map<string, { expiresAt: number; data: any }>();
   private lastRequestAt = new Map<string, number>();
+  private fmpEnabled = process.env.ENABLE_FMP !== 'false';
   private minIntervals = {
     alphavantage: Number(process.env.ALPHA_VANTAGE_MIN_INTERVAL_MS || 12000),
     finnhub: Number(process.env.FINNHUB_MIN_INTERVAL_MS || 1000),
@@ -151,6 +152,9 @@ export class AlphaVantageService implements StockDataService {
     params: Record<string, string> = {},
     options: { ttlMs?: number; cacheKey?: string } = {}
   ): Promise<any> {
+    if (!this.fmpEnabled) {
+      throw new Error('FMP disabled');
+    }
     if (!this.fmpApiKey) {
       throw new Error('FMP_API_KEY is required for this request');
     }

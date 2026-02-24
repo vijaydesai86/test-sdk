@@ -556,7 +556,9 @@ export async function executeTool(
             return await request;
           } catch (error: any) {
             const message = error?.message || 'Unavailable';
-            notes.push(`${label}: ${message}`);
+            if (message !== 'FMP disabled') {
+              notes.push(`${label}: ${message}`);
+            }
             return undefined as T;
           }
         };

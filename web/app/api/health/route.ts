@@ -38,7 +38,9 @@ export async function GET() {
   }
 
   try {
-    if (!process.env.FMP_API_KEY) {
+    if (process.env.ENABLE_FMP === 'false') {
+      results.fmp = { ok: false, error: 'FMP disabled' };
+    } else if (!process.env.FMP_API_KEY) {
       results.fmp = { ok: false, error: 'FMP_API_KEY not set' };
     } else {
       const response = await fetch(
