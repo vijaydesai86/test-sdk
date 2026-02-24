@@ -32,31 +32,14 @@ export interface StockDataService {
 export class AlphaVantageService implements StockDataService {
   private apiKey: string;
   private baseUrl = 'https://www.alphavantage.co/query';
-  private finnhubApiKey?: string;
-  private fmpApiKey?: string;
-  private newsApiKey?: string;
-  private fmpEnabled: boolean;
-  private alphaOnly: boolean;
-  private finnhubBaseUrl = 'https://finnhub.io/api/v1';
-  private fmpBaseUrl = 'https://financialmodelingprep.com/api/v3';
-  private newsApiBaseUrl = 'https://newsapi.org/v2';
   private cache = new Map<string, { expiresAt: number; data: any }>();
   private lastRequestAt = new Map<string, number>();
   private minIntervals = {
     alphavantage: Number(process.env.ALPHA_VANTAGE_MIN_INTERVAL_MS || 12000),
-    finnhub: Number(process.env.FINNHUB_MIN_INTERVAL_MS || 1000),
-    fmp: Number(process.env.FMP_MIN_INTERVAL_MS || 1000),
-    newsapi: Number(process.env.NEWSAPI_MIN_INTERVAL_MS || 1000),
   };
 
   constructor(apiKey?: string) {
     this.apiKey = apiKey || process.env.ALPHA_VANTAGE_API_KEY || 'demo';
-    this.finnhubApiKey = process.env.FINNHUB_API_KEY;
-    this.fmpApiKey = process.env.FMP_API_KEY;
-    this.newsApiKey = process.env.NEWSAPI_KEY;
-    this.fmpEnabled = process.env.FMP_DISABLED !== 'true';
-    this.alphaOnly = process.env.USE_ALPHA_ONLY === 'true'
-      || (!this.finnhubApiKey && !this.fmpApiKey && !this.newsApiKey);
   }
 
   private buildCacheKey(prefix: string, params: Record<string, string>): string {
@@ -122,95 +105,6 @@ export class AlphaVantageService implements StockDataService {
     });
   }
 
-  private async makeFinnhubRequest(
-    path: string,
-    params: Record<string, string> = {},
-    options: { ttlMs?: number; cacheKey?: string } = {}
-  ): Promise<any> {
-    if (this.alphaOnly || !this.finnhubApiKey) {
-      throw new Error('Finnhub disabled');
-    }
-    const cacheKey = options.cacheKey || this.buildCacheKey(`finnhub:${path}`, params);
-    const ttlMs = options.ttlMs || 0;
-
-    return this.fetchWithCache(cacheKey, ttlMs, async () => {
-      await this.throttle('finnhub', this.minIntervals.finnhub);
-      try {
-        const response = await axios.get(`${this.finnhubBaseUrl}${path}`, {
-          params: {
-            ...params,
-            token: this.finnhubApiKey,
-          },
-          timeout: 10000,
-        });
-        return response.data;
-      } catch (error: any) {
-        console.error('Finnhub API request failed:', error.message);
-        throw new Error(`Finnhub request failed: ${error.message}`);
-      }
-    });
-  }
-
-  private async makeFmpRequest(
-    path: string,
-    params: Record<string, string> = {},
-    options: { ttlMs?: number; cacheKey?: string } = {}
-  ): Promise<any> {
-    if (this.alphaOnly || !this.fmpApiKey) {
-      throw new Error('FMP disabled');
-    }
-    const cacheKey = options.cacheKey || this.buildCacheKey(`fmp:${path}`, params);
-    const ttlMs = options.ttlMs || 0;
-
-    return this.fetchWithCache(cacheKey, ttlMs, async () => {
-      await this.throttle('fmp', this.minIntervals.fmp);
-      try {
-        const response = await axios.get(`${this.fmpBaseUrl}${path}`, {
-          params: {
-            ...params,
-            apikey: this.fmpApiKey,
-          },
-          timeout: 10000,
-        });
-        return response.data;
-      } catch (error: any) {
-        console.error('FMP API request failed:', error.message);
-        throw new Error(`FMP request failed: ${error.message}`);
-      }
-    });
-  }
-
-  private async makeNewsApiRequest(
-    params: Record<string, string>,
-    options: { ttlMs?: number; cacheKey?: string } = {}
-  ): Promise<any> {
-    if (this.alphaOnly || !this.newsApiKey) {
-      throw new Error('NewsAPI disabled');
-    }
-    const cacheKey = options.cacheKey || this.buildCacheKey('newsapi:everything', params);
-    const ttlMs = options.ttlMs || 0;
-
-    return this.fetchWithCache(cacheKey, ttlMs, async () => {
-      await this.throttle('newsapi', this.minIntervals.newsapi);
-      try {
-        const response = await axios.get(`${this.newsApiBaseUrl}/everything`, {
-          params: {
-            ...params,
-            apiKey: this.newsApiKey,
-          },
-          timeout: 10000,
-        });
-        return response.data;
-      } catch (error: any) {
-        console.error('NewsAPI request failed:', error.message);
-        throw new Error(`NewsAPI request failed: ${error.message}`);
-      }
-    });
-  }
-
-  private formatDate(date: Date): string {
-    return date.toISOString().split('T')[0];
-  }
 
   private buildBasicFinancialsFallback(overview: any): any {
     if (!overview) return null;
@@ -393,26 +287,6 @@ export class AlphaVantageService implements StockDataService {
   }
 
   async getBasicFinancials(symbol: string): Promise<any> {
-    try {
-      const data = await this.makeFinnhubRequest(
-        '/stock/metric',
-        {
-          symbol: symbol.toUpperCase(),
-          metric: 'all',
-        },
-        { ttlMs: 6 * 60 * 60 * 1000 }
-      );
-
-      if (data && (data.metric || data.series)) {
-        return {
-          symbol: symbol.toUpperCase(),
-          metric: data.metric || {},
-          series: data.series || {},
-        };
-      }
-    } catch {
-    }
-
     const overview = await this.getCompanyOverview(symbol).catch(() => null);
     const fallback = this.buildBasicFinancialsFallback(overview);
     if (fallback) return fallback;
@@ -487,42 +361,10 @@ export class AlphaVantageService implements StockDataService {
   }
 
   async getAnalystRecommendations(symbol: string): Promise<any> {
-    const data = await this.makeFinnhubRequest(
-      '/stock/recommendation',
-      {
-        symbol: symbol.toUpperCase(),
-      },
-      { ttlMs: 60 * 60 * 1000 }
-    );
-
-    if (Array.isArray(data)) {
-      return {
-        symbol: symbol.toUpperCase(),
-        recommendations: data.slice(0, 12),
-      };
-    }
-    throw new Error('Unable to fetch analyst recommendations');
+    throw new Error('Analyst recommendations unavailable in Alpha-only mode');
   }
 
   async getPriceTargets(symbol: string): Promise<any> {
-    try {
-      const data = await this.makeFinnhubRequest(
-        '/stock/price-target',
-        {
-          symbol: symbol.toUpperCase(),
-        },
-        { ttlMs: 60 * 60 * 1000 }
-      );
-
-      if (data && Object.keys(data).length > 0) {
-        return {
-          symbol: symbol.toUpperCase(),
-          ...data,
-        };
-      }
-    } catch {
-    }
-
     const overview = await this.getCompanyOverview(symbol).catch(() => null);
     return {
       symbol: symbol.toUpperCase(),
@@ -531,24 +373,6 @@ export class AlphaVantageService implements StockDataService {
   }
 
   async getPeers(symbol: string): Promise<any> {
-    try {
-      const data = await this.makeFinnhubRequest(
-        '/stock/peers',
-        {
-          symbol: symbol.toUpperCase(),
-        },
-        { ttlMs: 6 * 60 * 60 * 1000 }
-      );
-
-      if (Array.isArray(data)) {
-        return {
-          symbol: symbol.toUpperCase(),
-          peers: data,
-        };
-      }
-    } catch {
-    }
-
     const overview = await this.getCompanyOverview(symbol).catch(() => null);
     const query = overview?.industry || overview?.sector || overview?.name || symbol;
     const fallback = await this.searchStock(query).catch(() => ({ results: [] }));
@@ -563,7 +387,7 @@ export class AlphaVantageService implements StockDataService {
 
   async searchStock(query: string): Promise<any> {
     const [searchResults, alphaResults] = await Promise.all([
-      this.alphaOnly ? Promise.resolve({ results: [] }) : this.searchCompanies(query).catch(() => ({ results: [] })),
+      this.searchCompanies(query).catch(() => ({ results: [] })),
       this.makeRequest(
         {
           function: 'SYMBOL_SEARCH',
@@ -614,49 +438,7 @@ export class AlphaVantageService implements StockDataService {
   }
 
   async searchCompanies(query: string): Promise<any> {
-    if (this.alphaOnly) {
-      return { results: [] };
-    }
-    const [fmpResults, finnhubResults] = await Promise.all([
-      this.fmpApiKey && this.fmpEnabled
-        ? this.makeFmpRequest('/search', { query, limit: '10' }, { ttlMs: 60 * 60 * 1000 }).catch(() => [])
-        : Promise.resolve([]),
-      this.finnhubApiKey
-        ? this.makeFinnhubRequest('/search', { q: query }, { ttlMs: 60 * 60 * 1000 }).catch(() => ({ result: [] }))
-        : Promise.resolve({ result: [] }),
-    ]);
-
-    const fmp = Array.isArray(fmpResults)
-      ? fmpResults.map((item: any) => ({
-        symbol: item.symbol,
-        name: item.name,
-        exchange: item.exchangeShortName,
-        type: item.type,
-        source: 'fmp',
-      }))
-      : [];
-
-    const finnhub = Array.isArray(finnhubResults?.result)
-      ? finnhubResults.result.map((item: any) => ({
-        symbol: item.symbol,
-        name: item.description,
-        exchange: item.exchange,
-        type: item.type,
-        source: 'finnhub',
-      }))
-      : [];
-
-    const combined = [...fmp, ...finnhub];
-    const seen = new Set<string>();
-    const results = combined.filter((item) => {
-      if (!item.symbol) return false;
-      const key = item.symbol.toUpperCase();
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
-
-    return { results };
+    return { results: [] };
   }
 
   async getEarningsHistory(symbol: string): Promise<any> {
@@ -791,26 +573,11 @@ export class AlphaVantageService implements StockDataService {
   }
 
   async getStocksBySector(sector: string): Promise<any> {
-    return this.screenStocks({ sector, limit: 20 });
+    throw new Error('Sector screening unavailable in Alpha-only mode');
   }
 
   async screenStocks(filters: Record<string, string | number | undefined>): Promise<any> {
-    const params: Record<string, string> = {};
-    Object.entries(filters).forEach(([key, value]) => {
-      if (value !== undefined && value !== '') {
-        params[key] = String(value);
-      }
-    });
-
-    const data = await this.makeFmpRequest('/stock-screener', params, { ttlMs: 15 * 60 * 1000 });
-
-    if (Array.isArray(data)) {
-      return {
-        filters,
-        results: data,
-      };
-    }
-    throw new Error('Unable to screen stocks');
+    throw new Error('Stock screening unavailable in Alpha-only mode');
   }
 
   async getTopGainersLosers(): Promise<any> {
@@ -847,78 +614,14 @@ export class AlphaVantageService implements StockDataService {
   }
 
   async getNewsSentiment(symbol: string): Promise<any> {
-    const data = await this.makeFinnhubRequest(
-      '/news-sentiment',
-      {
-        symbol: symbol.toUpperCase(),
-      },
-      { ttlMs: 10 * 60 * 1000 }
-    );
-
-    if (data && Object.keys(data).length > 0) {
-      return {
-        symbol: symbol.toUpperCase(),
-        sentiment: data,
-      };
-    }
-    throw new Error('Unable to fetch news sentiment');
+    throw new Error('News sentiment unavailable in Alpha-only mode');
   }
 
   async getCompanyNews(symbol: string, days: number = 30): Promise<any> {
-    const toDate = new Date();
-    const fromDate = new Date();
-    fromDate.setDate(toDate.getDate() - days);
-
-    const data = await this.makeFinnhubRequest(
-      '/company-news',
-      {
-        symbol: symbol.toUpperCase(),
-        from: this.formatDate(fromDate),
-        to: this.formatDate(toDate),
-      },
-      { ttlMs: 10 * 60 * 1000 }
-    );
-
-    if (Array.isArray(data)) {
-      return {
-        symbol: symbol.toUpperCase(),
-        articles: data.slice(0, 20),
-      };
-    }
-    throw new Error('Unable to fetch company news');
+    throw new Error('Company news unavailable in Alpha-only mode');
   }
 
   async searchNews(query: string, days: number = 30): Promise<any> {
-    const toDate = new Date();
-    const fromDate = new Date();
-    fromDate.setDate(toDate.getDate() - days);
-
-    const data = await this.makeNewsApiRequest(
-      {
-        q: query,
-        from: this.formatDate(fromDate),
-        to: this.formatDate(toDate),
-        language: 'en',
-        sortBy: 'publishedAt',
-        pageSize: '20',
-      },
-      { ttlMs: 10 * 60 * 1000 }
-    );
-
-    if (data?.articles) {
-      return {
-        query,
-        totalResults: data.totalResults,
-        articles: data.articles.map((article: any) => ({
-          source: article.source?.name,
-          author: article.author,
-          title: article.title,
-          description: article.description,
-          url: article.url,
-          publishedAt: article.publishedAt,
-        })),
-      };
-    }
-    throw new Error('Unable to fetch news articles');
+    throw new Error('News search unavailable in Alpha-only mode');
   }
 }

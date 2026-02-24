@@ -800,19 +800,16 @@ export async function executeTool(
         const query = args.query || '';
         const limit = Number(args.limit || 12);
         const notes: string[] = [];
-        const alphaOnly = process.env.USE_ALPHA_ONLY === 'true';
 
         let universe: string[] = [];
-        if (!alphaOnly) {
-          try {
-            const sectorResults = await stockService.getStocksBySector(query);
-            universe = (sectorResults.results || []).map((item: any) => item.symbol).filter(Boolean).slice(0, limit);
-            if (universe.length > 0) {
-              notes.push(`Universe built from sector screening for "${query}".`);
-            }
-          } catch (error: any) {
-            notes.push(`Sector screening unavailable: ${error.message}`);
+        try {
+          const sectorResults = await stockService.getStocksBySector(query);
+          universe = (sectorResults.results || []).map((item: any) => item.symbol).filter(Boolean).slice(0, limit);
+          if (universe.length > 0) {
+            notes.push(`Universe built from sector screening for "${query}".`);
           }
+        } catch (error: any) {
+          notes.push(`Sector screening unavailable: ${error.message}`);
         }
 
         if (universe.length === 0) {

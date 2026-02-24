@@ -133,9 +133,6 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) for complete deployment instructions.
    - Uses your existing GitHub Copilot subscription
    - No additional cost!
 2. **Alpha Vantage Key** (Required for market data): Get from [Alpha Vantage](https://www.alphavantage.co/support/#api-key)
-3. **FMP Key** (Required for screening/search): Get a free key from [Financial Modeling Prep](https://financialmodelingprep.com/developer/docs/)
-4. **Finnhub Key** (Required for analyst data, peers, sentiment): Get a free key from [Finnhub](https://finnhub.io/)
-5. **NewsAPI Key** (Required for broader news search): Get a free key from [NewsAPI](https://newsapi.org/)
 
 ### For Local Development:
 
@@ -144,17 +141,11 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) for complete deployment instructions.
 2. Create `.env.local` in the `web` directory:
    ```env
    ALPHA_VANTAGE_API_KEY=your_api_key_here
-   FMP_API_KEY=your_fmp_key_here
-   FINNHUB_API_KEY=your_finnhub_key_here
-   NEWSAPI_KEY=your_newsapi_key_here
    ```
 
 3. For CLI, create `.env` in the root directory:
    ```env
    ALPHA_VANTAGE_API_KEY=your_api_key_here
-   FMP_API_KEY=your_fmp_key_here
-   FINNHUB_API_KEY=your_finnhub_key_here
-   NEWSAPI_KEY=your_newsapi_key_here
    ```
 
 **Note**: Alpha Vantage free tier has a limit of 5 API calls per minute.
@@ -168,7 +159,7 @@ GitHub Copilot SDK
         ↓
 Custom Stock Tools
         ↓
-Stock Data APIs (Alpha Vantage + FMP + Finnhub + NewsAPI)
+Stock Data APIs (Alpha Vantage)
 ```
 
 ### Components

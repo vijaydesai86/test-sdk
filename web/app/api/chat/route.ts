@@ -381,52 +381,10 @@ async function handleAnalystTrendRequest(
   message: string,
   sessionId?: string | null
 ) {
-  if (process.env.USE_ALPHA_ONLY === 'true' || !process.env.FINNHUB_API_KEY) {
-    return NextResponse.json(
-      { error: 'Analyst rating trends are unavailable in Alpha-only mode.' },
-      { status: 501 }
-    );
-  }
-  const currentSessionId = sessionId || Math.random().toString(36).substring(7);
-  let conversationMessages: ChatMessage[] = sessionId ? sessions.get(sessionId) || [] : [];
-  if (conversationMessages.length === 0) {
-    conversationMessages.push({ role: 'system', content: COMPACT_SYSTEM_PROMPT });
-  }
-  conversationMessages.push({ role: 'user', content: message });
-
-  const [trendResult, ratingsResult] = await Promise.all([
-    executeTool('get_analyst_recommendations', { symbol }, stockService),
-    executeTool('get_analyst_ratings', { symbol }, stockService),
-  ]);
-
-  if (!trendResult.success) {
-    return NextResponse.json(
-      { error: trendResult.error || trendResult.message || 'Analyst trends unavailable' },
-      { status: 500 }
-    );
-  }
-
-  const recommendations = trendResult.data?.recommendations || [];
-  const responseText = formatAnalystTrendResponse(
-    symbol,
-    recommendations,
-    ratingsResult.success ? ratingsResult.data : undefined
+  return NextResponse.json(
+    { error: 'Analyst rating trends require a premium data provider and are unavailable in Alpha-only mode.' },
+    { status: 501 }
   );
-
-  conversationMessages.push({ role: 'assistant', content: responseText });
-  sessions.set(currentSessionId, conversationMessages);
-
-  return NextResponse.json({
-    response: responseText,
-    sessionId: currentSessionId,
-    model: DEFAULT_MODEL,
-    provider: 'direct',
-    stats: {
-      rounds: 0,
-      toolCalls: 2,
-      toolsProvided: 0,
-    },
-  });
 }
 
 function buildFallbackModels(requestedModel: string): string[] {
