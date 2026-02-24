@@ -41,7 +41,8 @@ export interface SectorReportData {
   notes?: string[];
 }
 
-const DEFAULT_REPORTS_DIR = process.env.REPORTS_DIR || 'reports';
+const DEFAULT_REPORTS_DIR =
+  process.env.REPORTS_DIR || (process.env.VERCEL ? '/tmp/reports' : 'reports');
 
 function formatDateLabel(date: string): string {
   return date.slice(0, 10);
