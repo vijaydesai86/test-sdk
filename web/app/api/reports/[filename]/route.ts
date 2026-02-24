@@ -9,7 +9,7 @@ export async function GET(
   { params }: { params: Promise<{ filename: string }> }
 ) {
   const { filename } = await params;
-  if (!filename || !/^[a-z0-9-]+-[0-9T\-]+\.md$/i.test(filename)) {
+  if (!filename || !/^[a-z0-9-]+\.md$/i.test(filename)) {
     return NextResponse.json({ error: 'Invalid report filename' }, { status: 400 });
   }
 
@@ -37,7 +37,7 @@ export async function DELETE(
   { params }: { params: Promise<{ filename: string }> }
 ) {
   const { filename } = await params;
-  if (!filename || !/^[a-z0-9-]+-[0-9T\-]+\.md$/i.test(filename)) {
+  if (!filename || !/^[a-z0-9-]+\.md$/i.test(filename)) {
     return NextResponse.json({ error: 'Invalid report filename' }, { status: 400 });
   }
 
