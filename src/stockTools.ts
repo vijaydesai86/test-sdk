@@ -42,12 +42,44 @@ export function createStockTools(stockService: StockDataService) {
     const results = await Promise.all(
       queries.map((term) => stockService.searchStock(term).catch(() => ({ results: [] })))
     );
-    const symbols = results.flatMap((result: any) => (result.results || []).map((item: any) => item.symbol));
-    const universe = Array.from(new Set(symbols.filter(Boolean))).slice(0, limit);
+    const rawItems = results.flatMap((result: any) => (result.results || []) as any[]);
+    const uniqueItems = Array.from(
+      new Map(rawItems.filter((item) => item?.symbol).map((item) => [item.symbol, item])).values()
+    );
+    const usItems = uniqueItems.filter((item) => {
+      const region = String(item.region || '').toLowerCase();
+      const currency = String(item.currency || '').toUpperCase();
+      const type = String(item.type || '').toLowerCase();
+      return region.includes('united states') || currency === 'USD' || type.includes('equity');
+    });
+    const candidates = (usItems.length ? usItems : uniqueItems).slice(0, Math.max(limit * 2, 10));
+    const terms = buildSearchQueries(query).map((term) => term.toLowerCase());
+    const matches = await Promise.all(
+      candidates.map(async (item) => {
+        const overview = await stockService.getCompanyOverview(item.symbol).catch(() => null);
+        const text = [
+          item.name,
+          overview?.name,
+          overview?.sector,
+          overview?.industry,
+          overview?.description,
+        ]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase();
+        return text && terms.some((term) => text.includes(term)) ? item.symbol : null;
+      })
+    );
+    const universe = Array.from(new Set(matches.filter(Boolean))) as string[];
     if (universe.length > 0) {
-      notes.push(`Universe built from keyword-expanded search for "${query}".`);
+      notes.push(`Universe built from keyword-filtered search for "${query}".`);
+      return universe.slice(0, limit);
     }
-    return universe;
+    const fallback = candidates.map((item) => item.symbol).filter(Boolean).slice(0, limit);
+    if (fallback.length > 0) {
+      notes.push(`Universe built from symbol search fallback for "${query}".`);
+    }
+    return fallback;
   };
 
   const expandUniverseFromTopMovers = async (query: string, limit: number, notes: string[]) => {
