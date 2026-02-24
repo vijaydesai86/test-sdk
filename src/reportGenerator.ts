@@ -31,6 +31,7 @@ export interface SectorReportItem {
   analystRatings?: any;
   priceTargets?: any;
   newsSentiment?: any;
+  companyNews?: { articles?: any[] };
 }
 
 export interface SectorReportData {
@@ -48,6 +49,7 @@ export interface PeerReportItem {
   basicFinancials?: any;
   priceTargets?: any;
   priceHistory?: { prices?: PricePoint[] };
+  companyNews?: { articles?: any[] };
 }
 
 export interface PeerReportData {
@@ -88,6 +90,186 @@ function formatChartNumber(value: number): number {
     return Number(value.toFixed(0));
   }
   return Number(value.toFixed(2));
+}
+
+function formatNumber(value: unknown, decimals = 2): string {
+  const num = toNumber(value);
+  if (num === null) return 'N/A';
+  return num.toFixed(decimals);
+}
+
+function trimTrailingZeros(value: string): string {
+  return value.replace(/\.0+$/, '').replace(/(\.\d*?)0+$/, '$1');
+}
+
+function formatMarketCap(value: unknown): string {
+  const num = toNumber(value);
+  if (num === null) return 'N/A';
+  if (num >= 1e9) {
+    return `${trimTrailingZeros((num / 1e9).toFixed(2))}B`;
+  }
+  if (num >= 1e6) {
+    return `${trimTrailingZeros((num / 1e6).toFixed(2))}M`;
+  }
+  return trimTrailingZeros(num.toFixed(0));
+}
+
+function formatPercent(value: unknown, decimals = 1): string {
+  const num = normalizePercent(value);
+  if (num === null) return 'N/A';
+  return `${num.toFixed(decimals)}%`;
+}
+
+function getMetricValue(metrics: any, keys: string[]): number | null {
+  for (const key of keys) {
+    const value = toNumber(metrics?.[key]);
+    if (value !== null) return value;
+  }
+  return null;
+}
+
+function formatRatingSummary(item: SectorReportItem | PeerReportItem | StockReportData): string {
+  const ratings = (item as any).analystRatings || (item as any).companyOverview || (item as any).overview;
+  const strongBuy = toNumber(ratings?.strongBuy ?? ratings?.analystRatingStrongBuy);
+  const buy = toNumber(ratings?.buy ?? ratings?.analystRatingBuy);
+  const hold = toNumber(ratings?.hold ?? ratings?.analystRatingHold);
+  const sell = toNumber(ratings?.sell ?? ratings?.analystRatingSell);
+  const strongSell = toNumber(ratings?.strongSell ?? ratings?.analystRatingStrongSell);
+
+  if ([strongBuy, buy, hold, sell, strongSell].every((value) => value === null)) {
+    return 'N/A';
+  }
+
+  return `SB ${strongBuy ?? 0} / B ${buy ?? 0} / H ${hold ?? 0} / S ${sell ?? 0} / SS ${strongSell ?? 0}`;
+}
+
+function deriveLayer(item: SectorReportItem): string {
+  const text = [
+    item.overview?.industry,
+    item.overview?.sector,
+    item.overview?.description,
+    item.overview?.name,
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+
+  if (/(semiconductor|gpu|accelerator|chip|processor|foundry)/.test(text)) {
+    return 'Compute & Accelerators';
+  }
+  if (/(network|infiniband|ethernet|switch|optical)/.test(text)) {
+    return 'Networking & Interconnect';
+  }
+  if (/(data center|colocation|reit|power|cooling|infrastructure)/.test(text)) {
+    return 'Data Center Infrastructure';
+  }
+  if (/(storage|memory|flash|ssd)/.test(text)) {
+    return 'Storage & Memory';
+  }
+  if (/(cloud|platform|software|ai|analytics|ml|inference)/.test(text)) {
+    return 'Platforms & Software';
+  }
+  return 'Other / Diversified';
+}
+
+function getEpsValue(item: SectorReportItem | PeerReportItem): number | null {
+  return getMetricValue(item.basicFinancials?.metric, ['epsTTM', 'epsNormalizedAnnual'])
+    ?? toNumber(item.overview?.eps);
+}
+
+function getRevenueGrowth(item: SectorReportItem | PeerReportItem): number | null {
+  const metric = getMetricValue(item.basicFinancials?.metric, [
+    'revenueGrowthTTM',
+    'revenueGrowthAnnual',
+    'revenueGrowth5Y',
+  ]);
+  return normalizePercent(metric ?? item.overview?.quarterlyRevenueGrowth);
+}
+
+function getEpsGrowth(item: SectorReportItem | PeerReportItem): number | null {
+  const metric = getMetricValue(item.basicFinancials?.metric, ['epsGrowthTTM', 'epsGrowthAnnual']);
+  return normalizePercent(metric ?? item.overview?.quarterlyEarningsGrowth);
+}
+
+function getGrossMargin(item: SectorReportItem | PeerReportItem): number | null {
+  const metric = getMetricValue(item.basicFinancials?.metric, ['grossMarginTTM', 'grossMarginAnnual']);
+  return normalizePercent(metric ?? item.overview?.profitMargin);
+}
+
+function getOperatingMargin(item: SectorReportItem | PeerReportItem): number | null {
+  const metric = getMetricValue(item.basicFinancials?.metric, ['operatingMarginTTM', 'operatingMarginAnnual']);
+  return normalizePercent(metric ?? item.overview?.operatingMargin);
+}
+
+function getTargetUpside(item: SectorReportItem | PeerReportItem): number | null {
+  const price = toNumber(item.price?.price);
+  const target = toNumber(item.priceTargets?.targetMean || (item as any).analystRatings?.analystTargetPrice);
+  if (!price || !target) return null;
+  return ((target - price) / price) * 100;
+}
+
+function getMovingAverage(item: SectorReportItem | PeerReportItem): number | null {
+  return toNumber(item.overview?.['50DayMovingAverage'] ?? (item as any).analystRatings?.movingAverage50Day);
+}
+
+function formatPriceTrend(item: SectorReportItem | PeerReportItem): string {
+  const price = toNumber(item.price?.price);
+  const average = getMovingAverage(item);
+  if (!price || !average) return 'N/A';
+  const diff = ((price - average) / average) * 100;
+  const direction = diff >= 0 ? 'above' : 'below';
+  return `${diff.toFixed(1)}% ${direction} 50D MA`;
+}
+
+function getHeadline(article: any): string | null {
+  if (!article) return null;
+  return article.headline || article.title || null;
+}
+
+function buildNewsHighlights(items: Array<SectorReportItem | PeerReportItem>, limit = 2): string {
+  const rows = items
+    .map((item) => {
+      const headlines = (item.companyNews?.articles || [])
+        .map(getHeadline)
+        .filter(Boolean)
+        .slice(0, limit) as string[];
+      if (headlines.length === 0) return null;
+      return `- ${item.symbol}: ${headlines.join('; ')}`;
+    })
+    .filter((row): row is string => row !== null);
+
+  return rows.length ? rows.join('\n') : 'N/A';
+}
+
+function buildKeyTakeaways(items: SectorReportItem[], scored: { item: SectorReportItem; score: number | null }[]): string {
+  if (items.length === 0) return 'N/A';
+  const byMarketCap = [...items].sort((a, b) => (toNumber(b.overview?.marketCapitalization) || 0) - (toNumber(a.overview?.marketCapitalization) || 0));
+  const byRevenueGrowth = [...items].sort((a, b) => (getRevenueGrowth(b) || 0) - (getRevenueGrowth(a) || 0));
+  const byEpsGrowth = [...items].sort((a, b) => (getEpsGrowth(b) || 0) - (getEpsGrowth(a) || 0));
+  const byMargin = [...items].sort((a, b) => (getGrossMargin(b) || 0) - (getGrossMargin(a) || 0));
+  const byUpside = [...items].sort((a, b) => (getTargetUpside(b) || 0) - (getTargetUpside(a) || 0));
+  const topScore = [...scored]
+    .filter((row) => row.score !== null)
+    .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))[0];
+
+  const takeaways = [
+    byMarketCap[0] ? `Largest market cap: ${byMarketCap[0].symbol} (${formatMarketCap(byMarketCap[0].overview?.marketCapitalization)})` : null,
+    byRevenueGrowth[0] && getRevenueGrowth(byRevenueGrowth[0]) !== null
+      ? `Fastest revenue growth: ${byRevenueGrowth[0].symbol} (${formatPercent(getRevenueGrowth(byRevenueGrowth[0]))})`
+      : null,
+    byEpsGrowth[0] && getEpsGrowth(byEpsGrowth[0]) !== null
+      ? `Fastest EPS growth: ${byEpsGrowth[0].symbol} (${formatPercent(getEpsGrowth(byEpsGrowth[0]))})`
+      : null,
+    byMargin[0] && getGrossMargin(byMargin[0]) !== null
+      ? `Highest gross margin: ${byMargin[0].symbol} (${formatPercent(getGrossMargin(byMargin[0]))})`
+      : null,
+    byUpside[0] && getTargetUpside(byUpside[0]) !== null
+      ? `Largest target upside: ${byUpside[0].symbol} (${getTargetUpside(byUpside[0])?.toFixed(1)}%)`
+      : null,
+    topScore ? `Top composite score: ${topScore.item.symbol} (${topScore.score?.toFixed(1)})` : null,
+  ].filter(Boolean) as string[];
+
+  return takeaways.length ? takeaways.map((line) => `- ${line}`).join('\n') : 'N/A';
 }
 
 function buildPriceChart(prices: PricePoint[] = []): string {
@@ -217,18 +399,56 @@ function buildMarginChart(incomeStatement?: any): string {
   });
 }
 
-function buildPeerTable(items: SectorReportItem[]): string {
+function buildSectorMetricsTable(items: SectorReportItem[], layers: Map<string, string>): string {
   if (items.length === 0) return '';
-  const header = '| Symbol | Price | Market Cap | P/E | Analyst Target |';
-  const divider = '|---|---:|---:|---:|---:|';
+  const header = '| Symbol | Company | Layer | Price | Market Cap | EPS (TTM) | Rev Growth | EPS Growth | Gross Margin |';
+  const divider = '|---|---|---|---:|---:|---:|---:|---:|---:|';
   const rows = items.map((item) => {
-    const price = item.price?.price || 'N/A';
-    const marketCap = item.overview?.marketCapitalization || 'N/A';
-    const pe = item.overview?.peRatio || item.basicFinancials?.metric?.peBasicExclExtraTTM || 'N/A';
-    const target = item.priceTargets?.targetMean || item.analystRatings?.analystTargetPrice || 'N/A';
-    return `| ${item.symbol} | ${price} | ${marketCap} | ${pe} | ${target} |`;
+    const price = formatNumber(item.price?.price, 2);
+    const marketCap = formatMarketCap(item.overview?.marketCapitalization);
+    const eps = getEpsValue(item);
+    const revenueGrowth = getRevenueGrowth(item);
+    const epsGrowth = getEpsGrowth(item);
+    const grossMargin = getGrossMargin(item);
+    return [
+      item.symbol,
+      item.overview?.name || 'N/A',
+      layers.get(item.symbol) || 'Other / Diversified',
+      price,
+      marketCap,
+      eps === null ? 'N/A' : eps.toFixed(2),
+      revenueGrowth === null ? 'N/A' : `${revenueGrowth.toFixed(1)}%`,
+      epsGrowth === null ? 'N/A' : `${epsGrowth.toFixed(1)}%`,
+      grossMargin === null ? 'N/A' : `${grossMargin.toFixed(1)}%`,
+    ].join(' | ');
   });
-  return [header, divider, ...rows].join('\n');
+
+  return [header, divider, ...rows.map((row) => `| ${row} |`)].join('\n');
+}
+
+function buildSectorSentimentTable(items: SectorReportItem[]): string {
+  if (items.length === 0) return '';
+  const header = '| Symbol | Analyst Ratings | Target Mean | Target Upside | P/E | Operating Margin | Price vs 50D |';
+  const divider = '|---|---|---:|---:|---:|---:|---|';
+  const rows = items.map((item) => {
+    const ratings = formatRatingSummary(item);
+    const target = formatNumber(item.priceTargets?.targetMean || item.analystRatings?.analystTargetPrice, 2);
+    const upside = getTargetUpside(item);
+    const pe = toNumber(item.overview?.peRatio ?? item.basicFinancials?.metric?.peBasicExclExtraTTM);
+    const operatingMargin = getOperatingMargin(item);
+    const trend = formatPriceTrend(item);
+    return [
+      item.symbol,
+      ratings,
+      target,
+      upside === null ? 'N/A' : `${upside.toFixed(1)}%`,
+      pe === null ? 'N/A' : pe.toFixed(1),
+      operatingMargin === null ? 'N/A' : `${operatingMargin.toFixed(1)}%`,
+      trend,
+    ].join(' | ');
+  });
+
+  return [header, divider, ...rows.map((row) => `| ${row} |`)].join('\n');
 }
 
 function buildTargetDistribution(priceTargets?: any): string {
@@ -491,7 +711,7 @@ export function buildStockReport(data: StockReportData): string {
     `Generated: ${data.generatedAt}`,
     '## 📊 Snapshot',
     `- Price: ${data.price?.price || 'N/A'} (${data.price?.changePercent || 'N/A'})`,
-    `- Market Cap: ${data.companyOverview?.marketCapitalization || 'N/A'}`,
+    `- Market Cap: ${formatMarketCap(data.companyOverview?.marketCapitalization)}`,
     `- Sector: ${data.companyOverview?.sector || 'N/A'}`,
     `- Industry: ${data.companyOverview?.industry || 'N/A'}`,
     '## 📈 Price & EPS Trends',
@@ -532,24 +752,20 @@ export function buildStockReport(data: StockReportData): string {
 
 export function buildSectorReport(data: SectorReportData): string {
   const header = `# Sector/Thematic Report: ${data.query}`;
-  const table = buildPeerTable(data.items);
   const notes = data.notes?.length ? data.notes.map((n) => `- ${n}`).join('\n') : 'N/A';
+  const layers = new Map<string, string>();
+  data.items.forEach((item) => {
+    layers.set(item.symbol, deriveLayer(item));
+  });
+
   const marketCaps = data.items
     .map((item) => toNumber(item.overview?.marketCapitalization))
     .filter((value): value is number => value !== null);
   const peRatios = data.items
     .map((item) => toNumber(item.overview?.peRatio ?? item.basicFinancials?.metric?.peBasicExclExtraTTM))
     .filter((value): value is number => value !== null);
-  const prices = data.items
-    .map((item) => toNumber(item.price?.price))
-    .filter((value): value is number => value !== null);
   const targetUpside = data.items
-    .map((item) => {
-      const price = toNumber(item.price?.price);
-      const target = toNumber(item.priceTargets?.targetMean || item.analystRatings?.analystTargetPrice);
-      if (!price || !target) return null;
-      return ((target - price) / price) * 100;
-    })
+    .map((item) => getTargetUpside(item))
     .filter((value): value is number => value !== null);
   const averageValue = (values: number[]) =>
     values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
@@ -580,103 +796,130 @@ export function buildSectorReport(data: SectorReportData): string {
       companyNews: undefined,
     };
     const scorecard = computeScorecard(scoreData);
-    return { symbol: item.symbol, score: scorecard.composite };
+    return { item, score: scorecard.composite };
   });
 
   const scoreTable = scored
     .filter((row) => row.score !== null)
     .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
-    .map((row) => `| ${row.symbol} | ${row.score?.toFixed(1)} |`);
+    .map((row) => {
+      const upside = getTargetUpside(row.item);
+      return [
+        row.item.symbol,
+        row.score?.toFixed(1) ?? 'N/A',
+        formatPercent(getRevenueGrowth(row.item)),
+        formatPercent(getEpsGrowth(row.item)),
+        upside === null ? 'N/A' : `${upside.toFixed(1)}%`,
+        formatRatingSummary(row.item),
+      ].join(' | ');
+    });
 
   const scoreSection = scoreTable.length
-    ? ['| Symbol | Composite Score |', '|---|---:|', ...scoreTable].join('\n')
+    ? [
+        '| Symbol | Score | Rev Growth | EPS Growth | Target Upside | Analyst Ratings |',
+        '|---|---:|---:|---:|---:|---|',
+        ...scoreTable.map((row) => `| ${row} |`),
+      ].join('\n')
     : '_Score data unavailable_';
 
-  const marketCapSeries = data.items
-    .map((item) => ({
-      symbol: item.symbol,
-      value: toNumber(item.overview?.marketCapitalization),
-    }))
-    .filter((item) => item.value !== null)
-    .map((item) => ({ symbol: item.symbol, value: item.value as number }));
+  const layerGroups = Array.from(layers.entries()).reduce<Record<string, string[]>>((acc, [symbol, layer]) => {
+    if (!acc[layer]) acc[layer] = [];
+    acc[layer].push(symbol);
+    return acc;
+  }, {});
 
-  const peSeries = data.items
-    .map((item) => ({
-      symbol: item.symbol,
-      value: toNumber(item.overview?.peRatio ?? item.basicFinancials?.metric?.peBasicExclExtraTTM),
-    }))
-    .filter((item) => item.value !== null)
-    .map((item) => ({ symbol: item.symbol, value: item.value as number }));
+  const layerSection = Object.entries(layerGroups)
+    .map(([layer, symbols]) => `- ${layer}: ${symbols.join(', ')}`)
+    .join('\n');
 
-  const priceSeries = data.items
-    .map((item) => ({
-      symbol: item.symbol,
-      value: toNumber(item.price?.price),
-    }))
-    .filter((item) => item.value !== null)
-    .map((item) => ({ symbol: item.symbol, value: item.value as number }));
+  const growthLeaders = data.items
+    .map((item) => ({ symbol: item.symbol, value: getRevenueGrowth(item) }))
+    .filter((row): row is { symbol: string; value: number } => row.value !== null)
+    .sort((a, b) => b.value - a.value)
+    .slice(0, 5)
+    .map((row) => `| ${row.symbol} | ${row.value.toFixed(1)}% |`);
+  const growthSection = growthLeaders.length
+    ? ['| Symbol | Revenue Growth |', '|---|---:|', ...growthLeaders].join('\n')
+    : '_Revenue growth data unavailable_';
 
-  const marketCapChart = buildBarChart('Market Cap', 'Market Cap', marketCapSeries);
-  const peChart = buildBarChart('P/E Ratio', 'P/E', peSeries);
-  const priceChart = buildBarChart('Price', 'Price', priceSeries);
-  const targetSeries = data.items
-    .map((item) => ({
-      symbol: item.symbol,
-      value: toNumber(item.priceTargets?.targetMean || item.analystRatings?.analystTargetPrice),
-    }))
-    .filter((item) => item.value !== null)
-    .map((item) => ({ symbol: item.symbol, value: item.value as number }));
-  const targetChart = buildBarChart('Analyst Target Mean', 'Price', targetSeries);
+  const epsGrowthLeaders = data.items
+    .map((item) => ({ symbol: item.symbol, value: getEpsGrowth(item) }))
+    .filter((row): row is { symbol: string; value: number } => row.value !== null)
+    .sort((a, b) => b.value - a.value)
+    .slice(0, 5)
+    .map((row) => `| ${row.symbol} | ${row.value.toFixed(1)}% |`);
+  const epsGrowthSection = epsGrowthLeaders.length
+    ? ['| Symbol | EPS Growth |', '|---|---:|', ...epsGrowthLeaders].join('\n')
+    : '_EPS growth data unavailable_';
 
-  const upsideRows = data.items
-    .map((item) => {
-      const price = toNumber(item.price?.price);
-      const target = toNumber(item.priceTargets?.targetMean || item.analystRatings?.analystTargetPrice);
-      if (!price || !target) return null;
-      return {
-        symbol: item.symbol,
-        upside: ((target - price) / price) * 100,
-      };
-    })
-    .filter((row): row is { symbol: string; upside: number } => row !== null)
-    .sort((a, b) => b.upside - a.upside)
-    .slice(0, 5);
+  const allocationCandidates = scored
+    .filter((row) => row.score !== null)
+    .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
+    .slice(0, 8);
+  const allocationTotal = allocationCandidates.reduce((sum, row) => sum + (row.score ?? 0), 0);
+  const allocationRows = allocationCandidates.map((row) => {
+    const weight = allocationTotal > 0 ? ((row.score ?? 0) / allocationTotal) * 100 : 0;
+    return `| ${row.item.symbol} | ${row.score?.toFixed(1) ?? 'N/A'} | ${weight.toFixed(1)}% |`;
+  });
+  const allocationSection = allocationRows.length
+    ? ['| Symbol | Score | Indicative Weight |', '|---|---:|---:|', ...allocationRows].join('\n')
+    : '_Allocation data unavailable_';
 
-  const upsideSection = upsideRows.length
-    ? [
-        '| Symbol | Target Upside |',
-        '|---|---:|',
-        ...upsideRows.map((row) => `| ${row.symbol} | ${row.upside.toFixed(1)}% |`),
-      ].join('\n')
-    : '_Target upside data unavailable_';
-
-  const overviewSection = [
+  const averageUpside = averageValue(targetUpside);
+  const snapshotSection = [
     `Universe Size: ${data.universe.length}`,
-    `Median Market Cap: ${medianValue(marketCaps)?.toFixed(0) ?? 'N/A'}`,
+    `Median Market Cap: ${formatMarketCap(medianValue(marketCaps))}`,
     `Average P/E: ${averageValue(peRatios)?.toFixed(1) ?? 'N/A'}`,
-    `Average Price: ${averageValue(prices)?.toFixed(2) ?? 'N/A'}`,
-    `Average Target Upside: ${averageValue(targetUpside)?.toFixed(1) ?? 'N/A'}%`,
+    `Average Target Upside: ${averageUpside === null ? 'N/A' : `${averageUpside.toFixed(1)}%`}`,
   ].join('\n');
+
+  const metricsTable = buildSectorMetricsTable(data.items, layers);
+  const sentimentTable = buildSectorSentimentTable(data.items);
+  const keyTakeaways = buildKeyTakeaways(data.items, scored);
+  const newsHighlights = buildNewsHighlights(data.items, 2);
 
   return [
     header,
     `Generated: ${data.generatedAt}`,
     `Universe: ${data.universe.join(', ') || 'N/A'}`,
+    '## ✨ Executive Summary',
+    keyTakeaways,
+    '## 🧠 AI Stack Overview',
+    [
+      '- Compute & Accelerators: GPUs/ASICs and related compute silicon for training/inference.',
+      '- Networking & Interconnect: fabrics/switches moving data across clusters.',
+      '- Storage & Memory: high-throughput storage and memory stack for model training.',
+      '- Data Center Infrastructure: power, cooling, real estate, and build-out services.',
+      '- Platforms & Software: cloud platforms, orchestration, and AI software layers.',
+    ].join('\n'),
+    '## 🧭 Layer Map',
+    layerSection || 'N/A',
     '## 📌 Universe Snapshot',
-    overviewSection,
-    '## 🎯 Target Upside Leaders',
-    upsideSection,
-    '## 📊 Charts',
-    marketCapChart || '_Market cap chart unavailable_',
-    peChart || '_P/E chart unavailable_',
-    priceChart || '_Price chart unavailable_',
-    targetChart || '_Analyst target chart unavailable_',
-    '## ✅ Score Ranking',
+    snapshotSection,
+    '## 🚀 Growth Leaders',
+    growthSection,
+    '## ⚡ EPS Growth Leaders',
+    epsGrowthSection,
+    '## ⭐ Score-Based Picks',
     scoreSection,
-    '## 📊 Comparison Table',
-    table || '_No data available_',
+    '## 💼 Indicative Allocation (Illustrative Only)',
+    allocationSection,
+    '## 📊 Company Metrics',
+    metricsTable || '_No data available_',
+    '## 🧾 Analyst Sentiment & Valuation',
+    sentimentTable || '_No data available_',
+    '## 📰 News Highlights',
+    newsHighlights,
+    '## 🔗 Dependencies & Customer Map (Typical)',
+    [
+      '- Upstream: semiconductor fabrication, advanced packaging, memory, and networking components.',
+      '- Infrastructure: power/cooling systems, data center construction, and colocation capacity.',
+      '- Buyers: hyperscale cloud providers, enterprise AI adopters, and public sector workloads.',
+      '- Downstream: software vendors, integrators, and AI application developers.',
+    ].join('\n'),
     '## 🔍 Notes',
     notes,
+    '_Not financial advice. Use this as a starting point for diligence._',
   ].join('\n\n');
 }
 
@@ -696,42 +939,63 @@ export async function saveReport(content: string, title: string, directory = DEF
 export function buildPeerReport(data: PeerReportData): string {
   const header = `# Peer Comparison Report: ${data.symbol}`;
   const rows = data.items.map((item) => {
-    const price = item.price?.price ?? 'N/A';
-    const marketCap = item.overview?.marketCapitalization ?? 'N/A';
-    const pe = item.overview?.peRatio ?? item.basicFinancials?.metric?.peBasicExclExtraTTM ?? 'N/A';
-    const target = item.priceTargets?.targetMean ?? item.overview?.analystTargetPrice ?? 'N/A';
-    const priceValue = toNumber(price);
-    const targetValue = toNumber(target);
-    const upside = priceValue && targetValue
-      ? `${(((targetValue - priceValue) / priceValue) * 100).toFixed(1)}%`
-      : 'N/A';
-    return `| ${item.symbol} | ${price} | ${marketCap} | ${pe} | ${target} | ${upside} |`;
+    const price = formatNumber(item.price?.price, 2);
+    const marketCap = formatMarketCap(item.overview?.marketCapitalization);
+    const eps = getEpsValue(item);
+    const revenueGrowth = getRevenueGrowth(item);
+    const grossMargin = getGrossMargin(item);
+    const target = formatNumber(item.priceTargets?.targetMean ?? item.overview?.analystTargetPrice, 2);
+    const upside = getTargetUpside(item);
+    const rating = formatRatingSummary(item);
+    const trend = formatPriceTrend(item);
+    const moatSignals = [
+      grossMargin !== null && grossMargin >= 40 ? 'Margin strength' : null,
+      getOperatingMargin(item) !== null && (getOperatingMargin(item) ?? 0) >= 15 ? 'Operating leverage' : null,
+      toNumber(item.overview?.marketCapitalization) !== null
+        && (toNumber(item.overview?.marketCapitalization) ?? 0) >= 50_000_000_000
+        ? 'Scale advantage'
+        : null,
+      rating !== 'N/A' ? 'Analyst conviction' : null,
+    ].filter(Boolean).join(', ') || 'Limited data';
+
+    return [
+      item.symbol,
+      item.overview?.name || 'N/A',
+      item.overview?.sector || 'N/A',
+      price,
+      marketCap,
+      eps === null ? 'N/A' : eps.toFixed(2),
+      revenueGrowth === null ? 'N/A' : `${revenueGrowth.toFixed(1)}%`,
+      grossMargin === null ? 'N/A' : `${grossMargin.toFixed(1)}%`,
+      target,
+      upside === null ? 'N/A' : `${upside.toFixed(1)}%`,
+      trend,
+      rating,
+      moatSignals,
+    ].join(' | ');
   });
 
   const table = [
-    '| Symbol | Price | Market Cap | P/E | Target Mean | Upside |',
-    '|---|---:|---:|---:|---:|---:|',
-    ...rows,
+    '| Symbol | Company | Sector | Price | Market Cap | EPS | Rev Growth | Gross Margin | Target Mean | Upside | Price vs 50D | Ratings | Moat Signals |',
+    '|---|---|---|---:|---:|---:|---:|---:|---:|---:|---|---|---|',
+    ...rows.map((row) => `| ${row} |`),
   ].join('\n');
 
-  const performanceChart = buildPerformanceChart(data.items, `Price Performance (${data.range.toUpperCase()})`);
-  const valuationSeries = data.items
-    .map((item) => ({
-      symbol: item.symbol,
-      value: toNumber(item.overview?.peRatio ?? item.basicFinancials?.metric?.peBasicExclExtraTTM),
-    }))
-    .filter((item) => item.value !== null)
-    .map((item) => ({ symbol: item.symbol, value: item.value as number }));
-  const valuationChart = buildBarChart('Valuation (P/E)', 'P/E', valuationSeries);
-  const targetSeries = data.items
-    .map((item) => ({
-      symbol: item.symbol,
-      value: toNumber(item.priceTargets?.targetMean || item.overview?.analystTargetPrice),
-    }))
-    .filter((item) => item.value !== null)
-    .map((item) => ({ symbol: item.symbol, value: item.value as number }));
-  const targetChart = buildBarChart('Target Mean', 'Price', targetSeries);
   const notes = data.notes?.length ? data.notes.map((note) => `- ${note}`).join('\n') : 'N/A';
+  const marketCaps = data.items
+    .map((item) => toNumber(item.overview?.marketCapitalization))
+    .filter((value): value is number => value !== null);
+  const peRatios = data.items
+    .map((item) => toNumber(item.overview?.peRatio ?? item.basicFinancials?.metric?.peBasicExclExtraTTM))
+    .filter((value): value is number => value !== null);
+  const avgMarketCap = marketCaps.length
+    ? formatMarketCap(marketCaps.reduce((sum, value) => sum + value, 0) / marketCaps.length)
+    : 'N/A';
+  const avgPe = peRatios.length
+    ? (peRatios.reduce((sum, value) => sum + value, 0) / peRatios.length).toFixed(1)
+    : 'N/A';
+
+  const newsHighlights = buildNewsHighlights(data.items, 1);
 
   return [
     header,
@@ -739,14 +1003,14 @@ export function buildPeerReport(data: PeerReportData): string {
     `Universe: ${data.universe.join(', ') || 'N/A'}`,
     '## 📌 Overview',
     `Range: ${data.range.toUpperCase()}`,
-    '## 📊 Price Performance',
-    performanceChart || '_Price performance unavailable_',
-    '## 📊 Valuation & Targets',
-    valuationChart || '_Valuation chart unavailable_',
-    targetChart || '_Target chart unavailable_',
+    `Average Market Cap: ${avgMarketCap}`,
+    `Average P/E: ${avgPe}`,
     '## 🔍 Comparison Table',
     table,
-    '## 📝 Notes',
+    '## 📰 News Highlights',
+    newsHighlights,
+    '## 🧾 Notes',
     notes,
+    '_Not financial advice. Use this as a starting point for diligence._',
   ].join('\n\n');
 }

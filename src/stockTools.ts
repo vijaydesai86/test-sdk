@@ -463,14 +463,14 @@ export function createStockTools(stockService: StockDataService) {
       const universe = [symbol.toUpperCase(), ...peerSymbols].slice(0, limit + 1);
       const items = await Promise.all(
         universe.map(async (ticker) => {
-          const [price, overview, basicFinancials, priceTargets, priceHistory] = await Promise.all([
-            stockService.getStockPrice(ticker),
-            stockService.getCompanyOverview(ticker),
-            stockService.getBasicFinancials(ticker),
-            stockService.getPriceTargets(ticker),
-            stockService.getPriceHistory(ticker, range),
+          const [price, overview, basicFinancials, priceTargets, companyNews] = await Promise.all([
+            stockService.getStockPrice(ticker).catch(() => null),
+            stockService.getCompanyOverview(ticker).catch(() => null),
+            stockService.getBasicFinancials(ticker).catch(() => null),
+            stockService.getPriceTargets(ticker).catch(() => null),
+            stockService.getCompanyNews(ticker, 14).catch(() => null),
           ]);
-          return { symbol: ticker, price, overview, basicFinancials, priceTargets, priceHistory };
+          return { symbol: ticker, price, overview, basicFinancials, priceTargets, companyNews };
         })
       );
 
@@ -540,15 +540,16 @@ export function createStockTools(stockService: StockDataService) {
 
         const items = [] as any[];
         for (const symbol of universe) {
-          const [price, overview, basicFinancials, analystRatings, priceTargets, newsSentiment] = await Promise.all([
-            stockService.getStockPrice(symbol),
-            stockService.getCompanyOverview(symbol),
-            stockService.getBasicFinancials(symbol),
-            stockService.getAnalystRatings(symbol),
-            stockService.getPriceTargets(symbol),
-            stockService.getNewsSentiment(symbol),
+          const [price, overview, basicFinancials, analystRatings, priceTargets, newsSentiment, companyNews] = await Promise.all([
+            stockService.getStockPrice(symbol).catch(() => null),
+            stockService.getCompanyOverview(symbol).catch(() => null),
+            stockService.getBasicFinancials(symbol).catch(() => null),
+            stockService.getAnalystRatings(symbol).catch(() => null),
+            stockService.getPriceTargets(symbol).catch(() => null),
+            stockService.getNewsSentiment(symbol).catch(() => null),
+            stockService.getCompanyNews(symbol, 14).catch(() => null),
           ]);
-          items.push({ symbol, price, overview, basicFinancials, analystRatings, priceTargets, newsSentiment });
+          items.push({ symbol, price, overview, basicFinancials, analystRatings, priceTargets, newsSentiment, companyNews });
         }
 
         const content = buildSectorReport({

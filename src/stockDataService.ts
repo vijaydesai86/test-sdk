@@ -35,6 +35,7 @@ export class AlphaVantageService implements StockDataService {
   private finnhubApiKey?: string;
   private fmpApiKey?: string;
   private newsApiKey?: string;
+  private fmpEnabled: boolean;
   private finnhubBaseUrl = 'https://finnhub.io/api/v1';
   private fmpBaseUrl = 'https://financialmodelingprep.com/api/v3';
   private newsApiBaseUrl = 'https://newsapi.org/v2';
@@ -52,6 +53,7 @@ export class AlphaVantageService implements StockDataService {
     this.finnhubApiKey = process.env.FINNHUB_API_KEY;
     this.fmpApiKey = process.env.FMP_API_KEY;
     this.newsApiKey = process.env.NEWSAPI_KEY;
+    this.fmpEnabled = process.env.FMP_DISABLED !== 'true';
   }
 
   private buildCacheKey(prefix: string, params: Record<string, string>): string {
@@ -506,7 +508,7 @@ export class AlphaVantageService implements StockDataService {
 
   async searchStock(query: string): Promise<any> {
     const [searchResults, alphaResults] = await Promise.all([
-      this.searchCompanies(query),
+      this.searchCompanies(query).catch(() => ({ results: [] })),
       this.makeRequest(
         {
           function: 'SYMBOL_SEARCH',
@@ -547,10 +549,10 @@ export class AlphaVantageService implements StockDataService {
   async searchCompanies(query: string): Promise<any> {
     const [fmpResults, finnhubResults] = await Promise.all([
       this.fmpApiKey && this.fmpEnabled
-        ? this.makeFmpRequest('/search', { query, limit: '10' }, { ttlMs: 60 * 60 * 1000 })
+        ? this.makeFmpRequest('/search', { query, limit: '10' }, { ttlMs: 60 * 60 * 1000 }).catch(() => [])
         : Promise.resolve([]),
       this.finnhubApiKey
-        ? this.makeFinnhubRequest('/search', { q: query }, { ttlMs: 60 * 60 * 1000 })
+        ? this.makeFinnhubRequest('/search', { q: query }, { ttlMs: 60 * 60 * 1000 }).catch(() => ({ result: [] }))
         : Promise.resolve({ result: [] }),
     ]);
 

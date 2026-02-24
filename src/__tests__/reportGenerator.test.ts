@@ -23,7 +23,7 @@ describe('reportGenerator', () => {
     expect(report).toContain('Moat');
   });
 
-  it('builds a sector report with charts', () => {
+  it('builds a sector report with narrative sections', () => {
     const report = buildSectorReport({
       query: 'AI data center',
       generatedAt: '2025-01-01T00:00:00Z',
@@ -35,10 +35,10 @@ describe('reportGenerator', () => {
       notes: ['Universe built from search'],
     });
 
-    expect(report).toContain('## 📊 Charts');
-    expect(report).toContain('```chart');
-    expect(report).toContain('Analyst Target Mean');
-    expect(report).toContain('Score Ranking');
+    expect(report).toContain('## ✨ Executive Summary');
+    expect(report).toContain('## 🧠 AI Stack Overview');
+    expect(report).toContain('## 📊 Company Metrics');
+    expect(report).toContain('Indicative Allocation');
   });
 
   it('saves report to disk', async () => {
@@ -49,7 +49,7 @@ describe('reportGenerator', () => {
     expect(content).toBe('hello');
   });
 
-  it('builds a peer report with charts', () => {
+  it('builds a peer report with detailed comparison table', () => {
     const report = buildPeerReport({
       symbol: 'AMD',
       generatedAt: '2025-01-01T00:00:00Z',
@@ -75,7 +75,8 @@ describe('reportGenerator', () => {
     });
 
     expect(report).toContain('Peer Comparison Report');
-    expect(report).toContain('```chart');
-    expect(report).toContain('Price Performance');
+    expect(report).toContain('Comparison Table');
+    expect(report).toContain('Moat Signals');
+    expect(report).toContain('News Highlights');
   });
 });
