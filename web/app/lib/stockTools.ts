@@ -550,6 +550,17 @@ export async function executeTool(
       }
       case 'generate_stock_report': {
         const symbol = args.symbol || '';
+        const notes: string[] = [];
+        const safeFetch = async <T>(label: string, request: Promise<T>) => {
+          try {
+            return await request;
+          } catch (error: any) {
+            const message = error?.message || 'Unavailable';
+            notes.push(`${label}: ${message}`);
+            return undefined as T;
+          }
+        };
+
         const [
           price,
           priceHistory,
@@ -566,23 +577,23 @@ export async function executeTool(
           newsSentiment,
           companyNews,
         ] = await Promise.all([
-          stockService.getStockPrice(symbol),
-          stockService.getPriceHistory(symbol, 'daily'),
-          stockService.getCompanyOverview(symbol),
-          stockService.getBasicFinancials(symbol),
-          stockService.getEarningsHistory(symbol),
-          stockService.getIncomeStatement(symbol),
-          stockService.getBalanceSheet(symbol),
-          stockService.getCashFlow(symbol),
-          stockService.getAnalystRatings(symbol),
-          stockService.getAnalystRecommendations(symbol),
-          stockService.getPriceTargets(symbol),
-          stockService.getPeers(symbol),
-          stockService.getNewsSentiment(symbol),
-          stockService.getCompanyNews(symbol, 30),
+          safeFetch('Price', stockService.getStockPrice(symbol)),
+          safeFetch('Price history', stockService.getPriceHistory(symbol, 'daily')),
+          safeFetch('Company overview', stockService.getCompanyOverview(symbol)),
+          safeFetch('Basic financials', stockService.getBasicFinancials(symbol)),
+          safeFetch('Earnings history', stockService.getEarningsHistory(symbol)),
+          safeFetch('Income statement', stockService.getIncomeStatement(symbol)),
+          safeFetch('Balance sheet', stockService.getBalanceSheet(symbol)),
+          safeFetch('Cash flow', stockService.getCashFlow(symbol)),
+          safeFetch('Analyst ratings', stockService.getAnalystRatings(symbol)),
+          safeFetch('Analyst recommendations', stockService.getAnalystRecommendations(symbol)),
+          safeFetch('Price targets', stockService.getPriceTargets(symbol)),
+          safeFetch('Peers', stockService.getPeers(symbol)),
+          safeFetch('News sentiment', stockService.getNewsSentiment(symbol)),
+          safeFetch('Company news', stockService.getCompanyNews(symbol, 30)),
         ]);
 
-        const content = buildStockReport({
+        const reportBody = buildStockReport({
           symbol: symbol.toUpperCase(),
           generatedAt: new Date().toISOString(),
           price,
@@ -600,6 +611,14 @@ export async function executeTool(
           newsSentiment,
           companyNews,
         });
+
+        const content = notes.length
+          ? reportBody.replace(
+              '## 📊 Snapshot',
+              `## ⚠️ Data Gaps\n${notes.map((item) => `- ${item}`).join('\n')}\n\n## 📊 Snapshot`
+            )
+          : reportBody;
+
         const saved = await saveReport(content, `${symbol}-stock-report`);
         return {
           success: true,
@@ -624,10 +643,14 @@ export async function executeTool(
         }
 
         if (universe.length === 0) {
-          const searchResults = await stockService.searchCompanies(query);
-          universe = (searchResults.results || []).map((item: any) => item.symbol).filter(Boolean).slice(0, limit);
-          if (universe.length > 0) {
-            notes.push(`Universe built from multi-source search for "${query}".`);
+          try {
+            const searchResults = await stockService.searchCompanies(query);
+            universe = (searchResults.results || []).map((item: any) => item.symbol).filter(Boolean).slice(0, limit);
+            if (universe.length > 0) {
+              notes.push(`Universe built from multi-source search for "${query}".`);
+            }
+          } catch (error: any) {
+            notes.push(`Company search unavailable: ${error.message}`);
           }
         }
 
