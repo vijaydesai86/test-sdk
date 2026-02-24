@@ -192,7 +192,7 @@ export default function ChatInterface() {
     new Set(
       messages
         .filter((message) => message.role === 'assistant')
-        .flatMap((message) => message.content.match(/\/api\/reports\/[a-z0-9-]+-[0-9T\-]+\.md/gi) || [])
+        .flatMap((message) => message.content.match(/\/api\/reports\/[a-z0-9-]+\.md/gi) || [])
     )
   ).filter((link) => !deletedReports.has(link));
 
