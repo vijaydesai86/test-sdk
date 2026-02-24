@@ -190,19 +190,30 @@ function isToolCallLike(content: string | null | undefined): boolean {
 
 function parseReportRequest(message: string) {
   const text = message.trim();
-  const stockMatch = text.match(/report\s+(?:for|on)\s+([a-zA-Z]{1,6})\b/i);
-  if (stockMatch) {
-    return { type: 'stock' as const, symbol: stockMatch[1].toUpperCase() };
-  }
-
+  const lower = text.toLowerCase();
   const sectorMatch = text.match(/(sector|theme)\s+report\s+for\s+(.+)$/i);
   if (sectorMatch) {
     return { type: 'sector' as const, query: sectorMatch[2].trim() };
   }
 
+  if (lower.includes('sector report') || lower.includes('theme report')) {
+    const queryMatch = text.match(/report\s+for\s+(.+)$/i);
+    if (queryMatch) {
+      return { type: 'sector' as const, query: queryMatch[1].trim() };
+    }
+  }
+
   const genericMatch = text.match(/report\s+for\s+(.+)$/i);
   if (genericMatch) {
-    return { type: 'sector' as const, query: genericMatch[1].trim() };
+    const query = genericMatch[1].trim();
+    if (query.includes(' ') || /sector|theme|stocks?/i.test(query)) {
+      return { type: 'sector' as const, query };
+    }
+  }
+
+  const stockMatch = text.match(/report\s+(?:for|on)\s+([a-zA-Z]{1,6})\b/i);
+  if (stockMatch) {
+    return { type: 'stock' as const, symbol: stockMatch[1].toUpperCase() };
   }
 
   return null;
@@ -446,6 +457,90 @@ function formatRatingsResponse(data: any) {
     `Strong Sell: ${data.strongSell ?? 'N/A'}`,
     `Target Price: ${data.analystTargetPrice ?? 'N/A'}`,
   ].join('\n');
+}
+
+async function handlePeerComparison(
+  symbol: string,
+  stockService: StockDataService,
+  message: string,
+  sessionId?: string | null
+) {
+  const currentSessionId = sessionId || Math.random().toString(36).substring(7);
+  let conversationMessages: ChatMessage[] = sessionId ? sessions.get(sessionId) || [] : [];
+  if (conversationMessages.length === 0) {
+    conversationMessages.push({ role: 'system', content: COMPACT_SYSTEM_PROMPT });
+  }
+  conversationMessages.push({ role: 'user', content: message });
+
+  let peers: string[] = [];
+  let fallbackNote = '';
+  try {
+    const peerResult = await stockService.getPeers(symbol);
+    peers = (peerResult?.peers || []).filter((peer: string) => peer && peer !== symbol).slice(0, 6);
+  } catch (error: any) {
+    fallbackNote = `Peers unavailable via Finnhub (${error.message || 'Unknown error'}). Using search results as proxy.`;
+    try {
+      const searchResult = await stockService.searchStock(symbol);
+      peers = (searchResult?.results || [])
+        .map((item: any) => item.symbol)
+        .filter((peer: string) => peer && peer !== symbol)
+        .slice(0, 6);
+    } catch {
+      peers = [];
+    }
+  }
+
+  const universe = [symbol, ...peers].slice(0, 8);
+  const rows = await Promise.all(
+    universe.map(async (ticker) => {
+      const [price, overview, basicFinancials, targets] = await Promise.all([
+        stockService.getStockPrice(ticker).catch(() => null),
+        stockService.getCompanyOverview(ticker).catch(() => null),
+        stockService.getBasicFinancials(ticker).catch(() => null),
+        stockService.getPriceTargets(ticker).catch(() => null),
+      ]);
+      const priceValue = Number(price?.price);
+      const targetValue = Number(targets?.targetMean || overview?.analystTargetPrice);
+      const upside = priceValue && targetValue
+        ? `${(((targetValue - priceValue) / priceValue) * 100).toFixed(1)}%`
+        : 'N/A';
+      return {
+        symbol: ticker,
+        price: price?.price ?? 'N/A',
+        marketCap: overview?.marketCapitalization ?? 'N/A',
+        pe: overview?.peRatio ?? basicFinancials?.metric?.peBasicExclExtraTTM ?? 'N/A',
+        target: targets?.targetMean ?? overview?.analystTargetPrice ?? 'N/A',
+        upside,
+      };
+    })
+  );
+
+  const table = [
+    '| Symbol | Price | Market Cap | P/E | Target Mean | Upside |',
+    '|---|---:|---:|---:|---:|---:|',
+    ...rows.map((row) => `| ${row.symbol} | ${row.price} | ${row.marketCap} | ${row.pe} | ${row.target} | ${row.upside} |`),
+  ].join('\n');
+
+  const responseText = [
+    `## 🔍 Peer Comparison — ${symbol}`,
+    fallbackNote,
+    table,
+  ].filter(Boolean).join('\n\n');
+
+  conversationMessages.push({ role: 'assistant', content: responseText });
+  sessions.set(currentSessionId, conversationMessages);
+
+  return NextResponse.json({
+    response: responseText,
+    sessionId: currentSessionId,
+    model: DEFAULT_MODEL,
+    provider: 'direct',
+    stats: {
+      rounds: 0,
+      toolCalls: universe.length * 4,
+      toolsProvided: 0,
+    },
+  });
 }
 
 const DEFAULT_TOOL_NAMES = [
@@ -783,6 +878,13 @@ export async function POST(request: NextRequest) {
     }
     if (sectorRequest?.type === 'stocks' && sectorRequest.sector) {
       return handleDirectToolResponse('get_stocks_by_sector', { sector: sectorRequest.sector }, stockService, message, sessionId);
+    }
+
+    if (lowerMessage.includes('compare') || lowerMessage.includes('peers')) {
+      const compareSymbol = await resolveSymbolFromMessage(message, stockService);
+      if (compareSymbol) {
+        return handlePeerComparison(compareSymbol, stockService, message, sessionId);
+      }
     }
 
     if (lowerMessage.includes('screen')) {
