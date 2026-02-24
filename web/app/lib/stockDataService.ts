@@ -550,7 +550,7 @@ export class AlphaVantageService implements StockDataService {
 
   async searchCompanies(query: string): Promise<any> {
     const [fmpResults, finnhubResults] = await Promise.all([
-      this.fmpApiKey
+      this.fmpApiKey && this.fmpEnabled
         ? this.makeFmpRequest('/search', { query, limit: '10' }, { ttlMs: 60 * 60 * 1000 })
         : Promise.resolve([]),
       this.finnhubApiKey

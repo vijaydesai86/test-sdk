@@ -525,6 +525,14 @@ export function createStockTools(stockService: StockDataService) {
         }
 
         if (universe.length === 0) {
+          const searchResults = await stockService.searchStock(query);
+          universe = (searchResults.results || []).map((item: any) => item.symbol).filter(Boolean).slice(0, limit);
+          if (universe.length > 0) {
+            notes.push(`Universe built from Alpha Vantage symbol search for "${query}".`);
+          }
+        }
+
+        if (universe.length === 0) {
           const newsResults = await stockService.searchNews(query, 14);
           const headlines = (newsResults.articles || []).map((a: any) => a.title || '').filter(Boolean).slice(0, 10);
           notes.push(`News scan headlines: ${headlines.join('; ') || 'N/A'}`);
