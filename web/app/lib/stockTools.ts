@@ -562,38 +562,62 @@ export async function executeTool(
             return undefined as T;
           }
         };
+        const optionalFetch = async <T>(request: Promise<T>) => {
+          try {
+            return await request;
+          } catch {
+            return undefined as T;
+          }
+        };
+
+        const price = await safeFetch('Price', stockService.getStockPrice(symbol));
+        const priceHistory = await safeFetch('Price history', stockService.getPriceHistory(symbol, 'daily'));
+        const companyOverview = await safeFetch('Company overview', stockService.getCompanyOverview(symbol));
+        const basicFinancials = await safeFetch('Basic financials', stockService.getBasicFinancials(symbol));
+        const earningsHistory = await safeFetch('Earnings history', stockService.getEarningsHistory(symbol));
+        const incomeStatement = await safeFetch('Income statement', stockService.getIncomeStatement(symbol));
+        const balanceSheet = await safeFetch('Balance sheet', stockService.getBalanceSheet(symbol));
+        const cashFlow = await safeFetch('Cash flow', stockService.getCashFlow(symbol));
 
         const [
-          price,
-          priceHistory,
-          companyOverview,
-          basicFinancials,
-          earningsHistory,
-          incomeStatement,
-          balanceSheet,
-          cashFlow,
           analystRatings,
           analystRecommendations,
-          priceTargets,
+          priceTargetsRaw,
           peers,
-          newsSentiment,
-          companyNews,
+          newsSentimentRaw,
+          companyNewsRaw,
         ] = await Promise.all([
-          safeFetch('Price', stockService.getStockPrice(symbol)),
-          safeFetch('Price history', stockService.getPriceHistory(symbol, 'daily')),
-          safeFetch('Company overview', stockService.getCompanyOverview(symbol)),
-          safeFetch('Basic financials', stockService.getBasicFinancials(symbol)),
-          safeFetch('Earnings history', stockService.getEarningsHistory(symbol)),
-          safeFetch('Income statement', stockService.getIncomeStatement(symbol)),
-          safeFetch('Balance sheet', stockService.getBalanceSheet(symbol)),
-          safeFetch('Cash flow', stockService.getCashFlow(symbol)),
           safeFetch('Analyst ratings', stockService.getAnalystRatings(symbol)),
           safeFetch('Analyst recommendations', stockService.getAnalystRecommendations(symbol)),
-          safeFetch('Price targets', stockService.getPriceTargets(symbol)),
+          optionalFetch(stockService.getPriceTargets(symbol)),
           safeFetch('Peers', stockService.getPeers(symbol)),
-          safeFetch('News sentiment', stockService.getNewsSentiment(symbol)),
-          safeFetch('Company news', stockService.getCompanyNews(symbol, 30)),
+          optionalFetch(stockService.getNewsSentiment(symbol)),
+          optionalFetch(stockService.getCompanyNews(symbol, 30)),
         ]);
+
+        const priceTargets = priceTargetsRaw || (companyOverview?.analystTargetPrice
+          ? {
+              targetMean: companyOverview.analystTargetPrice,
+              targetMedian: companyOverview.analystTargetPrice,
+              targetHigh: companyOverview.analystTargetPrice,
+              targetLow: companyOverview.analystTargetPrice,
+            }
+          : undefined);
+        if (!priceTargets) {
+          notes.push('Price targets: Unavailable');
+        }
+
+        const newsSentiment = newsSentimentRaw;
+        if (!newsSentiment) {
+          notes.push('News sentiment: Unavailable');
+        }
+
+        const companyNews = companyNewsRaw || (await optionalFetch(
+          stockService.searchNews(symbol, 14)
+        ));
+        if (!companyNews) {
+          notes.push('Company news: Unavailable');
+        }
 
         const reportBody = buildStockReport({
           symbol: symbol.toUpperCase(),
