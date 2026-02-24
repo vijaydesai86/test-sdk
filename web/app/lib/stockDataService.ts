@@ -392,29 +392,30 @@ export class AlphaVantageService implements StockDataService {
   }
 
   async searchStock(query: string): Promise<any> {
-    const [searchResults, alphaResults] = await Promise.all([
-      this.searchCompanies(query).catch(() => ({ results: [] })),
-      this.makeRequest(
-        {
-          function: 'SYMBOL_SEARCH',
-          keywords: query,
-        },
-        { ttlMs: 60 * 60 * 1000 }
-      ).catch(() => null),
-    ]);
+    const alphaResults = await this.makeRequest(
+      {
+        function: 'SYMBOL_SEARCH',
+        keywords: query,
+      },
+      { ttlMs: 60 * 60 * 1000 }
+    );
+
+    if (alphaResults?.Note) {
+      throw new Error(alphaResults.Note);
+    }
+    if (alphaResults?.['Error Message']) {
+      throw new Error(alphaResults['Error Message']);
+    }
 
     const alphaMatches = alphaResults?.bestMatches || [];
-    const combined = [
-      ...(searchResults.results || []),
-      ...alphaMatches.map((match: any) => ({
-        symbol: match['1. symbol'],
-        name: match['2. name'],
-        type: match['3. type'],
-        region: match['4. region'],
-        currency: match['8. currency'],
-        source: 'alphavantage',
-      })),
-    ];
+    const combined = alphaMatches.map((match: any) => ({
+      symbol: match['1. symbol'],
+      name: match['2. name'],
+      type: match['3. type'],
+      region: match['4. region'],
+      currency: match['8. currency'],
+      source: 'alphavantage',
+    }));
 
     const seen = new Set<string>();
     const results = combined.filter((item) => {
