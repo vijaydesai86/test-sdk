@@ -150,9 +150,33 @@ const DEFAULT_TOOL_NAMES = [
   'get_analyst_ratings',
 ];
 
+const REPORT_TOOL_NAMES = [
+  'search_stock',
+  'get_stock_price',
+  'get_company_overview',
+  'get_basic_financials',
+  'get_analyst_ratings',
+  'get_analyst_recommendations',
+  'get_price_targets',
+  'get_news_sentiment',
+  'get_company_news',
+  'get_price_history',
+  'get_earnings_history',
+  'get_income_statement',
+  'get_balance_sheet',
+  'get_cash_flow',
+  'get_peers',
+  'get_insider_trading',
+  'generate_stock_report',
+  'generate_sector_report',
+];
+
+const MAX_TOOLS_NON_REPORT = 10;
+
 function selectToolNames(message: string) {
   const text = message.toLowerCase();
-  const selected = new Set(DEFAULT_TOOL_NAMES);
+  const isReport = text.includes('report');
+  const selected = new Set(isReport ? REPORT_TOOL_NAMES : DEFAULT_TOOL_NAMES);
 
   if (text.includes('report')) {
     selected.add('generate_stock_report');
@@ -204,7 +228,7 @@ function selectToolNames(message: string) {
     selected.add('get_top_gainers_losers');
   }
 
-  return Array.from(selected);
+  return { toolNames: Array.from(selected), isReport };
 }
 async function callGitHubModelsAPI(
   messages: ChatMessage[],
@@ -393,8 +417,11 @@ export async function POST(request: NextRequest) {
     // Add user message
     conversationMessages.push({ role: 'user', content: message });
 
-    const toolNames = selectToolNames(message);
-    const toolDefinitions = getToolDefinitionsByName(toolNames);
+    const { toolNames, isReport } = selectToolNames(message);
+    let toolDefinitions = getToolDefinitionsByName(toolNames);
+    if (!isReport && toolDefinitions.length > MAX_TOOLS_NON_REPORT) {
+      toolDefinitions = toolDefinitions.slice(0, MAX_TOOLS_NON_REPORT);
+    }
 
     // Call the Copilot API with tool-calling loop
     let rounds = 0;
