@@ -176,7 +176,13 @@ export default function ChatInterface() {
         }),
       });
 
-      const data = await response.json();
+      let data: any;
+      try {
+        data = await response.json();
+      } catch {
+        const fallbackText = await response.text();
+        throw new Error(fallbackText || 'Failed to parse server response');
+      }
 
       if (!response.ok) {
         const message = data.details
