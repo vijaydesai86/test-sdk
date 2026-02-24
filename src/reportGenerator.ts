@@ -938,87 +938,128 @@ export async function saveReport(content: string, title: string, directory = DEF
 
 export function buildPeerReport(data: PeerReportData): string {
   const header = `# Peer Comparison Report: ${data.symbol}`;
-  const rows = data.items.map((item) => {
+  const notes = data.notes?.length ? data.notes.map((note) => `- ${note}`).join('\n') : '';
+
+  const scored = data.items.map((item) => {
+    const scoreData: StockReportData = {
+      symbol: item.symbol,
+      generatedAt: data.generatedAt,
+      price: item.price || {},
+      priceHistory: item.priceHistory,
+      companyOverview: item.overview,
+      basicFinancials: item.basicFinancials,
+      earningsHistory: undefined,
+      incomeStatement: undefined,
+      balanceSheet: undefined,
+      cashFlow: undefined,
+      analystRatings: undefined,
+      analystRecommendations: undefined,
+      priceTargets: item.priceTargets,
+      peers: undefined,
+      newsSentiment: undefined,
+      companyNews: undefined,
+    };
+    const scorecard = computeScorecard(scoreData);
+    return { item, score: scorecard.composite };
+  });
+
+  const inclusionRows = data.items.map((item) => {
+    const name = item.overview?.name || item.symbol;
+    const reason = item.symbol.toUpperCase() === data.symbol.toUpperCase()
+      ? 'Base company'
+      : 'Peer comparison set';
+    return `| ${name} (${item.symbol}) | ${reason} |`;
+  });
+  const inclusionSection = inclusionRows.length
+    ? ['| Company (Ticker) | Why Included |', '|---|---|', ...inclusionRows].join('\n')
+    : '_Peer universe unavailable._';
+
+  const snapshotRows = data.items.map((item) => {
+    const name = item.overview?.name || item.symbol;
     const price = formatNumber(item.price?.price, 2);
     const marketCap = formatMarketCap(item.overview?.marketCapitalization);
     const eps = getEpsValue(item);
-    const revenueGrowth = getRevenueGrowth(item);
-    const grossMargin = getGrossMargin(item);
+    const pe = toNumber(item.overview?.peRatio ?? item.basicFinancials?.metric?.peBasicExclExtraTTM);
     const target = formatNumber(item.priceTargets?.targetMean ?? item.overview?.analystTargetPrice, 2);
     const upside = getTargetUpside(item);
-    const rating = formatRatingSummary(item);
-    const trend = formatPriceTrend(item);
-    const moatSignals = [
-      grossMargin !== null && grossMargin >= 40 ? 'Margin strength' : null,
-      getOperatingMargin(item) !== null && (getOperatingMargin(item) ?? 0) >= 15 ? 'Operating leverage' : null,
-      toNumber(item.overview?.marketCapitalization) !== null
-        && (toNumber(item.overview?.marketCapitalization) ?? 0) >= 50_000_000_000
-        ? 'Scale advantage'
-        : null,
-      rating !== 'N/A' ? 'Analyst conviction' : null,
-    ].filter(Boolean).join(', ') || 'Limited data';
-
     return [
-      item.symbol,
-      item.overview?.name || 'N/A',
-      item.overview?.sector || 'N/A',
+      `${name} (${item.symbol})`,
       price,
       marketCap,
       eps === null ? 'N/A' : eps.toFixed(2),
-      revenueGrowth === null ? 'N/A' : `${revenueGrowth.toFixed(1)}%`,
-      grossMargin === null ? 'N/A' : `${grossMargin.toFixed(1)}%`,
+      pe === null ? 'N/A' : pe.toFixed(1),
       target,
       upside === null ? 'N/A' : `${upside.toFixed(1)}%`,
-      trend,
-      rating,
-      moatSignals,
     ].join(' | ');
   });
+  const snapshotSection = snapshotRows.length
+    ? ['| Company (Ticker) | Price | Market Cap | EPS | P/E | Target Mean | Upside |', '|---|---:|---:|---:|---:|---:|---:|', ...snapshotRows.map((row) => `| ${row} |`)].join('\n')
+    : '_Peer snapshot unavailable._';
 
-  const table = [
-    '| Symbol | Company | Sector | Price | Market Cap | EPS | Rev Growth | Gross Margin | Target Mean | Upside | Price vs 50D | Ratings | Moat Signals |',
-    '|---|---|---|---:|---:|---:|---:|---:|---:|---:|---|---|---|',
-    ...rows.map((row) => `| ${row} |`),
-  ].join('\n');
+  const roleRows = data.items.map((item) => {
+    const name = item.overview?.name || item.symbol;
+    const description = item.overview?.description || '';
+    const firstSentence = description.split('. ').shift();
+    const role = firstSentence ? `${firstSentence}.` : (item.overview?.industry || item.overview?.sector || 'Role unavailable');
+    return `| ${name} (${item.symbol}) | ${role} |`;
+  });
+  const roleSection = roleRows.length
+    ? ['| Company (Ticker) | Role in Peer Set |', '|---|---|', ...roleRows].join('\n')
+    : '_Role data unavailable._';
 
-  const notes = data.notes?.length ? data.notes.map((note) => `- ${note}`).join('\n') : 'N/A';
-  const marketCaps = data.items
-    .map((item) => toNumber(item.overview?.marketCapitalization))
-    .filter((value): value is number => value !== null);
-  const peRatios = data.items
-    .map((item) => toNumber(item.overview?.peRatio ?? item.basicFinancials?.metric?.peBasicExclExtraTTM))
-    .filter((value): value is number => value !== null);
-  const avgMarketCap = marketCaps.length
-    ? formatMarketCap(marketCaps.reduce((sum, value) => sum + value, 0) / marketCaps.length)
-    : 'N/A';
-  const avgPe = peRatios.length
-    ? (peRatios.reduce((sum, value) => sum + value, 0) / peRatios.length).toFixed(1)
-    : 'N/A';
+  const analystRows = data.items.map((item) => {
+    const name = item.overview?.name || item.symbol;
+    const rating = formatRatingSummary(item);
+    const target = formatNumber(item.priceTargets?.targetMean ?? item.overview?.analystTargetPrice, 2);
+    const upside = getTargetUpside(item);
+    return [
+      `${name} (${item.symbol})`,
+      rating,
+      target,
+      upside === null ? 'N/A' : `${upside.toFixed(1)}%`,
+    ].join(' | ');
+  });
+  const analystSection = analystRows.length
+    ? ['| Company (Ticker) | Analyst Ratings | Target Mean | Upside |', '|---|---|---:|---:|', ...analystRows.map((row) => `| ${row} |`)].join('\n')
+    : '_Analyst data unavailable._';
 
-  const newsHighlights = buildNewsHighlights(data.items, 1);
-  const sections: string[] = [
+  const scoredSorted = scored.filter((row) => row.score !== null).sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+  const scoreCount = scoredSorted.length;
+  const recommendationRows = scored.map((row) => {
+    const name = row.item.overview?.name || row.item.symbol;
+    if (row.score === null || scoreCount === 0) {
+      return `| ${name} (${row.item.symbol}) | N/A | N/A | Insufficient data |`;
+    }
+    const rank = scoredSorted.findIndex((sorted) => sorted.item.symbol === row.item.symbol) + 1;
+    const percentile = scoreCount > 1 ? 1 - (rank - 1) / (scoreCount - 1) : 1;
+    const recommendation = percentile >= 0.67
+      ? 'Overweight'
+      : percentile >= 0.34
+        ? 'Neutral'
+        : 'Underweight';
+    return `| ${name} (${row.item.symbol}) | ${row.score.toFixed(1)} | ${rank} | ${recommendation} |`;
+  });
+  const recommendationSection = recommendationRows.length
+    ? ['| Company (Ticker) | Score | Rank | Recommendation |', '|---|---:|---:|---|', ...recommendationRows].join('\n')
+    : '_Recommendations unavailable._';
+
+  const sections = [
     header,
     `Generated: ${data.generatedAt}`,
-    `Universe: ${data.universe.join(', ') || 'N/A'}`,
-    '## 📌 Overview',
-    `Range: ${data.range.toUpperCase()}`,
-    `Average Market Cap: ${avgMarketCap}`,
-    `Average P/E: ${avgPe}`,
-  ];
-
-  if (rows.length) {
-    sections.push('## 🔍 Comparison Table', table);
-  }
-
-  if (newsHighlights !== 'N/A') {
-    sections.push('## 📰 News Highlights', newsHighlights);
-  }
-
-  if (notes && notes !== 'N/A') {
-    sections.push('## 🧾 Notes', notes);
-  }
-
-  sections.push('_Not financial advice. Use this as a starting point for diligence._');
+    `Universe: ${data.items.map((item) => `${item.overview?.name || item.symbol} (${item.symbol})`).join(', ') || 'N/A'}`,
+    '## ✅ Companies Included',
+    inclusionSection,
+    '## 🧾 Company Snapshot',
+    snapshotSection,
+    '## 🧭 Role in Peer Set',
+    roleSection,
+    '## 🧠 Analyst View',
+    analystSection,
+    '## ✅ Recommendations',
+    recommendationSection,
+    notes ? `## 🔍 Notes\n${notes}` : null,
+    '_Not financial advice. Use this as a starting point for diligence._',
+  ].filter(Boolean) as string[];
 
   return sections.join('\n\n');
 }

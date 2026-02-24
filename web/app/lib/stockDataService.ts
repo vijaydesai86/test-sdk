@@ -594,7 +594,16 @@ export class AlphaVantageService implements StockDataService {
       return true;
     });
 
-    return { results };
+    const usResults = results.filter((item) => {
+      const region = String(item.region || '').toLowerCase();
+      const currency = String(item.currency || '').toUpperCase();
+      const exchange = String(item.exchange || '').toUpperCase();
+      return region.includes('united states')
+        || currency === 'USD'
+        || ['NYSE', 'NASDAQ', 'AMEX'].some((label) => exchange.includes(label));
+    });
+
+    return { results: usResults.length ? usResults : results };
   }
 
   async searchCompanies(query: string): Promise<any> {
