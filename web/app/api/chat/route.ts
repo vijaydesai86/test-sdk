@@ -381,6 +381,12 @@ async function handleAnalystTrendRequest(
   message: string,
   sessionId?: string | null
 ) {
+  if (process.env.USE_ALPHA_ONLY === 'true') {
+    return NextResponse.json(
+      { error: 'Analyst rating trends are unavailable in Alpha-only mode.' },
+      { status: 501 }
+    );
+  }
   const currentSessionId = sessionId || Math.random().toString(36).substring(7);
   let conversationMessages: ChatMessage[] = sessionId ? sessions.get(sessionId) || [] : [];
   if (conversationMessages.length === 0) {
