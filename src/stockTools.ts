@@ -592,7 +592,7 @@ export function createStockTools(stockService: StockDataService) {
     },
     handler: async (args: any) => {
       const query = args.query as string;
-      const limit = Math.min(Number(args.limit || 12), 8);
+      const limit = Math.min(Number(args.limit || 12), 6);
 
       try {
         let universe: string[] = [];

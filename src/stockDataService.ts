@@ -34,6 +34,7 @@ export class AlphaVantageService implements StockDataService {
   private baseUrl = 'https://www.alphavantage.co/query';
   private cache = new Map<string, { expiresAt: number; data: any }>();
   private lastRequestAt = new Map<string, number>();
+  private static sharedCache = new Map<string, { expiresAt: number; data: any }>();
   private minIntervals = {
     alphavantage: Number(process.env.ALPHA_VANTAGE_MIN_INTERVAL_MS || 12000),
   };
@@ -67,15 +68,18 @@ export class AlphaVantageService implements StockDataService {
     fetcher: () => Promise<any>
   ): Promise<any> {
     if (ttlMs > 0) {
-      const cached = this.cache.get(cacheKey);
+      const cached = this.cache.get(cacheKey) || AlphaVantageService.sharedCache.get(cacheKey);
       if (cached && cached.expiresAt > Date.now()) {
+        this.cache.set(cacheKey, cached);
         return cached.data;
       }
     }
 
     const data = await fetcher();
     if (ttlMs > 0) {
-      this.cache.set(cacheKey, { expiresAt: Date.now() + ttlMs, data });
+      const entry = { expiresAt: Date.now() + ttlMs, data };
+      this.cache.set(cacheKey, entry);
+      AlphaVantageService.sharedCache.set(cacheKey, entry);
     }
     return data;
   }
