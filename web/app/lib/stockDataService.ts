@@ -562,7 +562,7 @@ export class AlphaVantageService implements StockDataService {
 
   async searchStock(query: string): Promise<any> {
     const [searchResults, alphaResults] = await Promise.all([
-      this.searchCompanies(query),
+      this.searchCompanies(query).catch(() => ({ results: [] })),
       this.makeRequest(
         {
           function: 'SYMBOL_SEARCH',
@@ -603,10 +603,10 @@ export class AlphaVantageService implements StockDataService {
   async searchCompanies(query: string): Promise<any> {
     const [fmpResults, finnhubResults] = await Promise.all([
       this.fmpApiKey && this.fmpEnabled
-        ? this.makeFmpRequest('/search', { query, limit: '10' }, { ttlMs: 60 * 60 * 1000 })
+        ? this.makeFmpRequest('/search', { query, limit: '10' }, { ttlMs: 60 * 60 * 1000 }).catch(() => [])
         : Promise.resolve([]),
       this.finnhubApiKey
-        ? this.makeFinnhubRequest('/search', { q: query }, { ttlMs: 60 * 60 * 1000 })
+        ? this.makeFinnhubRequest('/search', { q: query }, { ttlMs: 60 * 60 * 1000 }).catch(() => ({ result: [] }))
         : Promise.resolve({ result: [] }),
     ]);
 
