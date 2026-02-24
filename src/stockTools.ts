@@ -6,28 +6,48 @@ import { buildSectorReport, buildStockReport, buildPeerReport, saveReport } from
  * Create stock information tools for GitHub Copilot SDK
  */
 export function createStockTools(stockService: StockDataService) {
-  const curatedSectorUniverses = [
-    {
-      label: 'AI data centers',
-      keywords: [
-        'ai data center',
-        'ai datacenter',
-        'ai data centre',
-        'data center ai',
-        'datacenter ai',
-        'data centres ai',
-        'data centers ai',
-        'data center',
-        'datacenter',
-        'data centre',
-      ],
-      symbols: ['NVDA', 'AMD', 'AVGO', 'ANET', 'MRVL', 'SMCI', 'VRT', 'EQIX', 'DLR', 'IRM'],
-    },
-  ];
+  const stopwords = new Set([
+    'stocks',
+    'stock',
+    'sector',
+    'theme',
+    'report',
+    'the',
+    'and',
+    'for',
+    'of',
+    'in',
+  ]);
 
-  const getCuratedUniverse = (query: string) => {
-    const normalized = query.toLowerCase();
-    return curatedSectorUniverses.find((entry) => entry.keywords.some((keyword) => normalized.includes(keyword)));
+  const buildSearchQueries = (query: string) => {
+    const cleaned = query.toLowerCase().replace(/[^a-z0-9\s]/g, ' ');
+    const tokens = cleaned.split(/\s+/).filter((token) => token && !stopwords.has(token));
+    const phrases: string[] = [];
+    for (let i = 0; i < tokens.length; i += 1) {
+      phrases.push(tokens[i]);
+      if (i + 1 < tokens.length) {
+        phrases.push(`${tokens[i]} ${tokens[i + 1]}`);
+      }
+      if (i + 2 < tokens.length) {
+        phrases.push(`${tokens[i]} ${tokens[i + 1]} ${tokens[i + 2]}`);
+      }
+    }
+    const unique = Array.from(new Set([query, ...phrases].filter(Boolean)));
+    return unique.slice(0, 8);
+  };
+
+  const expandUniverseFromQuery = async (query: string, limit: number, notes: string[]) => {
+    const queries = buildSearchQueries(query);
+    if (queries.length === 0) return [] as string[];
+    const results = await Promise.all(
+      queries.map((term) => stockService.searchStock(term).catch(() => ({ results: [] })))
+    );
+    const symbols = results.flatMap((result: any) => (result.results || []).map((item: any) => item.symbol));
+    const universe = Array.from(new Set(symbols.filter(Boolean))).slice(0, limit);
+    if (universe.length > 0) {
+      notes.push(`Universe built from keyword-expanded search for "${query}".`);
+    }
+    return universe;
   };
 
   const searchStockTool = defineTool('search_stock', {
@@ -557,11 +577,7 @@ export function createStockTools(stockService: StockDataService) {
         }
 
         if (universe.length === 0) {
-          const curated = getCuratedUniverse(query);
-          if (curated) {
-            universe = curated.symbols.slice(0, limit);
-            notes.push(`Universe built from curated list for "${curated.label}".`);
-          }
+          universe = await expandUniverseFromQuery(query, limit, notes);
         }
 
         if (universe.length === 0) {
