@@ -142,6 +142,26 @@ function isToolCallLike(content: string | null | undefined): boolean {
   return /"name"\s*:\s*"functions\./.test(content) || /"arguments"\s*:\s*\{/.test(content);
 }
 
+function parseReportRequest(message: string) {
+  const text = message.trim();
+  const stockMatch = text.match(/report\s+(?:for|on)\s+([a-zA-Z]{1,6})\b/i);
+  if (stockMatch) {
+    return { type: 'stock' as const, symbol: stockMatch[1].toUpperCase() };
+  }
+
+  const sectorMatch = text.match(/(sector|theme)\s+report\s+for\s+(.+)$/i);
+  if (sectorMatch) {
+    return { type: 'sector' as const, query: sectorMatch[2].trim() };
+  }
+
+  const genericMatch = text.match(/report\s+for\s+(.+)$/i);
+  if (genericMatch) {
+    return { type: 'sector' as const, query: genericMatch[1].trim() };
+  }
+
+  return null;
+}
+
 const DEFAULT_TOOL_NAMES = [
   'search_stock',
   'get_stock_price',
@@ -396,6 +416,60 @@ export async function POST(request: NextRequest) {
       );
     }
     const stockService: StockDataService = new AlphaVantageService(alphaVantageKey);
+
+    const reportRequest = parseReportRequest(message);
+    if (reportRequest) {
+      const currentSessionId = sessionId || Math.random().toString(36).substring(7);
+      let conversationMessages: ChatMessage[] = sessionId ? sessions.get(sessionId) || [] : [];
+      const systemPrompt = process.env.USE_FULL_SYSTEM_PROMPT === 'true'
+        ? SYSTEM_PROMPT
+        : COMPACT_SYSTEM_PROMPT;
+      if (conversationMessages.length === 0) {
+        conversationMessages.push({ role: 'system', content: systemPrompt });
+      }
+
+      conversationMessages.push({ role: 'user', content: message });
+
+      const toolResult = reportRequest.type === 'stock'
+        ? await executeTool('generate_stock_report', { symbol: reportRequest.symbol }, stockService)
+        : await executeTool('generate_sector_report', { query: reportRequest.query }, stockService);
+
+      if (!toolResult.success) {
+        return NextResponse.json(
+          { error: toolResult.error || toolResult.message || 'Report generation failed' },
+          { status: 500 }
+        );
+      }
+
+      const downloadUrl = toolResult.data?.downloadUrl;
+      const responseText = downloadUrl
+        ? `Report generated: ${downloadUrl}`
+        : 'Report generated.';
+
+      conversationMessages.push({ role: 'assistant', content: responseText });
+      sessions.set(currentSessionId, conversationMessages);
+
+      console.info('Chat request stats', {
+        provider: provider || 'github',
+        model: model || DEFAULT_MODEL,
+        rounds: 0,
+        toolCalls: 1,
+        toolsProvided: 0,
+        directReport: reportRequest.type,
+      });
+
+      return NextResponse.json({
+        response: responseText,
+        sessionId: currentSessionId,
+        model: model || DEFAULT_MODEL,
+        provider: provider || 'github',
+        stats: {
+          rounds: 0,
+          toolCalls: 1,
+          toolsProvided: 0,
+        },
+      });
+    }
 
     // Get or create conversation history
     let conversationMessages: ChatMessage[] = sessionId ? sessions.get(sessionId) || [] : [];
