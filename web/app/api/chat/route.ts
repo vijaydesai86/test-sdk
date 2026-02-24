@@ -397,29 +397,6 @@ function buildFallbackModels(requestedModel: string): string[] {
   return Array.from(new Set(combined.filter(Boolean)));
 }
 
-function formatAnalystTrendResponse(symbol: string, recommendations: any[], ratings?: any): string {
-  const rows = recommendations
-    .map((rec) => {
-      const period = rec.period || rec.date || 'N/A';
-      return `| ${period} | ${rec.strongBuy ?? 'N/A'} | ${rec.buy ?? 'N/A'} | ${rec.hold ?? 'N/A'} | ${rec.sell ?? 'N/A'} | ${rec.strongSell ?? 'N/A'} |`;
-    });
-
-  const table = rows.length
-    ? ['| Period | Strong Buy | Buy | Hold | Sell | Strong Sell |', '|---|---:|---:|---:|---:|---:|', ...rows].join('\n')
-    : '_No analyst trend data available._';
-
-  const snapshot = ratings
-    ? `**Latest Snapshot:** Strong Buy ${ratings.strongBuy ?? 'N/A'} · Buy ${ratings.buy ?? 'N/A'} · Hold ${ratings.hold ?? 'N/A'} · Sell ${ratings.sell ?? 'N/A'} · Strong Sell ${ratings.strongSell ?? 'N/A'} · Target ${ratings.analystTargetPrice ?? 'N/A'}`
-    : '';
-
-  return [
-    `## 📈 Analyst Rating Trends — ${symbol}`,
-    snapshot,
-    table,
-    'Source: Finnhub',
-  ].filter(Boolean).join('\n\n');
-}
-
 function formatPriceResponse(data: any) {
   if (!data) return '_No price data available._';
   return [
@@ -1250,7 +1227,7 @@ export async function POST(request: NextRequest) {
         'Make sure OPENAI_API_KEY is set in your Vercel environment variables, and that the proxy URL is reachable from this deployment. ' +
         'If you see TLS errors, install Arm root certificates for the runtime environment.';
     } else {
-      details = 'Make sure GITHUB_TOKEN is set in your Vercel environment variables and that ALPHA_VANTAGE_API_KEY, FMP_API_KEY, FINNHUB_API_KEY, and NEWSAPI_KEY are configured for full data coverage.';
+      details = 'Make sure GITHUB_TOKEN and ALPHA_VANTAGE_API_KEY are set in your Vercel environment variables.';
     }
     return NextResponse.json(
       {

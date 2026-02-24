@@ -700,7 +700,7 @@ export async function executeTool(
             return await request;
           } catch (error: any) {
             const message = error?.message || 'Unavailable';
-            if (!['FMP disabled', 'Finnhub disabled', 'NewsAPI disabled'].includes(message)) {
+            if (!message.includes('Alpha-only mode')) {
               notes.push(`${label}: ${message}`);
             }
             return undefined as T;
@@ -888,7 +888,7 @@ export async function executeTool(
           const peers = await stockService.getPeers(symbol);
           peerSymbols = (peers.peers || []).filter((peer: string) => peer && peer !== symbol).slice(0, limit);
         } catch (error: any) {
-          notes.push(`Peers unavailable via Finnhub: ${error.message}`);
+          notes.push(`Peers unavailable: ${error.message}`);
           try {
             const search = await stockService.searchStock(symbol);
             peerSymbols = (search.results || []).map((item: any) => item.symbol).filter(Boolean).slice(0, limit);
