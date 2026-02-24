@@ -943,7 +943,7 @@ export async function POST(request: NextRequest) {
     let totalToolCalls = 0;
     let assistantContent: string | null = null;
     let activeModel = requestedModel;
-    let activeProvider = provider || 'github';
+    let activeProvider: 'github' | 'openai-proxy' = provider === 'openai-proxy' ? 'openai-proxy' : 'github';
     if (AUTO_DOWNGRADE_GPT5 && /gpt-5/i.test(activeModel) && activeProvider === 'github') {
       activeModel = DEFAULT_MODEL;
     }
