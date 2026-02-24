@@ -296,6 +296,14 @@ function parseMarketCapFilter(message: string) {
   return filters;
 }
 
+function parseLimitFromMessage(message: string, fallback = 8) {
+  const match = message.match(/\b(?:top|limit|up to)\s+(\d{1,2})\b/i);
+  if (!match) return fallback;
+  const value = Number(match[1]);
+  if (Number.isNaN(value) || value <= 0) return fallback;
+  return Math.min(Math.max(value, 2), 20);
+}
+
 function parseSearchRequest(message: string) {
   const match = message.match(/search\s+stock\s+(?:for\s+)?(.+)/i);
   if (match) return { query: match[1].trim() };
@@ -898,9 +906,10 @@ export async function POST(request: NextRequest) {
     if (lowerMessage.includes('compare') || lowerMessage.includes('peers')) {
       const compareSymbol = await resolveSymbolFromMessage(message, stockService);
       if (compareSymbol) {
+        const limit = parseLimitFromMessage(message, 8);
         return handleDirectToolResponse(
           'generate_peer_report',
-          { symbol: compareSymbol, range: timeframe || '5y', limit: 8 },
+          { symbol: compareSymbol, range: timeframe || '5y', limit },
           stockService,
           message,
           sessionId
