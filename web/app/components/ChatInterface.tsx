@@ -176,12 +176,12 @@ export default function ChatInterface() {
         }),
       });
 
+      const rawText = await response.text();
       let data: any;
       try {
-        data = await response.json();
+        data = rawText ? JSON.parse(rawText) : {};
       } catch {
-        const fallbackText = await response.text();
-        throw new Error(fallbackText || 'Failed to parse server response');
+        throw new Error(rawText || 'Failed to parse server response');
       }
 
       if (!response.ok) {
