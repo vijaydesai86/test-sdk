@@ -81,29 +81,34 @@ const expandUniverseFromTopMovers = async (
     ].filter(Boolean)));
     const terms = buildSearchQueries(query).map((term) => term.toLowerCase());
     const matches: string[] = [];
-    for (const symbol of candidates.slice(0, 20)) {
-      const overview = await stockService.getCompanyOverview(symbol).catch(() => null);
-      const text = [
-        overview?.name,
-        overview?.sector,
-        overview?.industry,
-        overview?.description,
-      ]
-        .filter(Boolean)
-        .join(' ')
-        .toLowerCase();
-      if (text && terms.some((term) => text.includes(term))) {
-        matches.push(symbol);
-      }
-      if (matches.length >= limit) break;
+  for (const symbol of candidates.slice(0, 20)) {
+    const overview = await stockService.getCompanyOverview(symbol).catch(() => null);
+    const text = [
+      overview?.name,
+      overview?.sector,
+      overview?.industry,
+      overview?.description,
+    ]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase();
+    if (text && terms.some((term) => text.includes(term))) {
+      matches.push(symbol);
     }
-    if (matches.length > 0) {
-      notes.push(`Universe built from top movers filtered by "${query}".`);
-    }
-    return matches.slice(0, limit);
-  } catch {
-    return [];
+    if (matches.length >= limit) break;
   }
+  if (matches.length > 0) {
+    notes.push(`Universe built from top movers filtered by "${query}".`);
+    return matches.slice(0, limit);
+  }
+  if (candidates.length > 0) {
+    notes.push(`Universe built from top movers due to limited matches for "${query}".`);
+    return candidates.slice(0, limit);
+  }
+  return [];
+} catch {
+  return [];
+}
 };
 
 function buildToolDefinitions() {
@@ -663,7 +668,7 @@ export async function executeTool(
             return await request;
           } catch (error: any) {
             const message = error?.message || 'Unavailable';
-            if (message !== 'FMP disabled') {
+            if (!['FMP disabled', 'Finnhub disabled', 'NewsAPI disabled'].includes(message)) {
               notes.push(`${label}: ${message}`);
             }
             return undefined as T;
@@ -763,16 +768,19 @@ export async function executeTool(
         const query = args.query || '';
         const limit = Number(args.limit || 12);
         const notes: string[] = [];
+        const alphaOnly = process.env.USE_ALPHA_ONLY === 'true';
 
         let universe: string[] = [];
-        try {
-          const sectorResults = await stockService.getStocksBySector(query);
-          universe = (sectorResults.results || []).map((item: any) => item.symbol).filter(Boolean).slice(0, limit);
-          if (universe.length > 0) {
-            notes.push(`Universe built from sector screening for "${query}".`);
+        if (!alphaOnly) {
+          try {
+            const sectorResults = await stockService.getStocksBySector(query);
+            universe = (sectorResults.results || []).map((item: any) => item.symbol).filter(Boolean).slice(0, limit);
+            if (universe.length > 0) {
+              notes.push(`Universe built from sector screening for "${query}".`);
+            }
+          } catch (error: any) {
+            notes.push(`Sector screening unavailable: ${error.message}`);
           }
-        } catch (error: any) {
-          notes.push(`Sector screening unavailable: ${error.message}`);
         }
 
         if (universe.length === 0) {

@@ -41,6 +41,7 @@ export class AlphaVantageService implements StockDataService {
   private cache = new Map<string, { expiresAt: number; data: any }>();
   private lastRequestAt = new Map<string, number>();
   private fmpEnabled = process.env.ENABLE_FMP !== 'false';
+  private alphaOnly = process.env.USE_ALPHA_ONLY === 'true';
   private minIntervals = {
     alphavantage: Number(process.env.ALPHA_VANTAGE_MIN_INTERVAL_MS || 12000),
     finnhub: Number(process.env.FINNHUB_MIN_INTERVAL_MS || 1000),
@@ -123,8 +124,8 @@ export class AlphaVantageService implements StockDataService {
     params: Record<string, string> = {},
     options: { ttlMs?: number; cacheKey?: string } = {}
   ): Promise<any> {
-    if (!this.finnhubApiKey) {
-      throw new Error('FINNHUB_API_KEY is required for this request');
+    if (this.alphaOnly || !this.finnhubApiKey) {
+      throw new Error('Finnhub disabled');
     }
     const cacheKey = options.cacheKey || this.buildCacheKey(`finnhub:${path}`, params);
     const ttlMs = options.ttlMs || 0;
@@ -152,11 +153,8 @@ export class AlphaVantageService implements StockDataService {
     params: Record<string, string> = {},
     options: { ttlMs?: number; cacheKey?: string } = {}
   ): Promise<any> {
-    if (!this.fmpEnabled) {
+    if (this.alphaOnly || !this.fmpEnabled || !this.fmpApiKey) {
       throw new Error('FMP disabled');
-    }
-    if (!this.fmpApiKey) {
-      throw new Error('FMP_API_KEY is required for this request');
     }
     const cacheKey = options.cacheKey || this.buildCacheKey(`fmp:${path}`, params);
     const ttlMs = options.ttlMs || 0;
@@ -183,8 +181,8 @@ export class AlphaVantageService implements StockDataService {
     params: Record<string, string>,
     options: { ttlMs?: number; cacheKey?: string } = {}
   ): Promise<any> {
-    if (!this.newsApiKey) {
-      throw new Error('NEWSAPI_KEY is required for this request');
+    if (this.alphaOnly || !this.newsApiKey) {
+      throw new Error('NewsAPI disabled');
     }
     const cacheKey = options.cacheKey || this.buildCacheKey('newsapi:everything', params);
     const ttlMs = options.ttlMs || 0;
@@ -562,7 +560,7 @@ export class AlphaVantageService implements StockDataService {
 
   async searchStock(query: string): Promise<any> {
     const [searchResults, alphaResults] = await Promise.all([
-      this.searchCompanies(query).catch(() => ({ results: [] })),
+      this.alphaOnly ? Promise.resolve({ results: [] }) : this.searchCompanies(query).catch(() => ({ results: [] })),
       this.makeRequest(
         {
           function: 'SYMBOL_SEARCH',
@@ -594,13 +592,13 @@ export class AlphaVantageService implements StockDataService {
       return true;
     });
 
-    if (results.length > 0) {
-      return { results };
-    }
-    return { results: [] };
+    return { results };
   }
 
   async searchCompanies(query: string): Promise<any> {
+    if (this.alphaOnly) {
+      return { results: [] };
+    }
     const [fmpResults, finnhubResults] = await Promise.all([
       this.fmpApiKey && this.fmpEnabled
         ? this.makeFmpRequest('/search', { query, limit: '10' }, { ttlMs: 60 * 60 * 1000 }).catch(() => [])

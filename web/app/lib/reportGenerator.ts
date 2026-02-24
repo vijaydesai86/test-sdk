@@ -487,7 +487,7 @@ export function buildStockReport(data: StockReportData): string {
   const headline = `# ${data.symbol} Comprehensive Equity Research Report`;
   const scorecard = computeScorecard(data);
 
-  const sections = [
+  const sections: string[] = [
     headline,
     `Generated: ${data.generatedAt}`,
     '## 📊 Snapshot',
@@ -495,38 +495,64 @@ export function buildStockReport(data: StockReportData): string {
     `- Market Cap: ${data.companyOverview?.marketCapitalization || 'N/A'}`,
     `- Sector: ${data.companyOverview?.sector || 'N/A'}`,
     `- Industry: ${data.companyOverview?.industry || 'N/A'}`,
-    '## 📈 Price & EPS Trends',
-    priceChart || '_Price history unavailable_',
-    epsChart || '_EPS history unavailable_',
-    '## 📊 Revenue & Margin Trends',
-    revenueChart || '_Revenue trend unavailable_',
-    marginChart || '_Margin trend unavailable_',
-    '## 💰 Financials',
+  ];
+
+  if (priceChart || epsChart) {
+    sections.push('## 📈 Price & EPS Trends');
+    if (priceChart) sections.push(priceChart);
+    if (epsChart) sections.push(epsChart);
+  }
+
+  if (revenueChart || marginChart) {
+    sections.push('## 📊 Revenue & Margin Trends');
+    if (revenueChart) sections.push(revenueChart);
+    if (marginChart) sections.push(marginChart);
+  }
+
+  const financialLines = [
     `- P/E: ${data.companyOverview?.peRatio || data.basicFinancials?.metric?.peBasicExclExtraTTM || 'N/A'}`,
     `- PEG: ${data.companyOverview?.pegRatio || 'N/A'}`,
     `- Gross Margin: ${data.basicFinancials?.metric?.grossMarginTTM || 'N/A'}`,
     `- Operating Margin: ${data.basicFinancials?.metric?.operatingMarginTTM || 'N/A'}`,
     `- ROE: ${data.basicFinancials?.metric?.roeTTM || 'N/A'}`,
-    '## 🧠 Analyst View',
-    `- Target Mean: ${data.priceTargets?.targetMean || data.analystRatings?.analystTargetPrice || 'N/A'}`,
-    `- Ratings: Strong Buy ${data.analystRatings?.strongBuy || 'N/A'} / Buy ${data.analystRatings?.buy || 'N/A'} / Hold ${data.analystRatings?.hold || 'N/A'}`,
-    targetChart || '_Analyst target distribution unavailable_',
-    '## ✅ Scorecard',
-    `- Growth: ${scorecard.components.growth?.toFixed(1) ?? 'N/A'} (avg of revenue/EPS growth %)`,
-    `- Profitability: ${scorecard.components.profitability?.toFixed(1) ?? 'N/A'} (avg of gross/operating margin, ROE)`,
-    `- Valuation: ${scorecard.components.valuation?.toFixed(1) ?? 'N/A'} (100 - PE/50*100)`,
-    `- Momentum: ${scorecard.components.momentum?.toFixed(1) ?? 'N/A'} (50 + price % change)`,
-    `- Moat: ${scorecard.components.moat?.toFixed(1) ?? 'N/A'} (avg of margin stability, pricing power, analyst conviction)`,
-    `- Moat • Margin Stability: ${scorecard.moatDetails.marginStability?.toFixed(1) ?? 'N/A'}`,
-    `- Moat • Pricing Power: ${scorecard.moatDetails.pricingPower?.toFixed(1) ?? 'N/A'}`,
-    `- Moat • Analyst Conviction: ${scorecard.moatDetails.analystConviction?.toFixed(1) ?? 'N/A'}`,
-    `- Composite Score: ${scorecard.composite?.toFixed(1) ?? 'N/A'}`,
-    '## 🔍 News & Sentiment',
-    `- Sentiment: ${data.newsSentiment?.sentiment?.sentiment || data.newsSentiment?.sentiment?.buzz || 'N/A'}`,
-    `- Recent Headlines: ${(data.companyNews?.articles || []).slice(0, 5).map((a) => a.headline || a.title).filter(Boolean).join('; ') || 'N/A'}`,
-    '## ✅ Notes',
-    'This report is generated from real-time data sources (Alpha Vantage, Finnhub, FMP, NewsAPI).',
-  ];
+  ].filter((line) => !line.endsWith('N/A'));
+  if (financialLines.length) {
+    sections.push('## 💰 Financials', ...financialLines);
+  }
+
+  const analystTarget = data.priceTargets?.targetMean || data.analystRatings?.analystTargetPrice;
+  const hasRatings = [data.analystRatings?.strongBuy, data.analystRatings?.buy, data.analystRatings?.hold]
+    .some((value) => value !== undefined && value !== null && value !== 'N/A');
+  if (analystTarget || hasRatings || targetChart) {
+    sections.push('## 🧠 Analyst View');
+    if (analystTarget) sections.push(`- Target Mean: ${analystTarget}`);
+    if (hasRatings) {
+      sections.push(`- Ratings: Strong Buy ${data.analystRatings?.strongBuy || 'N/A'} / Buy ${data.analystRatings?.buy || 'N/A'} / Hold ${data.analystRatings?.hold || 'N/A'}`);
+    }
+    if (targetChart) sections.push(targetChart);
+  }
+
+  if (scorecard.composite !== null) {
+    sections.push(
+      '## ✅ Scorecard',
+      `- Growth: ${scorecard.components.growth?.toFixed(1) ?? 'N/A'} (avg of revenue/EPS growth %)`,
+      `- Profitability: ${scorecard.components.profitability?.toFixed(1) ?? 'N/A'} (avg of gross/operating margin, ROE)`,
+      `- Valuation: ${scorecard.components.valuation?.toFixed(1) ?? 'N/A'} (100 - PE/50*100)`,
+      `- Momentum: ${scorecard.components.momentum?.toFixed(1) ?? 'N/A'}`,
+      `- Moat: ${scorecard.components.moat?.toFixed(1) ?? 'N/A'} (avg of margin stability, pricing power, analyst conviction)`,
+      `- Composite Score: ${scorecard.composite?.toFixed(1) ?? 'N/A'}`,
+    );
+  }
+
+  const headlines = (data.companyNews?.articles || [])
+    .map((a) => a.headline || a.title)
+    .filter(Boolean);
+  const sentiment = data.newsSentiment?.sentiment?.sentiment || data.newsSentiment?.sentiment?.buzz;
+  if (sentiment || headlines.length) {
+    sections.push('## 🔍 News & Sentiment');
+    if (sentiment) sections.push(`- Sentiment: ${sentiment}`);
+    if (headlines.length) sections.push(`- Recent Headlines: ${headlines.slice(0, 5).join('; ')}`);
+  }
 
   return sections.filter(Boolean).join('\n\n');
 }
@@ -659,26 +685,41 @@ export function buildSectorReport(data: SectorReportData): string {
     `Average Target Upside: ${averageValue(targetUpside)?.toFixed(1) ?? 'N/A'}%`,
   ].join('\n');
 
-  return [
+  const sections: string[] = [
     header,
     `Generated: ${data.generatedAt}`,
     `Universe: ${data.universe.join(', ') || 'N/A'}`,
-    '## 📌 Universe Snapshot',
-    overviewSection,
-    '## 🎯 Target Upside Leaders',
-    upsideSection,
-    '## 📊 Charts',
-    marketCapChart || '_Market cap chart unavailable_',
-    peChart || '_P/E chart unavailable_',
-    priceChart || '_Price chart unavailable_',
-    targetChart || '_Analyst target chart unavailable_',
-    '## ✅ Score Ranking',
-    scoreSection,
-    '## 📊 Comparison Table',
-    table || '_No data available_',
-    '## 🔍 Notes',
-    notes,
-  ].join('\n\n');
+  ];
+
+  if (data.universe.length > 0) {
+    sections.push('## 📌 Universe Snapshot', overviewSection);
+  }
+
+  if (!upsideSection.startsWith('_')) {
+    sections.push('## 🎯 Target Upside Leaders', upsideSection);
+  }
+
+  if (marketCapChart || peChart || priceChart || targetChart) {
+    sections.push('## 📊 Charts');
+    if (marketCapChart) sections.push(marketCapChart);
+    if (peChart) sections.push(peChart);
+    if (priceChart) sections.push(priceChart);
+    if (targetChart) sections.push(targetChart);
+  }
+
+  if (!scoreSection.startsWith('_')) {
+    sections.push('## ✅ Score Ranking', scoreSection);
+  }
+
+  if (table) {
+    sections.push('## 📊 Comparison Table', table);
+  }
+
+  if (notes && notes !== 'N/A') {
+    sections.push('## 🔍 Notes', notes);
+  }
+
+  return sections.join('\n\n');
 }
 
 export async function saveReport(content: string, title: string, directory = DEFAULT_REPORTS_DIR) {
@@ -734,20 +775,31 @@ export function buildPeerReport(data: PeerReportData): string {
   const targetChart = buildBarChart('Target Mean', 'Price', targetSeries);
   const notes = data.notes?.length ? data.notes.map((note) => `- ${note}`).join('\n') : 'N/A';
 
-  return [
+  const sections: string[] = [
     header,
     `Generated: ${data.generatedAt}`,
     `Universe: ${data.universe.join(', ') || 'N/A'}`,
     '## 📌 Overview',
     `Range: ${data.range.toUpperCase()}`,
-    '## 📊 Price Performance',
-    performanceChart || '_Price performance unavailable_',
-    '## 📊 Valuation & Targets',
-    valuationChart || '_Valuation chart unavailable_',
-    targetChart || '_Target chart unavailable_',
-    '## 🔍 Comparison Table',
-    table,
-    '## 📝 Notes',
-    notes,
-  ].join('\n\n');
+  ];
+
+  if (performanceChart) {
+    sections.push('## 📊 Price Performance', performanceChart);
+  }
+
+  if (valuationChart || targetChart) {
+    sections.push('## 📊 Valuation & Targets');
+    if (valuationChart) sections.push(valuationChart);
+    if (targetChart) sections.push(targetChart);
+  }
+
+  if (rows.length) {
+    sections.push('## 🔍 Comparison Table', table);
+  }
+
+  if (notes && notes !== 'N/A') {
+    sections.push('## 📝 Notes', notes);
+  }
+
+  return sections.join('\n\n');
 }

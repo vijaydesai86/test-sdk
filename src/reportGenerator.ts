@@ -705,8 +705,7 @@ export function buildStockReport(data: StockReportData): string {
   const targetChart = buildTargetDistribution(data.priceTargets);
   const headline = `# ${data.symbol} Comprehensive Equity Research Report`;
   const scorecard = computeScorecard(data);
-
-  const sections = [
+  const sections: string[] = [
     headline,
     `Generated: ${data.generatedAt}`,
     '## 📊 Snapshot',
@@ -714,38 +713,66 @@ export function buildStockReport(data: StockReportData): string {
     `- Market Cap: ${formatMarketCap(data.companyOverview?.marketCapitalization)}`,
     `- Sector: ${data.companyOverview?.sector || 'N/A'}`,
     `- Industry: ${data.companyOverview?.industry || 'N/A'}`,
-    '## 📈 Price & EPS Trends',
-    priceChart || '_Price history unavailable_',
-    epsChart || '_EPS history unavailable_',
-    '## 📊 Revenue & Margin Trends',
-    revenueChart || '_Revenue trend unavailable_',
-    marginChart || '_Margin trend unavailable_',
-    '## 💰 Financials',
+  ];
+
+  if (priceChart || epsChart) {
+    sections.push('## 📈 Price & EPS Trends');
+    if (priceChart) sections.push(priceChart);
+    if (epsChart) sections.push(epsChart);
+  }
+
+  if (revenueChart || marginChart) {
+    sections.push('## 📊 Revenue & Margin Trends');
+    if (revenueChart) sections.push(revenueChart);
+    if (marginChart) sections.push(marginChart);
+  }
+
+  const financialLines = [
     `- P/E: ${data.companyOverview?.peRatio || data.basicFinancials?.metric?.peBasicExclExtraTTM || 'N/A'}`,
     `- PEG: ${data.companyOverview?.pegRatio || 'N/A'}`,
     `- Gross Margin: ${data.basicFinancials?.metric?.grossMarginTTM || 'N/A'}`,
     `- Operating Margin: ${data.basicFinancials?.metric?.operatingMarginTTM || 'N/A'}`,
     `- ROE: ${data.basicFinancials?.metric?.roeTTM || 'N/A'}`,
-    '## 🧠 Analyst View',
-    `- Target Mean: ${data.priceTargets?.targetMean || data.analystRatings?.analystTargetPrice || 'N/A'}`,
-    `- Ratings: Strong Buy ${data.analystRatings?.strongBuy || 'N/A'} / Buy ${data.analystRatings?.buy || 'N/A'} / Hold ${data.analystRatings?.hold || 'N/A'}`,
-    targetChart || '_Analyst target distribution unavailable_',
-    '## ✅ Scorecard',
-    `- Growth: ${scorecard.components.growth?.toFixed(1) ?? 'N/A'} (avg of revenue/EPS growth %)`,
-    `- Profitability: ${scorecard.components.profitability?.toFixed(1) ?? 'N/A'} (avg of gross/operating margin, ROE)`,
-    `- Valuation: ${scorecard.components.valuation?.toFixed(1) ?? 'N/A'} (100 - PE/50*100)`,
-    `- Momentum: ${scorecard.components.momentum?.toFixed(1) ?? 'N/A'} (50 + price % change)`,
-    `- Moat: ${scorecard.components.moat?.toFixed(1) ?? 'N/A'} (avg of margin stability, pricing power, analyst conviction)`,
-    `- Moat • Margin Stability: ${scorecard.moatDetails.marginStability?.toFixed(1) ?? 'N/A'}`,
-    `- Moat • Pricing Power: ${scorecard.moatDetails.pricingPower?.toFixed(1) ?? 'N/A'}`,
-    `- Moat • Analyst Conviction: ${scorecard.moatDetails.analystConviction?.toFixed(1) ?? 'N/A'}`,
-    `- Composite Score: ${scorecard.composite?.toFixed(1) ?? 'N/A'}`,
-    '## 🔍 News & Sentiment',
-    `- Sentiment: ${data.newsSentiment?.sentiment?.sentiment || data.newsSentiment?.sentiment?.buzz || 'N/A'}`,
-    `- Recent Headlines: ${(data.companyNews?.articles || []).slice(0, 5).map((a) => a.headline || a.title).filter(Boolean).join('; ') || 'N/A'}`,
-    '## ✅ Notes',
-    'This report is generated from real-time data sources (Alpha Vantage, Finnhub, FMP, NewsAPI).',
-  ];
+  ].filter((line) => !line.endsWith('N/A'));
+  if (financialLines.length) {
+    sections.push('## 💰 Financials', ...financialLines);
+  }
+
+  const analystTarget = data.priceTargets?.targetMean || data.analystRatings?.analystTargetPrice;
+  const hasRatings = [data.analystRatings?.strongBuy, data.analystRatings?.buy, data.analystRatings?.hold]
+    .some((value) => value !== undefined && value !== null && value !== 'N/A');
+  if (analystTarget || hasRatings || targetChart) {
+    sections.push('## 🧠 Analyst View');
+    if (analystTarget) {
+      sections.push(`- Target Mean: ${analystTarget}`);
+    }
+    if (hasRatings) {
+      sections.push(`- Ratings: Strong Buy ${data.analystRatings?.strongBuy || 'N/A'} / Buy ${data.analystRatings?.buy || 'N/A'} / Hold ${data.analystRatings?.hold || 'N/A'}`);
+    }
+    if (targetChart) sections.push(targetChart);
+  }
+
+  if (scorecard.composite !== null) {
+    sections.push(
+      '## ✅ Scorecard',
+      `- Growth: ${scorecard.components.growth?.toFixed(1) ?? 'N/A'} (avg of revenue/EPS growth %)`,
+      `- Profitability: ${scorecard.components.profitability?.toFixed(1) ?? 'N/A'} (avg of gross/operating margin, ROE)`,
+      `- Valuation: ${scorecard.components.valuation?.toFixed(1) ?? 'N/A'} (100 - PE/50*100)`,
+      `- Momentum: ${scorecard.components.momentum?.toFixed(1) ?? 'N/A'} (50 + price % change)`,
+      `- Moat: ${scorecard.components.moat?.toFixed(1) ?? 'N/A'} (avg of margin stability, pricing power, analyst conviction)`,
+      `- Composite Score: ${scorecard.composite?.toFixed(1) ?? 'N/A'}`,
+    );
+  }
+
+  const headlines = (data.companyNews?.articles || [])
+    .map((a) => a.headline || a.title)
+    .filter(Boolean);
+  const sentiment = data.newsSentiment?.sentiment?.sentiment || data.newsSentiment?.sentiment?.buzz;
+  if (sentiment || headlines.length) {
+    sections.push('## 🔍 News & Sentiment');
+    if (sentiment) sections.push(`- Sentiment: ${sentiment}`);
+    if (headlines.length) sections.push(`- Recent Headlines: ${headlines.slice(0, 5).join('; ')}`);
+  }
 
   return sections.filter(Boolean).join('\n\n');
 }
@@ -878,34 +905,59 @@ export function buildSectorReport(data: SectorReportData): string {
   const keyTakeaways = buildKeyTakeaways(data.items, scored);
   const newsHighlights = buildNewsHighlights(data.items, 2);
 
-  return [
+  const sections: string[] = [
     header,
     `Generated: ${data.generatedAt}`,
     `Universe: ${data.universe.join(', ') || 'N/A'}`,
-    '## ✨ Executive Summary',
-    keyTakeaways,
-    '## 🧭 Layer Map',
-    layerSection || 'N/A',
-    '## 📌 Universe Snapshot',
-    snapshotSection,
-    '## 🚀 Growth Leaders',
-    growthSection,
-    '## ⚡ EPS Growth Leaders',
-    epsGrowthSection,
-    '## ⭐ Score-Based Picks',
-    scoreSection,
-    '## 💼 Indicative Allocation (Illustrative Only)',
-    allocationSection,
-    '## 📊 Company Metrics',
-    metricsTable || '_No data available_',
-    '## 🧾 Analyst Sentiment & Valuation',
-    sentimentTable || '_No data available_',
-    '## 📰 News Highlights',
-    newsHighlights,
-    '## 🔍 Notes',
-    notes,
-    '_Not financial advice. Use this as a starting point for diligence._',
-  ].join('\n\n');
+  ];
+
+  if (keyTakeaways !== 'N/A') {
+    sections.push('## ✨ Executive Summary', keyTakeaways);
+  }
+
+  if (layerSection) {
+    sections.push('## 🧭 Layer Map', layerSection);
+  }
+
+  if (data.universe.length > 0) {
+    sections.push('## 📌 Universe Snapshot', snapshotSection);
+  }
+
+  if (!growthSection.startsWith('_')) {
+    sections.push('## 🚀 Growth Leaders', growthSection);
+  }
+
+  if (!epsGrowthSection.startsWith('_')) {
+    sections.push('## ⚡ EPS Growth Leaders', epsGrowthSection);
+  }
+
+  if (!scoreSection.startsWith('_')) {
+    sections.push('## ⭐ Score-Based Picks', scoreSection);
+  }
+
+  if (!allocationSection.startsWith('_')) {
+    sections.push('## 💼 Indicative Allocation (Illustrative Only)', allocationSection);
+  }
+
+  if (metricsTable) {
+    sections.push('## 📊 Company Metrics', metricsTable);
+  }
+
+  if (sentimentTable && !sentimentTable.includes('N/A')) {
+    sections.push('## 🧾 Analyst Sentiment & Valuation', sentimentTable);
+  }
+
+  if (newsHighlights !== 'N/A') {
+    sections.push('## 📰 News Highlights', newsHighlights);
+  }
+
+  if (notes && notes !== 'N/A') {
+    sections.push('## 🔍 Notes', notes);
+  }
+
+  sections.push('_Not financial advice. Use this as a starting point for diligence._');
+
+  return sections.join('\n\n');
 }
 
 export async function saveReport(content: string, title: string, directory = DEFAULT_REPORTS_DIR) {
@@ -981,8 +1033,7 @@ export function buildPeerReport(data: PeerReportData): string {
     : 'N/A';
 
   const newsHighlights = buildNewsHighlights(data.items, 1);
-
-  return [
+  const sections: string[] = [
     header,
     `Generated: ${data.generatedAt}`,
     `Universe: ${data.universe.join(', ') || 'N/A'}`,
@@ -990,12 +1041,21 @@ export function buildPeerReport(data: PeerReportData): string {
     `Range: ${data.range.toUpperCase()}`,
     `Average Market Cap: ${avgMarketCap}`,
     `Average P/E: ${avgPe}`,
-    '## 🔍 Comparison Table',
-    table,
-    '## 📰 News Highlights',
-    newsHighlights,
-    '## 🧾 Notes',
-    notes,
-    '_Not financial advice. Use this as a starting point for diligence._',
-  ].join('\n\n');
+  ];
+
+  if (rows.length) {
+    sections.push('## 🔍 Comparison Table', table);
+  }
+
+  if (newsHighlights !== 'N/A') {
+    sections.push('## 📰 News Highlights', newsHighlights);
+  }
+
+  if (notes && notes !== 'N/A') {
+    sections.push('## 🧾 Notes', notes);
+  }
+
+  sections.push('_Not financial advice. Use this as a starting point for diligence._');
+
+  return sections.join('\n\n');
 }

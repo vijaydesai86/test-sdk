@@ -78,8 +78,13 @@ export function createStockTools(stockService: StockDataService) {
       }
       if (matches.length > 0) {
         notes.push(`Universe built from top movers filtered by "${query}".`);
+        return matches.slice(0, limit);
       }
-      return matches.slice(0, limit);
+      if (candidates.length > 0) {
+        notes.push(`Universe built from top movers due to limited matches for "${query}".`);
+        return candidates.slice(0, limit);
+      }
+      return [];
     } catch {
       return [];
     }
@@ -469,17 +474,17 @@ export function createStockTools(stockService: StockDataService) {
           stockService.getStockPrice(symbol),
           stockService.getPriceHistory(symbol, range),
           stockService.getCompanyOverview(symbol),
-          stockService.getBasicFinancials(symbol),
-          stockService.getEarningsHistory(symbol),
-          stockService.getIncomeStatement(symbol),
-          stockService.getBalanceSheet(symbol),
-          stockService.getCashFlow(symbol),
-          stockService.getAnalystRatings(symbol),
-          stockService.getAnalystRecommendations(symbol),
-          stockService.getPriceTargets(symbol),
-          stockService.getPeers(symbol),
-          stockService.getNewsSentiment(symbol),
-          stockService.getCompanyNews(symbol, 30),
+          stockService.getBasicFinancials(symbol).catch(() => null),
+          stockService.getEarningsHistory(symbol).catch(() => null),
+          stockService.getIncomeStatement(symbol).catch(() => null),
+          stockService.getBalanceSheet(symbol).catch(() => null),
+          stockService.getCashFlow(symbol).catch(() => null),
+          stockService.getAnalystRatings(symbol).catch(() => null),
+          stockService.getAnalystRecommendations(symbol).catch(() => null),
+          stockService.getPriceTargets(symbol).catch(() => null),
+          stockService.getPeers(symbol).catch(() => null),
+          stockService.getNewsSentiment(symbol).catch(() => null),
+          stockService.getCompanyNews(symbol, 30).catch(() => null),
         ]);
 
         const content = buildStockReport({
@@ -580,19 +585,22 @@ export function createStockTools(stockService: StockDataService) {
     handler: async (args: any) => {
       const query = args.query as string;
       const limit = Number(args.limit || 12);
+      const alphaOnly = process.env.USE_ALPHA_ONLY === 'true';
 
       try {
         let universe: string[] = [];
         const notes: string[] = [];
 
-        try {
-          const sectorResults = await stockService.getStocksBySector(query);
-          universe = (sectorResults.results || []).map((item: any) => item.symbol).filter(Boolean).slice(0, limit);
-          if (universe.length > 0) {
-            notes.push(`Universe built from sector screening for "${query}".`);
+        if (!alphaOnly) {
+          try {
+            const sectorResults = await stockService.getStocksBySector(query);
+            universe = (sectorResults.results || []).map((item: any) => item.symbol).filter(Boolean).slice(0, limit);
+            if (universe.length > 0) {
+              notes.push(`Universe built from sector screening for "${query}".`);
+            }
+          } catch (error: any) {
+            notes.push(`Sector screening unavailable: ${error.message}`);
           }
-        } catch (error: any) {
-          notes.push(`Sector screening unavailable: ${error.message}`);
         }
 
         if (universe.length === 0) {
