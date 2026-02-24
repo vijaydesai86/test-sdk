@@ -17,6 +17,30 @@ export function getToolDefinitionsByName(toolNames?: string[]) {
   return definitions.filter((tool) => allowList.has(tool.function.name));
 }
 
+const curatedSectorUniverses = [
+  {
+    label: 'AI data centers',
+    keywords: [
+      'ai data center',
+      'ai datacenter',
+      'ai data centre',
+      'data center ai',
+      'datacenter ai',
+      'data centres ai',
+      'data centers ai',
+      'data center',
+      'datacenter',
+      'data centre',
+    ],
+    symbols: ['NVDA', 'AMD', 'AVGO', 'ANET', 'MRVL', 'SMCI', 'VRT', 'EQIX', 'DLR', 'IRM'],
+  },
+];
+
+const getCuratedUniverse = (query: string) => {
+  const normalized = query.toLowerCase();
+  return curatedSectorUniverses.find((entry) => entry.keywords.some((keyword) => normalized.includes(keyword)));
+};
+
 function buildToolDefinitions() {
   return [
     {
@@ -711,6 +735,14 @@ export async function executeTool(
         }
 
         if (universe.length === 0) {
+          const curated = getCuratedUniverse(query);
+          if (curated) {
+            universe = curated.symbols.slice(0, limit);
+            notes.push(`Universe built from curated list for "${curated.label}".`);
+          }
+        }
+
+        if (universe.length === 0) {
           const newsResults = await stockService.searchNews(query, 14);
           const headlines = (newsResults.articles || []).map((a: any) => a.title || '').filter(Boolean).slice(0, 10);
           notes.push(`News scan headlines: ${headlines.join('; ') || 'N/A'}`);
@@ -719,12 +751,12 @@ export async function executeTool(
         const items = [] as any[];
         for (const symbol of universe) {
           const [price, overview, basicFinancials, analystRatings, priceTargets, newsSentiment] = await Promise.all([
-            stockService.getStockPrice(symbol),
-            stockService.getCompanyOverview(symbol),
-            stockService.getBasicFinancials(symbol),
-            stockService.getAnalystRatings(symbol),
-            stockService.getPriceTargets(symbol),
-            stockService.getNewsSentiment(symbol),
+            stockService.getStockPrice(symbol).catch(() => null),
+            stockService.getCompanyOverview(symbol).catch(() => null),
+            stockService.getBasicFinancials(symbol).catch(() => null),
+            stockService.getAnalystRatings(symbol).catch(() => null),
+            stockService.getPriceTargets(symbol).catch(() => null),
+            stockService.getNewsSentiment(symbol).catch(() => null),
           ]);
           items.push({ symbol, price, overview, basicFinancials, analystRatings, priceTargets, newsSentiment });
         }
@@ -767,11 +799,11 @@ export async function executeTool(
         const items = await Promise.all(
           universe.map(async (ticker) => {
             const [price, overview, basicFinancials, priceTargets, priceHistory] = await Promise.all([
-              stockService.getStockPrice(ticker),
-              stockService.getCompanyOverview(ticker),
-              stockService.getBasicFinancials(ticker),
-              stockService.getPriceTargets(ticker),
-              stockService.getPriceHistory(ticker, range),
+              stockService.getStockPrice(ticker).catch(() => null),
+              stockService.getCompanyOverview(ticker).catch(() => null),
+              stockService.getBasicFinancials(ticker).catch(() => null),
+              stockService.getPriceTargets(ticker).catch(() => null),
+              stockService.getPriceHistory(ticker, range).catch(() => null),
             ]);
             return { symbol: ticker, price, overview, basicFinancials, priceTargets, priceHistory };
           })
