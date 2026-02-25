@@ -146,6 +146,80 @@ function buildEpsChart(earnings: EarningsPoint[] = []): string {
   });
 }
 
+function buildPeChart(prices: PricePoint[] = [], earnings: EarningsPoint[] = []): string {
+  if (prices.length === 0 || earnings.length < 4) return '';
+  const sortedPrices = [...prices]
+    .map((point) => ({
+      date: point.date,
+      value: toNumber(point.close),
+    }))
+    .filter((point): point is { date: string; value: number } => point.value !== null)
+    .sort((a, b) => a.date.localeCompare(b.date));
+  if (sortedPrices.length === 0) return '';
+
+  const sortedEarnings = [...earnings]
+    .map((point) => ({
+      date: point.fiscalQuarter,
+      value: toNumber(point.reportedEPS),
+    }))
+    .filter((point): point is { date: string; value: number } => point.value !== null)
+    .sort((a, b) => a.date.localeCompare(b.date));
+  if (sortedEarnings.length < 4) return '';
+
+  const findClosestPrice = (date: string): number | null => {
+    const target = new Date(date).getTime();
+    if (Number.isNaN(target)) return null;
+    let closest: { diff: number; value: number } | null = null;
+    for (const point of sortedPrices) {
+      const time = new Date(point.date).getTime();
+      if (Number.isNaN(time)) continue;
+      const diff = Math.abs(time - target);
+      if (!closest || diff < closest.diff) {
+        closest = { diff, value: point.value };
+      }
+    }
+    return closest?.value ?? null;
+  };
+
+  const pePoints: Array<{ date: string; value: number }> = [];
+  for (let index = 3; index < sortedEarnings.length; index += 1) {
+    const window = sortedEarnings.slice(index - 3, index + 1);
+    const ttmEps = window.reduce((sum, point) => sum + point.value, 0);
+    if (ttmEps <= 0) continue;
+    const price = findClosestPrice(sortedEarnings[index].date);
+    if (price === null) continue;
+    pePoints.push({
+      date: sortedEarnings[index].date,
+      value: price / ttmEps,
+    });
+  }
+  if (pePoints.length === 0) return '';
+
+  const series = downsample(pePoints, 16);
+  const labels = series.map((point) => formatDateLabel(point.date));
+  const values = series.map((point) => formatChartNumber(point.value));
+  const filtered = filterSeries(labels, values);
+  if (filtered.labels.length === 0) return '';
+
+  return buildChartBlock({
+    title: { text: 'P/E Trend (TTM)', left: 'center' },
+    tooltip: { trigger: 'axis' },
+    grid: { left: 40, right: 20, top: 50, bottom: 40 },
+    xAxis: { type: 'category', data: filtered.labels },
+    yAxis: { type: 'value', scale: true, name: 'P/E' },
+    series: [
+      {
+        name: 'P/E',
+        type: 'line',
+        smooth: true,
+        symbol: 'circle',
+        symbolSize: 6,
+        data: filtered.values,
+      },
+    ],
+  });
+}
+
 function buildRevenueChart(incomeStatement?: any): string {
   const reports = incomeStatement?.quarterlyReports || incomeStatement?.annualReports || [];
   if (!Array.isArray(reports) || reports.length === 0) return '';
@@ -753,6 +827,7 @@ function computeScorecard(data: StockReportData) {
 export function buildStockReport(data: StockReportData): string {
   const priceChart = buildPriceChart(data.priceHistory?.prices || []);
   const epsChart = buildEpsChart(data.earningsHistory?.quarterlyEarnings || []);
+  const peChart = buildPeChart(data.priceHistory?.prices || [], data.earningsHistory?.quarterlyEarnings || []);
   const revenueChart = buildRevenueChart(data.incomeStatement);
   const marginChart = buildMarginChart(data.incomeStatement);
   const targetChart = buildTargetDistribution(data.priceTargets);
@@ -1006,6 +1081,7 @@ export function buildStockReport(data: StockReportData): string {
     sections.push('- Date axis: Month/Year');
     if (priceChart) sections.push(priceChart);
     if (epsChart) sections.push(epsChart);
+    if (peChart) sections.push(peChart);
   }
 
   if (revenueChart || marginChart) {
