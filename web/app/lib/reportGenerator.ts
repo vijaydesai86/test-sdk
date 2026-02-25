@@ -537,7 +537,7 @@ export function buildStockReport(data: StockReportData): string {
 
   const snapshotLines = [
     `- Price: ${data.price?.price || 'Unavailable'} (${data.price?.changePercent || 'Unavailable'})`,
-    `- Market Cap: ${data.companyOverview?.marketCapitalization || 'Unavailable'}`,
+    `- Market Cap: ${formatMarketCap(data.companyOverview?.marketCapitalization)}`,
     `- Sector: ${data.companyOverview?.sector || 'Unavailable'}`,
     `- Industry: ${data.companyOverview?.industry || 'Unavailable'}`,
   ].filter((line) => !line.endsWith('Unavailable') && !line.includes('(Unavailable)'));
