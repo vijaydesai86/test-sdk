@@ -35,16 +35,16 @@ const buildSearchQueries = (query: string) => {
   const tokens = cleaned.split(/\s+/).filter((token) => token && !stopwords.has(token));
   const phrases: string[] = [];
   for (let i = 0; i < tokens.length; i += 1) {
-    phrases.push(tokens[i]);
-    if (i + 1 < tokens.length) {
-      phrases.push(`${tokens[i]} ${tokens[i + 1]}`);
-    }
     if (i + 2 < tokens.length) {
       phrases.push(`${tokens[i]} ${tokens[i + 1]} ${tokens[i + 2]}`);
     }
+    if (i + 1 < tokens.length) {
+      phrases.push(`${tokens[i]} ${tokens[i + 1]}`);
+    }
   }
+  phrases.push(...tokens);
   const unique = Array.from(new Set([query, ...phrases].filter(Boolean)));
-  return unique.slice(0, 4);
+  return unique.slice(0, 5);
 };
 
 const expandUniverseFromQuery = async (
@@ -786,6 +786,10 @@ export async function executeTool(
 
         if (universe.length === 0) {
           universe = await expandUniverseFromTopMovers(query, limit, notes, stockService);
+        }
+
+        if (universe.length === 0) {
+          notes.push('No tickers matched the theme keywords on Alpha Vantage. Try a more specific query.');
         }
 
         const items = [] as any[];
