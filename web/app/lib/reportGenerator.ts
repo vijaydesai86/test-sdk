@@ -464,7 +464,7 @@ function applyAxisTheme(axis: any): any {
       ...(axis.axisTick || {}),
       lineStyle: { color: '#94a3b8', ...(axis.axisTick?.lineStyle || {}) },
     },
-    axisLabel: { color: '#475569', ...(axis.axisLabel || {}) },
+    axisLabel: { color: '#475569', fontSize: 11, ...(axis.axisLabel || {}) },
     splitLine: {
       ...(axis.splitLine || {}),
       lineStyle: { color: '#e2e8f0', ...(axis.splitLine?.lineStyle || {}) },
@@ -474,10 +474,14 @@ function applyAxisTheme(axis: any): any {
 
 function applyChartTheme(option: Record<string, any>): Record<string, any> {
   const base = {
+    backgroundColor: '#ffffff',
     color: ['#6366f1', '#14b8a6', '#f59e0b', '#ef4444', '#0ea5e9', '#a855f7'],
     textStyle: {
       fontFamily: 'Inter, system-ui, -apple-system, Segoe UI, sans-serif',
       color: '#0f172a',
+    },
+    title: {
+      textStyle: { color: '#0f172a', fontSize: 14, fontWeight: 600 },
     },
     tooltip: {
       backgroundColor: '#0f172a',
@@ -556,6 +560,8 @@ function buildScorecardRadar(scorecard: ReturnType<typeof computeScorecard>): st
         type: 'radar',
         data: [{ value: values, name: 'Scorecard' }],
         areaStyle: { opacity: 0.2 },
+        lineStyle: { width: 2 },
+        symbolSize: 6,
       },
     ],
   });
@@ -960,11 +966,11 @@ export function buildStockReport(data: StockReportData): string {
   if (netDebt !== null && netDebt > 0) watchSignals.push('Net debt position');
 
   const bearSignals = riskLines.map((line) => line.replace(/^-\s*/, ''));
-  const highlightsBlock = [
-    `> **Bull Case:** ${bullSignals.length ? bullSignals.join('; ') : 'Signals limited by available data.'}`,
-    `> **Bear Case:** ${bearSignals.length ? bearSignals.join('; ') : 'No major red flags surfaced from available data.'}`,
-    `> **What to watch:** ${watchSignals.length ? watchSignals.join('; ') : 'Monitor upcoming earnings and guidance.'}`,
-  ].join('\n');
+  const highlightsLines = [
+    `- **Bull Case:** ${bullSignals.length ? bullSignals.join('; ') : 'Signals limited by available data.'}`,
+    `- **Bear Case:** ${bearSignals.length ? bearSignals.join('; ') : 'No major red flags surfaced from available data.'}`,
+    `- **What to watch:** ${watchSignals.length ? watchSignals.join('; ') : 'Monitor upcoming earnings and guidance.'}`,
+  ];
 
   const sections: string[] = [
     headline,
@@ -1021,7 +1027,7 @@ export function buildStockReport(data: StockReportData): string {
 
   sections.push('## 🚀 Growth Drivers', '- Period: trailing twelve months unless noted', ...(growthLines.length ? growthLines : ['- Growth drivers unavailable']));
   sections.push('## ⚠️ Risks & Headwinds', ...(riskLines.length ? riskLines : ['- No major risk flags surfaced from available data']));
-  sections.push('## 🧭 Investment Highlights', highlightsBlock);
+  sections.push('## 🧭 Investment Highlights', ...highlightsLines);
 
   const hasRatings = [data.analystRatings?.strongBuy, data.analystRatings?.buy, data.analystRatings?.hold]
     .map((value) => toNumber(value))
