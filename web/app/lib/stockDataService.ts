@@ -36,9 +36,7 @@ export class AlphaVantageService implements StockDataService {
   private lastRequestAt = new Map<string, number>();
   private static sharedCache = new Map<string, { expiresAt: number; data: any }>();
   private minIntervals = {
-    alphavantage: process.env.VERCEL
-      ? 0
-      : Number(process.env.ALPHA_VANTAGE_MIN_INTERVAL_MS || 12000),
+    alphavantage: Number(process.env.ALPHA_VANTAGE_MIN_INTERVAL_MS || 1200),
   };
 
   constructor(apiKey?: string) {
