@@ -219,6 +219,22 @@ function parseReportRequest(message: string) {
   return null;
 }
 
+function parseComparisonCompanies(message: string): string[] | null {
+  const match = message.match(/compare(?:\s+companies)?\s+(.+)/i);
+  if (!match) return null;
+  let list = match[1].trim();
+  const cutoffIndex = list.search(/\b(report|over|for|using|with|range|timeframe)\b/i);
+  if (cutoffIndex >= 0) {
+    list = list.slice(0, cutoffIndex).trim();
+  }
+  if (!list) return null;
+  const parts = list.includes(',')
+    ? list.split(',')
+    : list.split(/\s+/);
+  const companies = parts.map((item) => item.trim()).filter(Boolean);
+  return companies.length >= 2 ? companies : null;
+}
+
 function parseAnalystTrendsRequest(message: string) {
   const match = message.match(/analyst\s+(?:rating|recommendation)?\s*trends?\s+for\s+([a-zA-Z]{1,6})/i)
     || message.match(/([a-zA-Z]{1,6})\s+analyst\s+(?:rating|recommendation)?\s*trends?/i);
@@ -934,6 +950,19 @@ export async function POST(request: NextRequest) {
     }
     if (sectorRequest?.type === 'stocks' && sectorRequest.sector) {
       return handleDirectToolResponse('get_stocks_by_sector', { sector: sectorRequest.sector }, stockService, message, sessionId);
+    }
+
+    if (lowerMessage.includes('compare')) {
+      const comparisonCompanies = parseComparisonCompanies(message);
+      if (comparisonCompanies) {
+        return handleDirectToolResponse(
+          'generate_comparison_report',
+          { companies: comparisonCompanies, range: timeframe || '1y' },
+          stockService,
+          message,
+          sessionId
+        );
+      }
     }
 
     if (lowerMessage.includes('compare') || lowerMessage.includes('peers')) {
