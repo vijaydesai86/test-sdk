@@ -545,6 +545,10 @@ function buildScorecardRadar(scorecard: ReturnType<typeof computeScorecard>): st
       indicator: indicators,
       radius: '65%',
       splitNumber: 4,
+      axisName: { color: '#334155', fontSize: 12 },
+      splitLine: { lineStyle: { color: '#cbd5f5' } },
+      axisLine: { lineStyle: { color: '#cbd5f5' } },
+      splitArea: { areaStyle: { color: ['#f8fafc', '#eef2ff'] } },
     },
     series: [
       {

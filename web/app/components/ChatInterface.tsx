@@ -640,6 +640,7 @@ export default function ChatInterface() {
             ) : (
               <div className="prose dark:prose-invert max-w-none">
                 <ReactMarkdown
+                  remarkPlugins={[remarkGfm]}
                   components={{
                     code({ className, children, ...props }) {
                       const match = /language-(\w+)/.exec(className || '');
