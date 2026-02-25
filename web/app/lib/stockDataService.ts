@@ -1,33 +1,76 @@
 import axios from 'axios';
 type YahooFinanceModule = typeof import('yahoo-finance2');
-let yahooFinanceModule: YahooFinanceModule | null = null;
+type YahooFinanceClient = {
+  quote?: (symbol: string, options?: any) => Promise<any>;
+  quoteSummary?: (symbol: string, options?: any) => Promise<any>;
+  historical?: (symbol: string, options?: any) => Promise<any>;
+  search?: (query: string, options?: any) => Promise<any>;
+};
 
-const getYahooFinance = async (): Promise<any> => {
+let yahooFinanceModule: YahooFinanceModule | null = null;
+let yahooFinanceClient: YahooFinanceClient | null = null;
+
+const buildYahooClient = (mod: any): YahooFinanceClient => {
+  const sources: any[] = [
+    mod,
+    mod?.default,
+    mod?.default?.default,
+    mod?.default?.default?.default,
+  ];
+
+  const createCandidates = [
+    mod,
+    mod?.createYahooFinance,
+    mod?.default?.createYahooFinance,
+    mod?.default,
+    mod?.default?.default,
+  ];
+
+  for (const candidate of createCandidates) {
+    if (typeof candidate !== 'function') continue;
+    try {
+      const instance = candidate();
+      if (instance) sources.push(instance);
+    } catch {
+      try {
+        const instance = new candidate();
+        if (instance) sources.push(instance);
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  const findFn = (name: keyof YahooFinanceClient) => {
+    for (const source of sources) {
+      const fn = source?.[name];
+      if (typeof fn === 'function') {
+        return fn.bind(source);
+      }
+    }
+    return undefined;
+  };
+
+  return {
+    quote: findFn('quote'),
+    quoteSummary: findFn('quoteSummary'),
+    historical: findFn('historical'),
+    search: findFn('search'),
+  };
+};
+
+const getYahooFinance = async (): Promise<YahooFinanceClient> => {
+  if (yahooFinanceClient) return yahooFinanceClient;
   if (!yahooFinanceModule) {
     const mod = await import('yahoo-finance2');
     yahooFinanceModule = mod;
   }
-  const mod = yahooFinanceModule as any;
-  const candidates = [mod?.default, mod?.default?.default, mod];
-  for (const candidate of candidates) {
-    if (!candidate) continue;
-    const hasMethods = candidate.quote || candidate.quoteSummary || candidate.historical;
-    if (hasMethods) return candidate;
-    if (typeof candidate === 'function') {
-      try {
-        const instance = candidate();
-        if (instance?.quote || instance?.quoteSummary || instance?.historical) return instance;
-      } catch {
-        try {
-          const instance = new candidate();
-          if (instance?.quote || instance?.quoteSummary || instance?.historical) return instance;
-        } catch {
-          // ignore
-        }
-      }
-    }
+  const client = buildYahooClient(yahooFinanceModule as any);
+  if (!client.quote || !client.historical) {
+    throw new Error('Yahoo Finance client missing required methods');
   }
-  return mod?.default ?? mod;
+  yahooFinanceClient = client;
+  return client;
 };
 
 export interface StockDataService {
@@ -725,6 +768,7 @@ export class AlphaVantageService implements StockDataService {
 class YahooFinanceService implements StockDataService {
   private lastRequestAt = 0;
   private minIntervalMs = Number(process.env.YFINANCE_MIN_INTERVAL_MS || 1200);
+  private maxRetries = Number(process.env.YFINANCE_MAX_RETRIES || 1);
 
   private async throttle() {
     if (this.minIntervalMs <= 0) return;
@@ -736,16 +780,41 @@ class YahooFinanceService implements StockDataService {
     this.lastRequestAt = Date.now();
   }
 
+  private async withRetry<T>(action: () => Promise<T>): Promise<T> {
+    let attempt = 0;
+    while (attempt <= this.maxRetries) {
+      try {
+        return await action();
+      } catch (error: any) {
+        const message = String(error?.message || error);
+        const shouldRetry = /too many requests|status 429|crumb/i.test(message);
+        if (attempt >= this.maxRetries || !shouldRetry) {
+          throw error;
+        }
+        const wait = this.minIntervalMs * (attempt + 1);
+        await new Promise((resolve) => setTimeout(resolve, wait));
+        attempt += 1;
+      }
+    }
+    throw new Error('Yahoo Finance request failed');
+  }
+
   private async getQuoteSummary(symbol: string, modules: string[]) {
     await this.throttle();
     const yahooFinance = await getYahooFinance();
-    return yahooFinance.quoteSummary(symbol, { modules });
+    if (!yahooFinance.quoteSummary) {
+      throw new Error('Yahoo Finance quoteSummary unavailable');
+    }
+    return this.withRetry(() => yahooFinance.quoteSummary?.(symbol, { modules }));
   }
 
   async getStockPrice(symbol: string): Promise<any> {
     await this.throttle();
     const yahooFinance = await getYahooFinance();
-    const quote = await yahooFinance.quote(symbol);
+    if (!yahooFinance.quote) {
+      throw new Error('Yahoo Finance quote unavailable');
+    }
+    const quote = await this.withRetry(() => yahooFinance.quote?.(symbol));
     return attachSource({
       symbol: symbol.toUpperCase(),
       price: quote.regularMarketPrice?.toFixed?.(2) ?? quote.regularMarketPrice,
@@ -758,7 +827,10 @@ class YahooFinanceService implements StockDataService {
     const { period1, period2 } = parseRangeToPeriod(range);
     await this.throttle();
     const yahooFinance = await getYahooFinance();
-    const results = await yahooFinance.historical(symbol, { period1, period2, interval: '1d' });
+    if (!yahooFinance.historical) {
+      throw new Error('Yahoo Finance historical unavailable');
+    }
+    const results = await this.withRetry(() => yahooFinance.historical?.(symbol, { period1, period2, interval: '1d' }));
     const prices = (results || []).map((row: any) => ({
       date: row.date?.toISOString?.().slice(0, 10) || row.date,
       close: row.close,
