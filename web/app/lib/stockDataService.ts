@@ -7,7 +7,22 @@ const getYahooFinance = async (): Promise<any> => {
     const mod = await import('yahoo-finance2');
     yahooFinanceModule = mod;
   }
-  return (yahooFinanceModule.default ?? (yahooFinanceModule as any)) as any;
+  const mod = yahooFinanceModule as any;
+  const candidates = [mod?.default, mod?.default?.default, mod];
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    const hasMethods = candidate.quote || candidate.quoteSummary || candidate.historical;
+    if (hasMethods) return candidate;
+    if (typeof candidate === 'function') {
+      try {
+        const instance = new candidate();
+        if (instance?.quote || instance?.quoteSummary || instance?.historical) return instance;
+      } catch {
+        // ignore
+      }
+    }
+  }
+  return mod?.default ?? mod;
 };
 
 export interface StockDataService {
