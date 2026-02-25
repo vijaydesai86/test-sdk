@@ -6,18 +6,18 @@ import { buildSectorReport, buildStockReport, buildPeerReport, saveReport } from
  * Create stock information tools for GitHub Copilot SDK
  */
 export function createStockTools(stockService: StockDataService) {
-  const stopwords = new Set([
-    'stocks',
-    'stock',
-    'sector',
-    'theme',
-    'report',
-    'the',
-    'and',
-    'for',
-    'of',
-    'in',
-  ]);
+const stopwords = new Set([
+  'stocks',
+  'stock',
+  'sector',
+  'theme',
+  'report',
+  'the',
+  'and',
+  'for',
+  'of',
+  'in',
+]);
 
 const buildSearchQueries = (query: string) => {
   const cleaned = query.toLowerCase().replace(/[^a-z0-9\s]/g, ' ');
@@ -34,6 +34,49 @@ const buildSearchQueries = (query: string) => {
   phrases.push(...tokens);
   const unique = Array.from(new Set([query, ...phrases].filter(Boolean)));
   return unique.slice(0, 5);
+};
+
+const buildThemeTokens = (query: string) => {
+  const cleaned = query.toLowerCase().replace(/[^a-z0-9\s]/g, ' ');
+  const tokens = cleaned.split(/\s+/).filter((token) => token && !stopwords.has(token));
+  const phrases: string[] = [];
+  for (let i = 0; i < tokens.length; i += 1) {
+    if (i + 1 < tokens.length) {
+      phrases.push(`${tokens[i]} ${tokens[i + 1]}`);
+    }
+    if (i + 2 < tokens.length) {
+      phrases.push(`${tokens[i]} ${tokens[i + 1]} ${tokens[i + 2]}`);
+    }
+  }
+  return { tokens, phrases };
+};
+
+const scoreThemeMatch = (
+  overview: any,
+  tokens: string[],
+  phrases: string[]
+) => {
+  const text = [
+    overview?.name,
+    overview?.sector,
+    overview?.industry,
+    overview?.description,
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+  if (!text) return 0;
+  const tokenMatches = tokens.filter((token) => text.includes(token));
+  const phraseMatches = phrases.filter((phrase) => text.includes(phrase));
+  const tokenScore = tokenMatches.length;
+  const phraseScore = phraseMatches.length * 2;
+  if (tokens.length >= 2 && tokenScore < 2 && phraseMatches.length === 0) {
+    return 0;
+  }
+  if (tokens.length === 1 && tokenScore === 0 && phraseMatches.length === 0) {
+    return 0;
+  }
+  return tokenScore + phraseScore;
 };
 
   const expandUniverseFromQuery = async (query: string, limit: number, notes: string[]) => {
@@ -626,52 +669,64 @@ const buildSearchQueries = (query: string) => {
       const limit = Math.min(Number(args.limit || 4), 4);
 
       try {
-        let universe: string[] = [];
         const notes: string[] = [];
         notes.push('Universe limited to the top matches to respect Alpha Vantage free-tier rate limits.');
 
-        try {
-          const searchResults = await stockService.searchStock(query);
-          universe = (searchResults.results || []).map((item: any) => item.symbol).filter(Boolean).slice(0, limit);
-          if (universe.length > 0) {
-            notes.push(`Universe built from Alpha Vantage symbol search for "${query}".`);
-          }
-        } catch (error: any) {
-          notes.push(`Symbol search unavailable: ${error.message}`);
-        }
+        const { tokens, phrases } = buildThemeTokens(query);
+        const searchTerms = buildSearchQueries(query);
+        const searchResults = await Promise.all(
+          searchTerms.map((term) => stockService.searchStock(term).catch(() => ({ results: [] })))
+        );
+        const candidates = searchResults
+          .flatMap((result) => result.results || [])
+          .filter((item: any) => item?.symbol)
+          .slice(0, Math.max(limit * 4, 8));
+        const uniqueCandidates = Array.from(
+          new Map(candidates.map((item: any) => [item.symbol, item])).values()
+        );
 
-        if (universe.length === 0) {
-          universe = await expandUniverseFromQuery(query, limit, notes);
-        }
-
-        if (universe.length === 0) {
-          universe = await expandUniverseFromTopMovers(query, limit, notes);
-        }
-
-        if (universe.length === 0) {
-          notes.push('No tickers matched the theme keywords on Alpha Vantage. Try a more specific query.');
-        }
-
-        const items = [] as any[];
-        for (const symbol of universe) {
+        const scoredItems: any[] = [];
+        for (const candidate of uniqueCandidates) {
           try {
-            const overview = await stockService.getCompanyOverview(symbol);
-            const price = await stockService.getStockPrice(symbol).catch(() => null);
-            const basicFinancials = await stockService.getBasicFinancials(symbol).catch(() => null);
+            const overview = await stockService.getCompanyOverview(candidate.symbol);
+            const matchScore = scoreThemeMatch(overview, tokens, phrases);
+            if (matchScore === 0) continue;
+            const price = await stockService.getStockPrice(candidate.symbol).catch(() => null);
+            const basicFinancials = await stockService.getBasicFinancials(candidate.symbol).catch(() => null);
             const analystRatings = overview ? { ...overview } : null;
             const priceTargets = overview?.analystTargetPrice
               ? { targetMean: overview.analystTargetPrice }
               : null;
-            items.push({ symbol, price, overview, basicFinancials, analystRatings, priceTargets });
+            scoredItems.push({
+              symbol: candidate.symbol,
+              price,
+              overview,
+              basicFinancials,
+              analystRatings,
+              priceTargets,
+              matchScore,
+            });
+            if (scoredItems.length >= limit) {
+              break;
+            }
           } catch (error: any) {
             const message = error?.message || 'Unknown error';
-            if (message.includes('429')) {
+            if (message.includes('frequency') || message.includes('Thank you for using Alpha Vantage')) {
               notes.push('Alpha Vantage rate limit reached; remaining symbols skipped.');
               break;
             }
-            items.push({ symbol, price: null, overview: null, basicFinancials: null, analystRatings: null, priceTargets: null });
-            notes.push(`${symbol}: ${message}`);
+            notes.push(`${candidate.symbol}: ${message}`);
           }
+        }
+
+        const sortedItems = scoredItems.sort((a, b) => b.matchScore - a.matchScore);
+        const items = sortedItems.slice(0, limit).map(({ matchScore, ...item }) => item);
+        const universe = items.map((item) => item.symbol);
+
+        if (universe.length > 0) {
+          notes.push(`Universe built from Alpha Vantage symbol search for "${query}".`);
+        } else {
+          notes.push('No tickers matched the theme keywords on Alpha Vantage. Try a more specific query.');
         }
 
         const content = buildSectorReport({
