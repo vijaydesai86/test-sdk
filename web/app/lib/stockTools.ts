@@ -158,12 +158,17 @@ const resolveSymbolFromQuery = async (stockService: StockDataService, query: str
   if (!trimmed) {
     return { ok: false, reason: 'Empty query', candidates: [] as any[] };
   }
-  const isLikelyTicker = /^[a-zA-Z]{1,6}$/.test(trimmed);
+  const stopwordSet = new Set(['stocks', 'stock', 'companies', 'company', 'compare', 'and']);
+  const cleanedTokens = trimmed
+    .split(/\s+/)
+    .filter((token) => token && !stopwordSet.has(token.toLowerCase()));
+  const cleanedQuery = cleanedTokens.length ? cleanedTokens.join(' ') : trimmed;
+  const isLikelyTicker = /^[a-zA-Z]{1,6}$/.test(cleanedQuery);
   try {
-    const results = await stockService.searchStock(trimmed);
+    const results = await stockService.searchStock(cleanedQuery);
     const candidates = (results.results || []) as any[];
     if (!candidates.length) {
-      if (isLikelyTicker) return { ok: true, symbol: trimmed.toUpperCase(), candidates: [] };
+      if (isLikelyTicker) return { ok: true, symbol: cleanedQuery.toUpperCase(), candidates: [] };
       return { ok: false, reason: 'No matches found', candidates: [] };
     }
     const scored = candidates
@@ -178,7 +183,7 @@ const resolveSymbolFromQuery = async (stockService: StockDataService, query: str
     return { ok: true, symbol: String(top.item.symbol).toUpperCase(), candidates: scored.slice(0, 5).map((row) => row.item) };
   } catch (error: any) {
     if (isLikelyTicker) {
-      return { ok: true, symbol: trimmed.toUpperCase(), candidates: [] };
+      return { ok: true, symbol: cleanedQuery.toUpperCase(), candidates: [] };
     }
     return { ok: false, reason: error.message || 'Search failed', candidates: [] };
   }

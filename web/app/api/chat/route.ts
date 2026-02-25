@@ -235,6 +235,13 @@ function parseComparisonCompanies(message: string): string[] | null {
   const stopwords = new Set(['and', 'stocks', 'stock', 'companies', 'company', 'compare']);
   const companies = parts
     .map((item) => item.trim())
+    .filter(Boolean)
+    .map((item) => {
+      const tokens = item
+        .split(/\s+/)
+        .filter((token) => token && !stopwords.has(token.toLowerCase()));
+      return tokens.join(' ');
+    })
     .filter((item) => item && !stopwords.has(item.toLowerCase()));
   return companies.length >= 2 ? companies : null;
 }
