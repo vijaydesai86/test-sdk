@@ -367,7 +367,7 @@ function formatPercent(value: unknown, decimals = 1): string {
   return `${num.toFixed(decimals)}%`;
 }
 
-function formatSignedPercent(value: unknown, decimals = 2, options?: { alreadyPercent?: boolean }): string {
+function formatSignedPercentValue(value: unknown, decimals = 2, options?: { alreadyPercent?: boolean }): string {
   const num = options?.alreadyPercent ? toNumber(value) : normalizePercent(value);
   if (num === null) return 'N/A';
   const sign = num > 0 ? '+' : '';
@@ -751,7 +751,7 @@ export function buildStockReport(data: StockReportData): string {
   const changePercentIsPercent = typeof changePercent === 'string' && changePercent.includes('%');
   const priceLine = price === null
     ? 'N/A'
-    : `${formatPrice(price)} (${formatSignedPercent(changePercentValue, 2, { alreadyPercent: changePercentIsPercent })})`;
+    : `${formatPrice(price)} (${formatSignedPercentValue(changePercentValue, 2, { alreadyPercent: changePercentIsPercent })})`;
 
   const snapshotLines = [
     `- Price: ${priceLine} (day change)`,
@@ -905,7 +905,7 @@ export function buildStockReport(data: StockReportData): string {
   const kpiTable = buildTable(
     ['KPI', 'Value'],
     [
-      ['Price', `${formatPrice(price)} (${formatSignedPercent(changePercentValue, 2, { alreadyPercent: changePercentIsPercent })})`],
+      ['Price', `${formatPrice(price)} (${formatSignedPercentValue(changePercentValue, 2, { alreadyPercent: changePercentIsPercent })})`],
       ['Market Cap', formatCurrency(overview.marketCapitalization)],
       ['52W Range', `${formatCurrency(weekLow)} - ${formatCurrency(weekHigh)}`],
       ['Revenue (TTM)', formatCurrency(overview.revenueTTM)],
