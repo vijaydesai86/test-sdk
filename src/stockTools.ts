@@ -27,6 +27,12 @@ const CACHE_TTL_MS = Number(process.env.STOCK_CACHE_TTL_MS || 1000 * 60 * 60 * 2
 const DEFAULT_SOURCE = (process.env.STOCK_DATA_PROVIDER || 'alphavantage').toLowerCase() === 'yfinance'
   ? 'Yahoo Finance'
   : 'Alpha Vantage';
+const SOURCE_LEGEND = (() => {
+  const provider = (process.env.STOCK_DATA_PROVIDER || 'alphavantage').toLowerCase();
+  if (provider === 'hybrid') return '_Legend: Alpha Vantage is primary; Yahoo Finance fills gaps._';
+  if (provider === 'yfinance') return '_Legend: Yahoo Finance provider._';
+  return '_Legend: Alpha Vantage provider._';
+})();
 
 type CacheEntry = { updatedAt: string; data: any };
 type SymbolCache = Record<string, CacheEntry>;
@@ -724,7 +730,7 @@ const resolveSymbolFromQuery = async (query: string) => {
             )
           : reportBody;
         const sourceSection = sources.size
-          ? `## 🧾 Data Sources\n${Array.from(sources.entries()).map(([key, value]) => `- ${key}: ${value}`).join('\n')}`
+          ? `## 🧾 Data Sources\n${SOURCE_LEGEND}\n${Array.from(sources.entries()).map(([key, value]) => `- ${key}: ${value}`).join('\n')}`
           : '';
         const finalContent = sourceSection
           ? content.replace('## 📊 Snapshot', `${sourceSection}\n\n## 📊 Snapshot`)

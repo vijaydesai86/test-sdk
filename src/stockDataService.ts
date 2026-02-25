@@ -1,5 +1,14 @@
 import axios from 'axios';
-import yahooFinance from 'yahoo-finance2';
+type YahooFinanceModule = typeof import('yahoo-finance2');
+let yahooFinanceModule: YahooFinanceModule | null = null;
+
+const getYahooFinance = async (): Promise<YahooFinanceModule['default']> => {
+  if (!yahooFinanceModule) {
+    const mod = await import('yahoo-finance2');
+    yahooFinanceModule = mod;
+  }
+  return (yahooFinanceModule.default ?? (yahooFinanceModule as any)) as YahooFinanceModule['default'];
+};
 
 export interface StockDataService {
   getStockPrice(symbol: string): Promise<any>;
@@ -695,10 +704,12 @@ export class AlphaVantageService implements StockDataService {
 
 class YahooFinanceService implements StockDataService {
   private async getQuoteSummary(symbol: string, modules: string[]) {
+    const yahooFinance = await getYahooFinance();
     return yahooFinance.quoteSummary(symbol, { modules });
   }
 
   async getStockPrice(symbol: string): Promise<any> {
+    const yahooFinance = await getYahooFinance();
     const quote = await yahooFinance.quote(symbol);
     return attachSource({
       symbol: symbol.toUpperCase(),
@@ -710,6 +721,7 @@ class YahooFinanceService implements StockDataService {
 
   async getPriceHistory(symbol: string, range = '1y'): Promise<any> {
     const { period1, period2 } = parseRangeToPeriod(range);
+    const yahooFinance = await getYahooFinance();
     const results = await yahooFinance.historical(symbol, { period1, period2, interval: '1d' });
     const prices = (results || []).map((row: any) => ({
       date: row.date?.toISOString?.().slice(0, 10) || row.date,

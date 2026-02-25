@@ -1636,6 +1636,12 @@ export function buildComparisonReport(data: ComparisonReportData): string {
   const header = `# Company Comparison Report`;
   const notes = data.notes?.length ? data.notes.map((note) => `- ${note}`).join('\n') : '';
   const sources = data.sources || {};
+  const provider = (process.env.STOCK_DATA_PROVIDER || 'alphavantage').toLowerCase();
+  const sourceLegend = provider === 'hybrid'
+    ? '_Legend: Alpha Vantage is primary; Yahoo Finance fills gaps._'
+    : provider === 'yfinance'
+      ? '_Legend: Yahoo Finance provider._'
+      : '_Legend: Alpha Vantage provider._';
   const items = data.items;
 
   const snapshotRows = items.map((item) => {
@@ -1909,7 +1915,7 @@ export function buildComparisonReport(data: ComparisonReportData): string {
     `Universe: ${data.universe.join(', ')}`,
     notes ? `## ⚠️ Data Gaps\n${notes}` : null,
     sourceTable ? '## 🧾 Data Sources' : null,
-    sourceTable || null,
+    sourceTable ? `${sourceLegend}\n\n${sourceTable}` : null,
     '## 📊 Snapshot',
     snapshotTable,
     '## 🧾 Scale & Profitability',

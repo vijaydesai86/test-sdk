@@ -1,4 +1,6 @@
 import { NextResponse } from 'next/server';
+
+export const runtime = 'nodejs';
 import { createStockService } from '@/app/lib/stockDataService';
 
 const TEST_SYMBOL = 'NVDA';

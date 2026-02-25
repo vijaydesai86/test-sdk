@@ -32,6 +32,7 @@ const RATE_LIMIT_GUIDANCE =
 
 // Vercel: allow up to 5 minutes for deep research requests
 export const maxDuration = 300;
+export const runtime = 'nodejs';
 
 interface ChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
