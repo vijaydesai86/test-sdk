@@ -2,12 +2,12 @@ import axios from 'axios';
 type YahooFinanceModule = typeof import('yahoo-finance2');
 let yahooFinanceModule: YahooFinanceModule | null = null;
 
-const getYahooFinance = async (): Promise<YahooFinanceModule['default']> => {
+const getYahooFinance = async (): Promise<any> => {
   if (!yahooFinanceModule) {
     const mod = await import('yahoo-finance2');
     yahooFinanceModule = mod;
   }
-  return (yahooFinanceModule.default ?? (yahooFinanceModule as any)) as YahooFinanceModule['default'];
+  return (yahooFinanceModule.default ?? (yahooFinanceModule as any)) as any;
 };
 
 export interface StockDataService {
