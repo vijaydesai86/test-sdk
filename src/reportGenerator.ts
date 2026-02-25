@@ -498,7 +498,7 @@ function buildPriceChart(prices: PricePoint[] = []): string {
     yAxis: { type: 'value', scale: true },
     series: [
       {
-        name: 'Close',
+        name: 'Closing Price (Daily)',
         type: 'line',
         smooth: true,
         symbol: 'circle',
@@ -526,7 +526,7 @@ function buildEpsChart(earnings: EarningsPoint[] = []): string {
     yAxis: { type: 'value', scale: true },
     series: [
       {
-        name: 'EPS',
+        name: 'Reported EPS (Quarter)',
         type: 'line',
         smooth: true,
         symbol: 'circle',
