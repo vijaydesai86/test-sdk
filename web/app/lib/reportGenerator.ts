@@ -1591,6 +1591,32 @@ export function buildComparisonReport(data: ComparisonReportData): string {
     ['left', 'right', 'right', 'right', 'right']
   );
 
+  const coverageRows = items.map((item) => {
+    const overview = item.overview || {};
+    const revenueGrowth = getStockRevenueGrowth({
+      symbol: item.symbol,
+      generatedAt: '',
+      price: {},
+      companyOverview: item.overview,
+      basicFinancials: item.basicFinancials,
+    } as StockReportData);
+    const pe = toNumber(overview.peRatio ?? item.basicFinancials?.metric?.peBasicExclExtraTTM);
+    const marketCap = toNumber(overview.marketCapitalization);
+    const hasPriceHistory = (item.priceHistory?.prices || []).length > 1;
+    return [
+      `${overview.name || item.symbol} (${item.symbol})`,
+      hasPriceHistory ? '✅' : '—',
+      revenueGrowth === null ? '—' : '✅',
+      pe === null ? '—' : '✅',
+      marketCap === null ? '—' : '✅',
+    ];
+  });
+  const coverageTable = buildTable(
+    ['Company', 'Price History', 'Revenue Growth', 'P/E', 'Market Cap'],
+    coverageRows,
+    ['left', 'center', 'center', 'center', 'center']
+  );
+
   const analystRows = items.map((item) => {
     const price = toNumber(item.price?.price);
     const target = toNumber(item.priceTargets?.targetMean || item.analystRatings?.analystTargetPrice);
@@ -1661,9 +1687,10 @@ export function buildComparisonReport(data: ComparisonReportData): string {
   const validScores = scored.filter((row) => row.score !== null) as Array<{ item: ComparisonReportItem; score: number }>;
   const totalScore = validScores.reduce((sum, row) => sum + (row.score ?? 0), 0);
   const weights = scored.map((row) => {
-    if (!validScores.length || totalScore === 0 || row.score === null) {
+    if (!validScores.length || totalScore === 0) {
       return 100 / scored.length;
     }
+    if (row.score === null) return null;
     return (row.score / totalScore) * 100;
   });
 
@@ -1702,8 +1729,8 @@ export function buildComparisonReport(data: ComparisonReportData): string {
     return [
       `${row.item.overview?.name || row.item.symbol} (${row.item.symbol})`,
       row.score === null ? 'N/A' : row.score.toFixed(1),
-      `${weights[index].toFixed(1)}%`,
-      reasons.length ? reasons.join('; ') : 'Balanced exposure',
+      weights[index] === null ? 'N/A' : `${weights[index]!.toFixed(1)}%`,
+      weights[index] === null ? 'Insufficient data' : (reasons.length ? reasons.join('; ') : 'Balanced exposure'),
     ];
   });
   const allocationTable = buildTable(
@@ -1739,6 +1766,8 @@ export function buildComparisonReport(data: ComparisonReportData): string {
     '## ⭐ Analyst Picks',
     `- Highest target upside: ${topUpside ? `${topUpside.name} (${topUpside.upside.toFixed(1)}%)` : 'N/A'}`,
     `- Strongest consensus: ${topRating ? `${topRating.name} (${(topRating.score! * 100).toFixed(0)}% buy/strong buy)` : 'N/A'}`,
+    '## 🧩 Data Coverage (Chart Inputs)',
+    coverageTable,
     '## 📈 Price Performance (Indexed)',
     performanceChart || '_Price performance data unavailable._',
     '## 📊 Valuation vs Growth',
@@ -1747,7 +1776,9 @@ export function buildComparisonReport(data: ComparisonReportData): string {
     marginChart || '_Margin comparison data unavailable._',
     '## 🧭 Indicative Allocation (Not Investment Advice)',
     allocationTable,
-    '_Indicative allocation is derived from normalized composite scores. It is not investment advice._',
+    validScores.length < scored.length
+      ? '_Some companies lack composite scores; weights are normalized across available scores._'
+      : '_Indicative allocation is derived from normalized composite scores. It is not investment advice._',
   ].filter(Boolean) as string[];
 
   return sections.join('\n\n');
