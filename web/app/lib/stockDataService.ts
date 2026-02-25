@@ -86,6 +86,16 @@ const getYahooFinance = async (): Promise<YahooFinanceClient> => {
   if (!yahooFinanceModule) {
     yahooFinanceModule = await loadYahooModule();
   }
+  if (process.env.STOCK_DATA_PROVIDER === 'yfinance') {
+    const keys = Object.keys((yahooFinanceModule as any) || {});
+    console.log('[yfinance] module keys:', keys);
+    if ((yahooFinanceModule as any)?.default) {
+      console.log('[yfinance] module.default keys:', Object.keys((yahooFinanceModule as any).default || {}));
+    }
+    if ((yahooFinanceModule as any)?.YahooFinance) {
+      console.log('[yfinance] module.YahooFinance keys:', Object.keys((yahooFinanceModule as any).YahooFinance || {}));
+    }
+  }
   const client = buildYahooClient(yahooFinanceModule as any);
   if (!client.quote || !client.historical) {
     const modKeys = Object.keys((yahooFinanceModule as any) || {}).join(', ');
