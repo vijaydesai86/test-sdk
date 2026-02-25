@@ -70,7 +70,7 @@ function formatDateLabel(date: string): string {
   }
   return new Intl.DateTimeFormat('en-US', {
     month: 'short',
-    day: '2-digit',
+    year: '2-digit',
   }).format(parsed);
 }
 
@@ -120,10 +120,35 @@ function formatPercent(value: unknown, decimals = 1): string {
   return `${num.toFixed(decimals)}%`;
 }
 
+function formatSignedPercent(value: unknown, decimals = 2, options?: { alreadyPercent?: boolean }): string {
+  const num = options?.alreadyPercent ? toNumber(value) : normalizePercent(value);
+  if (num === null) return 'N/A';
+  const sign = num > 0 ? '+' : '';
+  return `${sign}${num.toFixed(decimals)}%`;
+}
+
+function formatPrice(value: unknown, decimals = 2): string {
+  const num = toNumber(value);
+  if (num === null) return 'N/A';
+  return `$${num.toFixed(decimals)}`;
+}
+
 function formatCurrency(value: unknown): string {
   const formatted = formatMarketCap(value);
   if (formatted === 'N/A') return 'N/A';
   return `$${formatted}`;
+}
+
+function formatCompactNumber(value: unknown): string {
+  const num = toNumber(value);
+  if (num === null) return 'N/A';
+  if (Math.abs(num) >= 1e9) {
+    return `${trimTrailingZeros((num / 1e9).toFixed(2))}B`;
+  }
+  if (Math.abs(num) >= 1e6) {
+    return `${trimTrailingZeros((num / 1e6).toFixed(2))}M`;
+  }
+  return new Intl.NumberFormat('en-US').format(Math.round(num));
 }
 
 function summarizeDescription(description: string, maxSentences = 2): string {
@@ -864,9 +889,17 @@ export function buildStockReport(data: StockReportData): string {
   const scorecard = computeScorecard(data);
   const overview = data.companyOverview || {};
   const price = toNumber(data.price?.price);
+  const changePercent = data.price?.changePercent;
+  const changePercentValue = typeof changePercent === 'string'
+    ? Number(changePercent.replace('%', ''))
+    : changePercent;
+  const changePercentIsPercent = typeof changePercent === 'string' && changePercent.includes('%');
+  const priceLine = price === null
+    ? 'N/A'
+    : `${formatPrice(price)} (${formatSignedPercent(changePercentValue, 2, { alreadyPercent: changePercentIsPercent })})`;
   const snapshotLines = [
-    `- Price: ${data.price?.price || 'Unavailable'} (${data.price?.changePercent || 'Unavailable'})`,
-    `- Market Cap: ${formatMarketCap(overview.marketCapitalization)}`,
+    `- Price: ${priceLine} (day change)`,
+    `- Market Cap: ${formatCurrency(overview.marketCapitalization)}`,
     `- Sector: ${overview.sector || 'Unavailable'}`,
     `- Industry: ${overview.industry || 'Unavailable'}`,
   ].filter((line) => !line.endsWith('Unavailable') && !line.endsWith('N/A') && !line.includes('(Unavailable)'));
@@ -880,7 +913,7 @@ export function buildStockReport(data: StockReportData): string {
     overview.marketCapitalization ? `- Market Cap: ${formatCurrency(overview.marketCapitalization)}` : null,
     overview.revenueTTM ? `- Revenue (TTM): ${formatCurrency(overview.revenueTTM)}` : null,
     overview.grossProfitTTM ? `- Gross Profit (TTM): ${formatCurrency(overview.grossProfitTTM)}` : null,
-    overview.sharesOutstanding ? `- Shares Outstanding: ${formatNumber(overview.sharesOutstanding, 0)}` : null,
+    overview.sharesOutstanding ? `- Shares Outstanding: ${formatCompactNumber(overview.sharesOutstanding)}` : null,
     overview.dividendYield ? `- Dividend Yield: ${formatPercent(overview.dividendYield)}` : null,
   ].filter(Boolean) as string[];
 
@@ -890,7 +923,7 @@ export function buildStockReport(data: StockReportData): string {
   const competitiveLines = [
     overview.industry ? `- Industry Focus: ${overview.industry}` : null,
     overview.sector ? `- Sector: ${overview.sector}` : null,
-    peers.length ? `- Peer Set: ${peers.join(', ')}` : '- Peer Set: Unavailable',
+    peers.length ? `- Peer Set: ${peers.join(', ')}` : '- Peer Set: Unavailable (data gap or rate limit)',
   ].filter(Boolean) as string[];
 
   const revenueGrowth = getStockRevenueGrowth(data);
@@ -955,8 +988,8 @@ export function buildStockReport(data: StockReportData): string {
           formatCurrency(incomeReport.operatingIncome),
           formatCurrency(incomeReport.netIncome),
         ]]
-      )
-    : '_Income statement data unavailable._';
+      , ['left', 'right', 'right', 'right', 'right'])
+    : '_Income statement data unavailable (provider or rate limit)._';
 
   const balanceTable = balanceReport
     ? buildTable(
@@ -969,8 +1002,8 @@ export function buildStockReport(data: StockReportData): string {
           formatCurrency(balanceReport.totalAssets),
           formatCurrency(balanceReport.totalShareholderEquity),
         ]]
-      )
-    : '_Balance sheet data unavailable._';
+      , ['left', 'right', 'right', 'right', 'right', 'right'])
+    : '_Balance sheet data unavailable (provider or rate limit)._';
 
   const cashReport = getLatestReport(data.cashFlow);
   const cashTable = cashReport
@@ -982,8 +1015,8 @@ export function buildStockReport(data: StockReportData): string {
           formatCurrency(cashReport.capitalExpenditures),
           formatCurrency(cashReport.freeCashFlow),
         ]]
-      )
-    : '_Cash flow data unavailable._';
+      , ['left', 'right', 'right', 'right'])
+    : '_Cash flow data unavailable (provider or rate limit)._';
 
   const forwardPE = toNumber(overview.forwardPE);
   const pegRatio = toNumber(overview.pegRatio);
@@ -1000,10 +1033,11 @@ export function buildStockReport(data: StockReportData): string {
       ['P/E (TTM)', peRatio === null ? 'N/A' : peRatio.toFixed(1)],
       ['Forward P/E', forwardPE === null ? 'N/A' : forwardPE.toFixed(1)],
       ['PEG', pegRatio === null ? 'N/A' : pegRatio.toFixed(2)],
-      ['Price / Book', priceToBook === null ? 'N/A' : priceToBook.toFixed(2)],
       ['Price / Sales', priceToSales === null ? 'N/A' : priceToSales.toFixed(2)],
+      ['Price / Book', priceToBook === null ? 'N/A' : priceToBook.toFixed(2)],
       ['Market Cap / Revenue', marketCapToRevenue === null ? 'N/A' : marketCapToRevenue.toFixed(2)],
-    ]
+    ],
+    ['left', 'right']
   );
   const weekHigh = toNumber(overview['52WeekHigh']);
   const weekLow = toNumber(overview['52WeekLow']);
@@ -1012,13 +1046,13 @@ export function buildStockReport(data: StockReportData): string {
   const kpiTable = buildTable(
     ['KPI', 'Value'],
     [
-      ['💵 Price', `${data.price?.price || 'N/A'} (${data.price?.changePercent || 'N/A'})`],
-      ['🏷️ Market Cap', formatCurrency(overview.marketCapitalization)],
-      ['📊 52W Range', `${formatCurrency(weekLow)} - ${formatCurrency(weekHigh)}`],
-      ['🧾 Revenue (TTM)', formatCurrency(overview.revenueTTM)],
-      ['💰 Gross Margin', formatPercent(grossMargin)],
-      ['🏦 Operating Margin', formatPercent(operatingMargin)],
-      ['📈 ROE', formatPercent(data.basicFinancials?.metric?.roeTTM)],
+      ['Price', `${formatPrice(price)} (${formatSignedPercent(changePercentValue, 2, { alreadyPercent: changePercentIsPercent })})`],
+      ['Market Cap', formatCurrency(overview.marketCapitalization)],
+      ['52W Range', `${formatCurrency(weekLow)} - ${formatCurrency(weekHigh)}`],
+      ['Revenue (TTM)', formatCurrency(overview.revenueTTM)],
+      ['Gross Margin (TTM)', formatPercent(grossMargin)],
+      ['Operating Margin (TTM)', formatPercent(operatingMargin)],
+      ['ROE (TTM)', formatPercent(data.basicFinancials?.metric?.roeTTM)],
     ],
     ['left', 'right']
   );
@@ -1026,7 +1060,7 @@ export function buildStockReport(data: StockReportData): string {
   const ownershipLines = [
     overview.percentInstitutions ? `- Institutional Ownership: ${formatPercent(overview.percentInstitutions)}` : null,
     overview.percentInsiders ? `- Insider Ownership: ${formatPercent(overview.percentInsiders)}` : null,
-    overview.sharesFloat ? `- Shares Float: ${formatNumber(overview.sharesFloat, 0)}` : null,
+    overview.sharesFloat ? `- Shares Float: ${formatCompactNumber(overview.sharesFloat)}` : null,
     overview.shortRatio ? `- Short Ratio: ${formatNumber(overview.shortRatio, 2)}` : null,
     overview.shortPercentFloat ? `- Short Interest (float): ${formatPercent(overview.shortPercentFloat)}` : null,
     `- Analyst Ratings: ${formatRatingSummary(data)}`,
@@ -1076,9 +1110,9 @@ export function buildStockReport(data: StockReportData): string {
 
   const bearSignals = riskLines.map((line) => line.replace(/^-\s*/, ''));
   const highlightsBlock = [
-    `> **Bull Case:** ${bullSignals.length ? bullSignals.join('; ') : 'Signals limited by available data.'}`,
-    `> **Bear Case:** ${bearSignals.length ? bearSignals.join('; ') : 'No major red flags surfaced from available data.'}`,
-    `> **What to watch:** ${watchSignals.length ? watchSignals.join('; ') : 'Monitor upcoming earnings and guidance.'}`,
+    `- **Bull Case:** ${bullSignals.length ? bullSignals.join('; ') : 'Signals limited by available data.'}`,
+    `- **Bear Case:** ${bearSignals.length ? bearSignals.join('; ') : 'No major red flags surfaced from available data.'}`,
+    `- **What to watch:** ${watchSignals.length ? watchSignals.join('; ') : 'Monitor upcoming earnings and guidance.'}`,
   ].join('\n');
 
   const sections: string[] = [
@@ -1094,6 +1128,7 @@ export function buildStockReport(data: StockReportData): string {
 
   if (priceChart || epsChart) {
     sections.push('## 📈 Price & EPS Trends');
+    sections.push('- Date axis: Month/Year');
     if (priceChart) sections.push(priceChart);
     if (epsChart) sections.push(epsChart);
   }
@@ -1105,11 +1140,11 @@ export function buildStockReport(data: StockReportData): string {
   }
 
   const financialLines = [
-    `- P/E: ${data.companyOverview?.peRatio || data.basicFinancials?.metric?.peBasicExclExtraTTM || 'Unavailable'}`,
-    `- PEG: ${data.companyOverview?.pegRatio || 'Unavailable'}`,
-    `- Gross Margin: ${data.basicFinancials?.metric?.grossMarginTTM || 'Unavailable'}`,
-    `- Operating Margin: ${data.basicFinancials?.metric?.operatingMarginTTM || 'Unavailable'}`,
-    `- ROE: ${data.basicFinancials?.metric?.roeTTM || 'Unavailable'}`,
+    `- P/E: ${peRatio === null ? 'Unavailable' : peRatio.toFixed(1)}`,
+    `- PEG: ${pegRatio === null ? 'Unavailable' : pegRatio.toFixed(2)}`,
+    `- Gross Margin (TTM): ${formatPercent(grossMargin)}`,
+    `- Operating Margin (TTM): ${formatPercent(operatingMargin)}`,
+    `- ROE (TTM): ${formatPercent(data.basicFinancials?.metric?.roeTTM)}`,
   ].filter((line) => !line.endsWith('Unavailable'));
   if (financialLines.length) {
     sections.push('## 💰 Financials', ...financialLines);
@@ -1133,7 +1168,7 @@ export function buildStockReport(data: StockReportData): string {
     ...(fromLow !== null ? [`- Price vs 52-Week Low: ${fromLow.toFixed(1)}%`] : []),
   );
 
-  sections.push('## 🚀 Growth Drivers', ...(growthLines.length ? growthLines : ['- Growth drivers unavailable']));
+  sections.push('## 🚀 Growth Drivers', '- Period: trailing twelve months unless noted', ...(growthLines.length ? growthLines : ['- Growth drivers unavailable']));
   sections.push('## ⚠️ Risks & Headwinds', ...(riskLines.length ? riskLines : ['- No major risk flags surfaced from available data']));
   sections.push('## 🧭 Investment Highlights', highlightsBlock);
 
@@ -1159,6 +1194,7 @@ export function buildStockReport(data: StockReportData): string {
     sections.push(
       '## ✅ Scorecard',
       ...(scorecardRadar ? [scorecardRadar] : []),
+      '- Radar chart shows normalized component scores (0-100).',
       `- Growth: ${scorecard.components.growth?.toFixed(1) ?? 'Unavailable'} (avg of revenue/EPS growth %)`,
       `- Profitability: ${scorecard.components.profitability?.toFixed(1) ?? 'Unavailable'} (avg of gross/operating margin, ROE)`,
       `- Valuation: ${scorecard.components.valuation?.toFixed(1) ?? 'Unavailable'} (100 - PE/50*100)`,
