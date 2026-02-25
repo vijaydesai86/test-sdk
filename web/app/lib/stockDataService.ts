@@ -15,10 +15,15 @@ const getYahooFinance = async (): Promise<any> => {
     if (hasMethods) return candidate;
     if (typeof candidate === 'function') {
       try {
-        const instance = new candidate();
+        const instance = candidate();
         if (instance?.quote || instance?.quoteSummary || instance?.historical) return instance;
       } catch {
-        // ignore
+        try {
+          const instance = new candidate();
+          if (instance?.quote || instance?.quoteSummary || instance?.historical) return instance;
+        } catch {
+          // ignore
+        }
       }
     }
   }
@@ -718,12 +723,27 @@ export class AlphaVantageService implements StockDataService {
 }
 
 class YahooFinanceService implements StockDataService {
+  private lastRequestAt = 0;
+  private minIntervalMs = Number(process.env.YFINANCE_MIN_INTERVAL_MS || 1200);
+
+  private async throttle() {
+    if (this.minIntervalMs <= 0) return;
+    const now = Date.now();
+    const wait = this.minIntervalMs - (now - this.lastRequestAt);
+    if (wait > 0) {
+      await new Promise((resolve) => setTimeout(resolve, wait));
+    }
+    this.lastRequestAt = Date.now();
+  }
+
   private async getQuoteSummary(symbol: string, modules: string[]) {
+    await this.throttle();
     const yahooFinance = await getYahooFinance();
     return yahooFinance.quoteSummary(symbol, { modules });
   }
 
   async getStockPrice(symbol: string): Promise<any> {
+    await this.throttle();
     const yahooFinance = await getYahooFinance();
     const quote = await yahooFinance.quote(symbol);
     return attachSource({
@@ -736,6 +756,7 @@ class YahooFinanceService implements StockDataService {
 
   async getPriceHistory(symbol: string, range = '1y'): Promise<any> {
     const { period1, period2 } = parseRangeToPeriod(range);
+    await this.throttle();
     const yahooFinance = await getYahooFinance();
     const results = await yahooFinance.historical(symbol, { period1, period2, interval: '1d' });
     const prices = (results || []).map((row: any) => ({
