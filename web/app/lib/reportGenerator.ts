@@ -481,6 +481,8 @@ function applyChartTheme(option: Record<string, any>): Record<string, any> {
       color: '#0f172a',
     },
     title: {
+      left: 'center',
+      top: 8,
       textStyle: { color: '#0f172a', fontSize: 14, fontWeight: 600 },
     },
     tooltip: {
@@ -492,10 +494,25 @@ function applyChartTheme(option: Record<string, any>): Record<string, any> {
   };
 
   const themed = { ...base, ...option };
+  const mergedTitle = option.title
+    ? {
+        ...base.title,
+        ...option.title,
+        textStyle: { ...base.title.textStyle, ...(option.title.textStyle || {}) },
+      }
+    : base.title;
 
   return {
     ...themed,
-    grid: { containLabel: true, ...(option.grid || {}) },
+    title: mergedTitle,
+    grid: {
+      left: 50,
+      right: 24,
+      top: 60,
+      bottom: 50,
+      containLabel: true,
+      ...(option.grid || {}),
+    },
     tooltip: { ...base.tooltip, ...(option.tooltip || {}) },
     legend: { ...base.legend, ...(option.legend || {}) },
     xAxis: Array.isArray(option.xAxis)
