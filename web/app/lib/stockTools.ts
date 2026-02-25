@@ -42,9 +42,10 @@ const buildSearchQueries = (query: string) => {
       phrases.push(`${tokens[i]} ${tokens[i + 1]}`);
     }
   }
-  phrases.push(...tokens);
+  const condensed = phrases.flatMap((phrase) => [phrase.replace(/\s+/g, ''), phrase.replace(/\s+/g, '-')]);
+  phrases.push(...condensed, ...tokens);
   const unique = Array.from(new Set([query, ...phrases].filter(Boolean)));
-  return unique.slice(0, 5);
+  return unique.slice(0, 8);
 };
 
 const buildThemeTokens = (query: string) => {
@@ -81,7 +82,12 @@ const scoreThemeMatch = (
   const phraseMatches = phrases.filter((phrase) => text.includes(phrase));
   const tokenScore = tokenMatches.length;
   const phraseScore = phraseMatches.length * 2;
-  if (tokens.length >= 2 && tokenScore < 2 && phraseMatches.length === 0) {
+  const meaningfulTokens = tokens.filter((token) => token.length > 2);
+  const meaningfulMatches = meaningfulTokens.filter((token) => text.includes(token));
+  if (meaningfulTokens.length > 0 && meaningfulMatches.length === 0 && phraseMatches.length === 0) {
+    return 0;
+  }
+  if (meaningfulTokens.length >= 2 && meaningfulMatches.length < 2 && phraseMatches.length === 0) {
     return 0;
   }
   if (tokens.length === 1 && tokenScore === 0 && phraseMatches.length === 0) {
