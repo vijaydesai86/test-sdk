@@ -435,7 +435,7 @@ export class AlphaVantageService implements StockDataService {
     }));
 
     const seen = new Set<string>();
-    const results = combined.filter((item) => {
+    const results = combined.filter((item: { symbol?: string }) => {
       if (!item.symbol) return false;
       const key = item.symbol.toUpperCase();
       if (seen.has(key)) return false;
