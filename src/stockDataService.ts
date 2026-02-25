@@ -10,12 +10,32 @@ type YahooFinanceClient = {
 let yahooFinanceModule: YahooFinanceModule | null = null;
 let yahooFinanceClient: YahooFinanceClient | null = null;
 
+const YAHOO_MODULE_IDS = [
+  'yahoo-finance2',
+  'yahoo-finance2/dist/esm/index.js',
+  'yahoo-finance2/dist/cjs/index.js',
+];
+
+const loadYahooModule = async (): Promise<YahooFinanceModule> => {
+  const errors: string[] = [];
+  for (const id of YAHOO_MODULE_IDS) {
+    try {
+      return await import(id);
+    } catch (error: any) {
+      errors.push(`${id}: ${error?.message || error}`);
+    }
+  }
+  throw new Error(`Unable to load yahoo-finance2 module: ${errors.join(' | ')}`);
+};
+
 const buildYahooClient = (mod: any): YahooFinanceClient => {
   const sources: any[] = [
     mod,
     mod?.default,
     mod?.default?.default,
     mod?.default?.default?.default,
+    mod?.YahooFinance,
+    mod?.default?.YahooFinance,
   ];
 
   const createCandidates = [
@@ -24,6 +44,8 @@ const buildYahooClient = (mod: any): YahooFinanceClient => {
     mod?.default?.createYahooFinance,
     mod?.default,
     mod?.default?.default,
+    mod?.YahooFinance,
+    mod?.default?.YahooFinance,
   ];
 
   for (const candidate of createCandidates) {
@@ -62,12 +84,12 @@ const buildYahooClient = (mod: any): YahooFinanceClient => {
 const getYahooFinance = async (): Promise<YahooFinanceClient> => {
   if (yahooFinanceClient) return yahooFinanceClient;
   if (!yahooFinanceModule) {
-    const mod = await import('yahoo-finance2');
-    yahooFinanceModule = mod;
+    yahooFinanceModule = await loadYahooModule();
   }
   const client = buildYahooClient(yahooFinanceModule as any);
   if (!client.quote || !client.historical) {
-    throw new Error('Yahoo Finance client missing required methods');
+    const modKeys = Object.keys((yahooFinanceModule as any) || {}).join(', ');
+    throw new Error(`Yahoo Finance client missing required methods. Module keys: ${modKeys || 'none'}`);
   }
   yahooFinanceClient = client;
   return client;
