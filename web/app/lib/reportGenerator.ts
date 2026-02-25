@@ -398,18 +398,6 @@ function formatCompactNumber(value: unknown): string {
   return new Intl.NumberFormat('en-US').format(Math.round(num));
 }
 
-function formatCompactNumber(value: unknown): string {
-  const num = toNumber(value);
-  if (num === null) return 'N/A';
-  if (Math.abs(num) >= 1e9) {
-    return `${trimTrailingZeros((num / 1e9).toFixed(2))}B`;
-  }
-  if (Math.abs(num) >= 1e6) {
-    return `${trimTrailingZeros((num / 1e6).toFixed(2))}M`;
-  }
-  return new Intl.NumberFormat('en-US').format(Math.round(num));
-}
-
 function getMetricValue(metrics: any, keys: string[]): number | null {
   for (const key of keys) {
     const value = toNumber(metrics?.[key]);
