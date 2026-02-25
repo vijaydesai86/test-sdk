@@ -441,7 +441,7 @@ export class AlphaVantageService implements StockDataService {
       return true;
     });
 
-    const usResults = results.filter((item) => {
+    const usResults = results.filter((item: { region?: string; currency?: string; exchange?: string; type?: string }) => {
       const region = String(item.region || '').toLowerCase();
       const currency = String(item.currency || '').toUpperCase();
       const exchange = String(item.exchange || '').toUpperCase();
@@ -452,7 +452,9 @@ export class AlphaVantageService implements StockDataService {
         || ['NYSE', 'NASDAQ', 'AMEX'].some((label) => exchange.includes(label));
     });
 
-    const filtered = usResults.length ? usResults : results.filter((item) => {
+    const filtered = usResults.length
+      ? usResults
+      : results.filter((item: { type?: string }) => {
       const type = String(item.type || '').toLowerCase();
       return !type || type.includes('equity');
     });
