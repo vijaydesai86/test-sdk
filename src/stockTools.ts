@@ -24,6 +24,9 @@ const stopwords = new Set([
 const REPORTS_DIR = process.env.REPORTS_DIR || (process.env.VERCEL ? '/tmp/reports' : 'reports');
 const CACHE_DIR = path.join(REPORTS_DIR, 'cache');
 const CACHE_TTL_MS = Number(process.env.STOCK_CACHE_TTL_MS || 1000 * 60 * 60 * 24 * 7);
+const DEFAULT_SOURCE = (process.env.STOCK_DATA_PROVIDER || 'alphavantage').toLowerCase() === 'yfinance'
+  ? 'Yahoo Finance'
+  : 'Alpha Vantage';
 
 type CacheEntry = { updatedAt: string; data: any };
 type SymbolCache = Record<string, CacheEntry>;
@@ -618,6 +621,7 @@ const resolveSymbolFromQuery = async (query: string) => {
         }
         const symbol = resolved.symbol;
         const notes: string[] = [];
+        const sources = new Map<string, string>();
         const cache = await loadSymbolCache(symbol);
         let rateLimitHit = false;
         const isRateLimit = (message: string) =>
@@ -630,6 +634,10 @@ const resolveSymbolFromQuery = async (query: string) => {
           if (rateLimitHit) return undefined as T;
           try {
             const result = await request;
+            if (result && typeof result === 'object') {
+              const sourceValue = '__source' in result ? String((result as any).__source) : DEFAULT_SOURCE;
+              sources.set(label, sourceValue);
+            }
             setCachedValue(cache, key, result);
             return result;
           } catch (error: any) {
@@ -640,6 +648,12 @@ const resolveSymbolFromQuery = async (query: string) => {
               return cachedValue !== null ? (cachedValue as T) : (undefined as T);
             }
             notes.push(`${label}: ${message}`);
+            if (cachedValue && typeof cachedValue === 'object') {
+              const sourceValue = '__source' in cachedValue
+                ? String((cachedValue as any).__source)
+                : DEFAULT_SOURCE;
+              sources.set(label, sourceValue);
+            }
             return cachedValue !== null ? (cachedValue as T) : (undefined as T);
           }
         };
@@ -709,11 +723,17 @@ const resolveSymbolFromQuery = async (query: string) => {
               `## ⚠️ Data Gaps\n${notes.map((item) => `- ${item}`).join('\n')}\n\n## 📊 Snapshot`
             )
           : reportBody;
-        const saved = await saveReport(content, `${symbol}-stock-report`);
+        const sourceSection = sources.size
+          ? `## 🧾 Data Sources\n${Array.from(sources.entries()).map(([key, value]) => `- ${key}: ${value}`).join('\n')}`
+          : '';
+        const finalContent = sourceSection
+          ? content.replace('## 📊 Snapshot', `${sourceSection}\n\n## 📊 Snapshot`)
+          : content;
+        const saved = await saveReport(finalContent, `${symbol}-stock-report`);
         await saveSymbolCache(symbol, cache);
         return {
           success: true,
-          data: { content, ...saved },
+          data: { content: finalContent, ...saved },
           message: `Saved stock report to ${saved.filePath}`,
         };
       } catch (error: any) {
@@ -826,10 +846,12 @@ const resolveSymbolFromQuery = async (query: string) => {
 
       const universe = resolved.map((row) => row.symbol as string);
       const notes: string[] = [];
+      const sourceMap: Record<string, Record<string, string>> = {};
       let rateLimitHit = false;
       const isRateLimit = (message: string) =>
         message.includes('frequency') || message.includes('Thank you for using Alpha Vantage');
       const safeFetch = async <T>(
+        symbol: string,
         cache: SymbolCache,
         label: string,
         key: string,
@@ -837,11 +859,23 @@ const resolveSymbolFromQuery = async (query: string) => {
       ) => {
         const cachedValue = getCachedValue(cache, key);
         if (cachedValue !== null) {
+          if (cachedValue && typeof cachedValue === 'object') {
+            const sourceValue = '__source' in cachedValue
+              ? String((cachedValue as any).__source)
+              : DEFAULT_SOURCE;
+            sourceMap[symbol] = sourceMap[symbol] || {};
+            sourceMap[symbol][label] = sourceValue;
+          }
           return cachedValue as T;
         }
         if (rateLimitHit) return undefined as T;
         try {
           const result = await request;
+          if (result && typeof result === 'object') {
+            const sourceValue = '__source' in result ? String((result as any).__source) : DEFAULT_SOURCE;
+            sourceMap[symbol] = sourceMap[symbol] || {};
+            sourceMap[symbol][label] = sourceValue;
+          }
           setCachedValue(cache, key, result);
           return result;
         } catch (error: any) {
@@ -852,6 +886,13 @@ const resolveSymbolFromQuery = async (query: string) => {
             return cachedValue !== null ? (cachedValue as T) : (undefined as T);
           }
           notes.push(`${label}: ${message}`);
+          if (cachedValue && typeof cachedValue === 'object') {
+            const sourceValue = '__source' in cachedValue
+              ? String((cachedValue as any).__source)
+              : DEFAULT_SOURCE;
+            sourceMap[symbol] = sourceMap[symbol] || {};
+            sourceMap[symbol][label] = sourceValue;
+          }
           return cachedValue !== null ? (cachedValue as T) : (undefined as T);
         }
       };
@@ -881,15 +922,15 @@ const resolveSymbolFromQuery = async (query: string) => {
       const items: any[] = [];
       for (const symbol of universe) {
         const cache = await loadSymbolCache(symbol);
-        const price = await safeFetch(cache, `Price (${symbol})`, 'price', stockService.getStockPrice(symbol));
-        const overview = await safeFetch(cache, `Company overview (${symbol})`, 'overview', stockService.getCompanyOverview(symbol));
+        const price = await safeFetch(symbol, cache, 'Price', 'price', stockService.getStockPrice(symbol));
+        const overview = await safeFetch(symbol, cache, 'Company overview', 'overview', stockService.getCompanyOverview(symbol));
         const basicFinancials = overview ? buildBasicFinancialsFallback(overview) : undefined;
-        const priceHistory = await safeFetch(cache, `Price history (${symbol})`, `priceHistory:${range}`, stockService.getPriceHistory(symbol, range));
-        const incomeStatement = await safeFetch(cache, `Income statement (${symbol})`, 'incomeStatement', stockService.getIncomeStatement(symbol));
-        const balanceSheet = await safeFetch(cache, `Balance sheet (${symbol})`, 'balanceSheet', stockService.getBalanceSheet(symbol));
-        const cashFlow = await safeFetch(cache, `Cash flow (${symbol})`, 'cashFlow', stockService.getCashFlow(symbol));
-        const analystRatings = await safeFetch(cache, `Analyst ratings (${symbol})`, 'analystRatings', stockService.getAnalystRatings(symbol));
-        const priceTargets = await safeFetch(cache, `Price targets (${symbol})`, 'priceTargets', stockService.getPriceTargets(symbol));
+        const priceHistory = await safeFetch(symbol, cache, 'Price history', `priceHistory:${range}`, stockService.getPriceHistory(symbol, range));
+        const incomeStatement = await safeFetch(symbol, cache, 'Income statement', 'incomeStatement', stockService.getIncomeStatement(symbol));
+        const balanceSheet = await safeFetch(symbol, cache, 'Balance sheet', 'balanceSheet', stockService.getBalanceSheet(symbol));
+        const cashFlow = await safeFetch(symbol, cache, 'Cash flow', 'cashFlow', stockService.getCashFlow(symbol));
+        const analystRatings = await safeFetch(symbol, cache, 'Analyst ratings', 'analystRatings', stockService.getAnalystRatings(symbol));
+        const priceTargets = await safeFetch(symbol, cache, 'Price targets', 'priceTargets', stockService.getPriceTargets(symbol));
         items.push({
           symbol,
           price,
@@ -911,6 +952,7 @@ const resolveSymbolFromQuery = async (query: string) => {
         universe,
         items,
         notes,
+        sources: sourceMap,
       });
 
       const saved = await saveReport(content, `${universe.join('-')}-comparison-report`);

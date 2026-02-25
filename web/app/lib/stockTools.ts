@@ -35,6 +35,9 @@ const stopwords = new Set([
 const REPORTS_DIR = process.env.REPORTS_DIR || (process.env.VERCEL ? '/tmp/reports' : 'reports');
 const CACHE_DIR = path.join(REPORTS_DIR, 'cache');
 const CACHE_TTL_MS = Number(process.env.STOCK_CACHE_TTL_MS || 1000 * 60 * 60 * 24 * 7);
+const DEFAULT_SOURCE = (process.env.STOCK_DATA_PROVIDER || 'alphavantage').toLowerCase() === 'yfinance'
+  ? 'Yahoo Finance'
+  : 'Alpha Vantage';
 
 type CacheEntry = { updatedAt: string; data: any };
 type SymbolCache = Record<string, CacheEntry>;
@@ -840,6 +843,7 @@ export async function executeTool(
         const symbol = resolved.symbol;
         const range = args.range || '5y';
         const notes: string[] = [];
+        const sources = new Map<string, string>();
         const cache = await loadSymbolCache(symbol);
         let rateLimitHit = false;
         const isRateLimit = (message: string) =>
@@ -847,11 +851,21 @@ export async function executeTool(
         const safeFetch = async <T>(label: string, key: string, request: Promise<T>) => {
           const cachedValue = getCachedValue(cache, key);
           if (cachedValue !== null) {
+            if (cachedValue && typeof cachedValue === 'object' && '__source' in cachedValue) {
+              sources.set(label, String((cachedValue as any).__source));
+            } else if (cachedValue && typeof cachedValue === 'object') {
+              sources.set(label, DEFAULT_SOURCE);
+            }
             return cachedValue as T;
           }
           if (rateLimitHit) return undefined as T;
           try {
             const result = await request;
+            if (result && typeof result === 'object' && '__source' in result) {
+              sources.set(label, String((result as any).__source));
+            } else if (result && typeof result === 'object') {
+              sources.set(label, DEFAULT_SOURCE);
+            }
             setCachedValue(cache, key, result);
             return result;
           } catch (error: any) {
@@ -863,6 +877,11 @@ export async function executeTool(
             }
             if (!message.includes('Alpha-only mode')) {
               notes.push(`${label}: ${message}`);
+            }
+            if (cachedValue && typeof cachedValue === 'object' && '__source' in cachedValue) {
+              sources.set(label, String((cachedValue as any).__source));
+            } else if (cachedValue && typeof cachedValue === 'object') {
+              sources.set(label, DEFAULT_SOURCE);
             }
             return cachedValue !== null ? (cachedValue as T) : (undefined as T);
           }
@@ -935,11 +954,17 @@ export async function executeTool(
             )
           : reportBody;
 
-        const saved = await saveReport(content, `${symbol}-stock-report`);
+        const sourceSection = sources.size
+          ? `## 🧾 Data Sources\n${Array.from(sources.entries()).map(([key, value]) => `- ${key}: ${value}`).join('\n')}`
+          : '';
+        const finalContent = sourceSection
+          ? content.replace('## 📊 Snapshot', `${sourceSection}\n\n## 📊 Snapshot`)
+          : content;
+        const saved = await saveReport(finalContent, `${symbol}-stock-report`);
         await saveSymbolCache(symbol, cache);
         return {
           success: true,
-          data: { content, ...saved, downloadUrl: `/api/reports/${saved.filename}` },
+          data: { content: finalContent, ...saved, downloadUrl: `/api/reports/${saved.filename}` },
           message: `Saved stock report to ${saved.filePath}`,
         };
       }
@@ -982,25 +1007,39 @@ export async function executeTool(
 
         const universe = resolved.map((row) => row.symbol as string);
         const notes: string[] = [];
+        const sourceMap: Record<string, Record<string, string>> = {};
         let rateLimitHit = false;
         const isRateLimit = (message: string) =>
           message.includes('frequency') || message.includes('Thank you for using Alpha Vantage');
         const safeFetch = async <T>(
+          symbol: string,
           cache: SymbolCache,
           label: string,
           key: string,
           request: Promise<T>
         ) => {
-          const cachedValue = getCachedValue(cache, key);
-          if (cachedValue !== null) {
-            return cachedValue as T;
+        const cachedValue = getCachedValue(cache, key);
+        if (cachedValue !== null) {
+          if (cachedValue && typeof cachedValue === 'object') {
+            const sourceValue = '__source' in cachedValue
+              ? String((cachedValue as any).__source)
+              : DEFAULT_SOURCE;
+            sourceMap[symbol] = sourceMap[symbol] || {};
+            sourceMap[symbol][label] = sourceValue;
           }
+          return cachedValue as T;
+        }
           if (rateLimitHit) return undefined as T;
-          try {
-            const result = await request;
-            setCachedValue(cache, key, result);
-            return result;
-          } catch (error: any) {
+        try {
+          const result = await request;
+          if (result && typeof result === 'object') {
+            const sourceValue = '__source' in result ? String((result as any).__source) : DEFAULT_SOURCE;
+            sourceMap[symbol] = sourceMap[symbol] || {};
+            sourceMap[symbol][label] = sourceValue;
+          }
+          setCachedValue(cache, key, result);
+          return result;
+        } catch (error: any) {
             const message = error?.message || 'Unavailable';
             if (isRateLimit(message)) {
               rateLimitHit = true;
@@ -1010,9 +1049,16 @@ export async function executeTool(
             if (!message.includes('Alpha-only mode')) {
               notes.push(`${label}: ${message}`);
             }
-            return cachedValue !== null ? (cachedValue as T) : (undefined as T);
+          if (cachedValue && typeof cachedValue === 'object') {
+            const sourceValue = '__source' in cachedValue
+              ? String((cachedValue as any).__source)
+              : DEFAULT_SOURCE;
+            sourceMap[symbol] = sourceMap[symbol] || {};
+            sourceMap[symbol][label] = sourceValue;
           }
-        };
+          return cachedValue !== null ? (cachedValue as T) : (undefined as T);
+        }
+      };
         const buildBasicFinancialsFallback = (overview: any) => {
           if (!overview) return undefined;
           const revenue = Number(overview.revenueTTM);
@@ -1039,15 +1085,15 @@ export async function executeTool(
         const items: any[] = [];
         for (const symbol of universe) {
           const cache = await loadSymbolCache(symbol);
-          const price = await safeFetch(cache, `Price (${symbol})`, 'price', stockService.getStockPrice(symbol));
-          const overview = await safeFetch(cache, `Company overview (${symbol})`, 'overview', stockService.getCompanyOverview(symbol));
+          const price = await safeFetch(symbol, cache, 'Price', 'price', stockService.getStockPrice(symbol));
+          const overview = await safeFetch(symbol, cache, 'Company overview', 'overview', stockService.getCompanyOverview(symbol));
           const basicFinancials = overview ? buildBasicFinancialsFallback(overview) : undefined;
-          const priceHistory = await safeFetch(cache, `Price history (${symbol})`, `priceHistory:${range}`, stockService.getPriceHistory(symbol, range));
-          const incomeStatement = await safeFetch(cache, `Income statement (${symbol})`, 'incomeStatement', stockService.getIncomeStatement(symbol));
-          const balanceSheet = await safeFetch(cache, `Balance sheet (${symbol})`, 'balanceSheet', stockService.getBalanceSheet(symbol));
-          const cashFlow = await safeFetch(cache, `Cash flow (${symbol})`, 'cashFlow', stockService.getCashFlow(symbol));
-          const analystRatings = await safeFetch(cache, `Analyst ratings (${symbol})`, 'analystRatings', stockService.getAnalystRatings(symbol));
-          const priceTargets = await safeFetch(cache, `Price targets (${symbol})`, 'priceTargets', stockService.getPriceTargets(symbol));
+          const priceHistory = await safeFetch(symbol, cache, 'Price history', `priceHistory:${range}`, stockService.getPriceHistory(symbol, range));
+          const incomeStatement = await safeFetch(symbol, cache, 'Income statement', 'incomeStatement', stockService.getIncomeStatement(symbol));
+          const balanceSheet = await safeFetch(symbol, cache, 'Balance sheet', 'balanceSheet', stockService.getBalanceSheet(symbol));
+          const cashFlow = await safeFetch(symbol, cache, 'Cash flow', 'cashFlow', stockService.getCashFlow(symbol));
+          const analystRatings = await safeFetch(symbol, cache, 'Analyst ratings', 'analystRatings', stockService.getAnalystRatings(symbol));
+          const priceTargets = await safeFetch(symbol, cache, 'Price targets', 'priceTargets', stockService.getPriceTargets(symbol));
           items.push({
             symbol,
             price,
@@ -1069,6 +1115,7 @@ export async function executeTool(
           universe,
           items,
           notes,
+          sources: sourceMap,
         });
         const saved = await saveReport(content, `${universe.join('-')}-comparison-report`);
         return {

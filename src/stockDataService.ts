@@ -1,4 +1,5 @@
 import axios from 'axios';
+import yahooFinance from 'yahoo-finance2';
 
 export interface StockDataService {
   getStockPrice(symbol: string): Promise<any>;
@@ -24,6 +25,48 @@ export interface StockDataService {
   getCompanyNews(symbol: string, days?: number): Promise<any>;
   searchNews(query: string, days?: number): Promise<any>;
 }
+
+type Provider = 'alphavantage' | 'yfinance' | 'hybrid';
+const PROVIDER_ENV = (process.env.STOCK_DATA_PROVIDER || 'alphavantage').toLowerCase() as Provider;
+const SOURCE_YAHOO = 'Yahoo Finance';
+
+const attachSource = (data: any, source: string) => {
+  if (data && typeof data === 'object') {
+    (data as any).__source = source;
+  }
+  return data;
+};
+
+const pickNumber = (value: any) => {
+  if (value === undefined || value === null) return null;
+  const num = Number(value);
+  return Number.isNaN(num) ? null : num;
+};
+
+const toPercentLabel = (value?: number | null) => {
+  if (value === null || value === undefined || Number.isNaN(value)) return 'N/A';
+  return `${(value * 100).toFixed(2)}%`;
+};
+
+const parseRangeToPeriod = (range?: string) => {
+  const now = Date.now();
+  const dayMs = 24 * 60 * 60 * 1000;
+  const lower = (range || '').toLowerCase();
+  const years = lower.includes('max') ? 20
+    : lower.includes('5y') ? 5
+    : lower.includes('3y') ? 3
+    : lower.includes('1y') ? 1
+    : lower.includes('6m') ? 0.5
+    : lower.includes('3m') ? 0.25
+    : lower.includes('1m') ? 1 / 12
+    : lower.includes('1w') ? 1 / 52
+    : 1;
+  const periodMs = years * 365 * dayMs;
+  return {
+    period1: new Date(now - periodMs),
+    period2: new Date(now),
+  };
+};
 
 /**
  * Stock data service using Alpha Vantage API (free tier)
@@ -648,4 +691,379 @@ export class AlphaVantageService implements StockDataService {
   async searchNews(query: string, days: number = 30): Promise<any> {
     throw new Error('News search unavailable in Alpha-only mode');
   }
+}
+
+class YahooFinanceService implements StockDataService {
+  private async getQuoteSummary(symbol: string, modules: string[]) {
+    return yahooFinance.quoteSummary(symbol, { modules });
+  }
+
+  async getStockPrice(symbol: string): Promise<any> {
+    const quote = await yahooFinance.quote(symbol);
+    return attachSource({
+      symbol: symbol.toUpperCase(),
+      price: quote.regularMarketPrice?.toFixed?.(2) ?? quote.regularMarketPrice,
+      change: quote.regularMarketChange?.toFixed?.(2) ?? quote.regularMarketChange,
+      changePercent: toPercentLabel(quote.regularMarketChangePercent ?? null),
+    }, SOURCE_YAHOO);
+  }
+
+  async getPriceHistory(symbol: string, range = '1y'): Promise<any> {
+    const { period1, period2 } = parseRangeToPeriod(range);
+    const results = await yahooFinance.historical(symbol, { period1, period2, interval: '1d' });
+    const prices = (results || []).map((row: any) => ({
+      date: row.date?.toISOString?.().slice(0, 10) || row.date,
+      close: row.close,
+    }));
+    return attachSource({ symbol: symbol.toUpperCase(), prices }, SOURCE_YAHOO);
+  }
+
+  async getCompanyOverview(symbol: string): Promise<any> {
+    const summary = await this.getQuoteSummary(symbol, [
+      'summaryProfile',
+      'price',
+      'defaultKeyStatistics',
+      'financialData',
+      'summaryDetail',
+      'calendarEvents',
+      'recommendationTrend',
+    ]);
+    const profile = summary.summaryProfile || {};
+    const stats = summary.defaultKeyStatistics || {};
+    const financials = summary.financialData || {};
+    const detail = summary.summaryDetail || {};
+    const price = summary.price || {};
+    const rec = summary.recommendationTrend?.trend?.[0] || {};
+
+    return attachSource({
+      symbol: symbol.toUpperCase(),
+      name: price.longName || price.shortName || symbol.toUpperCase(),
+      description: profile.longBusinessSummary,
+      sector: profile.sector,
+      industry: profile.industry,
+      marketCapitalization: price.marketCap,
+      eps: stats.trailingEps,
+      peRatio: stats.trailingPE,
+      forwardPE: stats.forwardPE,
+      pegRatio: stats.pegRatio,
+      bookValue: stats.bookValue,
+      dividendPerShare: detail.dividendRate,
+      dividendYield: detail.dividendYield,
+      revenueTTM: financials.totalRevenue,
+      grossProfitTTM: financials.grossProfits,
+      '52WeekHigh': detail.fiftyTwoWeekHigh,
+      '52WeekLow': detail.fiftyTwoWeekLow,
+      '50DayMovingAverage': detail.fiftyDayAverage,
+      '200DayMovingAverage': detail.twoHundredDayAverage,
+      beta: stats.beta,
+      profitMargin: financials.profitMargins,
+      operatingMargin: financials.operatingMargins,
+      returnOnAssets: financials.returnOnAssets,
+      returnOnEquity: financials.returnOnEquity,
+      revenuePerShare: financials.revenuePerShare,
+      quarterlyEarningsGrowth: financials.earningsGrowth,
+      quarterlyRevenueGrowth: financials.revenueGrowth,
+      sharesOutstanding: stats.sharesOutstanding,
+      sharesFloat: stats.floatShares,
+      percentInsiders: stats.heldPercentInsiders,
+      percentInstitutions: stats.heldPercentInstitutions,
+      shortRatio: stats.shortRatio,
+      shortPercentFloat: stats.shortPercentOfFloat,
+      shortPercentOutstanding: stats.shortPercentOfFloat,
+      analystTargetPrice: financials.targetMeanPrice,
+      analystRatingStrongBuy: rec.strongBuy,
+      analystRatingBuy: rec.buy,
+      analystRatingHold: rec.hold,
+      analystRatingSell: rec.sell,
+      analystRatingStrongSell: rec.strongSell,
+      exDividendDate: detail.exDividendDate,
+      dividendDate: detail.dividendDate,
+    }, SOURCE_YAHOO);
+  }
+
+  async getBasicFinancials(symbol: string): Promise<any> {
+    const overview = await this.getCompanyOverview(symbol);
+    const revenue = pickNumber(overview.revenueTTM);
+    const grossProfit = pickNumber(overview.grossProfitTTM);
+    const grossMarginTTM = revenue && grossProfit ? grossProfit / revenue : pickNumber(overview.profitMargin);
+    return attachSource({
+      symbol: symbol.toUpperCase(),
+      metric: {
+        peBasicExclExtraTTM: overview.peRatio,
+        epsTTM: overview.eps,
+        revenueGrowthTTM: overview.quarterlyRevenueGrowth,
+        epsGrowthTTM: overview.quarterlyEarningsGrowth,
+        grossMarginTTM,
+        operatingMarginTTM: overview.operatingMargin,
+        roeTTM: overview.returnOnEquity,
+        revenuePerShareTTM: overview.revenuePerShare,
+      },
+      series: {},
+    }, SOURCE_YAHOO);
+  }
+
+  async getInsiderTrading(symbol: string): Promise<any> {
+    throw new Error('Insider trading unavailable via Yahoo Finance');
+  }
+
+  async getAnalystRatings(symbol: string): Promise<any> {
+    const summary = await this.getQuoteSummary(symbol, ['recommendationTrend', 'summaryDetail']);
+    const trend = summary.recommendationTrend?.trend?.[0] || {};
+    const detail = summary.summaryDetail || {};
+    return attachSource({
+      symbol: symbol.toUpperCase(),
+      strongBuy: trend.strongBuy ?? 'N/A',
+      buy: trend.buy ?? 'N/A',
+      hold: trend.hold ?? 'N/A',
+      sell: trend.sell ?? 'N/A',
+      strongSell: trend.strongSell ?? 'N/A',
+      movingAverage50Day: detail.fiftyDayAverage ?? 'N/A',
+    }, SOURCE_YAHOO);
+  }
+
+  async getAnalystRecommendations(symbol: string): Promise<any> {
+    throw new Error('Analyst recommendations unavailable via Yahoo Finance');
+  }
+
+  async getPriceTargets(symbol: string): Promise<any> {
+    const summary = await this.getQuoteSummary(symbol, ['financialData']);
+    const financials = summary.financialData || {};
+    return attachSource({
+      symbol: symbol.toUpperCase(),
+      targetMean: financials.targetMeanPrice ?? null,
+    }, SOURCE_YAHOO);
+  }
+
+  async getPeers(symbol: string): Promise<any> {
+    throw new Error('Peers unavailable via Yahoo Finance');
+  }
+
+  async searchStock(query: string): Promise<any> {
+    return new AlphaVantageService().searchStock(query);
+  }
+
+  async searchCompanies(query: string): Promise<any> {
+    return new AlphaVantageService().searchCompanies(query);
+  }
+
+  async getEarningsHistory(symbol: string): Promise<any> {
+    const summary = await this.getQuoteSummary(symbol, ['earningsHistory']);
+    const history = summary.earningsHistory?.history || [];
+    return attachSource({
+      symbol: symbol.toUpperCase(),
+      quarterlyEarnings: history.map((row: any) => ({
+        fiscalQuarter: row.quarter,
+        reportedEPS: row.epsActual,
+      })),
+    }, SOURCE_YAHOO);
+  }
+
+  async getIncomeStatement(symbol: string): Promise<any> {
+    const summary = await this.getQuoteSummary(symbol, ['incomeStatementHistory']);
+    const reports = summary.incomeStatementHistory?.incomeStatementHistory || [];
+    return attachSource({
+      symbol: symbol.toUpperCase(),
+      annualReports: reports.map((row: any) => ({
+        fiscalDateEnding: row.endDate,
+        totalRevenue: row.totalRevenue,
+        grossProfit: row.grossProfit,
+        operatingIncome: row.operatingIncome,
+        netIncome: row.netIncome,
+        ebitda: row.ebitda,
+      })),
+    }, SOURCE_YAHOO);
+  }
+
+  async getBalanceSheet(symbol: string): Promise<any> {
+    const summary = await this.getQuoteSummary(symbol, ['balanceSheetHistory']);
+    const reports = summary.balanceSheetHistory?.balanceSheetStatements || [];
+    return attachSource({
+      symbol: symbol.toUpperCase(),
+      annualReports: reports.map((row: any) => ({
+        fiscalDateEnding: row.endDate,
+        totalAssets: row.totalAssets,
+        totalLiabilities: row.totalLiab,
+        totalShareholderEquity: row.totalStockholderEquity,
+        cashAndEquivalents: row.cash,
+        longTermDebt: row.longTermDebt,
+      })),
+    }, SOURCE_YAHOO);
+  }
+
+  async getCashFlow(symbol: string): Promise<any> {
+    const summary = await this.getQuoteSummary(symbol, ['cashflowStatementHistory']);
+    const reports = summary.cashflowStatementHistory?.cashflowStatements || [];
+    return attachSource({
+      symbol: symbol.toUpperCase(),
+      annualReports: reports.map((row: any) => ({
+        fiscalDateEnding: row.endDate,
+        operatingCashflow: row.totalCashFromOperatingActivities,
+        capitalExpenditures: row.capitalExpenditures,
+        freeCashFlow: row.totalCashFromOperatingActivities && row.capitalExpenditures
+          ? (Number(row.totalCashFromOperatingActivities) - Math.abs(Number(row.capitalExpenditures))).toString()
+          : 'N/A',
+        dividendPayout: row.dividendsPaid,
+      })),
+    }, SOURCE_YAHOO);
+  }
+
+  async getSectorPerformance(): Promise<any> {
+    throw new Error('Sector performance unavailable via Yahoo Finance');
+  }
+
+  async getStocksBySector(sector: string): Promise<any> {
+    throw new Error('Sector screening unavailable via Yahoo Finance');
+  }
+
+  async screenStocks(filters: Record<string, string | number | undefined>): Promise<any> {
+    throw new Error('Screening unavailable via Yahoo Finance');
+  }
+
+  async getTopGainersLosers(): Promise<any> {
+    throw new Error('Top movers unavailable via Yahoo Finance');
+  }
+
+  async getNewsSentiment(symbol: string): Promise<any> {
+    throw new Error('News sentiment unavailable via Yahoo Finance');
+  }
+
+  async getCompanyNews(symbol: string, days?: number): Promise<any> {
+    throw new Error('Company news unavailable via Yahoo Finance');
+  }
+
+  async searchNews(query: string, days?: number): Promise<any> {
+    throw new Error('News search unavailable via Yahoo Finance');
+  }
+}
+
+class HybridStockDataService implements StockDataService {
+  constructor(
+    private primary: StockDataService,
+    private fallback: StockDataService
+  ) {}
+
+  private async withFallback<T>(primaryCall: () => Promise<T>, fallbackCall: () => Promise<T>): Promise<T> {
+    try {
+      return await primaryCall();
+    } catch {
+      return fallbackCall();
+    }
+  }
+
+  getStockPrice(symbol: string) {
+    return this.withFallback(
+      () => this.primary.getStockPrice(symbol),
+      () => this.fallback.getStockPrice(symbol)
+    );
+  }
+  getPriceHistory(symbol: string, range?: string) {
+    return this.withFallback(
+      () => this.primary.getPriceHistory(symbol, range),
+      () => this.fallback.getPriceHistory(symbol, range)
+    );
+  }
+  getCompanyOverview(symbol: string) {
+    return this.withFallback(
+      () => this.primary.getCompanyOverview(symbol),
+      () => this.fallback.getCompanyOverview(symbol)
+    );
+  }
+  getBasicFinancials(symbol: string) {
+    return this.withFallback(
+      () => this.primary.getBasicFinancials(symbol),
+      () => this.fallback.getBasicFinancials(symbol)
+    );
+  }
+  getInsiderTrading(symbol: string) {
+    return this.withFallback(
+      () => this.primary.getInsiderTrading(symbol),
+      () => this.fallback.getInsiderTrading(symbol)
+    );
+  }
+  getAnalystRatings(symbol: string) {
+    return this.withFallback(
+      () => this.primary.getAnalystRatings(symbol),
+      () => this.fallback.getAnalystRatings(symbol)
+    );
+  }
+  getAnalystRecommendations(symbol: string) {
+    return this.withFallback(
+      () => this.primary.getAnalystRecommendations(symbol),
+      () => this.fallback.getAnalystRecommendations(symbol)
+    );
+  }
+  getPriceTargets(symbol: string) {
+    return this.withFallback(
+      () => this.primary.getPriceTargets(symbol),
+      () => this.fallback.getPriceTargets(symbol)
+    );
+  }
+  getPeers(symbol: string) {
+    return this.withFallback(
+      () => this.primary.getPeers(symbol),
+      () => this.fallback.getPeers(symbol)
+    );
+  }
+  searchStock(query: string) {
+    return this.primary.searchStock(query);
+  }
+  searchCompanies(query: string) {
+    return this.primary.searchCompanies(query);
+  }
+  getEarningsHistory(symbol: string) {
+    return this.withFallback(
+      () => this.primary.getEarningsHistory(symbol),
+      () => this.fallback.getEarningsHistory(symbol)
+    );
+  }
+  getIncomeStatement(symbol: string) {
+    return this.withFallback(
+      () => this.primary.getIncomeStatement(symbol),
+      () => this.fallback.getIncomeStatement(symbol)
+    );
+  }
+  getBalanceSheet(symbol: string) {
+    return this.withFallback(
+      () => this.primary.getBalanceSheet(symbol),
+      () => this.fallback.getBalanceSheet(symbol)
+    );
+  }
+  getCashFlow(symbol: string) {
+    return this.withFallback(
+      () => this.primary.getCashFlow(symbol),
+      () => this.fallback.getCashFlow(symbol)
+    );
+  }
+  getSectorPerformance() {
+    return this.primary.getSectorPerformance();
+  }
+  getStocksBySector(sector: string) {
+    return this.primary.getStocksBySector(sector);
+  }
+  screenStocks(filters: Record<string, string | number | undefined>) {
+    return this.primary.screenStocks(filters);
+  }
+  getTopGainersLosers() {
+    return this.primary.getTopGainersLosers();
+  }
+  getNewsSentiment(symbol: string) {
+    return this.primary.getNewsSentiment(symbol);
+  }
+  getCompanyNews(symbol: string, days?: number) {
+    return this.primary.getCompanyNews(symbol, days);
+  }
+  searchNews(query: string, days?: number) {
+    return this.primary.searchNews(query, days);
+  }
+}
+
+export function createStockService(apiKey?: string): StockDataService {
+  const provider = PROVIDER_ENV;
+  if (provider === 'yfinance') {
+    return new YahooFinanceService();
+  }
+  if (provider === 'hybrid') {
+    return new HybridStockDataService(new AlphaVantageService(apiKey), new YahooFinanceService());
+  }
+  return new AlphaVantageService(apiKey);
 }

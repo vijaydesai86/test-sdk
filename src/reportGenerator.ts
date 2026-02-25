@@ -80,6 +80,7 @@ export interface ComparisonReportData {
   universe: string[];
   items: ComparisonReportItem[];
   notes?: string[];
+  sources?: Record<string, Record<string, string>>;
 }
 
 const DEFAULT_REPORTS_DIR = process.env.REPORTS_DIR || 'reports';
@@ -1634,6 +1635,7 @@ export async function saveReport(content: string, title: string, directory = DEF
 export function buildComparisonReport(data: ComparisonReportData): string {
   const header = `# Company Comparison Report`;
   const notes = data.notes?.length ? data.notes.map((note) => `- ${note}`).join('\n') : '';
+  const sources = data.sources || {};
   const items = data.items;
 
   const snapshotRows = items.map((item) => {
@@ -1906,6 +1908,8 @@ export function buildComparisonReport(data: ComparisonReportData): string {
     `Generated: ${data.generatedAt}`,
     `Universe: ${data.universe.join(', ')}`,
     notes ? `## ⚠️ Data Gaps\n${notes}` : null,
+    sourceTable ? '## 🧾 Data Sources' : null,
+    sourceTable || null,
     '## 📊 Snapshot',
     snapshotTable,
     '## 🧾 Scale & Profitability',
@@ -2133,3 +2137,26 @@ export function buildPeerReport(data: PeerReportData): string {
 
   return sections.join('\n\n');
 }
+  const sourceRows = Object.entries(sources).map(([symbol, map]) => {
+    const lookup = items.find((item) => item.symbol === symbol);
+    const name = lookup?.overview?.name || symbol;
+    const pick = (key: string) => map[key] || 'N/A';
+    return [
+      `${name} (${symbol})`,
+      pick('Price'),
+      pick('Company overview'),
+      pick('Price history'),
+      pick('Income statement'),
+      pick('Balance sheet'),
+      pick('Cash flow'),
+      pick('Analyst ratings'),
+      pick('Price targets'),
+    ];
+  });
+  const sourceTable = sourceRows.length
+    ? buildTable(
+        ['Company', 'Price', 'Overview', 'Price History', 'Income', 'Balance', 'Cash Flow', 'Analyst', 'Targets'],
+        sourceRows,
+        ['left', 'center', 'center', 'center', 'center', 'center', 'center', 'center', 'center']
+      )
+    : '';

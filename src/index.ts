@@ -1,7 +1,7 @@
 import { CopilotClient } from '@github/copilot-sdk';
 import * as readline from 'readline';
 import { createStockTools } from './stockTools';
-import { AlphaVantageService } from './stockDataService';
+import { createStockService } from './stockDataService';
 import * as dotenv from 'dotenv';
 
 // Load environment variables
@@ -10,15 +10,15 @@ dotenv.config();
 async function main() {
   console.log('🚀 Starting Stock Information Assistant with GitHub Copilot SDK...\n');
 
-  // Initialize stock data service (always uses real Alpha Vantage API)
+  const provider = (process.env.STOCK_DATA_PROVIDER || 'alphavantage').toLowerCase();
   const apiKey = process.env.ALPHA_VANTAGE_API_KEY;
-  if (!apiKey) {
-    console.error('❌ ALPHA_VANTAGE_API_KEY is required. Get a free key at: https://www.alphavantage.co/support/#api-key');
+  if (provider !== 'yfinance' && !apiKey) {
+    console.error('❌ ALPHA_VANTAGE_API_KEY is required for Alpha Vantage or hybrid mode.');
     process.exit(1);
   }
-  const stockService = new AlphaVantageService(apiKey);
+  const stockService = createStockService(apiKey);
 
-  console.log('📊 Using Alpha Vantage API for real-time stock data\n');
+  console.log(`📊 Using stock data provider: ${provider}\n`);
 
   // Create Copilot client
   let client: CopilotClient | null = null;
