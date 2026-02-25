@@ -1,5 +1,5 @@
 import { StockDataService } from './stockDataService';
-import { buildSectorReport, buildStockReport, buildPeerReport, saveReport } from './reportGenerator';
+import { buildSectorReport, buildStockReport, buildPeerReport, buildComparisonReport, saveReport } from './reportGenerator';
 
 /**
  * OpenAI-compatible tool definitions for stock information
@@ -94,6 +94,57 @@ const scoreThemeMatch = (
     return 0;
   }
   return tokenScore + phraseScore;
+};
+
+const scoreSearchMatch = (query: string, item: any) => {
+  const normalized = query.trim().toLowerCase();
+  const symbol = String(item?.symbol || '').toLowerCase();
+  const name = String(item?.name || '').toLowerCase();
+  const region = String(item?.region || '').toLowerCase();
+  const currency = String(item?.currency || '').toUpperCase();
+  const type = String(item?.type || '').toLowerCase();
+
+  let score = 0;
+  if (symbol === normalized) score += 100;
+  if (name === normalized) score += 90;
+  if (name.startsWith(normalized)) score += 70;
+  if (name.includes(normalized)) score += 50;
+  if (symbol.startsWith(normalized)) score += 40;
+  if (region.includes('united states')) score += 10;
+  if (currency === 'USD') score += 10;
+  if (type.includes('equity')) score += 5;
+  return score;
+};
+
+const resolveSymbolFromQuery = async (stockService: StockDataService, query: string) => {
+  const trimmed = query.trim();
+  if (!trimmed) {
+    return { ok: false, reason: 'Empty query', candidates: [] as any[] };
+  }
+  const isLikelyTicker = /^[a-zA-Z]{1,6}$/.test(trimmed);
+  try {
+    const results = await stockService.searchStock(trimmed);
+    const candidates = (results.results || []) as any[];
+    if (!candidates.length) {
+      if (isLikelyTicker) return { ok: true, symbol: trimmed.toUpperCase(), candidates: [] };
+      return { ok: false, reason: 'No matches found', candidates: [] };
+    }
+    const scored = candidates
+      .map((item) => ({ item, score: scoreSearchMatch(trimmed, item) }))
+      .sort((a, b) => b.score - a.score);
+    const top = scored[0];
+    const second = scored[1];
+    const ambiguity = !top || top.score < 60 || (second && top.score - second.score < 10);
+    if (ambiguity) {
+      return { ok: false, reason: 'Ambiguous match', candidates: scored.slice(0, 5).map((row) => row.item) };
+    }
+    return { ok: true, symbol: String(top.item.symbol).toUpperCase(), candidates: scored.slice(0, 5).map((row) => row.item) };
+  } catch (error: any) {
+    if (isLikelyTicker) {
+      return { ok: true, symbol: trimmed.toUpperCase(), candidates: [] };
+    }
+    return { ok: false, reason: error.message || 'Search failed', candidates: [] };
+  }
 };
 
 const expandUniverseFromQuery = async (
@@ -489,10 +540,25 @@ function buildToolDefinitions() {
         parameters: {
           type: 'object',
           properties: {
-            symbol: { type: 'string', description: 'Ticker symbol (e.g. AAPL)' },
+            symbol: { type: 'string', description: 'Ticker or company name (e.g. AAPL, Apple)' },
             range: { type: 'string', description: 'Price history range for charts (e.g., "1y", "3y", "5y", "max"). Default is "5y"' },
           },
           required: ['symbol'],
+        },
+      },
+    },
+    {
+      type: 'function' as const,
+      function: {
+        name: 'generate_comparison_report',
+        description: 'Generate a comprehensive comparison report for multiple companies and save it as a markdown artifact.',
+        parameters: {
+          type: 'object',
+          properties: {
+            companies: { type: 'array', items: { type: 'string' }, description: 'Company names or tickers (2-6 items)' },
+            range: { type: 'string', description: 'Price history range for charts (e.g., "1y", "3y", "5y", "max"). Default is "1y"' },
+          },
+          required: ['companies'],
         },
       },
     },
@@ -717,7 +783,19 @@ export async function executeTool(
         };
       }
       case 'generate_stock_report': {
-        const symbol = args.symbol || '';
+        const symbolQuery = args.symbol || '';
+        const resolved = await resolveSymbolFromQuery(stockService, symbolQuery);
+        if (!resolved.ok || !resolved.symbol) {
+          const candidates = (resolved.candidates || [])
+            .map((item: any) => `${item.name || item.symbol} (${item.symbol})`)
+            .join(', ');
+          return {
+            success: false,
+            error: `Ambiguous company name "${symbolQuery}". Candidates: ${candidates || 'Unavailable'}`,
+            data: { candidates: resolved.candidates || [] },
+          };
+        }
+        const symbol = resolved.symbol;
         const range = args.range || '5y';
         const notes: string[] = [];
         let rateLimitHit = false;
@@ -768,15 +846,18 @@ export async function executeTool(
         const basicFinancials = companyOverview ? buildBasicFinancialsFallback(companyOverview) : undefined;
         const priceHistory = await safeFetch('Price history', stockService.getPriceHistory(symbol, range));
         const earningsHistory = await safeFetch('Earnings history', stockService.getEarningsHistory(symbol));
-        const incomeStatement = undefined;
-        const balanceSheet = undefined;
-        const cashFlow = undefined;
-        const analystRatings = undefined;
-        const analystRecommendations = undefined;
-        const priceTargets = undefined;
-        const peers = undefined;
-        const newsSentiment = undefined;
-        const companyNews = undefined;
+        const incomeStatement = await safeFetch('Income statement', stockService.getIncomeStatement(symbol));
+        const balanceSheet = await safeFetch('Balance sheet', stockService.getBalanceSheet(symbol));
+        const cashFlow = await safeFetch('Cash flow', stockService.getCashFlow(symbol));
+        const analystRatings = await safeFetch('Analyst ratings', stockService.getAnalystRatings(symbol));
+        const analystRecommendations = await safeFetch(
+          'Analyst recommendations',
+          stockService.getAnalystRecommendations(symbol)
+        );
+        const priceTargets = await safeFetch('Price targets', stockService.getPriceTargets(symbol));
+        const peers = await safeFetch('Peers', stockService.getPeers(symbol));
+        const newsSentiment = await safeFetch('News sentiment', stockService.getNewsSentiment(symbol));
+        const companyNews = await safeFetch('Company news', stockService.getCompanyNews(symbol, 14));
 
         const reportBody = buildStockReport({
           symbol: symbol.toUpperCase(),
@@ -809,6 +890,127 @@ export async function executeTool(
           success: true,
           data: { content, ...saved, downloadUrl: `/api/reports/${saved.filename}` },
           message: `Saved stock report to ${saved.filePath}`,
+        };
+      }
+      case 'generate_comparison_report': {
+        const range = args.range || '1y';
+        const companiesInput = Array.isArray(args.companies)
+          ? args.companies
+          : String(args.companies || '').split(',');
+        const companies = companiesInput.map((item: string) => item.trim()).filter(Boolean);
+        if (companies.length < 2 || companies.length > 6) {
+          return { success: false, error: 'Provide between 2 and 6 company names or tickers.' };
+        }
+
+        const resolved: { query: string; symbol?: string; candidates?: any[]; reason?: string }[] = [];
+        for (const query of companies) {
+          const result = await resolveSymbolFromQuery(stockService, query);
+          if (!result.ok || !result.symbol) {
+            resolved.push({ query, candidates: result.candidates, reason: result.reason });
+          } else {
+            resolved.push({ query, symbol: result.symbol, candidates: result.candidates });
+          }
+        }
+
+        const ambiguous = resolved.filter((row) => !row.symbol);
+        if (ambiguous.length) {
+          const details = ambiguous
+            .map((row) => {
+              const candidates = (row.candidates || [])
+                .map((item: any) => `${item.name || item.symbol} (${item.symbol})`)
+                .join(', ');
+              return `${row.query}: ${candidates || 'Unavailable'}`;
+            })
+            .join(' | ');
+          return {
+            success: false,
+            error: `Ambiguous company name(s). Candidates: ${details}`,
+            data: { unresolved: ambiguous },
+          };
+        }
+
+        const universe = resolved.map((row) => row.symbol as string);
+        const notes: string[] = [];
+        let rateLimitHit = false;
+        const isRateLimit = (message: string) =>
+          message.includes('frequency') || message.includes('Thank you for using Alpha Vantage');
+        const safeFetch = async <T>(label: string, request: Promise<T>) => {
+          if (rateLimitHit) return undefined as T;
+          try {
+            return await request;
+          } catch (error: any) {
+            const message = error?.message || 'Unavailable';
+            if (isRateLimit(message)) {
+              rateLimitHit = true;
+              notes.push('Alpha Vantage rate limit reached; remaining sections skipped.');
+              return undefined as T;
+            }
+            if (!message.includes('Alpha-only mode')) {
+              notes.push(`${label}: ${message}`);
+            }
+            return undefined as T;
+          }
+        };
+        const buildBasicFinancialsFallback = (overview: any) => {
+          if (!overview) return undefined;
+          const revenue = Number(overview.revenueTTM);
+          const grossProfit = Number(overview.grossProfitTTM);
+          const grossMarginTTM = Number.isFinite(revenue) && revenue !== 0 && Number.isFinite(grossProfit)
+            ? grossProfit / revenue
+            : Number(overview.profitMargin) || null;
+          return {
+            symbol: overview.symbol,
+            metric: {
+              peBasicExclExtraTTM: overview.peRatio,
+              epsTTM: overview.eps,
+              revenueGrowthTTM: overview.quarterlyRevenueGrowth,
+              epsGrowthTTM: overview.quarterlyEarningsGrowth,
+              grossMarginTTM,
+              operatingMarginTTM: overview.operatingMargin,
+              roeTTM: overview.returnOnEquity,
+              revenuePerShareTTM: overview.revenuePerShare,
+            },
+            series: {},
+          };
+        };
+
+        const items: any[] = [];
+        for (const symbol of universe) {
+          const price = await safeFetch(`Price (${symbol})`, stockService.getStockPrice(symbol));
+          const overview = await safeFetch(`Company overview (${symbol})`, stockService.getCompanyOverview(symbol));
+          const basicFinancials = overview ? buildBasicFinancialsFallback(overview) : undefined;
+          const priceHistory = await safeFetch(`Price history (${symbol})`, stockService.getPriceHistory(symbol, range));
+          const incomeStatement = await safeFetch(`Income statement (${symbol})`, stockService.getIncomeStatement(symbol));
+          const balanceSheet = await safeFetch(`Balance sheet (${symbol})`, stockService.getBalanceSheet(symbol));
+          const cashFlow = await safeFetch(`Cash flow (${symbol})`, stockService.getCashFlow(symbol));
+          const analystRatings = await safeFetch(`Analyst ratings (${symbol})`, stockService.getAnalystRatings(symbol));
+          const priceTargets = await safeFetch(`Price targets (${symbol})`, stockService.getPriceTargets(symbol));
+          items.push({
+            symbol,
+            price,
+            overview,
+            basicFinancials,
+            priceHistory,
+            incomeStatement,
+            balanceSheet,
+            cashFlow,
+            analystRatings,
+            priceTargets,
+          });
+        }
+
+        const content = buildComparisonReport({
+          generatedAt: new Date().toISOString(),
+          range,
+          universe,
+          items,
+          notes,
+        });
+        const saved = await saveReport(content, `${universe.join('-')}-comparison-report`);
+        return {
+          success: true,
+          data: { content, ...saved, downloadUrl: `/api/reports/${saved.filename}` },
+          message: `Saved comparison report to ${saved.filePath}`,
         };
       }
       case 'generate_sector_report': {

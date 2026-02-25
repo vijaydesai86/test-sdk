@@ -59,6 +59,27 @@ export interface PeerReportData {
   notes?: string[];
 }
 
+export interface ComparisonReportItem {
+  symbol: string;
+  price?: any;
+  overview?: any;
+  basicFinancials?: any;
+  priceTargets?: any;
+  priceHistory?: { prices?: PricePoint[] };
+  incomeStatement?: any;
+  balanceSheet?: any;
+  cashFlow?: any;
+  analystRatings?: any;
+}
+
+export interface ComparisonReportData {
+  generatedAt: string;
+  range: string;
+  universe: string[];
+  items: ComparisonReportItem[];
+  notes?: string[];
+}
+
 const DEFAULT_REPORTS_DIR =
   process.env.REPORTS_DIR || (process.env.VERCEL ? '/tmp/reports' : 'reports');
 
@@ -655,6 +676,82 @@ function buildScorecardRadar(scorecard: ReturnType<typeof computeScorecard>): st
         lineStyle: { width: 2 },
         symbolSize: 6,
       },
+    ],
+  });
+}
+
+function computePriceChange(prices: PricePoint[] = []): number | null {
+  if (prices.length < 2) return null;
+  const sorted = [...prices].sort((a, b) => a.date.localeCompare(b.date));
+  const first = toNumber(sorted[0].close);
+  const last = toNumber(sorted[sorted.length - 1].close);
+  if (!first || !last) return null;
+  return ((last - first) / first) * 100;
+}
+
+function buildValuationGrowthScatter(items: ComparisonReportItem[]): string {
+  const points = items
+    .map((item) => {
+      const overview = item.overview || {};
+      const growth = getStockRevenueGrowth({
+        symbol: item.symbol,
+        generatedAt: '',
+        price: {},
+        companyOverview: overview,
+        basicFinancials: item.basicFinancials,
+      } as StockReportData);
+      const pe = toNumber(overview.peRatio ?? item.basicFinancials?.metric?.peBasicExclExtraTTM);
+      const marketCap = toNumber(overview.marketCapitalization);
+      if (growth === null || pe === null || !Number.isFinite(pe)) return null;
+      return {
+        name: item.symbol,
+        value: [Number(growth.toFixed(1)), Number(pe.toFixed(1))],
+        marketCap: marketCap ?? 0,
+      };
+    })
+    .filter((point): point is { name: string; value: [number, number]; marketCap: number } => point !== null);
+
+  if (points.length === 0) return '';
+
+  const maxCap = Math.max(...points.map((point) => point.marketCap || 0), 1);
+  return buildChartBlock({
+    tooltip: { trigger: 'item' },
+    xAxis: { type: 'value', name: 'Revenue Growth (TTM %)' },
+    yAxis: { type: 'value', name: 'P/E (TTM)' },
+    series: [
+      {
+        type: 'scatter',
+        data: points.map((point) => ({
+          name: point.name,
+          value: point.value,
+          symbolSize: 12 + Math.sqrt(point.marketCap / maxCap) * 18,
+          label: { show: true, formatter: '{b}', position: 'right' },
+        })),
+      },
+    ],
+  });
+}
+
+function buildMarginComparisonChart(items: ComparisonReportItem[]): string {
+  const rows = items.map((item) => {
+    const gross = normalizePercent(item.basicFinancials?.metric?.grossMarginTTM ?? item.overview?.profitMargin);
+    const operating = normalizePercent(item.basicFinancials?.metric?.operatingMarginTTM ?? item.overview?.operatingMargin);
+    return {
+      symbol: item.symbol,
+      gross: gross === null ? 0 : Number(gross.toFixed(1)),
+      operating: operating === null ? 0 : Number(operating.toFixed(1)),
+    };
+  });
+  if (rows.length === 0) return '';
+
+  return buildChartBlock({
+    tooltip: { trigger: 'axis' },
+    legend: { bottom: 0 },
+    xAxis: { type: 'category', data: rows.map((row) => row.symbol) },
+    yAxis: { type: 'value', name: 'Margin %' },
+    series: [
+      { name: 'Gross Margin', type: 'bar', data: rows.map((row) => row.gross) },
+      { name: 'Operating Margin', type: 'bar', data: rows.map((row) => row.operating) },
     ],
   });
 }
@@ -1377,6 +1474,283 @@ export async function saveReport(content: string, title: string, directory = DEF
   await fs.writeFile(filePath, content, 'utf8');
 
   return { filePath, filename };
+}
+
+export function buildComparisonReport(data: ComparisonReportData): string {
+  const header = `# Company Comparison Report`;
+  const notes = data.notes?.length ? data.notes.map((note) => `- ${note}`).join('\n') : '';
+  const items = data.items;
+
+  const snapshotRows = items.map((item) => {
+    const overview = item.overview || {};
+    const price = toNumber(item.price?.price);
+    const changePercent = item.price?.changePercent;
+    const changeValue = typeof changePercent === 'string'
+      ? Number(changePercent.replace('%', ''))
+      : changePercent;
+    const changeIsPercent = typeof changePercent === 'string' && changePercent.includes('%');
+    return [
+      `${overview.name || item.symbol} (${item.symbol})`,
+      formatPrice(price),
+      formatSignedPercentValue(changeValue, 2, { alreadyPercent: changeIsPercent }),
+      formatCurrency(overview.marketCapitalization),
+      overview.sector || 'N/A',
+      overview.industry || 'N/A',
+      `${formatCurrency(overview['52WeekLow'])} - ${formatCurrency(overview['52WeekHigh'])}`,
+    ];
+  });
+
+  const snapshotTable = buildTable(
+    ['Company', 'Price', 'Day Change', 'Market Cap', 'Sector', 'Industry', '52W Range'],
+    snapshotRows,
+    ['left', 'right', 'right', 'right', 'left', 'left', 'right']
+  );
+
+  const scaleRows = items.map((item) => {
+    const overview = item.overview || {};
+    return [
+      `${overview.name || item.symbol} (${item.symbol})`,
+      formatCurrency(overview.revenueTTM),
+      formatPercent(item.basicFinancials?.metric?.grossMarginTTM ?? overview.profitMargin),
+      formatPercent(item.basicFinancials?.metric?.operatingMarginTTM ?? overview.operatingMargin),
+      formatPercent(item.basicFinancials?.metric?.roeTTM ?? overview.returnOnEquity),
+    ];
+  });
+  const scaleTable = buildTable(
+    ['Company', 'Revenue (TTM)', 'Gross Margin', 'Operating Margin', 'ROE'],
+    scaleRows,
+    ['left', 'right', 'right', 'right', 'right']
+  );
+
+  const growthRows = items.map((item) => {
+    const revenueGrowth = getStockRevenueGrowth({
+      symbol: item.symbol,
+      generatedAt: '',
+      price: {},
+      companyOverview: item.overview,
+      basicFinancials: item.basicFinancials,
+    } as StockReportData);
+    const epsGrowth = getStockEpsGrowth({
+      symbol: item.symbol,
+      generatedAt: '',
+      price: {},
+      companyOverview: item.overview,
+      basicFinancials: item.basicFinancials,
+    } as StockReportData);
+    const priceChange = computePriceChange(item.priceHistory?.prices || []);
+    return [
+      `${item.overview?.name || item.symbol} (${item.symbol})`,
+      formatPercent(revenueGrowth),
+      formatPercent(epsGrowth),
+      priceChange === null ? 'N/A' : formatSignedPercentValue(priceChange, 1, { alreadyPercent: true }),
+    ];
+  });
+  const growthTable = buildTable(
+    ['Company', 'Revenue Growth (TTM)', 'EPS Growth (TTM)', `${data.range} Price Change`],
+    growthRows,
+    ['left', 'right', 'right', 'right']
+  );
+
+  const valuationRows = items.map((item) => {
+    const overview = item.overview || {};
+    const price = toNumber(item.price?.price);
+    const bookValue = toNumber(overview.bookValue);
+    const revenuePerShare = toNumber(overview.revenuePerShare);
+    return [
+      `${overview.name || item.symbol} (${item.symbol})`,
+      toNumber(overview.peRatio ?? item.basicFinancials?.metric?.peBasicExclExtraTTM)?.toFixed(1) ?? 'N/A',
+      toNumber(overview.forwardPE)?.toFixed(1) ?? 'N/A',
+      toNumber(overview.pegRatio)?.toFixed(2) ?? 'N/A',
+      price && revenuePerShare ? (price / revenuePerShare).toFixed(2) : 'N/A',
+      price && bookValue ? (price / bookValue).toFixed(2) : 'N/A',
+    ];
+  });
+  const valuationTable = buildTable(
+    ['Company', 'P/E', 'Forward P/E', 'PEG', 'Price/Sales', 'Price/Book'],
+    valuationRows,
+    ['left', 'right', 'right', 'right', 'right', 'right']
+  );
+
+  const balanceRows = items.map((item) => {
+    const balance = getLatestReport(item.balanceSheet);
+    const cashFlow = getLatestReport(item.cashFlow);
+    const cash = toNumber(balance?.cashAndEquivalents);
+    const debt = toNumber(balance?.longTermDebt);
+    const netDebt = cash !== null && debt !== null ? debt - cash : null;
+    return [
+      `${item.overview?.name || item.symbol} (${item.symbol})`,
+      formatCurrency(cash),
+      formatCurrency(debt),
+      netDebt === null ? 'N/A' : formatCurrency(netDebt),
+      formatCurrency(cashFlow?.freeCashFlow),
+    ];
+  });
+  const balanceTable = buildTable(
+    ['Company', 'Cash', 'Total Debt', 'Net Debt', 'Free Cash Flow'],
+    balanceRows,
+    ['left', 'right', 'right', 'right', 'right']
+  );
+
+  const analystRows = items.map((item) => {
+    const price = toNumber(item.price?.price);
+    const target = toNumber(item.priceTargets?.targetMean || item.analystRatings?.analystTargetPrice);
+    const upside = price && target ? ((target - price) / price) * 100 : null;
+    return [
+      `${item.overview?.name || item.symbol} (${item.symbol})`,
+      target === null ? 'N/A' : target.toFixed(2),
+      upside === null ? 'N/A' : `${upside.toFixed(1)}%`,
+      formatRatingSummary(item),
+    ];
+  });
+  const analystTable = buildTable(
+    ['Company', 'Target Mean', 'Upside', 'Ratings'],
+    analystRows,
+    ['left', 'right', 'right', 'left']
+  );
+
+  const upsideLeaders = analystRows
+    .map((row, index) => ({
+      symbol: items[index].symbol,
+      upside: Number(String(row[2]).replace('%', '')),
+      name: row[0],
+    }))
+    .filter((row) => Number.isFinite(row.upside));
+  const topUpside = upsideLeaders.sort((a, b) => b.upside - a.upside)[0];
+
+  const ratingLeaders = items
+    .map((item) => {
+      const ratings = item.analystRatings || item.overview || {};
+      const strongBuy = toNumber(ratings.strongBuy ?? ratings.analystRatingStrongBuy);
+      const buy = toNumber(ratings.buy ?? ratings.analystRatingBuy);
+      const hold = toNumber(ratings.hold ?? ratings.analystRatingHold);
+      const sell = toNumber(ratings.sell ?? ratings.analystRatingSell);
+      const strongSell = toNumber(ratings.strongSell ?? ratings.analystRatingStrongSell);
+      const total = [strongBuy, buy, hold, sell, strongSell]
+        .filter((value) => value !== null)
+        .reduce((sum, value) => sum + (value as number), 0);
+      const score = total ? ((strongBuy || 0) + (buy || 0)) / total : null;
+      return { symbol: item.symbol, name: item.overview?.name || item.symbol, score };
+    })
+    .filter((row) => row.score !== null)
+    .sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+  const topRating = ratingLeaders[0];
+
+  const scored = items.map((item) => {
+    const scoreData: StockReportData = {
+      symbol: item.symbol,
+      generatedAt: data.generatedAt,
+      price: item.price || {},
+      priceHistory: item.priceHistory,
+      companyOverview: item.overview,
+      basicFinancials: item.basicFinancials,
+      earningsHistory: undefined,
+      incomeStatement: item.incomeStatement,
+      balanceSheet: item.balanceSheet,
+      cashFlow: item.cashFlow,
+      analystRatings: item.analystRatings,
+      analystRecommendations: undefined,
+      priceTargets: item.priceTargets,
+      peers: undefined,
+      newsSentiment: undefined,
+      companyNews: undefined,
+    };
+    const scorecard = computeScorecard(scoreData);
+    return { item, score: scorecard.composite };
+  });
+
+  const validScores = scored.filter((row) => row.score !== null) as Array<{ item: ComparisonReportItem; score: number }>;
+  const totalScore = validScores.reduce((sum, row) => sum + (row.score ?? 0), 0);
+  const weights = scored.map((row) => {
+    if (!validScores.length || totalScore === 0 || row.score === null) {
+      return 100 / scored.length;
+    }
+    return (row.score / totalScore) * 100;
+  });
+
+  const revenueLeaders = [...scored].sort((a, b) => {
+    const aGrowth = getStockRevenueGrowth({
+      symbol: a.item.symbol,
+      generatedAt: '',
+      price: {},
+      companyOverview: a.item.overview,
+      basicFinancials: a.item.basicFinancials,
+    } as StockReportData) ?? -Infinity;
+    const bGrowth = getStockRevenueGrowth({
+      symbol: b.item.symbol,
+      generatedAt: '',
+      price: {},
+      companyOverview: b.item.overview,
+      basicFinancials: b.item.basicFinancials,
+    } as StockReportData) ?? -Infinity;
+    return bGrowth - aGrowth;
+  });
+  const topGrowth = revenueLeaders[0]?.item.symbol;
+
+  const marginLeaders = [...scored].sort((a, b) => {
+    const aMargin = normalizePercent(a.item.basicFinancials?.metric?.operatingMarginTTM ?? a.item.overview?.operatingMargin) ?? -Infinity;
+    const bMargin = normalizePercent(b.item.basicFinancials?.metric?.operatingMarginTTM ?? b.item.overview?.operatingMargin) ?? -Infinity;
+    return bMargin - aMargin;
+  });
+  const topMargin = marginLeaders[0]?.item.symbol;
+
+  const allocationRows = scored.map((row, index) => {
+    const reasons = [
+      row.item.symbol === topGrowth ? 'Top revenue growth' : null,
+      row.item.symbol === topMargin ? 'Best operating margin' : null,
+      row.score !== null && row.score > 60 ? 'Strong composite score' : null,
+    ].filter(Boolean);
+    return [
+      `${row.item.overview?.name || row.item.symbol} (${row.item.symbol})`,
+      row.score === null ? 'N/A' : row.score.toFixed(1),
+      `${weights[index].toFixed(1)}%`,
+      reasons.length ? reasons.join('; ') : 'Balanced exposure',
+    ];
+  });
+  const allocationTable = buildTable(
+    ['Company', 'Composite Score', 'Indicative Weight', 'Rationale'],
+    allocationRows,
+    ['left', 'right', 'right', 'left']
+  );
+
+  const performanceChart = buildPerformanceChart(
+    items.map((item) => ({ symbol: item.symbol, priceHistory: item.priceHistory } as PeerReportItem)),
+    `Price Performance (${data.range}, Indexed)`
+  );
+  const scatterChart = buildValuationGrowthScatter(items);
+  const marginChart = buildMarginComparisonChart(items);
+
+  const sections = [
+    header,
+    `Generated: ${data.generatedAt}`,
+    `Universe: ${data.universe.join(', ')}`,
+    notes ? `## ⚠️ Data Gaps\n${notes}` : null,
+    '## 📊 Snapshot',
+    snapshotTable,
+    '## 🧾 Scale & Profitability',
+    scaleTable,
+    '## 🚀 Growth & Momentum',
+    growthTable,
+    '## 🧮 Valuation',
+    valuationTable,
+    '## 🏦 Balance Sheet & Cash',
+    balanceTable,
+    '## 🧠 Analyst View',
+    analystTable,
+    '## ⭐ Analyst Picks',
+    `- Highest target upside: ${topUpside ? `${topUpside.name} (${topUpside.upside.toFixed(1)}%)` : 'N/A'}`,
+    `- Strongest consensus: ${topRating ? `${topRating.name} (${(topRating.score! * 100).toFixed(0)}% buy/strong buy)` : 'N/A'}`,
+    '## 📈 Price Performance (Indexed)',
+    performanceChart || '_Price performance data unavailable._',
+    '## 📊 Valuation vs Growth',
+    scatterChart || '_Valuation/growth data unavailable._',
+    '## 📊 Margin Comparison',
+    marginChart || '_Margin comparison data unavailable._',
+    '## 🧭 Indicative Allocation (Not Investment Advice)',
+    allocationTable,
+    '_Indicative allocation is derived from normalized composite scores. It is not investment advice._',
+  ].filter(Boolean) as string[];
+
+  return sections.join('\n\n');
 }
 
 export function buildPeerReport(data: PeerReportData): string {
