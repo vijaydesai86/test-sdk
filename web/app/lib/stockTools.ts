@@ -1,3 +1,5 @@
+import { promises as fs } from 'fs';
+import path from 'path';
 import { StockDataService } from './stockDataService';
 import { buildSectorReport, buildStockReport, buildPeerReport, buildComparisonReport, saveReport } from './reportGenerator';
 
@@ -29,6 +31,41 @@ const stopwords = new Set([
   'of',
   'in',
 ]);
+
+const REPORTS_DIR = process.env.REPORTS_DIR || (process.env.VERCEL ? '/tmp/reports' : 'reports');
+const CACHE_DIR = path.join(REPORTS_DIR, 'cache');
+const CACHE_TTL_MS = Number(process.env.STOCK_CACHE_TTL_MS || 1000 * 60 * 60 * 24 * 7);
+
+type CacheEntry = { updatedAt: string; data: any };
+type SymbolCache = Record<string, CacheEntry>;
+
+const loadSymbolCache = async (symbol: string): Promise<SymbolCache> => {
+  try {
+    const filePath = path.join(CACHE_DIR, `${symbol.toUpperCase()}.json`);
+    const raw = await fs.readFile(filePath, 'utf8');
+    return JSON.parse(raw) as SymbolCache;
+  } catch {
+    return {};
+  }
+};
+
+const saveSymbolCache = async (symbol: string, cache: SymbolCache) => {
+  await fs.mkdir(CACHE_DIR, { recursive: true });
+  const filePath = path.join(CACHE_DIR, `${symbol.toUpperCase()}.json`);
+  await fs.writeFile(filePath, JSON.stringify(cache, null, 2), 'utf8');
+};
+
+const getCachedValue = (cache: SymbolCache, key: string) => {
+  const entry = cache[key];
+  if (!entry) return null;
+  const ageMs = Date.now() - new Date(entry.updatedAt).getTime();
+  if (Number.isNaN(ageMs) || ageMs > CACHE_TTL_MS) return null;
+  return entry.data;
+};
+
+const setCachedValue = (cache: SymbolCache, key: string, data: any) => {
+  cache[key] = { updatedAt: new Date().toISOString(), data };
+};
 
 const buildSearchQueries = (query: string) => {
   const cleaned = query.toLowerCase().replace(/[^a-z0-9\s]/g, ' ');
@@ -798,24 +835,31 @@ export async function executeTool(
         const symbol = resolved.symbol;
         const range = args.range || '5y';
         const notes: string[] = [];
+        const cache = await loadSymbolCache(symbol);
         let rateLimitHit = false;
         const isRateLimit = (message: string) =>
           message.includes('frequency') || message.includes('Thank you for using Alpha Vantage');
-        const safeFetch = async <T>(label: string, request: Promise<T>) => {
+        const safeFetch = async <T>(label: string, key: string, request: Promise<T>) => {
+          const cachedValue = getCachedValue(cache, key);
+          if (cachedValue !== null) {
+            return cachedValue as T;
+          }
           if (rateLimitHit) return undefined as T;
           try {
-            return await request;
+            const result = await request;
+            setCachedValue(cache, key, result);
+            return result;
           } catch (error: any) {
             const message = error?.message || 'Unavailable';
             if (isRateLimit(message)) {
               rateLimitHit = true;
               notes.push('Alpha Vantage rate limit reached; remaining sections skipped.');
-              return undefined as T;
+              return cachedValue !== null ? (cachedValue as T) : (undefined as T);
             }
             if (!message.includes('Alpha-only mode')) {
               notes.push(`${label}: ${message}`);
             }
-            return undefined as T;
+            return cachedValue !== null ? (cachedValue as T) : (undefined as T);
           }
         };
         const buildBasicFinancialsFallback = (overview: any) => {
@@ -841,23 +885,24 @@ export async function executeTool(
           };
         };
 
-        const price = await safeFetch('Price', stockService.getStockPrice(symbol));
-        const companyOverview = await safeFetch('Company overview', stockService.getCompanyOverview(symbol));
+        const price = await safeFetch('Price', 'price', stockService.getStockPrice(symbol));
+        const companyOverview = await safeFetch('Company overview', 'overview', stockService.getCompanyOverview(symbol));
         const basicFinancials = companyOverview ? buildBasicFinancialsFallback(companyOverview) : undefined;
-        const priceHistory = await safeFetch('Price history', stockService.getPriceHistory(symbol, range));
-        const earningsHistory = await safeFetch('Earnings history', stockService.getEarningsHistory(symbol));
-        const incomeStatement = await safeFetch('Income statement', stockService.getIncomeStatement(symbol));
-        const balanceSheet = await safeFetch('Balance sheet', stockService.getBalanceSheet(symbol));
-        const cashFlow = await safeFetch('Cash flow', stockService.getCashFlow(symbol));
-        const analystRatings = await safeFetch('Analyst ratings', stockService.getAnalystRatings(symbol));
+        const priceHistory = await safeFetch('Price history', `priceHistory:${range}`, stockService.getPriceHistory(symbol, range));
+        const earningsHistory = await safeFetch('Earnings history', 'earningsHistory', stockService.getEarningsHistory(symbol));
+        const incomeStatement = await safeFetch('Income statement', 'incomeStatement', stockService.getIncomeStatement(symbol));
+        const balanceSheet = await safeFetch('Balance sheet', 'balanceSheet', stockService.getBalanceSheet(symbol));
+        const cashFlow = await safeFetch('Cash flow', 'cashFlow', stockService.getCashFlow(symbol));
+        const analystRatings = await safeFetch('Analyst ratings', 'analystRatings', stockService.getAnalystRatings(symbol));
         const analystRecommendations = await safeFetch(
           'Analyst recommendations',
+          'analystRecommendations',
           stockService.getAnalystRecommendations(symbol)
         );
-        const priceTargets = await safeFetch('Price targets', stockService.getPriceTargets(symbol));
-        const peers = await safeFetch('Peers', stockService.getPeers(symbol));
-        const newsSentiment = await safeFetch('News sentiment', stockService.getNewsSentiment(symbol));
-        const companyNews = await safeFetch('Company news', stockService.getCompanyNews(symbol, 14));
+        const priceTargets = await safeFetch('Price targets', 'priceTargets', stockService.getPriceTargets(symbol));
+        const peers = await safeFetch('Peers', 'peers', stockService.getPeers(symbol));
+        const newsSentiment = await safeFetch('News sentiment', 'newsSentiment', stockService.getNewsSentiment(symbol));
+        const companyNews = await safeFetch('Company news', 'companyNews', stockService.getCompanyNews(symbol, 14));
 
         const reportBody = buildStockReport({
           symbol: symbol.toUpperCase(),
@@ -886,6 +931,7 @@ export async function executeTool(
           : reportBody;
 
         const saved = await saveReport(content, `${symbol}-stock-report`);
+        await saveSymbolCache(symbol, cache);
         return {
           success: true,
           data: { content, ...saved, downloadUrl: `/api/reports/${saved.filename}` },
@@ -934,21 +980,32 @@ export async function executeTool(
         let rateLimitHit = false;
         const isRateLimit = (message: string) =>
           message.includes('frequency') || message.includes('Thank you for using Alpha Vantage');
-        const safeFetch = async <T>(label: string, request: Promise<T>) => {
+        const safeFetch = async <T>(
+          cache: SymbolCache,
+          label: string,
+          key: string,
+          request: Promise<T>
+        ) => {
+          const cachedValue = getCachedValue(cache, key);
+          if (cachedValue !== null) {
+            return cachedValue as T;
+          }
           if (rateLimitHit) return undefined as T;
           try {
-            return await request;
+            const result = await request;
+            setCachedValue(cache, key, result);
+            return result;
           } catch (error: any) {
             const message = error?.message || 'Unavailable';
             if (isRateLimit(message)) {
               rateLimitHit = true;
               notes.push('Alpha Vantage rate limit reached; remaining sections skipped.');
-              return undefined as T;
+              return cachedValue !== null ? (cachedValue as T) : (undefined as T);
             }
             if (!message.includes('Alpha-only mode')) {
               notes.push(`${label}: ${message}`);
             }
-            return undefined as T;
+            return cachedValue !== null ? (cachedValue as T) : (undefined as T);
           }
         };
         const buildBasicFinancialsFallback = (overview: any) => {
@@ -976,15 +1033,16 @@ export async function executeTool(
 
         const items: any[] = [];
         for (const symbol of universe) {
-          const price = await safeFetch(`Price (${symbol})`, stockService.getStockPrice(symbol));
-          const overview = await safeFetch(`Company overview (${symbol})`, stockService.getCompanyOverview(symbol));
+          const cache = await loadSymbolCache(symbol);
+          const price = await safeFetch(cache, `Price (${symbol})`, 'price', stockService.getStockPrice(symbol));
+          const overview = await safeFetch(cache, `Company overview (${symbol})`, 'overview', stockService.getCompanyOverview(symbol));
           const basicFinancials = overview ? buildBasicFinancialsFallback(overview) : undefined;
-          const priceHistory = await safeFetch(`Price history (${symbol})`, stockService.getPriceHistory(symbol, range));
-          const incomeStatement = await safeFetch(`Income statement (${symbol})`, stockService.getIncomeStatement(symbol));
-          const balanceSheet = await safeFetch(`Balance sheet (${symbol})`, stockService.getBalanceSheet(symbol));
-          const cashFlow = await safeFetch(`Cash flow (${symbol})`, stockService.getCashFlow(symbol));
-          const analystRatings = await safeFetch(`Analyst ratings (${symbol})`, stockService.getAnalystRatings(symbol));
-          const priceTargets = await safeFetch(`Price targets (${symbol})`, stockService.getPriceTargets(symbol));
+          const priceHistory = await safeFetch(cache, `Price history (${symbol})`, `priceHistory:${range}`, stockService.getPriceHistory(symbol, range));
+          const incomeStatement = await safeFetch(cache, `Income statement (${symbol})`, 'incomeStatement', stockService.getIncomeStatement(symbol));
+          const balanceSheet = await safeFetch(cache, `Balance sheet (${symbol})`, 'balanceSheet', stockService.getBalanceSheet(symbol));
+          const cashFlow = await safeFetch(cache, `Cash flow (${symbol})`, 'cashFlow', stockService.getCashFlow(symbol));
+          const analystRatings = await safeFetch(cache, `Analyst ratings (${symbol})`, 'analystRatings', stockService.getAnalystRatings(symbol));
+          const priceTargets = await safeFetch(cache, `Price targets (${symbol})`, 'priceTargets', stockService.getPriceTargets(symbol));
           items.push({
             symbol,
             price,
@@ -997,6 +1055,7 @@ export async function executeTool(
             analystRatings,
             priceTargets,
           });
+          await saveSymbolCache(symbol, cache);
         }
 
         const content = buildComparisonReport({
