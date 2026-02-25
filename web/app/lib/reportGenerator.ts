@@ -1489,6 +1489,30 @@ export function buildComparisonReport(data: ComparisonReportData): string {
       : '_Legend: Alpha Vantage provider._';
   const items = data.items;
 
+  const sourceRows = Object.entries(sources).map(([symbol, map]) => {
+    const lookup = items.find((item) => item.symbol === symbol);
+    const name = lookup?.overview?.name || symbol;
+    const pick = (key: string) => map[key] || 'N/A';
+    return [
+      `${name} (${symbol})`,
+      pick('Price'),
+      pick('Company overview'),
+      pick('Price history'),
+      pick('Income statement'),
+      pick('Balance sheet'),
+      pick('Cash flow'),
+      pick('Analyst ratings'),
+      pick('Price targets'),
+    ];
+  });
+  const sourceTable = sourceRows.length
+    ? buildTable(
+        ['Company', 'Price', 'Overview', 'Price History', 'Income', 'Balance', 'Cash Flow', 'Analyst', 'Targets'],
+        sourceRows,
+        ['left', 'center', 'center', 'center', 'center', 'center', 'center', 'center', 'center']
+      )
+    : '';
+
   const snapshotRows = items.map((item) => {
     const overview = item.overview || {};
     const price = toNumber(item.price?.price);
