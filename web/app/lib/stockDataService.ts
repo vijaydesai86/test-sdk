@@ -805,7 +805,7 @@ class YahooFinanceService implements StockDataService {
     if (!yahooFinance.quoteSummary) {
       throw new Error('Yahoo Finance quoteSummary unavailable');
     }
-    return this.withRetry(() => yahooFinance.quoteSummary?.(symbol, { modules }));
+    return this.withRetry(() => yahooFinance.quoteSummary(symbol, { modules }));
   }
 
   async getStockPrice(symbol: string): Promise<any> {
@@ -814,7 +814,7 @@ class YahooFinanceService implements StockDataService {
     if (!yahooFinance.quote) {
       throw new Error('Yahoo Finance quote unavailable');
     }
-    const quote = await this.withRetry(() => yahooFinance.quote?.(symbol));
+    const quote = await this.withRetry(() => yahooFinance.quote(symbol));
     return attachSource({
       symbol: symbol.toUpperCase(),
       price: quote.regularMarketPrice?.toFixed?.(2) ?? quote.regularMarketPrice,
@@ -830,7 +830,7 @@ class YahooFinanceService implements StockDataService {
     if (!yahooFinance.historical) {
       throw new Error('Yahoo Finance historical unavailable');
     }
-    const results = await this.withRetry(() => yahooFinance.historical?.(symbol, { period1, period2, interval: '1d' }));
+    const results = await this.withRetry(() => yahooFinance.historical(symbol, { period1, period2, interval: '1d' }));
     const prices = (results || []).map((row: any) => ({
       date: row.date?.toISOString?.().slice(0, 10) || row.date,
       close: row.close,
