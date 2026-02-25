@@ -228,10 +228,14 @@ function parseComparisonCompanies(message: string): string[] | null {
     list = list.slice(0, cutoffIndex).trim();
   }
   if (!list) return null;
-  const parts = list.includes(',')
-    ? list.split(',')
-    : list.split(/\s+/);
-  const companies = parts.map((item) => item.trim()).filter(Boolean);
+  const cleaned = list.replace(/\band\b/gi, ',');
+  const parts = cleaned.includes(',')
+    ? cleaned.split(',')
+    : cleaned.split(/\s+/);
+  const stopwords = new Set(['and', 'stocks', 'stock', 'companies', 'company', 'compare']);
+  const companies = parts
+    .map((item) => item.trim())
+    .filter((item) => item && !stopwords.has(item.toLowerCase()));
   return companies.length >= 2 ? companies : null;
 }
 
