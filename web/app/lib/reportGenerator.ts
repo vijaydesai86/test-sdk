@@ -498,9 +498,10 @@ function applyChartTheme(option: Record<string, any>): Record<string, any> {
     ? {
         ...base.title,
         ...option.title,
+        show: false,
         textStyle: { ...base.title.textStyle, ...(option.title.textStyle || {}) },
       }
-    : base.title;
+    : { ...base.title, show: false };
 
   return {
     ...themed,
@@ -508,7 +509,7 @@ function applyChartTheme(option: Record<string, any>): Record<string, any> {
     grid: {
       left: 50,
       right: 24,
-      top: 60,
+      top: 40,
       bottom: 50,
       containLabel: true,
       ...(option.grid || {}),
