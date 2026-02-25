@@ -802,19 +802,21 @@ class YahooFinanceService implements StockDataService {
   private async getQuoteSummary(symbol: string, modules: string[]) {
     await this.throttle();
     const yahooFinance = await getYahooFinance();
-    if (!yahooFinance.quoteSummary) {
+    const quoteSummary = yahooFinance.quoteSummary;
+    if (!quoteSummary) {
       throw new Error('Yahoo Finance quoteSummary unavailable');
     }
-    return this.withRetry(() => yahooFinance.quoteSummary(symbol, { modules }));
+    return this.withRetry(() => quoteSummary(symbol, { modules }));
   }
 
   async getStockPrice(symbol: string): Promise<any> {
     await this.throttle();
     const yahooFinance = await getYahooFinance();
-    if (!yahooFinance.quote) {
+    const quoteFn = yahooFinance.quote;
+    if (!quoteFn) {
       throw new Error('Yahoo Finance quote unavailable');
     }
-    const quote = await this.withRetry(() => yahooFinance.quote(symbol));
+    const quote = await this.withRetry(() => quoteFn(symbol));
     return attachSource({
       symbol: symbol.toUpperCase(),
       price: quote.regularMarketPrice?.toFixed?.(2) ?? quote.regularMarketPrice,
@@ -827,10 +829,11 @@ class YahooFinanceService implements StockDataService {
     const { period1, period2 } = parseRangeToPeriod(range);
     await this.throttle();
     const yahooFinance = await getYahooFinance();
-    if (!yahooFinance.historical) {
+    const historicalFn = yahooFinance.historical;
+    if (!historicalFn) {
       throw new Error('Yahoo Finance historical unavailable');
     }
-    const results = await this.withRetry(() => yahooFinance.historical(symbol, { period1, period2, interval: '1d' }));
+    const results = await this.withRetry(() => historicalFn(symbol, { period1, period2, interval: '1d' }));
     const prices = (results || []).map((row: any) => ({
       date: row.date?.toISOString?.().slice(0, 10) || row.date,
       close: row.close,
