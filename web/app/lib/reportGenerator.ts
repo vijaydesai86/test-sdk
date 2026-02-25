@@ -380,19 +380,6 @@ function formatPrice(value: unknown, decimals = 2): string {
   return `$${num.toFixed(decimals)}`;
 }
 
-function formatSignedPercent(value: unknown, decimals = 2, options?: { alreadyPercent?: boolean }): string {
-  const num = options?.alreadyPercent ? toNumber(value) : normalizePercent(value);
-  if (num === null) return 'N/A';
-  const sign = num > 0 ? '+' : '';
-  return `${sign}${num.toFixed(decimals)}%`;
-}
-
-function formatPrice(value: unknown, decimals = 2): string {
-  const num = toNumber(value);
-  if (num === null) return 'N/A';
-  return `$${num.toFixed(decimals)}`;
-}
-
 function formatCurrency(value: unknown): string {
   const formatted = formatMarketCap(value);
   if (formatted === 'N/A') return 'N/A';
