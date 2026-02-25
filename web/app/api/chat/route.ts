@@ -819,9 +819,9 @@ export async function POST(request: NextRequest) {
     const proxyKey = process.env.OPENAI_API_KEY || process.env.OPENAI_TOKEN;
 
     // Initialize stock service (always uses real Alpha Vantage API)
-    const provider = (process.env.STOCK_DATA_PROVIDER || 'alphavantage').toLowerCase();
+    const dataProvider = (process.env.STOCK_DATA_PROVIDER || 'alphavantage').toLowerCase();
     const alphaVantageKey = process.env.ALPHA_VANTAGE_API_KEY;
-    if (provider !== 'yfinance' && !alphaVantageKey) {
+    if (dataProvider !== 'yfinance' && !alphaVantageKey) {
       return NextResponse.json(
         {
           error: 'Alpha Vantage API key not configured',
