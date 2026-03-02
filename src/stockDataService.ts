@@ -78,16 +78,6 @@ const getYahooFinance = async (): Promise<YahooFinanceClient> => {
   if (!yahooFinanceModule) {
     yahooFinanceModule = await loadYahooModule();
   }
-  if (process.env.STOCK_DATA_PROVIDER === 'yfinance') {
-    const keys = Object.keys((yahooFinanceModule as any) || {});
-    console.log('[yfinance] module keys:', keys);
-    if ((yahooFinanceModule as any)?.default) {
-      console.log('[yfinance] module.default keys:', Object.keys((yahooFinanceModule as any).default || {}));
-    }
-    if ((yahooFinanceModule as any)?.YahooFinance) {
-      console.log('[yfinance] module.YahooFinance keys:', Object.keys((yahooFinanceModule as any).YahooFinance || {}));
-    }
-  }
   const client = buildYahooClient(yahooFinanceModule as any);
   if (!client.quote || !client.historical) {
     const modKeys = Object.keys((yahooFinanceModule as any) || {}).join(', ');
@@ -792,7 +782,27 @@ export class AlphaVantageService implements StockDataService {
 class YahooFinanceService implements StockDataService {
   private lastRequestAt = 0;
   private minIntervalMs = Number(process.env.YFINANCE_MIN_INTERVAL_MS || 1200);
-  private maxRetries = Number(process.env.YFINANCE_MAX_RETRIES || 1);
+  private maxRetries = Number(process.env.YFINANCE_MAX_RETRIES || 2);
+  // Cache all quoteSummary modules per symbol so that getCompanyOverview,
+  // getIncomeStatement, getBalanceSheet, getCashFlow, etc. share one API call.
+  // Lifetime matches the YahooFinanceService instance — created fresh per request
+  // by createStockService(), so no cross-request staleness risk.
+  private quoteSummaryCache = new Map<string, any>();
+
+  // All quoteSummary modules needed by this service.
+  private static SUMMARY_MODULES = [
+    'summaryProfile',
+    'price',
+    'defaultKeyStatistics',
+    'financialData',
+    'summaryDetail',
+    'calendarEvents',
+    'recommendationTrend',
+    'earningsHistory',
+    'incomeStatementHistory',
+    'balanceSheetHistory',
+    'cashflowStatementHistory',
+  ] as const;
 
   private async throttle() {
     if (this.minIntervalMs <= 0) return;
@@ -811,7 +821,7 @@ class YahooFinanceService implements StockDataService {
         return await action();
       } catch (error: any) {
         const message = String(error?.message || error);
-        const shouldRetry = /too many requests|status 429|crumb/i.test(message);
+        const shouldRetry = /too many requests|status 429|crumb|fetch failed|network|ECONNRESET|ETIMEDOUT/i.test(message);
         if (attempt >= this.maxRetries || !shouldRetry) {
           throw error;
         }
@@ -824,13 +834,32 @@ class YahooFinanceService implements StockDataService {
   }
 
   private async getQuoteSummary(symbol: string, modules: string[]) {
+    // Return cached result if available — avoids multiple API calls per symbol.
+    const cached = this.quoteSummaryCache.get(symbol);
+    if (cached) {
+      const result: any = {};
+      for (const mod of modules) {
+        result[mod] = cached[mod];
+      }
+      return result;
+    }
+
+    // Fetch ALL needed modules in one request and cache the full result.
     await this.throttle();
     const yahooFinance = await getYahooFinance();
-    const quoteSummary = yahooFinance.quoteSummary;
-    if (!quoteSummary) {
+    const quoteSummaryFn = yahooFinance.quoteSummary;
+    if (!quoteSummaryFn) {
       throw new Error('Yahoo Finance quoteSummary unavailable');
     }
-    return this.withRetry(() => quoteSummary(symbol, { modules }));
+    const allModules = YahooFinanceService.SUMMARY_MODULES as unknown as string[];
+    const fullData = await this.withRetry(() => quoteSummaryFn(symbol, { modules: allModules }));
+    this.quoteSummaryCache.set(symbol, fullData);
+
+    const result: any = {};
+    for (const mod of modules) {
+      result[mod] = (fullData as any)?.[mod];
+    }
+    return result;
   }
 
   async getStockPrice(symbol: string): Promise<any> {
