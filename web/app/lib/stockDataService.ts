@@ -10,21 +10,14 @@ type YahooFinanceClient = {
 let yahooFinanceModule: YahooFinanceModule | null = null;
 let yahooFinanceClient: YahooFinanceClient | null = null;
 
-const YAHOO_MODULE_IDS = [
-  'yahoo-finance2/dist/cjs/src/index-node.js',
-  'yahoo-finance2',
-];
-
 const loadYahooModule = async (): Promise<YahooFinanceModule> => {
-  const errors: string[] = [];
-  for (const id of YAHOO_MODULE_IDS) {
-    try {
-      return await import(id);
-    } catch (error: any) {
-      errors.push(`${id}: ${error?.message || error}`);
-    }
+  try {
+    // Static module specifier — webpack/nft can trace this, ensuring the package
+    // is included in the Vercel deployment's node_modules.
+    return await import('yahoo-finance2') as unknown as YahooFinanceModule;
+  } catch (e: any) {
+    throw new Error(`Unable to load yahoo-finance2 module: ${e?.message || e}`);
   }
-  throw new Error(`Unable to load yahoo-finance2 module: ${errors.join(' | ')}`);
 };
 
 const buildYahooClient = (mod: any): YahooFinanceClient => {
@@ -993,11 +986,27 @@ class YahooFinanceService implements StockDataService {
   }
 
   async searchStock(query: string): Promise<any> {
-    return new AlphaVantageService().searchStock(query);
+    await this.throttle();
+    const yahooFinance = await getYahooFinance();
+    const searchFn = yahooFinance.search;
+    if (!searchFn) {
+      throw new Error('Yahoo Finance search unavailable');
+    }
+    const data = await this.withRetry(() => searchFn(query, { newsCount: 0 }));
+    const quotes = ((data as any)?.quotes || [])
+      .filter((item: any) => item?.symbol)
+      .map((item: any) => ({
+        symbol: item.symbol,
+        name: item.longname || item.shortname || item.symbol,
+        type: 'Equity',
+        region: 'United States',
+        currency: 'USD',
+      }));
+    return { results: quotes };
   }
 
   async searchCompanies(query: string): Promise<any> {
-    return new AlphaVantageService().searchCompanies(query);
+    return this.searchStock(query);
   }
 
   async getEarningsHistory(symbol: string): Promise<any> {
