@@ -11,9 +11,8 @@ let yahooFinanceModule: YahooFinanceModule | null = null;
 let yahooFinanceClient: YahooFinanceClient | null = null;
 
 const YAHOO_MODULE_IDS = [
-  'yahoo-finance2/dist/cjs/index.js',
+  'yahoo-finance2/dist/cjs/src/index-node.js',
   'yahoo-finance2',
-  'yahoo-finance2/dist/esm/index.js',
 ];
 
 const loadYahooModule = async (): Promise<YahooFinanceModule> => {
