@@ -19,7 +19,6 @@ let yahooFinanceConfigured = false;
 // Vercel serverless function instances can handle multiple requests before recycling,
 // so this avoids redundant Yahoo Finance API calls for the same symbol within the TTL.
 const DEFAULT_QUOTE_SUMMARY_TTL_MS = 5 * 60 * 1000; // 5 minutes
-const RATE_LIMIT_BASE_BACKOFF_MS = 5000; // 5 seconds base wait on 429 errors
 const QUOTE_SUMMARY_TTL_MS = Number(process.env.YFINANCE_CACHE_TTL_MS || DEFAULT_QUOTE_SUMMARY_TTL_MS);
 const moduleQuoteSummaryCache = new Map<string, { data: any; expiresAt: number }>();
 
@@ -836,8 +835,8 @@ export class AlphaVantageService implements StockDataService {
 
 class YahooFinanceService implements StockDataService {
   private lastRequestAt = 0;
-  private minIntervalMs = Number(process.env.YFINANCE_MIN_INTERVAL_MS || 2000);
-  private maxRetries = Number(process.env.YFINANCE_MAX_RETRIES || 3);
+  private minIntervalMs = Number(process.env.YFINANCE_MIN_INTERVAL_MS || 500);
+  private maxRetries = Number(process.env.YFINANCE_MAX_RETRIES || 1);
   // Instance-level cache: shares quoteSummary data within a single request.
   // Module-level moduleQuoteSummaryCache (above) shares data across requests.
   private quoteSummaryCache = new Map<string, any>();
@@ -878,25 +877,22 @@ class YahooFinanceService implements StockDataService {
         // plain-text body; yahoo-finance2 tries to JSON.parse it which produces
         // "Unexpected token 'T', "Too Many Requests " is not valid JSON".
         const isRateLimit = /too many requests|status 429/i.test(message);
-        const shouldRetry = isRateLimit || /crumb|fetch failed|network|ECONNRESET|ETIMEDOUT/i.test(message);
+        if (isRateLimit) {
+          // On a rate-limit, clear the stale crumb so the NEXT request starts
+          // with fresh Yahoo Finance auth.  We do NOT sleep here — sleeping for
+          // many seconds per call on a Vercel serverless function with a 300 s
+          // timeout would cascade into FUNCTION_INVOCATION_TIMEOUT.
+          await clearYahooCrumb();
+          throw new Error(
+            'Yahoo Finance rate limit reached. Please wait a moment and try again.'
+          );
+        }
+        const shouldRetry = /crumb|fetch failed|network|ECONNRESET|ETIMEDOUT/i.test(message);
         if (attempt >= this.maxRetries || !shouldRetry) {
-          // Surface a friendly message when all retries are exhausted on a rate limit.
-          if (isRateLimit) {
-            throw new Error(
-              'Yahoo Finance rate limit reached. Please wait a moment and try again.'
-            );
-          }
           throw error;
         }
-        // On a rate-limit response, drop the stale crumb/cookie so the next
-        // attempt fetches fresh authentication from Yahoo Finance.
-        if (isRateLimit) {
-          await clearYahooCrumb();
-        }
-        // Use a much longer backoff for rate-limit errors so Yahoo Finance has
-        // time to lift the block before we try again.
-        const baseWait = isRateLimit ? RATE_LIMIT_BASE_BACKOFF_MS : this.minIntervalMs;
-        const wait = baseWait * Math.pow(2, attempt);
+        // Short back-off for transient network errors only (not rate-limits).
+        const wait = this.minIntervalMs * (attempt + 1);
         await new Promise((resolve) => setTimeout(resolve, wait));
         attempt += 1;
       }
