@@ -1,12 +1,16 @@
 import axios from 'axios';
 type YahooFinanceModule = typeof import('yahoo-finance2');
 type YahooFinanceClient = {
-  quote?: (symbol: string, options?: any) => Promise<any>;
-  quoteSummary?: (symbol: string, options?: any) => Promise<any>;
-  historical?: (symbol: string, options?: any) => Promise<any>;
-  chart?: (symbol: string, options?: any) => Promise<any>;
-  search?: (query: string, options?: any) => Promise<any>;
+  quote?: (symbol: string, queryOpts?: any, moduleOpts?: any) => Promise<any>;
+  quoteSummary?: (symbol: string, queryOpts?: any, moduleOpts?: any) => Promise<any>;
+  historical?: (symbol: string, queryOpts?: any, moduleOpts?: any) => Promise<any>;
+  chart?: (symbol: string, queryOpts?: any, moduleOpts?: any) => Promise<any>;
+  search?: (query: string, queryOpts?: any, moduleOpts?: any) => Promise<any>;
 };
+
+// Module options passed to every yahoo-finance2 call to skip strict schema
+// validation and avoid FailedYahooValidationError on partially returned data.
+const YF_MODULE_OPTS = { validateResult: false };
 
 let yahooFinanceModule: YahooFinanceModule | null = null;
 let yahooFinanceClient: YahooFinanceClient | null = null;
@@ -50,6 +54,25 @@ const configureYahooFinance = (mod: any) => {
     // Non-fatal — continue even if configuration fails.
   }
   yahooFinanceConfigured = true;
+};
+
+/**
+ * Replace the yahoo-finance2 cookie jar with a fresh one so the library
+ * re-fetches cookies + crumb on the next request.  Call this whenever a
+ * 429 / "Too Many Requests" error is detected so that a stale crumb is not
+ * re-used across retries.
+ */
+const clearYahooCrumb = async (): Promise<void> => {
+  try {
+    const mod = yahooFinanceModule as any;
+    const instance = mod?.default;
+    if (typeof instance?.setGlobalConfig !== 'function') return;
+    const { ExtendedCookieJar } = mod;
+    if (typeof ExtendedCookieJar !== 'function') return;
+    instance.setGlobalConfig({ cookieJar: new ExtendedCookieJar() });
+  } catch {
+    // best-effort
+  }
 };
 
 const buildYahooClient = (mod: any): YahooFinanceClient => {
@@ -853,10 +876,24 @@ class YahooFinanceService implements StockDataService {
         return await action();
       } catch (error: any) {
         const message = String(error?.message || error);
+        // Detect rate-limit: Yahoo Finance returns "Too Many Requests" as a
+        // plain-text body; yahoo-finance2 tries to JSON.parse it which produces
+        // "Unexpected token 'T', "Too Many Requests " is not valid JSON".
         const isRateLimit = /too many requests|status 429/i.test(message);
         const shouldRetry = isRateLimit || /crumb|fetch failed|network|ECONNRESET|ETIMEDOUT/i.test(message);
         if (attempt >= this.maxRetries || !shouldRetry) {
+          // Surface a friendly message when all retries are exhausted on a rate limit.
+          if (isRateLimit) {
+            throw new Error(
+              'Yahoo Finance rate limit reached. Please wait a moment and try again.'
+            );
+          }
           throw error;
+        }
+        // On a rate-limit response, drop the stale crumb/cookie so the next
+        // attempt fetches fresh authentication from Yahoo Finance.
+        if (isRateLimit) {
+          await clearYahooCrumb();
         }
         // Use a much longer backoff for rate-limit errors so Yahoo Finance has
         // time to lift the block before we try again.
@@ -896,7 +933,7 @@ class YahooFinanceService implements StockDataService {
       throw new Error('Yahoo Finance quoteSummary unavailable');
     }
     const allModules = YahooFinanceService.SUMMARY_MODULES as unknown as string[];
-    const fullData = await this.withRetry(() => quoteSummaryFn(symbol, { modules: allModules }));
+    const fullData = await this.withRetry(() => quoteSummaryFn(symbol, { modules: allModules }, YF_MODULE_OPTS));
     this.quoteSummaryCache.set(key, fullData);
     moduleQuoteSummaryCache.set(key, { data: fullData, expiresAt: Date.now() + QUOTE_SUMMARY_TTL_MS });
 
@@ -932,7 +969,7 @@ class YahooFinanceService implements StockDataService {
     if (!historicalFn) {
       throw new Error('Yahoo Finance historical unavailable');
     }
-    const results = await this.withRetry(() => historicalFn(symbol, { period1, period2, interval: '1d' }));
+    const results = await this.withRetry(() => historicalFn(symbol, { period1, period2, interval: '1d' }, YF_MODULE_OPTS));
     const prices = (results || []).map((row: any) => ({
       date: row.date?.toISOString?.().slice(0, 10) || row.date,
       close: row.close,
@@ -1067,7 +1104,7 @@ class YahooFinanceService implements StockDataService {
     if (!searchFn) {
       throw new Error('Yahoo Finance search unavailable');
     }
-    const data = await this.withRetry(() => searchFn(query, { newsCount: 0 }));
+    const data = await this.withRetry(() => searchFn(query, { newsCount: 0 }, YF_MODULE_OPTS));
     const quotes = ((data as any)?.quotes || [])
       .filter((item: any) => item?.symbol)
       .map((item: any) => ({
