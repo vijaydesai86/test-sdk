@@ -1,4 +1,8 @@
 import axios from 'axios';
+import YahooFinance from 'yahoo-finance2';
+
+// Singleton Yahoo Finance instance (suppresses the one-time survey notice)
+const yf = new YahooFinance({ suppressNotices: ['yahooSurvey'] } as any);
 
 export interface StockDataService {
   getStockPrice(symbol: string): Promise<any>;
@@ -648,4 +652,564 @@ export class AlphaVantageService implements StockDataService {
   async searchNews(query: string, days: number = 30): Promise<any> {
     throw new Error('News search unavailable in Alpha-only mode');
   }
+}
+
+// ---------------------------------------------------------------------------
+// Yahoo Finance service — no API key required; uses yahoo-finance2 npm package
+// ---------------------------------------------------------------------------
+
+export class YahooFinanceService implements StockDataService {
+  private cache = new Map<string, { expiresAt: number; data: any }>();
+  private lastRequestAt = 0;
+  // sharedCache is process-level; survives across invocations within the same Vercel instance
+  private static sharedCache = new Map<string, { expiresAt: number; data: any }>();
+  // Yahoo Finance rate-limits aggressive scrapers; stay well under 1 req/sec.
+  private minIntervalMs = Number(process.env.YAHOO_MIN_INTERVAL_MS || 500);
+
+  // Cache TTL constants
+  private static TTL_PRICE = 30_000;           // 30 s — live quote
+  private static TTL_HISTORY = 60 * 60_000;    // 1 h  — historical prices
+  private static TTL_FUNDAMENTALS = 6 * 60 * 60_000; // 6 h  — overview/financials
+
+  private async throttle(): Promise<void> {
+    if (this.minIntervalMs <= 0) return;
+    const now = Date.now();
+    const wait = this.minIntervalMs - (now - this.lastRequestAt);
+    if (wait > 0) {
+      await new Promise((resolve) => setTimeout(resolve, wait));
+    }
+    this.lastRequestAt = Date.now();
+  }
+
+  private async fetchWithCache<T>(
+    cacheKey: string,
+    ttlMs: number,
+    fetcher: () => Promise<T>
+  ): Promise<T> {
+    if (ttlMs > 0) {
+      const hit = this.cache.get(cacheKey) ?? YahooFinanceService.sharedCache.get(cacheKey);
+      if (hit && hit.expiresAt > Date.now()) {
+        this.cache.set(cacheKey, hit);
+        return hit.data as T;
+      }
+    }
+    const data = await fetcher();
+    if (ttlMs > 0) {
+      const entry = { expiresAt: Date.now() + ttlMs, data };
+      this.cache.set(cacheKey, entry);
+      YahooFinanceService.sharedCache.set(cacheKey, entry);
+    }
+    return data;
+  }
+
+  /** Fetch a quoteSummary with caching, throttling and retry on 429. */
+  private async quoteSummary(symbol: string, modules: string[], ttlMs: number): Promise<any> {
+    const key = `yf:quoteSummary:${symbol}:${[...modules].sort().join(',')}`;
+    return this.fetchWithCache(key, ttlMs, async () => {
+      await this.throttle();
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const result = await (yf as any).quoteSummary(symbol.toUpperCase(), {
+            modules,
+            validateResult: false,
+          });
+          return result;
+        } catch (err: any) {
+          const msg = String(err?.message || '');
+          if ((msg.includes('Too Many') || msg.includes('429') || msg.includes('rate')) && attempt < 2) {
+            await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
+            continue;
+          }
+          throw err;
+        }
+      }
+    });
+  }
+
+  async getStockPrice(symbol: string): Promise<any> {
+    const key = `yf:quote:${symbol.toUpperCase()}`;
+    return this.fetchWithCache(key, YahooFinanceService.TTL_PRICE, async () => {
+      await this.throttle();
+      const q = await (yf as any).quote(symbol.toUpperCase(), /* queryOptions */ {}, { validateResult: false });
+      if (!q) throw new Error('Unable to fetch stock price');
+      return {
+        symbol: q.symbol,
+        price: q.regularMarketPrice?.toString() ?? null,
+        change: q.regularMarketChange?.toString() ?? null,
+        changePercent: q.regularMarketChangePercent != null
+          ? `${q.regularMarketChangePercent.toFixed(2)}%`
+          : null,
+        volume: q.regularMarketVolume?.toString() ?? null,
+        latestTradingDay: q.regularMarketTime
+          ? new Date(q.regularMarketTime).toISOString().slice(0, 10)
+          : null,
+        open: q.regularMarketOpen?.toString() ?? null,
+        high: q.regularMarketDayHigh?.toString() ?? null,
+        low: q.regularMarketDayLow?.toString() ?? null,
+        previousClose: q.regularMarketPreviousClose?.toString() ?? null,
+        marketCap: q.marketCap?.toString() ?? null,
+      };
+    });
+  }
+
+  async getPriceHistory(symbol: string, range: string = '1y'): Promise<any> {
+    const upper = symbol.toUpperCase();
+    const normalizedRange = range.toLowerCase();
+    const periodMap: Record<string, { period1: string; interval: '1d' | '1wk' | '1mo' }> = {
+      '1d': { period1: daysAgo(1), interval: '1d' },
+      '1w': { period1: daysAgo(7), interval: '1d' },
+      '1week': { period1: daysAgo(7), interval: '1d' },
+      week: { period1: daysAgo(7), interval: '1d' },
+      '1m': { period1: daysAgo(30), interval: '1d' },
+      '1month': { period1: daysAgo(30), interval: '1d' },
+      month: { period1: daysAgo(30), interval: '1d' },
+      '3m': { period1: daysAgo(90), interval: '1d' },
+      '3month': { period1: daysAgo(90), interval: '1d' },
+      quarter: { period1: daysAgo(90), interval: '1d' },
+      '6m': { period1: daysAgo(180), interval: '1d' },
+      '6month': { period1: daysAgo(180), interval: '1d' },
+      '1y': { period1: daysAgo(365), interval: '1wk' },
+      '1year': { period1: daysAgo(365), interval: '1wk' },
+      year: { period1: daysAgo(365), interval: '1wk' },
+      '3y': { period1: daysAgo(365 * 3), interval: '1wk' },
+      '3year': { period1: daysAgo(365 * 3), interval: '1wk' },
+      '5y': { period1: daysAgo(365 * 5), interval: '1wk' },
+      '5year': { period1: daysAgo(365 * 5), interval: '1wk' },
+      max: { period1: daysAgo(365 * 20), interval: '1mo' },
+      all: { period1: daysAgo(365 * 20), interval: '1mo' },
+    };
+    const cfg = periodMap[normalizedRange] ?? { period1: daysAgo(365), interval: '1wk' as const };
+    const key = `yf:hist:${upper}:${normalizedRange}`;
+    return this.fetchWithCache(key, YahooFinanceService.TTL_HISTORY, async () => {
+      await this.throttle();
+      const rows: any[] = await (yf as any).historical(
+        upper,
+        { period1: cfg.period1, interval: cfg.interval },
+        { validateResult: false }
+      );
+      const prices = (rows || []).map((r: any) => ({
+        date: r.date instanceof Date ? r.date.toISOString().slice(0, 10) : String(r.date),
+        open: r.open?.toString() ?? null,
+        high: r.high?.toString() ?? null,
+        low: r.low?.toString() ?? null,
+        close: r.close?.toString() ?? null,
+        volume: r.volume?.toString() ?? null,
+      }));
+      return { symbol: upper, prices };
+    });
+  }
+
+  async getCompanyOverview(symbol: string): Promise<any> {
+    const data = await this.quoteSummary(symbol, [
+      'assetProfile', 'summaryDetail', 'defaultKeyStatistics', 'financialData', 'price',
+    ], YahooFinanceService.TTL_FUNDAMENTALS);
+
+    const p = data?.price ?? {};
+    const ap = data?.assetProfile ?? {};
+    const sd = data?.summaryDetail ?? {};
+    const ks = data?.defaultKeyStatistics ?? {};
+    const fd = data?.financialData ?? {};
+
+    return {
+      symbol: symbol.toUpperCase(),
+      name: p.longName ?? p.shortName ?? null,
+      description: ap.longBusinessSummary ?? null,
+      sector: ap.sector ?? null,
+      industry: ap.industry ?? null,
+      marketCapitalization: p.marketCap?.raw?.toString() ?? null,
+      eps: ks.trailingEps?.raw?.toString() ?? null,
+      peRatio: sd.trailingPE?.raw?.toString() ?? null,
+      forwardPE: sd.forwardPE?.raw?.toString() ?? null,
+      pegRatio: ks.pegRatio?.raw?.toString() ?? null,
+      bookValue: ks.bookValue?.raw?.toString() ?? null,
+      dividendPerShare: sd.dividendRate?.raw?.toString() ?? null,
+      dividendYield: sd.dividendYield?.raw != null
+        ? (sd.dividendYield.raw * 100).toFixed(2)
+        : null,
+      revenueTTM: fd.totalRevenue?.raw?.toString() ?? null,
+      grossProfitTTM: null,
+      '52WeekHigh': sd.fiftyTwoWeekHigh?.raw?.toString() ?? null,
+      '52WeekLow': sd.fiftyTwoWeekLow?.raw?.toString() ?? null,
+      '50DayMovingAverage': sd.fiftyDayAverage?.raw?.toString() ?? null,
+      '200DayMovingAverage': sd.twoHundredDayAverage?.raw?.toString() ?? null,
+      beta: sd.beta?.raw?.toString() ?? null,
+      profitMargin: fd.profitMargins?.raw?.toString() ?? null,
+      operatingMargin: fd.operatingMargins?.raw?.toString() ?? null,
+      returnOnAssets: fd.returnOnAssets?.raw?.toString() ?? null,
+      returnOnEquity: fd.returnOnEquity?.raw?.toString() ?? null,
+      revenuePerShare: fd.revenuePerShare?.raw?.toString() ?? null,
+      quarterlyEarningsGrowth: fd.earningsGrowth?.raw?.toString() ?? null,
+      quarterlyRevenueGrowth: fd.revenueGrowth?.raw?.toString() ?? null,
+      sharesOutstanding: ks.sharesOutstanding?.raw?.toString() ?? null,
+      sharesFloat: ks.floatShares?.raw?.toString() ?? null,
+      percentInsiders: ks.heldPercentInsiders?.raw != null
+        ? (ks.heldPercentInsiders.raw * 100).toFixed(2)
+        : null,
+      percentInstitutions: ks.heldPercentInstitutions?.raw != null
+        ? (ks.heldPercentInstitutions.raw * 100).toFixed(2)
+        : null,
+      shortRatio: ks.shortRatio?.raw?.toString() ?? null,
+      shortPercentFloat: ks.shortPercentOfFloat?.raw != null
+        ? (ks.shortPercentOfFloat.raw * 100).toFixed(2)
+        : null,
+      shortPercentOutstanding: null,
+      analystTargetPrice: fd.targetMeanPrice?.raw?.toString() ?? null,
+      analystRatingStrongBuy: null,
+      analystRatingBuy: null,
+      analystRatingHold: null,
+      analystRatingSell: null,
+      analystRatingStrongSell: null,
+      exDividendDate: sd.exDividendDate?.raw
+        ? new Date(sd.exDividendDate.raw * 1000).toISOString().slice(0, 10)
+        : null,
+      dividendDate: sd.dividendDate?.raw
+        ? new Date(sd.dividendDate.raw * 1000).toISOString().slice(0, 10)
+        : null,
+      website: ap.website ?? null,
+      employees: ap.fullTimeEmployees?.toString() ?? null,
+    };
+  }
+
+  async getBasicFinancials(symbol: string): Promise<any> {
+    const data = await this.quoteSummary(symbol, [
+      'defaultKeyStatistics', 'financialData', 'summaryDetail',
+    ], YahooFinanceService.TTL_FUNDAMENTALS);
+
+    const ks = data?.defaultKeyStatistics ?? {};
+    const fd = data?.financialData ?? {};
+    const sd = data?.summaryDetail ?? {};
+
+    return {
+      symbol: symbol.toUpperCase(),
+      metric: {
+        peBasicExclExtraTTM: sd.trailingPE?.raw ?? ks.trailingPE?.raw ?? null,
+        epsTTM: ks.trailingEps?.raw ?? null,
+        revenueGrowthTTM: fd.revenueGrowth?.raw ?? null,
+        epsGrowthTTM: fd.earningsGrowth?.raw ?? null,
+        grossMarginTTM: fd.grossMargins?.raw ?? null,
+        operatingMarginTTM: fd.operatingMargins?.raw ?? null,
+        roeTTM: fd.returnOnEquity?.raw ?? null,
+        roaTTM: fd.returnOnAssets?.raw ?? null,
+        revenuePerShareTTM: fd.revenuePerShare?.raw ?? null,
+        currentRatioQuarterly: fd.currentRatio?.raw ?? null,
+        debtToEquity: fd.debtToEquity?.raw ?? null,
+        totalDebt: fd.totalDebt?.raw ?? null,
+        freeCashflowTTM: fd.freeCashflow?.raw ?? null,
+        '52WeekHigh': sd.fiftyTwoWeekHigh?.raw ?? null,
+        '52WeekLow': sd.fiftyTwoWeekLow?.raw ?? null,
+        beta: sd.beta?.raw ?? null,
+        bookValuePerShareQuarterly: ks.bookValue?.raw ?? null,
+        forwardPE: sd.forwardPE?.raw ?? null,
+        pegRatio: ks.pegRatio?.raw ?? null,
+        priceToSalesRatioTTM: ks.priceToSalesTrailing12Months?.raw ?? null,
+        priceToBookMRQ: ks.priceToBook?.raw ?? null,
+      },
+      series: {},
+    };
+  }
+
+  async getInsiderTrading(symbol: string): Promise<any> {
+    const data = await this.quoteSummary(symbol, [
+      'insiderHolders', 'majorHoldersBreakdown', 'defaultKeyStatistics',
+    ], YahooFinanceService.TTL_FUNDAMENTALS);
+
+    const mhb = data?.majorHoldersBreakdown ?? {};
+    const ks = data?.defaultKeyStatistics ?? {};
+    const ih = data?.insiderHolders ?? {};
+
+    const result: any = {
+      symbol: symbol.toUpperCase(),
+      insiderOwnership: mhb.insidersPercentHeld?.raw != null
+        ? `${(mhb.insidersPercentHeld.raw * 100).toFixed(2)}%`
+        : 'N/A',
+      institutionalOwnership: mhb.institutionsPercentHeld?.raw != null
+        ? `${(mhb.institutionsPercentHeld.raw * 100).toFixed(2)}%`
+        : 'N/A',
+      sharesOutstanding: ks.sharesOutstanding?.raw?.toString() ?? 'N/A',
+      sharesFloat: ks.floatShares?.raw?.toString() ?? 'N/A',
+      shortRatio: ks.shortRatio?.raw?.toString() ?? 'N/A',
+      shortPercentFloat: ks.shortPercentOfFloat?.raw != null
+        ? `${(ks.shortPercentOfFloat.raw * 100).toFixed(2)}%`
+        : 'N/A',
+      shortPercentOutstanding: 'N/A',
+    };
+
+    const holders: any[] = ih.holders ?? [];
+    if (holders.length > 0) {
+      result.recentTransactions = holders.slice(0, 15).map((h: any) => ({
+        transactionDate: h.latestTransDate?.fmt ?? null,
+        insider: h.name ?? null,
+        title: h.relation ?? null,
+        transactionType: h.transactionDescription ?? null,
+        shares: h.positionDirect?.raw?.toString() ?? null,
+        sharePrice: null,
+        totalValue: 'N/A',
+      }));
+    }
+
+    return result;
+  }
+
+  async getAnalystRatings(symbol: string): Promise<any> {
+    const data = await this.quoteSummary(symbol, [
+      'financialData', 'summaryDetail',
+    ], YahooFinanceService.TTL_FUNDAMENTALS);
+
+    const fd = data?.financialData ?? {};
+    const sd = data?.summaryDetail ?? {};
+
+    return {
+      symbol: symbol.toUpperCase(),
+      analystTargetPrice: fd.targetMeanPrice?.raw?.toString() ?? 'N/A',
+      targetHigh: fd.targetHighPrice?.raw?.toString() ?? 'N/A',
+      targetLow: fd.targetLowPrice?.raw?.toString() ?? 'N/A',
+      recommendation: fd.recommendationKey ?? 'N/A',
+      numberOfAnalysts: fd.numberOfAnalystOpinions?.raw?.toString() ?? 'N/A',
+      movingAverage50Day: sd.fiftyDayAverage?.raw?.toString() ?? 'N/A',
+      upside: fd.targetMeanPrice?.raw != null && sd.fiftyDayAverage?.raw != null
+        ? `${(((fd.targetMeanPrice.raw / sd.fiftyDayAverage.raw) - 1) * 100).toFixed(1)}% (vs 50-day MA)`
+        : 'N/A',
+    };
+  }
+
+  async getAnalystRecommendations(symbol: string): Promise<any> {
+    throw new Error('Analyst recommendations unavailable via Yahoo Finance');
+  }
+
+  async getPriceTargets(symbol: string): Promise<any> {
+    const data = await this.quoteSummary(symbol, ['financialData'], YahooFinanceService.TTL_FUNDAMENTALS);
+    const fd = data?.financialData ?? {};
+    return {
+      symbol: symbol.toUpperCase(),
+      targetMean: fd.targetMeanPrice?.raw?.toString() ?? null,
+      targetHigh: fd.targetHighPrice?.raw?.toString() ?? null,
+      targetLow: fd.targetLowPrice?.raw?.toString() ?? null,
+      numberOfAnalysts: fd.numberOfAnalystOpinions?.raw?.toString() ?? null,
+    };
+  }
+
+  async getPeers(symbol: string): Promise<any> {
+    throw new Error('Peers unavailable via Yahoo Finance');
+  }
+
+  async searchStock(query: string): Promise<any> {
+    const key = `yf:search:${query.toLowerCase()}`;
+    return this.fetchWithCache(key, YahooFinanceService.TTL_HISTORY, async () => {
+      await this.throttle();
+      const result = await (yf as any).search(
+        query,
+        { newsCount: 0, quotesCount: 10 },
+        { validateResult: false }
+      );
+      const quotes: any[] = result?.quotes ?? [];
+      const filtered = quotes
+        .filter((q: any) => q.quoteType === 'EQUITY' || q.quoteType === 'ETF')
+        .map((q: any) => ({
+          symbol: q.symbol,
+          name: q.shortname ?? q.longname ?? null,
+          type: q.quoteType,
+          exchange: q.exchDisp ?? q.exchange ?? null,
+          region: null,
+          currency: null,
+          source: 'yahoo',
+        }));
+      return { results: filtered };
+    });
+  }
+
+  async searchCompanies(query: string): Promise<any> {
+    return this.searchStock(query);
+  }
+
+  async getEarningsHistory(symbol: string): Promise<any> {
+    const data = await this.quoteSummary(symbol, ['earnings', 'earningsTrend'], YahooFinanceService.TTL_FUNDAMENTALS);
+    const earningsData = data?.earnings ?? {};
+    const quarterly: any[] = earningsData.earningsChart?.quarterly ?? [];
+    const yearly: any[] = earningsData.financialsChart?.yearly ?? [];
+
+    if (quarterly.length === 0 && yearly.length === 0) {
+      throw new Error('Unable to fetch earnings history');
+    }
+
+    return {
+      symbol: symbol.toUpperCase(),
+      annualEarnings: yearly.slice(0, 10).map((e: any) => ({
+        fiscalYear: e.date?.toString() ?? null,
+        reportedEPS: e.earnings?.raw?.toString() ?? null,
+      })),
+      quarterlyEarnings: quarterly.slice(0, 12).map((e: any) => ({
+        fiscalQuarter: e.date?.toString() ?? null,
+        reportedEPS: e.actual?.raw?.toString() ?? null,
+        estimatedEPS: e.estimate?.raw?.toString() ?? null,
+        surprise: e.actual?.raw != null && e.estimate?.raw != null
+          ? (e.actual.raw - e.estimate.raw).toFixed(4)
+          : null,
+        surprisePercentage: e.actual?.raw != null && e.estimate?.raw != null && e.estimate.raw !== 0
+          ? (((e.actual.raw - e.estimate.raw) / Math.abs(e.estimate.raw)) * 100).toFixed(2)
+          : null,
+      })),
+    };
+  }
+
+  async getIncomeStatement(symbol: string): Promise<any> {
+    const data = await this.quoteSummary(symbol, ['incomeStatementHistory'], YahooFinanceService.TTL_FUNDAMENTALS);
+    const ish = data?.incomeStatementHistory ?? {};
+    const reports: any[] = ish.incomeStatementHistory ?? [];
+
+    if (reports.length === 0) throw new Error('Unable to fetch income statement');
+
+    const mapReport = (r: any) => ({
+      fiscalYear: r.endDate?.fmt ?? null,
+      totalRevenue: r.totalRevenue?.raw?.toString() ?? null,
+      grossProfit: r.grossProfit?.raw?.toString() ?? null,
+      operatingIncome: r.operatingIncome?.raw?.toString() ?? null,
+      netIncome: r.netIncome?.raw?.toString() ?? null,
+      ebitda: r.ebitda?.raw?.toString() ?? null,
+    });
+
+    return {
+      symbol: symbol.toUpperCase(),
+      annualReports: reports.slice(0, 5).map(mapReport),
+      quarterlyReports: reports.slice(0, 8).map((r: any) => ({
+        fiscalQuarter: r.endDate?.fmt ?? null,
+        totalRevenue: r.totalRevenue?.raw?.toString() ?? null,
+        grossProfit: r.grossProfit?.raw?.toString() ?? null,
+        operatingIncome: r.operatingIncome?.raw?.toString() ?? null,
+        netIncome: r.netIncome?.raw?.toString() ?? null,
+        ebitda: r.ebitda?.raw?.toString() ?? null,
+      })),
+    };
+  }
+
+  async getBalanceSheet(symbol: string): Promise<any> {
+    const data = await this.quoteSummary(symbol, ['balanceSheetHistory'], YahooFinanceService.TTL_FUNDAMENTALS);
+    const bsh = data?.balanceSheetHistory ?? {};
+    const reports: any[] = bsh.balanceSheetStatements ?? [];
+
+    if (reports.length === 0) throw new Error('Unable to fetch balance sheet');
+
+    return {
+      symbol: symbol.toUpperCase(),
+      quarterlyReports: reports.slice(0, 4).map((r: any) => ({
+        fiscalQuarter: r.endDate?.fmt ?? null,
+        totalAssets: r.totalAssets?.raw?.toString() ?? null,
+        totalLiabilities: r.totalLiab?.raw?.toString() ?? null,
+        totalShareholderEquity: r.totalStockholderEquity?.raw?.toString() ?? null,
+        cashAndEquivalents: r.cash?.raw?.toString() ?? null,
+        longTermDebt: r.longTermDebt?.raw?.toString() ?? null,
+      })),
+    };
+  }
+
+  async getCashFlow(symbol: string): Promise<any> {
+    const data = await this.quoteSummary(symbol, ['cashflowStatementHistory'], YahooFinanceService.TTL_FUNDAMENTALS);
+    const cfh = data?.cashflowStatementHistory ?? {};
+    const reports: any[] = cfh.cashflowStatements ?? [];
+
+    if (reports.length === 0) throw new Error('Unable to fetch cash flow data');
+
+    return {
+      symbol: symbol.toUpperCase(),
+      quarterlyReports: reports.slice(0, 4).map((r: any) => {
+        const opCF = r.totalCashFromOperatingActivities?.raw ?? null;
+        const capEx = r.capitalExpenditures?.raw ?? null;
+        return {
+          fiscalQuarter: r.endDate?.fmt ?? null,
+          operatingCashflow: opCF?.toString() ?? null,
+          capitalExpenditures: capEx?.toString() ?? null,
+          freeCashFlow: opCF != null && capEx != null
+            ? (opCF - Math.abs(capEx)).toString()
+            : 'N/A',
+          dividendPayout: r.dividendsPaid?.raw?.toString() ?? null,
+        };
+      }),
+    };
+  }
+
+  async getSectorPerformance(): Promise<any> {
+    throw new Error('Sector performance unavailable via Yahoo Finance');
+  }
+
+  async getStocksBySector(sector: string): Promise<any> {
+    throw new Error('Sector screening unavailable via Yahoo Finance');
+  }
+
+  async screenStocks(filters: Record<string, string | number | undefined>): Promise<any> {
+    throw new Error('Stock screening unavailable via Yahoo Finance');
+  }
+
+  async getTopGainersLosers(): Promise<any> {
+    const key = 'yf:topMovers';
+    return this.fetchWithCache(key, 5 * 60_000, async () => {
+      await this.throttle();
+      const [gainers, losers] = await Promise.all([
+        (yf as any).dailyGainers({ count: 10 }, { validateResult: false }).catch(() => ({ quotes: [] })),
+        (yf as any).dailyLosers({ count: 10 }, { validateResult: false }).catch(() => ({ quotes: [] })),
+      ]);
+      const mapMover = (q: any) => ({
+        ticker: q.symbol,
+        price: q.regularMarketPrice?.toString() ?? null,
+        changeAmount: q.regularMarketChange?.toString() ?? null,
+        changePercentage: q.regularMarketChangePercent != null
+          ? `${q.regularMarketChangePercent.toFixed(2)}%`
+          : null,
+        volume: q.regularMarketVolume?.toString() ?? null,
+      });
+      return {
+        topGainers: (gainers?.quotes ?? []).slice(0, 10).map(mapMover),
+        topLosers: (losers?.quotes ?? []).slice(0, 10).map(mapMover),
+        mostActive: [],
+      };
+    });
+  }
+
+  async getNewsSentiment(symbol: string): Promise<any> {
+    throw new Error('News sentiment unavailable via Yahoo Finance');
+  }
+
+  async getCompanyNews(symbol: string, days: number = 30): Promise<any> {
+    throw new Error('Company news unavailable via Yahoo Finance');
+  }
+
+  async searchNews(query: string, days: number = 30): Promise<any> {
+    throw new Error('News search unavailable via Yahoo Finance');
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Helper
+// ---------------------------------------------------------------------------
+
+function daysAgo(n: number): string {
+  const d = new Date(Date.now() - n * 24 * 60 * 60 * 1000);
+  return d.toISOString().slice(0, 10);
+}
+
+// ---------------------------------------------------------------------------
+// Factory — reads STOCK_DATA_PROVIDER to choose which service to use
+// ---------------------------------------------------------------------------
+
+/**
+ * Create the active stock data service based on environment configuration.
+ *
+ * STOCK_DATA_PROVIDER=yfinance  → YahooFinanceService (no API key needed)
+ * STOCK_DATA_PROVIDER=alphavantage (default) → AlphaVantageService
+ */
+export function createStockService(): { service: StockDataService; provider: string; missingKey?: string } {
+  const provider = (process.env.STOCK_DATA_PROVIDER || 'alphavantage').toLowerCase();
+
+  if (provider === 'yfinance' || provider === 'yahoo' || provider === 'yahoo_finance') {
+    return { service: new YahooFinanceService(), provider: 'yfinance' };
+  }
+
+  // Default: Alpha Vantage
+  const key = process.env.ALPHA_VANTAGE_API_KEY;
+  if (!key) {
+    return {
+      service: new AlphaVantageService(),
+      provider: 'alphavantage',
+      missingKey: 'ALPHA_VANTAGE_API_KEY',
+    };
+  }
+  return { service: new AlphaVantageService(key), provider: 'alphavantage' };
 }

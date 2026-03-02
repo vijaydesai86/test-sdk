@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getToolDefinitionsByName, executeTool } from '@/app/lib/stockTools';
-import { AlphaVantageService, StockDataService } from '@/app/lib/stockDataService';
+import { createStockService, StockDataService } from '@/app/lib/stockDataService';
 
 // GitHub Models API — new endpoint (azure endpoint deprecated Oct 2025)
 // Works with PATs from github.com/settings/personal-access-tokens (models:read scope)
@@ -790,18 +790,19 @@ export async function POST(request: NextRequest) {
     const githubToken = process.env.GITHUB_TOKEN || process.env.GH_TOKEN || process.env.COPILOT_GITHUB_TOKEN;
     const proxyKey = process.env.OPENAI_API_KEY || process.env.OPENAI_TOKEN;
 
-    // Initialize stock service (always uses real Alpha Vantage API)
-    const alphaVantageKey = process.env.ALPHA_VANTAGE_API_KEY;
-    if (!alphaVantageKey) {
+    // Initialize stock service — provider selected by STOCK_DATA_PROVIDER env var
+    const { service: stockService, missingKey } = createStockService();
+    if (missingKey) {
       return NextResponse.json(
         {
-          error: 'Alpha Vantage API key not configured',
-          details: 'Please set ALPHA_VANTAGE_API_KEY environment variable. Get a free API key at: https://www.alphavantage.co/support/#api-key',
+          error: `${missingKey} not configured`,
+          details: missingKey === 'ALPHA_VANTAGE_API_KEY'
+            ? 'Please set ALPHA_VANTAGE_API_KEY environment variable. Get a free API key at: https://www.alphavantage.co/support/#api-key — or set STOCK_DATA_PROVIDER=yfinance to use Yahoo Finance (no key required).'
+            : `Please set ${missingKey} in your environment.`,
         },
         { status: 503 }
       );
     }
-    const stockService: StockDataService = new AlphaVantageService(alphaVantageKey);
 
     const reportRequest = parseReportRequest(message);
     const timeframe = parseTimeframe(message);
