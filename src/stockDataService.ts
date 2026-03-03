@@ -949,36 +949,50 @@ class YahooFinanceService implements StockDataService {
         return await action();
       } catch (error: any) {
         const message = String(error?.message || error);
-        // Detect rate-limit errors.  Yahoo Finance can manifest as:
-        //   1. SyntaxError from response.json() on plain-text "Too Many Requests" body
-        //   2. HTTPError with statusText "Too Many Requests" (status 429)
-        //   3. "Failed to get crumb, status 429" when the crumb endpoint is blocked
-        //   4. "No set-cookie header present" when the initial page fetch returns 429
-        //      (no cookies → getCrumb throws before even reaching the crumb endpoint)
-        const isRateLimit = /too many requests|status 429|no set-cookie header|failed to get crumb/i.test(message);
-        if (isRateLimit) {
-          // Properly reset getCrumb.js's module-level singletons ('crumb' and
-          // 'promise') so the retry performs a genuine new auth round-trip.
+        // Detect crumb-specific errors that require clearing the cached crumb.
+        // These are distinct from general rate-limit errors — the crumb endpoint
+        // itself is blocked, not just the data endpoint.
+        const isCrumbError = /failed to get crumb|no set-cookie header/i.test(message);
+        // Detect general rate-limit errors (429 on data endpoints).
+        // Don't clear crumb for these — the crumb is fine, only the data endpoint is blocked.
+        const isRateLimit = /too many requests|status 429/i.test(message);
+
+        if (isCrumbError) {
+          // Crumb endpoint blocked: clear cached crumb so next attempt starts fresh.
           await clearYahooCrumb();
           if (attempt >= this.maxRetries) {
             throw new Error(
               'Yahoo Finance rate limit reached. Please wait a moment and try again.'
             );
           }
-          // Progressive back-off: 10 s → 20 s → 30 s.
-          // Yahoo Finance's per-IP rate limiter on the v10/quoteSummary endpoint
-          // requires more time to reset than the 5 s used previously.
-          const rateLimitDelays = [10000, 20000, 30000];
-          const delay = rateLimitDelays[attempt] ?? 30000;
+          // Long delay for crumb errors — the auth system is rate-limited.
+          const delay = 30000 + attempt * 15000; // 30s, 45s, 60s
           await new Promise((resolve) => setTimeout(resolve, delay));
           attempt += 1;
           continue;
         }
+
+        if (isRateLimit) {
+          // Data endpoint rate-limited: do NOT clear crumb (it's still valid).
+          // Just wait longer and retry with the same session.
+          if (attempt >= this.maxRetries) {
+            throw new Error(
+              'Yahoo Finance rate limit reached. Please wait a moment and try again.'
+            );
+          }
+          // Longer progressive back-off: 30 s → 45 s → 60 s.
+          // Yahoo Finance's per-IP rate limiter needs substantial cooling time.
+          const delay = 30000 + attempt * 15000; // 30s, 45s, 60s
+          await new Promise((resolve) => setTimeout(resolve, delay));
+          attempt += 1;
+          continue;
+        }
+
         const shouldRetry = /crumb|fetch failed|network|ECONNRESET|ETIMEDOUT/i.test(message);
         if (attempt >= this.maxRetries || !shouldRetry) {
           throw error;
         }
-        // Short back-off for transient network errors only (not rate-limits).
+        // Short back-off for transient network errors only.
         const wait = this.minIntervalMs * (attempt + 1);
         await new Promise((resolve) => setTimeout(resolve, wait));
         attempt += 1;
