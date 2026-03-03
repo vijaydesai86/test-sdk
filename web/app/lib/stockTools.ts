@@ -853,7 +853,9 @@ export async function executeTool(
         const cache = await loadSymbolCache(symbol);
         let rateLimitHit = false;
         const isRateLimit = (message: string) =>
-          message.includes('frequency') || message.includes('Thank you for using Alpha Vantage');
+          message.includes('frequency') ||
+          message.includes('Thank you for using Alpha Vantage') ||
+          /rate limit|too many requests/i.test(message);
         const safeFetch = async <T>(label: string, key: string, request: Promise<T>) => {
           const cachedValue = getCachedValue(cache, key);
           if (cachedValue !== null) {
@@ -878,7 +880,11 @@ export async function executeTool(
             const message = error?.message || 'Unavailable';
             if (isRateLimit(message)) {
               rateLimitHit = true;
-              notes.push('Alpha Vantage rate limit reached; remaining sections skipped.');
+              notes.push(
+                /yahoo finance|rate limit reached/i.test(message)
+                  ? 'Yahoo Finance rate limit reached; remaining sections skipped.'
+                  : 'Alpha Vantage rate limit reached; remaining sections skipped.'
+              );
               return cachedValue !== null ? (cachedValue as T) : (undefined as T);
             }
             if (!message.includes('Alpha-only mode')) {
@@ -1016,7 +1022,9 @@ export async function executeTool(
         const sourceMap: Record<string, Record<string, string>> = {};
         let rateLimitHit = false;
         const isRateLimit = (message: string) =>
-          message.includes('frequency') || message.includes('Thank you for using Alpha Vantage');
+          message.includes('frequency') ||
+          message.includes('Thank you for using Alpha Vantage') ||
+          /rate limit|too many requests/i.test(message);
         const safeFetch = async <T>(
           symbol: string,
           cache: SymbolCache,
@@ -1049,7 +1057,11 @@ export async function executeTool(
             const message = error?.message || 'Unavailable';
             if (isRateLimit(message)) {
               rateLimitHit = true;
-              notes.push('Alpha Vantage rate limit reached; remaining sections skipped.');
+              notes.push(
+                /yahoo finance|rate limit reached/i.test(message)
+                  ? 'Yahoo Finance rate limit reached; remaining sections skipped.'
+                  : 'Alpha Vantage rate limit reached; remaining sections skipped.'
+              );
               return cachedValue !== null ? (cachedValue as T) : (undefined as T);
             }
             if (!message.includes('Alpha-only mode')) {
