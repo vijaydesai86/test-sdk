@@ -1182,95 +1182,44 @@ class YahooFinanceService implements StockDataService {
   }
 
   async getCompanyOverview(symbol: string): Promise<any> {
-    // First, get basic data from chart() which doesn't need crumb
+    // ONLY use chart() which doesn't need crumb authentication.
+    // Yahoo Finance's quoteSummary API is rate-limited from cloud IPs like Vercel.
     let chartMeta: any = {};
     try {
       const chartData = await this.getChartData(symbol, '1y');
       chartMeta = chartData?.meta || {};
-    } catch {
-      // chart() failed, continue with quoteSummary only
-    }
-
-    // Try to get detailed data from quoteSummary (needs crumb - may be rate-limited)
-    let summary: any = {};
-    try {
-      summary = await this.getQuoteSummary(symbol, [
-        'summaryProfile',
-        'price',
-        'defaultKeyStatistics',
-        'financialData',
-        'summaryDetail',
-        'calendarEvents',
-        'recommendationTrend',
-      ]);
-    } catch (error: any) {
-      // quoteSummary failed (likely rate-limited), use chart data only
-      const isRateLimit = /rate limit/i.test(error?.message || '');
-      if (!isRateLimit) {
-        throw error;
-      }
-      // Return minimal data from chart() when rate-limited
+    } catch (error) {
+      // chart() failed - return minimal data
       return attachSource({
         symbol: symbol.toUpperCase(),
-        name: chartMeta.symbol || symbol.toUpperCase(),
+        name: symbol.toUpperCase(),
         marketCapitalization: null,
         eps: null,
         peRatio: null,
         sector: null,
         industry: null,
+        __note: 'Unable to fetch data from Yahoo Finance chart API',
       }, SOURCE_YAHOO);
     }
 
-    const profile = summary.summaryProfile || {};
-    const stats = summary.defaultKeyStatistics || {};
-    const financials = summary.financialData || {};
-    const detail = summary.summaryDetail || {};
-    const price = summary.price || {};
-    const rec = summary.recommendationTrend?.trend?.[0] || {};
-
+    // chart() meta provides basic price data - return what we can
     return attachSource({
       symbol: symbol.toUpperCase(),
-      name: price.longName || price.shortName || chartMeta.symbol || symbol.toUpperCase(),
-      description: profile.longBusinessSummary,
-      sector: profile.sector,
-      industry: profile.industry,
-      marketCapitalization: price.marketCap,
-      eps: stats.trailingEps,
-      peRatio: stats.trailingPE,
-      forwardPE: stats.forwardPE,
-      pegRatio: stats.pegRatio,
-      bookValue: stats.bookValue,
-      dividendPerShare: detail.dividendRate,
-      dividendYield: detail.dividendYield,
-      revenueTTM: financials.totalRevenue,
-      grossProfitTTM: financials.grossProfits,
-      '52WeekHigh': detail.fiftyTwoWeekHigh,
-      '52WeekLow': detail.fiftyTwoWeekLow,
-      '50DayMovingAverage': detail.fiftyDayAverage,
-      '200DayMovingAverage': detail.twoHundredDayAverage,
-      beta: stats.beta,
-      profitMargin: financials.profitMargins,
-      operatingMargin: financials.operatingMargins,
-      returnOnAssets: financials.returnOnAssets,
-      returnOnEquity: financials.returnOnEquity,
-      revenuePerShare: financials.revenuePerShare,
-      quarterlyEarningsGrowth: financials.earningsGrowth,
-      quarterlyRevenueGrowth: financials.revenueGrowth,
-      sharesOutstanding: stats.sharesOutstanding,
-      sharesFloat: stats.floatShares,
-      percentInsiders: stats.heldPercentInsiders,
-      percentInstitutions: stats.heldPercentInstitutions,
-      shortRatio: stats.shortRatio,
-      shortPercentFloat: stats.shortPercentOfFloat,
-      shortPercentOutstanding: stats.shortPercentOfFloat,
-      analystTargetPrice: financials.targetMeanPrice,
-      analystRatingStrongBuy: rec.strongBuy,
-      analystRatingBuy: rec.buy,
-      analystRatingHold: rec.hold,
-      analystRatingSell: rec.sell,
-      analystRatingStrongSell: rec.strongSell,
-      exDividendDate: detail.exDividendDate,
-      dividendDate: detail.dividendDate,
+      name: chartMeta.longName || chartMeta.shortName || chartMeta.symbol || symbol.toUpperCase(),
+      marketCapitalization: null, // Not available in chart()
+      eps: null, // Not available in chart()
+      peRatio: null, // Not available in chart()
+      sector: null, // Not available in chart()
+      industry: null, // Not available in chart()
+      '52WeekHigh': chartMeta.fiftyTwoWeekHigh ?? null,
+      '52WeekLow': chartMeta.fiftyTwoWeekLow ?? null,
+      '50DayMovingAverage': chartMeta.fiftyDayAverage ?? null,
+      '200DayMovingAverage': chartMeta.twoHundredDayAverage ?? null,
+      regularMarketPrice: chartMeta.regularMarketPrice ?? null,
+      previousClose: chartMeta.chartPreviousClose ?? chartMeta.previousClose ?? null,
+      currency: chartMeta.currency ?? 'USD',
+      exchangeName: chartMeta.exchangeName ?? null,
+      __note: 'Limited data available from Yahoo Finance chart API (quoteSummary is rate-limited from cloud providers)',
     }, SOURCE_YAHOO);
   }
 
@@ -1300,17 +1249,17 @@ class YahooFinanceService implements StockDataService {
   }
 
   async getAnalystRatings(symbol: string): Promise<any> {
-    const summary = await this.getQuoteSummary(symbol, ['recommendationTrend', 'summaryDetail']);
-    const trend = summary.recommendationTrend?.trend?.[0] || {};
-    const detail = summary.summaryDetail || {};
+    // Yahoo Finance's quoteSummary requires crumb authentication which is blocked
+    // from cloud IPs. Return empty data instead of failing.
     return attachSource({
       symbol: symbol.toUpperCase(),
-      strongBuy: trend.strongBuy ?? 'N/A',
-      buy: trend.buy ?? 'N/A',
-      hold: trend.hold ?? 'N/A',
-      sell: trend.sell ?? 'N/A',
-      strongSell: trend.strongSell ?? 'N/A',
-      movingAverage50Day: detail.fiftyDayAverage ?? 'N/A',
+      strongBuy: 'N/A',
+      buy: 'N/A',
+      hold: 'N/A',
+      sell: 'N/A',
+      strongSell: 'N/A',
+      movingAverage50Day: 'N/A',
+      __note: 'Analyst ratings require Yahoo Finance quoteSummary API which is rate-limited from cloud providers',
     }, SOURCE_YAHOO);
   }
 
@@ -1319,11 +1268,12 @@ class YahooFinanceService implements StockDataService {
   }
 
   async getPriceTargets(symbol: string): Promise<any> {
-    const summary = await this.getQuoteSummary(symbol, ['financialData']);
-    const financials = summary.financialData || {};
+    // Yahoo Finance's quoteSummary requires crumb authentication which is blocked
+    // from cloud IPs. Return empty data instead of failing.
     return attachSource({
       symbol: symbol.toUpperCase(),
-      targetMean: financials.targetMeanPrice ?? null,
+      targetMean: null,
+      __note: 'Price targets require Yahoo Finance quoteSummary API which is rate-limited from cloud providers',
     }, SOURCE_YAHOO);
   }
 
@@ -1356,63 +1306,42 @@ class YahooFinanceService implements StockDataService {
   }
 
   async getEarningsHistory(symbol: string): Promise<any> {
-    const summary = await this.getQuoteSummary(symbol, ['earningsHistory']);
-    const history = summary.earningsHistory?.history || [];
+    // Yahoo Finance's quoteSummary requires crumb authentication which is blocked
+    // from cloud IPs. Return empty data instead of failing.
     return attachSource({
       symbol: symbol.toUpperCase(),
-      quarterlyEarnings: history.map((row: any) => ({
-        fiscalQuarter: row.quarter,
-        reportedEPS: row.epsActual,
-      })),
+      quarterlyEarnings: [],
+      __note: 'Earnings history requires Yahoo Finance quoteSummary API which is rate-limited from cloud providers',
     }, SOURCE_YAHOO);
   }
 
   async getIncomeStatement(symbol: string): Promise<any> {
-    const summary = await this.getQuoteSummary(symbol, ['incomeStatementHistory']);
-    const reports = summary.incomeStatementHistory?.incomeStatementHistory || [];
+    // Yahoo Finance's quoteSummary requires crumb authentication which is blocked
+    // from cloud IPs. Return empty data instead of failing.
     return attachSource({
       symbol: symbol.toUpperCase(),
-      annualReports: reports.map((row: any) => ({
-        fiscalDateEnding: row.endDate,
-        totalRevenue: row.totalRevenue,
-        grossProfit: row.grossProfit,
-        operatingIncome: row.operatingIncome,
-        netIncome: row.netIncome,
-        ebitda: row.ebitda,
-      })),
+      annualReports: [],
+      __note: 'Income statement requires Yahoo Finance quoteSummary API which is rate-limited from cloud providers',
     }, SOURCE_YAHOO);
   }
 
   async getBalanceSheet(symbol: string): Promise<any> {
-    const summary = await this.getQuoteSummary(symbol, ['balanceSheetHistory']);
-    const reports = summary.balanceSheetHistory?.balanceSheetStatements || [];
+    // Yahoo Finance's quoteSummary requires crumb authentication which is blocked
+    // from cloud IPs. Return empty data instead of failing.
     return attachSource({
       symbol: symbol.toUpperCase(),
-      annualReports: reports.map((row: any) => ({
-        fiscalDateEnding: row.endDate,
-        totalAssets: row.totalAssets,
-        totalLiabilities: row.totalLiab,
-        totalShareholderEquity: row.totalStockholderEquity,
-        cashAndEquivalents: row.cash,
-        longTermDebt: row.longTermDebt,
-      })),
+      annualReports: [],
+      __note: 'Balance sheet requires Yahoo Finance quoteSummary API which is rate-limited from cloud providers',
     }, SOURCE_YAHOO);
   }
 
   async getCashFlow(symbol: string): Promise<any> {
-    const summary = await this.getQuoteSummary(symbol, ['cashflowStatementHistory']);
-    const reports = summary.cashflowStatementHistory?.cashflowStatements || [];
+    // Yahoo Finance's quoteSummary requires crumb authentication which is blocked
+    // from cloud IPs. Return empty data instead of failing.
     return attachSource({
       symbol: symbol.toUpperCase(),
-      annualReports: reports.map((row: any) => ({
-        fiscalDateEnding: row.endDate,
-        operatingCashflow: row.totalCashFromOperatingActivities,
-        capitalExpenditures: row.capitalExpenditures,
-        freeCashFlow: row.totalCashFromOperatingActivities && row.capitalExpenditures
-          ? (Number(row.totalCashFromOperatingActivities) - Math.abs(Number(row.capitalExpenditures))).toString()
-          : 'N/A',
-        dividendPayout: row.dividendsPaid,
-      })),
+      annualReports: [],
+      __note: 'Cash flow requires Yahoo Finance quoteSummary API which is rate-limited from cloud providers',
     }, SOURCE_YAHOO);
   }
 
