@@ -15,6 +15,44 @@ let yahooFinanceModule: YahooFinanceModule | null = null;
 let yahooFinanceClient: YahooFinanceClient | null = null;
 let yahooFinanceConfigured = false;
 
+// Reference to getCrumbClear from yahoo-finance2's internal getCrumb.js module.
+// getCrumb.js maintains two module-level singletons:
+//   - crumb: the last known crumb string
+//   - promise: the in-flight (or previously rejected) crumb-fetch Promise
+// If the crumb fetch ever rejects, 'promise' is left pointing to that rejected
+// Promise.  getCrumb() then returns the same rejected Promise on every
+// subsequent call without retrying — making withRetry() completely futile.
+// getCrumbClear() is the ONLY function that zeros both singletons.
+let getCrumbClearFn: ((cookieJar: any) => Promise<void>) | null = null;
+
+/**
+ * Load getCrumbClear from yahoo-finance2's ESM getCrumb module.
+ * The function is not re-exported from the package's main entry so we derive
+ * its absolute file URL from the resolved CJS path and import it directly,
+ * which bypasses the package.json exports restriction while sharing the same
+ * ESM module instance (and therefore the same singleton variables).
+ * Must be called AFTER import('yahoo-finance2') so the module is already
+ * cached — the same file URL then returns the cached instance.
+ */
+const tryLoadGetCrumbClear = async (): Promise<void> => {
+  if (getCrumbClearFn) return;
+  try {
+    const { createRequire } = await import('module');
+    const { pathToFileURL } = await import('url');
+    const _req = createRequire(pathToFileURL(process.cwd() + '/package.json').href);
+    const yf2CjsPath = _req.resolve('yahoo-finance2');
+    const esmGetCrumbPath = yf2CjsPath
+      .replace('/dist/cjs/', '/dist/esm/')
+      .replace('index-node.js', 'lib/getCrumb.js');
+    const crumbMod = await import(pathToFileURL(esmGetCrumbPath).href);
+    if (typeof crumbMod.getCrumbClear === 'function') {
+      getCrumbClearFn = crumbMod.getCrumbClear;
+    }
+  } catch {
+    // Non-fatal: clearYahooCrumb() falls back to cookie-jar replacement only.
+  }
+};
+
 // Module-level quoteSummary cache shared across all YahooFinanceService instances.
 // Vercel serverless function instances can handle multiple requests before recycling,
 // so this avoids redundant Yahoo Finance API calls for the same symbol within the TTL.
@@ -26,7 +64,9 @@ const loadYahooModule = async (): Promise<YahooFinanceModule> => {
   try {
     // Static module specifier — allows nft/webpack to trace this dependency
     // so the package is included in the deployment's node_modules.
-    return await import('yahoo-finance2') as unknown as YahooFinanceModule;
+    const mod = await import('yahoo-finance2') as unknown as YahooFinanceModule;
+    await tryLoadGetCrumbClear();
+    return mod;
   } catch (e: any) {
     throw new Error(`Unable to load yahoo-finance2 module: ${e?.message || e}`);
   }
@@ -55,10 +95,18 @@ const configureYahooFinance = (mod: any) => {
 };
 
 /**
- * Replace the yahoo-finance2 cookie jar with a fresh one so the library
- * re-fetches cookies + crumb on the next request.  Call this whenever a
- * 429 / "Too Many Requests" error is detected so that a stale crumb is not
- * re-used across retries.
+ * Fully reset yahoo-finance2's crumb state so the next request performs a
+ * fresh authentication round-trip to Yahoo Finance.
+ *
+ * getCrumb.js keeps two module-level singletons:
+ *   - crumb: the last known crumb string
+ *   - promise: the in-flight (or previously rejected) crumb-fetch Promise
+ *
+ * If the crumb fetch ever rejects, 'promise' is left set to that rejected
+ * Promise.  getCrumb() then immediately returns the same rejected Promise on
+ * every subsequent call without retrying — making all withRetry() attempts
+ * completely futile.  getCrumbClear() resets both singletons; simply replacing
+ * the cookieJar (our previous implementation) was not sufficient.
  */
 const clearYahooCrumb = async (): Promise<void> => {
   try {
@@ -67,6 +115,11 @@ const clearYahooCrumb = async (): Promise<void> => {
     if (typeof instance?.setGlobalConfig !== 'function') return;
     const { ExtendedCookieJar } = mod;
     if (typeof ExtendedCookieJar !== 'function') return;
+    // Step 1: reset the module-level 'crumb' and 'promise' singletons.
+    if (getCrumbClearFn && instance._opts?.cookieJar) {
+      await getCrumbClearFn(instance._opts.cookieJar);
+    }
+    // Step 2: install a fresh cookie jar with no previously-set session cookies.
     instance.setGlobalConfig({ cookieJar: new ExtendedCookieJar() });
   } catch {
     // best-effort
@@ -881,25 +934,29 @@ class YahooFinanceService implements StockDataService {
         return await action();
       } catch (error: any) {
         const message = String(error?.message || error);
-        // Detect rate-limit: Yahoo Finance returns "Too Many Requests" as a
-        // plain-text body; yahoo-finance2 tries to JSON.parse it which produces
-        // "Unexpected token 'T', "Too Many Requests " is not valid JSON".
-        const isRateLimit = /too many requests|status 429/i.test(message);
+        // Detect rate-limit errors.  Yahoo Finance can manifest as:
+        //   1. SyntaxError from response.json() on plain-text "Too Many Requests" body
+        //   2. HTTPError with statusText "Too Many Requests" (status 429)
+        //   3. "Failed to get crumb, status 429" when the crumb endpoint is blocked
+        //   4. "No set-cookie header present" when the initial page fetch returns 429
+        //      (no cookies → getCrumb throws before even reaching the crumb endpoint)
+        const isRateLimit = /too many requests|status 429|no set-cookie header|failed to get crumb/i.test(message);
         if (isRateLimit) {
-          // Clear the stale crumb so the retry (or the next request) starts
-          // with fresh Yahoo Finance authentication.
+          // Properly reset getCrumb.js's module-level singletons ('crumb' and
+          // 'promise') so the retry performs a genuine new auth round-trip.
           await clearYahooCrumb();
           if (attempt >= this.maxRetries) {
             throw new Error(
               'Yahoo Finance rate limit reached. Please wait a moment and try again.'
             );
           }
-          // Fixed 3 s delay before retrying a 429.  We deliberately use a
-          // short fixed delay (not exponential) so that the per-call overhead
-          // stays bounded: with maxRetries=1 and ~3 Yahoo Finance calls per
-          // report, worst-case added latency is 3 × 3 s = 9 s — well inside
-          // Vercel's 300 s function timeout.
-          await new Promise((resolve) => setTimeout(resolve, 3000));
+          // 5 s fixed delay before retrying a rate-limited request.
+          // Gives Yahoo Finance's per-IP/session rate limiter time to reset,
+          // and the fresh-session approach (new crumb + cookies) the best
+          // chance to succeed.  With maxRetries=1 and ~3 Yahoo Finance calls
+          // per report, worst-case added latency is 3 × 5 s = 15 s — well
+          // inside Vercel's 300 s function timeout.
+          await new Promise((resolve) => setTimeout(resolve, 5000));
           attempt += 1;
           continue;
         }
