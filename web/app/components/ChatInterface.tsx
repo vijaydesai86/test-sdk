@@ -100,7 +100,7 @@ const TOOL_CALL_WARNING =
   'Model returned tool calls as plain text. Switch to a tool-calling model from the dropdown.';
 const isToolCallText = (content: string) =>
   /"name"\s*:\s*"functions\./.test(content) || /"arguments"\s*:\s*\{/.test(content);
-const SAMPLE_REPORT_LINK = '/reports/nvda-sample.md';
+const SAMPLE_REPORT_LINK = '/reports/sample-report.md';
 
 export default function ChatInterface() {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -240,9 +240,9 @@ export default function ChatInterface() {
   };
 
   const exampleQuestions = [
-    'Generate a full stock report for NVDA',
+    'Generate a full stock report',
     'Generate a sector report for AI data center stocks',
-    'Compare peers for AMD with valuation and targets',
+    'Compare peers in the electric vehicle sector with valuation and targets',
     'What are today’s top gainers and losers?',
   ];
 
@@ -426,10 +426,10 @@ export default function ChatInterface() {
                   </p>
                   <button
                     type="button"
-                    onClick={() => handleReportClick({ filename: 'nvda-sample.md', downloadUrl: SAMPLE_REPORT_LINK })}
+                    onClick={() => handleReportClick({ filename: 'sample-report.md', downloadUrl: SAMPLE_REPORT_LINK })}
                     className="block w-full text-left truncate rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-2 text-blue-600 dark:text-blue-300 hover:bg-blue-50 dark:hover:bg-blue-900/30"
                   >
-                    Sample NVDA report (mock data)
+                    Sample report (mock data)
                   </button>
                 </div>
               ) : (

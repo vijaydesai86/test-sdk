@@ -30,10 +30,10 @@ const stubService = (): StockDataService => ({
 describe('web executeTool', () => {
   it('routes to basic financials', async () => {
     const service = stubService();
-    const result = await executeTool('get_basic_financials', { symbol: 'AAPL' }, service);
+    const result = await executeTool('get_basic_financials', { symbol: 'TEST' }, service);
 
     expect(result.success).toBe(true);
-    expect(service.getBasicFinancials).toHaveBeenCalledWith('AAPL');
+    expect(service.getBasicFinancials).toHaveBeenCalledWith('TEST');
   });
 
   it('routes to news search', async () => {

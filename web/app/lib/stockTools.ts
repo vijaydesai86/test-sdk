@@ -280,7 +280,7 @@ function buildToolDefinitions() {
         parameters: {
           type: 'object',
           properties: {
-            query: { type: 'string', description: 'Company name or ticker (e.g. "Apple" or "AAPL")' },
+            query: { type: 'string', description: 'Company name or ticker (e.g. "Apple" or "MSFT" or another valid ticker)' },
           },
           required: ['query'],
         },
@@ -294,7 +294,7 @@ function buildToolDefinitions() {
         parameters: {
           type: 'object',
           properties: {
-            symbol: { type: 'string', description: 'Ticker symbol (e.g. AAPL)' },
+            symbol: { type: 'string', description: 'Ticker symbol (e.g. "MSFT")' },
           },
           required: ['symbol'],
         },
@@ -308,7 +308,7 @@ function buildToolDefinitions() {
         parameters: {
           type: 'object',
           properties: {
-            symbol: { type: 'string', description: 'Ticker symbol (e.g. AAPL)' },
+            symbol: { type: 'string', description: 'Ticker symbol (e.g. "MSFT")' },
             range: { type: 'string', description: '"daily", "weekly", "monthly", "1w", "1m", "3m", "6m", "1y", "3y", "5y", "max". Default: "daily"' },
           },
           required: ['symbol'],
@@ -323,7 +323,7 @@ function buildToolDefinitions() {
         parameters: {
           type: 'object',
           properties: {
-            symbol: { type: 'string', description: 'Ticker symbol (e.g. AAPL)' },
+            symbol: { type: 'string', description: 'Ticker symbol (e.g. "MSFT")' },
           },
           required: ['symbol'],
         },
@@ -337,7 +337,7 @@ function buildToolDefinitions() {
         parameters: {
           type: 'object',
           properties: {
-            symbol: { type: 'string', description: 'Ticker symbol (e.g. AAPL)' },
+            symbol: { type: 'string', description: 'Ticker symbol (e.g. "MSFT")' },
           },
           required: ['symbol'],
         },
@@ -351,7 +351,7 @@ function buildToolDefinitions() {
         parameters: {
           type: 'object',
           properties: {
-            symbol: { type: 'string', description: 'Ticker symbol (e.g. AAPL)' },
+            symbol: { type: 'string', description: 'Ticker symbol (e.g. "MSFT")' },
           },
           required: ['symbol'],
         },
@@ -365,7 +365,7 @@ function buildToolDefinitions() {
         parameters: {
           type: 'object',
           properties: {
-            symbol: { type: 'string', description: 'Ticker symbol (e.g. AAPL)' },
+            symbol: { type: 'string', description: 'Ticker symbol (e.g. "MSFT")' },
           },
           required: ['symbol'],
         },
@@ -379,7 +379,7 @@ function buildToolDefinitions() {
         parameters: {
           type: 'object',
           properties: {
-            symbol: { type: 'string', description: 'Ticker symbol (e.g. AAPL)' },
+            symbol: { type: 'string', description: 'Ticker symbol (e.g. "MSFT")' },
           },
           required: ['symbol'],
         },
@@ -393,7 +393,7 @@ function buildToolDefinitions() {
         parameters: {
           type: 'object',
           properties: {
-            symbol: { type: 'string', description: 'Ticker symbol (e.g. AAPL)' },
+            symbol: { type: 'string', description: 'Ticker symbol (e.g. "MSFT")' },
           },
           required: ['symbol'],
         },
@@ -407,7 +407,7 @@ function buildToolDefinitions() {
         parameters: {
           type: 'object',
           properties: {
-            symbol: { type: 'string', description: 'Ticker symbol (e.g. AAPL)' },
+            symbol: { type: 'string', description: 'Ticker symbol (e.g. "MSFT")' },
           },
           required: ['symbol'],
         },
@@ -421,7 +421,7 @@ function buildToolDefinitions() {
         parameters: {
           type: 'object',
           properties: {
-            symbol: { type: 'string', description: 'Ticker symbol (e.g. AAPL)' },
+            symbol: { type: 'string', description: 'Ticker symbol (e.g. "MSFT")' },
           },
           required: ['symbol'],
         },
@@ -435,7 +435,7 @@ function buildToolDefinitions() {
         parameters: {
           type: 'object',
           properties: {
-            symbol: { type: 'string', description: 'Ticker symbol (e.g. AAPL)' },
+            symbol: { type: 'string', description: 'Ticker symbol (e.g. "MSFT")' },
           },
           required: ['symbol'],
         },
@@ -449,7 +449,7 @@ function buildToolDefinitions() {
         parameters: {
           type: 'object',
           properties: {
-            symbol: { type: 'string', description: 'Ticker symbol (e.g. AAPL)' },
+            symbol: { type: 'string', description: 'Ticker symbol (e.g. "MSFT")' },
           },
           required: ['symbol'],
         },
@@ -463,7 +463,7 @@ function buildToolDefinitions() {
         parameters: {
           type: 'object',
           properties: {
-            symbol: { type: 'string', description: 'Ticker symbol (e.g. AAPL)' },
+            symbol: { type: 'string', description: 'Ticker symbol (e.g. "MSFT")' },
           },
           required: ['symbol'],
         },
@@ -533,7 +533,7 @@ function buildToolDefinitions() {
         parameters: {
           type: 'object',
           properties: {
-            symbol: { type: 'string', description: 'Ticker symbol (e.g. AAPL)' },
+            symbol: { type: 'string', description: 'Ticker symbol (e.g. "MSFT")' },
           },
           required: ['symbol'],
         },
@@ -547,7 +547,7 @@ function buildToolDefinitions() {
         parameters: {
           type: 'object',
           properties: {
-            symbol: { type: 'string', description: 'Ticker symbol (e.g. AAPL)' },
+            symbol: { type: 'string', description: 'Ticker symbol (e.g. "MSFT")' },
             days: { type: 'number', description: 'Lookback window in days (optional)' },
           },
           required: ['symbol'],
@@ -591,7 +591,7 @@ function buildToolDefinitions() {
         parameters: {
           type: 'object',
           properties: {
-            symbol: { type: 'string', description: 'Ticker or company name (e.g. AAPL, Apple)' },
+            symbol: { type: 'string', description: 'Ticker or company name (e.g. "MSFT", Apple)' },
             range: { type: 'string', description: 'Price history range for charts (e.g., "1y", "3y", "5y", "max"). Default is "5y"' },
           },
           required: ['symbol'],
@@ -636,7 +636,7 @@ function buildToolDefinitions() {
         parameters: {
           type: 'object',
           properties: {
-            symbol: { type: 'string', description: 'Ticker symbol (e.g. AMD)' },
+            symbol: { type: 'string', description: 'Ticker symbol (e.g. "MSFT")' },
             limit: { type: 'number', description: 'Max peers to include (optional, default 8)' },
             range: { type: 'string', description: 'Price history range for charts (e.g., "1y", "3y", "5y", "max"). Default is "5y"' },
           },

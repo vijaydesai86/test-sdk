@@ -3,8 +3,6 @@ import { NextResponse } from 'next/server';
 export const runtime = 'nodejs';
 import { createStockService } from '@/app/lib/stockDataService';
 
-const TEST_SYMBOL = 'NVDA';
-
 export async function GET() {
   const results: Record<string, any> = {};
 
@@ -13,12 +11,18 @@ export async function GET() {
   if (provider !== 'yfinance' && !alphaVantageKey) {
     results.alphaVantage = { ok: false, error: 'ALPHA_VANTAGE_API_KEY not set' };
   } else {
-    const service = createStockService(alphaVantageKey);
-    try {
-      const price = await service.getStockPrice(TEST_SYMBOL);
-      results.alphaVantage = { ok: true, price: price?.price || null };
-    } catch (error: any) {
-      results.alphaVantage = { ok: false, error: error?.message || 'Failed' };
+    // Use an env-configured symbol for the live ping; fall back to a no-op config check.
+    const testSymbol = process.env.HEALTH_CHECK_SYMBOL;
+    if (testSymbol) {
+      const service = createStockService(alphaVantageKey);
+      try {
+        const price = await service.getStockPrice(testSymbol);
+        results.dataProvider = { ok: true, provider, price: price?.price || null };
+      } catch (error: any) {
+        results.dataProvider = { ok: false, provider, error: error?.message || 'Failed' };
+      }
+    } else {
+      results.dataProvider = { ok: true, provider, note: 'Set HEALTH_CHECK_SYMBOL to enable live ping' };
     }
   }
 

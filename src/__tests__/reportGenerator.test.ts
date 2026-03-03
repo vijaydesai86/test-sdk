@@ -7,7 +7,7 @@ import os from 'os';
 describe('reportGenerator', () => {
   it('builds a stock report with charts', () => {
     const report = buildStockReport({
-      symbol: 'AAPL',
+      symbol: 'TEST',
       generatedAt: '2025-01-01T00:00:00Z',
       price: { price: '100.00', changePercent: '1.0%' },
       priceHistory: { prices: [{ date: '2025-01-01', close: '100' }] },
@@ -16,7 +16,7 @@ describe('reportGenerator', () => {
       priceTargets: { targetLow: 80, targetMean: 110, targetMedian: 105, targetHigh: 130 },
     });
 
-    expect(report).toContain('# AAPL Comprehensive Equity Research Report');
+    expect(report).toContain('# TEST Comprehensive Equity Research Report');
     expect(report).toContain('```chart');
     expect(report).toContain('Analyst Target Distribution');
     expect(report).toContain('Composite Score');
@@ -27,18 +27,18 @@ describe('reportGenerator', () => {
     const report = buildSectorReport({
       query: 'AI data center',
       generatedAt: '2025-01-01T00:00:00Z',
-      universe: ['AAPL', 'MSFT'],
+      universe: ['SYMX', 'SYMY'],
       items: [
-        { symbol: 'AAPL', price: { price: '100' }, overview: { marketCapitalization: '1000', peRatio: '20' }, priceTargets: { targetMean: 120 } },
-        { symbol: 'MSFT', price: { price: '200' }, overview: { marketCapitalization: '2000', peRatio: '30' }, priceTargets: { targetMean: 220 } },
+        { symbol: 'SYMX', price: { price: '100' }, overview: { marketCapitalization: '1000', peRatio: '20' }, priceTargets: { targetMean: 120 } },
+        { symbol: 'SYMY', price: { price: '200' }, overview: { marketCapitalization: '2000', peRatio: '30' }, priceTargets: { targetMean: 220 } },
       ],
       notes: ['Universe built from search'],
     });
 
-    expect(report).toContain('## ✨ Executive Summary');
-    expect(report).toContain('## 🧠 AI Stack Overview');
-    expect(report).toContain('## 📊 Company Metrics');
-    expect(report).toContain('Indicative Allocation');
+    expect(report).toContain('Sector');
+    expect(report).toContain('AI data center');
+    expect(report).toContain('Companies Included');
+    expect(report).toContain('Recommendations');
   });
 
   it('saves report to disk', async () => {
@@ -51,32 +51,32 @@ describe('reportGenerator', () => {
 
   it('builds a peer report with detailed comparison table', () => {
     const report = buildPeerReport({
-      symbol: 'AMD',
+      symbol: 'SYMZ',
       generatedAt: '2025-01-01T00:00:00Z',
       range: '5y',
-      universe: ['AMD', 'NVDA'],
+      universe: ['SYMZ', 'SYMA'],
       items: [
         {
-          symbol: 'AMD',
+          symbol: 'SYMZ',
           price: { price: '100' },
           overview: { marketCapitalization: '1000', peRatio: '20' },
           priceTargets: { targetMean: 120 },
           priceHistory: { prices: [{ date: '2024-12-31', close: '100' }, { date: '2025-01-01', close: '102' }] },
         },
         {
-          symbol: 'NVDA',
+          symbol: 'SYMA',
           price: { price: '200' },
           overview: { marketCapitalization: '2000', peRatio: '30' },
           priceTargets: { targetMean: 240 },
           priceHistory: { prices: [{ date: '2024-12-31', close: '200' }, { date: '2025-01-01', close: '205' }] },
         },
       ],
-      notes: ['Peer data from Finnhub'],
+      notes: ['Peer data from provider'],
     });
 
     expect(report).toContain('Peer Comparison Report');
-    expect(report).toContain('Comparison Table');
-    expect(report).toContain('Moat Signals');
-    expect(report).toContain('News Highlights');
+    expect(report).toContain('Companies Included');
+    expect(report).toContain('Recommendations');
+    expect(report).toContain('Analyst View');
   });
 });

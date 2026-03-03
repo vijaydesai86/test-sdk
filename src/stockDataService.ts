@@ -4,6 +4,7 @@ type YahooFinanceClient = {
   quote?: (symbol: string, queryOpts?: any, moduleOpts?: any) => Promise<any>;
   quoteSummary?: (symbol: string, queryOpts?: any, moduleOpts?: any) => Promise<any>;
   historical?: (symbol: string, queryOpts?: any, moduleOpts?: any) => Promise<any>;
+  chart?: (symbol: string, queryOpts?: any, moduleOpts?: any) => Promise<any>;
   search?: (query: string, queryOpts?: any, moduleOpts?: any) => Promise<any>;
 };
 
@@ -60,6 +61,10 @@ const DEFAULT_QUOTE_SUMMARY_TTL_MS = 5 * 60 * 1000; // 5 minutes
 const QUOTE_SUMMARY_TTL_MS = Number(process.env.YFINANCE_CACHE_TTL_MS || DEFAULT_QUOTE_SUMMARY_TTL_MS);
 const moduleQuoteSummaryCache = new Map<string, { data: any; expiresAt: number }>();
 
+// Module-level throttle timestamp — persists across requests in the same warm
+// serverless instance, mirroring how AlphaVantageService.sharedCache works.
+let moduleLastYahooRequestAt = 0;
+
 const loadYahooModule = async (): Promise<YahooFinanceModule> => {
   try {
     // Static module specifier — allows nft/webpack to trace this dependency
@@ -81,12 +86,18 @@ const configureYahooFinance = (mod: any) => {
       yf.suppressNotices(['yahooSurvey']);
     }
     // Serialize requests (concurrency=1) to avoid triggering Yahoo Finance rate limits
-    // from concurrent calls. Reduce validation noise in logs.
+    // from concurrent calls. Use query1 host — it has a different (less aggressive)
+    // rate-limit policy for v10/quoteSummary than the default query2 host.
     if (typeof yf?.setGlobalConfig === 'function') {
       yf.setGlobalConfig({
+        YF_QUERY_HOST: process.env.YFINANCE_QUERY_HOST || 'query1.finance.yahoo.com',
         queue: { concurrency: 1 }, // serialize requests to reduce rate-limit risk
         validation: { logErrors: false, logOptionsErrors: false },
       });
+    }
+    // Suppress the deprecated historical()→chart() mapping notice; we call chart() directly.
+    if (typeof yf?.suppressNotices === 'function') {
+      yf.suppressNotices(['yahooSurvey', 'ripHistorical']);
     }
   } catch {
     // Non-fatal — continue even if configuration fails.
@@ -175,6 +186,7 @@ const buildYahooClient = (mod: any): YahooFinanceClient => {
     quote: findFn('quote'),
     quoteSummary: findFn('quoteSummary'),
     historical: findFn('historical'),
+    chart: findFn('chart'),
     search: findFn('search'),
   };
 };
@@ -186,7 +198,7 @@ const getYahooFinance = async (): Promise<YahooFinanceClient> => {
   }
   configureYahooFinance(yahooFinanceModule as any);
   const client = buildYahooClient(yahooFinanceModule as any);
-  if (!client.quoteSummary || !client.historical) {
+  if (!client.quoteSummary || !client.chart) {
     const modKeys = Object.keys((yahooFinanceModule as any) || {}).join(', ');
     throw new Error(`Yahoo Finance client missing required methods. Module keys: ${modKeys || 'none'}`);
   }
@@ -892,9 +904,12 @@ export class AlphaVantageService implements StockDataService {
 const RATE_LIMIT_MARKER = Symbol('RATE_LIMIT_MARKER');
 
 class YahooFinanceService implements StockDataService {
-  private lastRequestAt = 0;
-  private minIntervalMs = Number(process.env.YFINANCE_MIN_INTERVAL_MS || 500);
-  private maxRetries = Number(process.env.YFINANCE_MAX_RETRIES || 1);
+  // Use module-level timestamp so throttle spans across requests in a warm instance,
+  // preventing burst requests after a cold start from triggering Yahoo Finance rate limits.
+  private get lastRequestAt() { return moduleLastYahooRequestAt; }
+  private set lastRequestAt(v: number) { moduleLastYahooRequestAt = v; }
+  private minIntervalMs = Number(process.env.YFINANCE_MIN_INTERVAL_MS || 1500);
+  private maxRetries = Number(process.env.YFINANCE_MAX_RETRIES || 3);
   // Instance-level cache: shares quoteSummary data within a single request.
   // Module-level moduleQuoteSummaryCache (above) shares data across requests.
   private quoteSummaryCache = new Map<string, any>();
@@ -950,13 +965,12 @@ class YahooFinanceService implements StockDataService {
               'Yahoo Finance rate limit reached. Please wait a moment and try again.'
             );
           }
-          // 5 s fixed delay before retrying a rate-limited request.
-          // Gives Yahoo Finance's per-IP/session rate limiter time to reset,
-          // and the fresh-session approach (new crumb + cookies) the best
-          // chance to succeed.  With maxRetries=1 and ~3 Yahoo Finance calls
-          // per report, worst-case added latency is 3 × 5 s = 15 s — well
-          // inside Vercel's 300 s function timeout.
-          await new Promise((resolve) => setTimeout(resolve, 5000));
+          // Progressive back-off: 10 s → 20 s → 30 s.
+          // Yahoo Finance's per-IP rate limiter on the v10/quoteSummary endpoint
+          // requires more time to reset than the 5 s used previously.
+          const rateLimitDelays = [10000, 20000, 30000];
+          const delay = rateLimitDelays[attempt] ?? 30000;
+          await new Promise((resolve) => setTimeout(resolve, delay));
           attempt += 1;
           continue;
         }
@@ -1066,13 +1080,15 @@ class YahooFinanceService implements StockDataService {
     const { period1, period2 } = parseRangeToPeriod(range);
     await this.throttle();
     const yahooFinance = await getYahooFinance();
-    const historicalFn = yahooFinance.historical;
-    if (!historicalFn) {
-      throw new Error('Yahoo Finance historical unavailable');
+    // Use chart() directly — historical() was removed by Yahoo and the deprecated
+    // wrapper that remapped it produces noisy log output on every call.
+    const chartFn = yahooFinance.chart;
+    if (!chartFn) {
+      throw new Error('Yahoo Finance chart unavailable');
     }
-    const results = await this.withRetry(() => historicalFn(symbol, { period1, period2, interval: '1d' }, YF_MODULE_OPTS));
-    const prices = (results || []).map((row: any) => ({
-      date: row.date?.toISOString?.().slice(0, 10) || row.date,
+    const result = await this.withRetry(() => chartFn(symbol, { period1, period2, interval: '1d' }, YF_MODULE_OPTS));
+    const prices = (result?.quotes || []).map((row: any) => ({
+      date: row.date?.toISOString?.().slice(0, 10) || String(row.date),
       close: row.close,
     }));
     return attachSource({ symbol: symbol.toUpperCase(), prices }, SOURCE_YAHOO);

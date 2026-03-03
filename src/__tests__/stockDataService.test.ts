@@ -21,7 +21,7 @@ describe('AlphaVantageService', () => {
     mockedAxios.get.mockResolvedValueOnce({
       data: {
         'Global Quote': {
-          '01. symbol': 'AAPL',
+          '01. symbol': 'TEST',
           '05. price': '100.00',
           '09. change': '1.00',
           '10. change percent': '1.00%',
@@ -32,8 +32,8 @@ describe('AlphaVantageService', () => {
     });
 
     const service = new AlphaVantageService('test');
-    const first = await service.getStockPrice('AAPL');
-    const second = await service.getStockPrice('AAPL');
+    const first = await service.getStockPrice('TEST');
+    const second = await service.getStockPrice('TEST');
 
     expect(first.price).toBe('100.00');
     expect(second.price).toBe('100.00');
@@ -43,6 +43,6 @@ describe('AlphaVantageService', () => {
   it('returns alpha-only error for news', async () => {
     const service = new AlphaVantageService('test');
 
-    await expect(service.getCompanyNews('AAPL', 5)).rejects.toThrow('Alpha-only mode');
+    await expect(service.getCompanyNews('TEST', 5)).rejects.toThrow('Alpha-only mode');
   });
 });

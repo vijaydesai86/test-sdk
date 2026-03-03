@@ -254,7 +254,7 @@ const resolveSymbolFromQuery = async (query: string) => {
     parameters: {
       query: {
         type: 'string',
-        description: 'Company name or stock ticker to search for (e.g., "Apple", "AAPL", "Microsoft")',
+        description: 'Company name or stock ticker to search for (e.g., "Microsoft" or a ticker like "MSFT")',
       },
     },
     handler: async (args: any) => {
@@ -271,7 +271,7 @@ const resolveSymbolFromQuery = async (query: string) => {
   const getCurrentPriceTool = defineTool('get_stock_price', {
     description: 'Get the current stock price and basic quote information for a US stock.',
     parameters: {
-      symbol: { type: 'string', description: 'Stock ticker symbol (e.g., "AAPL", "MSFT", "GOOGL")' },
+      symbol: { type: 'string', description: 'Stock ticker symbol (e.g., "MSFT" or another valid ticker)' },
     },
     handler: async (args: any) => {
       const { symbol } = args;
@@ -287,7 +287,7 @@ const resolveSymbolFromQuery = async (query: string) => {
   const getPriceHistoryTool = defineTool('get_price_history', {
     description: 'Get historical price data for a US stock. Range supports daily/weekly/monthly or 1w, 1m, 3m, 6m, 1y, 3y, 5y, max.',
     parameters: {
-      symbol: { type: 'string', description: 'Stock ticker symbol (e.g., "AAPL", "MSFT")' },
+      symbol: { type: 'string', description: 'Stock ticker symbol (e.g., "MSFT" or another valid ticker)' },
       range: { type: 'string', description: 'Time range: "daily", "weekly", "monthly", "1w", "1m", "3m", "6m", "1y", "3y", "5y", "max". Default is "daily"' },
     },
     handler: async (args: any) => {
@@ -304,7 +304,7 @@ const resolveSymbolFromQuery = async (query: string) => {
   const getCompanyOverviewTool = defineTool('get_company_overview', {
     description: 'Get comprehensive company information including fundamentals like EPS, PE ratio, PEG ratio, profit margins, market cap, dividend yield, 52-week high/low, and analyst target price.',
     parameters: {
-      symbol: { type: 'string', description: 'Stock ticker symbol (e.g., "AAPL", "MSFT")' },
+      symbol: { type: 'string', description: 'Stock ticker symbol (e.g., "MSFT" or another valid ticker)' },
     },
     handler: async (args: any) => {
       const { symbol } = args;
@@ -320,7 +320,7 @@ const resolveSymbolFromQuery = async (query: string) => {
   const getBasicFinancialsTool = defineTool('get_basic_financials', {
     description: 'Get detailed financial ratios, metrics, and historical series (including PE history) for a US stock.',
     parameters: {
-      symbol: { type: 'string', description: 'Stock ticker symbol (e.g., "AAPL", "MSFT")' },
+      symbol: { type: 'string', description: 'Stock ticker symbol (e.g., "MSFT" or another valid ticker)' },
     },
     handler: async (args: any) => {
       const { symbol } = args;
@@ -336,7 +336,7 @@ const resolveSymbolFromQuery = async (query: string) => {
   const getInsiderTradingTool = defineTool('get_insider_trading', {
     description: 'Get insider ownership data for a US stock. Returns insider %, institutional %, short interest, and recent insider transactions.',
     parameters: {
-      symbol: { type: 'string', description: 'Stock ticker symbol (e.g., "AAPL", "MSFT")' },
+      symbol: { type: 'string', description: 'Stock ticker symbol (e.g., "MSFT" or another valid ticker)' },
     },
     handler: async (args: any) => {
       const { symbol } = args;
@@ -352,7 +352,7 @@ const resolveSymbolFromQuery = async (query: string) => {
   const getAnalystRatingsTool = defineTool('get_analyst_ratings', {
     description: 'Get full analyst ratings breakdown (Strong Buy/Buy/Hold/Sell/Strong Sell) and consensus target price with upside.',
     parameters: {
-      symbol: { type: 'string', description: 'Stock ticker symbol (e.g., "AAPL", "MSFT")' },
+      symbol: { type: 'string', description: 'Stock ticker symbol (e.g., "MSFT" or another valid ticker)' },
     },
     handler: async (args: any) => {
       const { symbol } = args;
@@ -368,7 +368,7 @@ const resolveSymbolFromQuery = async (query: string) => {
   const getAnalystRecommendationsTool = defineTool('get_analyst_recommendations', {
     description: 'Get analyst recommendation trends over time (strong buy/buy/hold/sell/strong sell counts).',
     parameters: {
-      symbol: { type: 'string', description: 'Stock ticker symbol (e.g., "AAPL", "MSFT")' },
+      symbol: { type: 'string', description: 'Stock ticker symbol (e.g., "MSFT" or another valid ticker)' },
     },
     handler: async (args: any) => {
       const { symbol } = args;
@@ -384,7 +384,7 @@ const resolveSymbolFromQuery = async (query: string) => {
   const getPriceTargetsTool = defineTool('get_price_targets', {
     description: 'Get analyst price target summary (high/low/mean/median) for a US stock.',
     parameters: {
-      symbol: { type: 'string', description: 'Stock ticker symbol (e.g., "AAPL", "MSFT")' },
+      symbol: { type: 'string', description: 'Stock ticker symbol (e.g., "MSFT" or another valid ticker)' },
     },
     handler: async (args: any) => {
       const { symbol } = args;
@@ -400,7 +400,7 @@ const resolveSymbolFromQuery = async (query: string) => {
   const getPeersTool = defineTool('get_peers', {
     description: 'Get a list of peer tickers for a US stock.',
     parameters: {
-      symbol: { type: 'string', description: 'Stock ticker symbol (e.g., "AAPL", "MSFT")' },
+      symbol: { type: 'string', description: 'Stock ticker symbol (e.g., "MSFT" or another valid ticker)' },
     },
     handler: async (args: any) => {
       const { symbol } = args;
@@ -416,7 +416,7 @@ const resolveSymbolFromQuery = async (query: string) => {
   const getEarningsHistoryTool = defineTool('get_earnings_history', {
     description: 'Get historical earnings per share (EPS) data including quarterly and annual EPS, estimates, and earnings surprises.',
     parameters: {
-      symbol: { type: 'string', description: 'Stock ticker symbol (e.g., "AAPL", "MSFT")' },
+      symbol: { type: 'string', description: 'Stock ticker symbol (e.g., "MSFT" or another valid ticker)' },
     },
     handler: async (args: any) => {
       const { symbol } = args;
@@ -432,7 +432,7 @@ const resolveSymbolFromQuery = async (query: string) => {
   const getIncomeStatementTool = defineTool('get_income_statement', {
     description: 'Get quarterly and annual income statement data. Returns revenue, gross profit, operating income, net income, and EBITDA.',
     parameters: {
-      symbol: { type: 'string', description: 'Stock ticker symbol (e.g., "AAPL", "MSFT")' },
+      symbol: { type: 'string', description: 'Stock ticker symbol (e.g., "MSFT" or another valid ticker)' },
     },
     handler: async (args: any) => {
       const { symbol } = args;
@@ -448,7 +448,7 @@ const resolveSymbolFromQuery = async (query: string) => {
   const getBalanceSheetTool = defineTool('get_balance_sheet', {
     description: 'Get balance sheet data. Returns total assets, liabilities, shareholder equity, cash, and debt levels.',
     parameters: {
-      symbol: { type: 'string', description: 'Stock ticker symbol (e.g., "AAPL", "MSFT")' },
+      symbol: { type: 'string', description: 'Stock ticker symbol (e.g., "MSFT" or another valid ticker)' },
     },
     handler: async (args: any) => {
       const { symbol } = args;
@@ -464,7 +464,7 @@ const resolveSymbolFromQuery = async (query: string) => {
   const getCashFlowTool = defineTool('get_cash_flow', {
     description: 'Get cash flow statement data. Returns operating cash flow, capital expenditures, free cash flow, and dividends.',
     parameters: {
-      symbol: { type: 'string', description: 'Stock ticker symbol (e.g., "AAPL", "MSFT")' },
+      symbol: { type: 'string', description: 'Stock ticker symbol (e.g., "MSFT" or another valid ticker)' },
     },
     handler: async (args: any) => {
       const { symbol } = args;
@@ -541,7 +541,7 @@ const resolveSymbolFromQuery = async (query: string) => {
   const getNewsSentimentTool = defineTool('get_news_sentiment', {
     description: 'Get the latest news articles and AI-powered sentiment analysis for a US stock. Returns headlines, summaries, and sentiment scores.',
     parameters: {
-      symbol: { type: 'string', description: 'Stock ticker symbol (e.g., "AAPL", "MSFT", "TSLA")' },
+      symbol: { type: 'string', description: 'Stock ticker symbol (e.g., "MSFT" or another valid ticker)' },
     },
     handler: async (args: any) => {
       const { symbol } = args;
@@ -557,7 +557,7 @@ const resolveSymbolFromQuery = async (query: string) => {
   const getCompanyNewsTool = defineTool('get_company_news', {
     description: 'Get recent company news articles for a US stock (typically last 30 days).',
     parameters: {
-      symbol: { type: 'string', description: 'Stock ticker symbol (e.g., "AAPL", "MSFT")' },
+      symbol: { type: 'string', description: 'Stock ticker symbol (e.g., "MSFT" or another valid ticker)' },
       days: { type: 'number', description: 'Lookback window in days (optional)' },
     },
     handler: async (args: any) => {
@@ -607,7 +607,7 @@ const resolveSymbolFromQuery = async (query: string) => {
   const generateStockReportTool = defineTool('generate_stock_report', {
     description: 'Generate a comprehensive stock research report and save it as a markdown artifact.',
     parameters: {
-      symbol: { type: 'string', description: 'Stock ticker or company name (e.g., "AAPL", "Apple")' },
+      symbol: { type: 'string', description: 'Stock ticker or company name (e.g., a ticker or company name (e.g. "MSFT"))' },
       range: { type: 'string', description: 'Price history range for charts (e.g., "1y", "3y", "5y", "max"). Default is "5y"' },
     },
     handler: async (args: any) => {
@@ -751,7 +751,7 @@ const resolveSymbolFromQuery = async (query: string) => {
   const generatePeerReportTool = defineTool('generate_peer_report', {
     description: 'Generate a comprehensive peer comparison report and save it as a markdown artifact.',
     parameters: {
-      symbol: { type: 'string', description: 'Stock ticker symbol (e.g., "AMD")' },
+      symbol: { type: 'string', description: 'Stock ticker symbol (e.g., "MSFT" or another valid ticker)' },
       limit: { type: 'number', description: 'Max peers to include (optional, default 8)' },
       range: { type: 'string', description: 'Price history range for charts (e.g., "1y", "3y", "5y", "max"). Default is "5y"' },
     },
