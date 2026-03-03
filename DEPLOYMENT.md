@@ -89,7 +89,8 @@ Stock Tools + Alpha Vantage API
 
 ### Testing Your Deployment
 
-1. Visit your deployment URL (e.g., `https://your-app.vercel.app`)
+1. After deployment, copy your live URL from the **Vercel dashboard** — it will look like `https://{your-project-name}.vercel.app`
+   > **Note:** Always use the URL shown in your own Vercel dashboard. Any previously shared demo links (e.g. `test-sdk-six.vercel.app`) may point to deleted deployments and will return `DEPLOYMENT_NOT_FOUND`.
 2. Try asking questions like:
    - "What is the current price of Apple stock?"
    - "Show me Microsoft's EPS and PE ratio"

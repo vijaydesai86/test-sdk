@@ -8,6 +8,8 @@ An AI-powered stock information tool that provides comprehensive US stock market
 
 [![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/vijaydesai86/test-sdk&root-directory=web&env=GITHUB_TOKEN&envDescription=GitHub%20token%20to%20use%20your%20Copilot%20subscription&envLink=https://github.com/settings/tokens)
 
+> **⚠️ Note:** After deploying, your live URL will be shown in the Vercel dashboard (e.g. `https://your-project-name.vercel.app`). Use the URL shown in your own Vercel dashboard — do not use any previously shared demo links as they may point to deleted deployments.
+
 **📖 [Complete Deployment Guide](DEPLOYMENT.md)** - Deploy to Vercel in 5 minutes!
 
 **What You Need for Vercel:**
