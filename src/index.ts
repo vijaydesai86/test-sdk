@@ -12,11 +12,16 @@ async function main() {
 
   const provider = (process.env.STOCK_DATA_PROVIDER || 'alphavantage').toLowerCase();
   const apiKey = process.env.ALPHA_VANTAGE_API_KEY;
-  if (provider !== 'yfinance' && !apiKey) {
+  const finnhubKey = process.env.FINNHUB_API_KEY;
+  if (provider === 'finnhub' && !finnhubKey) {
+    console.error('❌ FINNHUB_API_KEY is required when STOCK_DATA_PROVIDER=finnhub.');
+    process.exit(1);
+  }
+  if (provider !== 'finnhub' && !apiKey) {
     console.error('❌ ALPHA_VANTAGE_API_KEY is required for Alpha Vantage or hybrid mode.');
     process.exit(1);
   }
-  const stockService = createStockService(apiKey);
+  const stockService = createStockService(apiKey, finnhubKey);
 
   console.log(`📊 Using stock data provider: ${provider}\n`);
 

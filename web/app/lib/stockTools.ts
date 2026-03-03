@@ -35,13 +35,16 @@ const stopwords = new Set([
 const REPORTS_DIR = process.env.REPORTS_DIR || (process.env.VERCEL ? '/tmp/reports' : 'reports');
 const CACHE_DIR = path.join(REPORTS_DIR, 'cache');
 const CACHE_TTL_MS = Number(process.env.STOCK_CACHE_TTL_MS || 1000 * 60 * 60 * 24 * 7);
-const DEFAULT_SOURCE = (process.env.STOCK_DATA_PROVIDER || 'alphavantage').toLowerCase() === 'yfinance'
-  ? 'Yahoo Finance'
-  : 'Alpha Vantage';
+const DEFAULT_SOURCE = (() => {
+  const p = (process.env.STOCK_DATA_PROVIDER || 'alphavantage').toLowerCase();
+  if (p === 'finnhub') return 'Finnhub';
+  if (p === 'hybrid') return 'Alpha Vantage / Finnhub';
+  return 'Alpha Vantage';
+})();
 const SOURCE_LEGEND = (() => {
   const provider = (process.env.STOCK_DATA_PROVIDER || 'alphavantage').toLowerCase();
-  if (provider === 'hybrid') return '_Legend: Alpha Vantage is primary; Yahoo Finance fills gaps._';
-  if (provider === 'yfinance') return '_Legend: Yahoo Finance provider._';
+  if (provider === 'hybrid') return '_Legend: Alpha Vantage is primary; Finnhub fills gaps._';
+  if (provider === 'finnhub') return '_Legend: Finnhub provider._';
   return '_Legend: Alpha Vantage provider._';
 })();
 
@@ -880,14 +883,10 @@ export async function executeTool(
             const message = error?.message || 'Unavailable';
             if (isRateLimit(message)) {
               rateLimitHit = true;
-              notes.push(
-                /yahoo finance|rate limit reached/i.test(message)
-                  ? 'Yahoo Finance rate limit reached; remaining sections skipped.'
-                  : 'Alpha Vantage rate limit reached; remaining sections skipped.'
-              );
+              notes.push('Rate limit reached; remaining sections skipped.');
               return cachedValue !== null ? (cachedValue as T) : (undefined as T);
             }
-            if (!message.includes('Alpha-only mode')) {
+            if (!message.includes('Alpha-only mode') && !message.includes('free tier') && !message.includes('not available via') && !message.includes('not available in')) {
               notes.push(`${label}: ${message}`);
             }
             if (cachedValue && typeof cachedValue === 'object' && '__source' in cachedValue) {
@@ -1057,14 +1056,10 @@ export async function executeTool(
             const message = error?.message || 'Unavailable';
             if (isRateLimit(message)) {
               rateLimitHit = true;
-              notes.push(
-                /yahoo finance|rate limit reached/i.test(message)
-                  ? 'Yahoo Finance rate limit reached; remaining sections skipped.'
-                  : 'Alpha Vantage rate limit reached; remaining sections skipped.'
-              );
+              notes.push('Rate limit reached; remaining sections skipped.');
               return cachedValue !== null ? (cachedValue as T) : (undefined as T);
             }
-            if (!message.includes('Alpha-only mode')) {
+            if (!message.includes('Alpha-only mode') && !message.includes('free tier') && !message.includes('not available via') && !message.includes('not available in')) {
               notes.push(`${label}: ${message}`);
             }
           if (cachedValue && typeof cachedValue === 'object') {
