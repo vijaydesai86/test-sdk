@@ -833,6 +833,11 @@ export class AlphaVantageService implements StockDataService {
   }
 }
 
+// Sentinel stored in quoteSummaryCache to record a rate-limit failure without
+// making additional network calls.  Any section that reads from quoteSummary
+// after a 429 failure will throw the friendly error immediately.
+const RATE_LIMIT_MARKER = Symbol('RATE_LIMIT_MARKER');
+
 class YahooFinanceService implements StockDataService {
   private lastRequestAt = 0;
   private minIntervalMs = Number(process.env.YFINANCE_MIN_INTERVAL_MS || 500);
@@ -840,6 +845,9 @@ class YahooFinanceService implements StockDataService {
   // Instance-level cache: shares quoteSummary data within a single request.
   // Module-level moduleQuoteSummaryCache (above) shares data across requests.
   private quoteSummaryCache = new Map<string, any>();
+  // In-flight promise map: prevents duplicate concurrent quoteSummary fetches
+  // (e.g. when multiple data sections are fetched in parallel via Promise.all).
+  private quoteSummaryInFlight = new Map<string, Promise<any>>();
 
   // All quoteSummary modules needed by this service.
   private static SUMMARY_MODULES = [
@@ -920,30 +928,64 @@ class YahooFinanceService implements StockDataService {
     }
 
     // 2. Check instance-level cache (within one request).
-    const cached = this.quoteSummaryCache.get(key);
-    if (cached) {
+    //    Also handles the RATE_LIMIT_MARKER sentinel: if a previous call in this
+    //    same request already got a 429, fail immediately without hitting Yahoo Finance.
+    if (this.quoteSummaryCache.has(key)) {
+      const cached = this.quoteSummaryCache.get(key);
+      if (cached === RATE_LIMIT_MARKER) {
+        throw new Error(
+          'Yahoo Finance rate limit reached. Please wait a moment and try again.'
+        );
+      }
       const result: any = {};
       for (const mod of modules) result[mod] = cached[mod];
       return result;
     }
 
-    // 3. Fetch ALL needed modules in one request and populate both caches.
-    await this.throttle();
-    const yahooFinance = await getYahooFinance();
-    const quoteSummaryFn = yahooFinance.quoteSummary;
-    if (!quoteSummaryFn) {
-      throw new Error('Yahoo Finance quoteSummary unavailable');
+    // 3. Single-flight deduplication: if a fetch is already in-progress for this
+    //    symbol (e.g. two sections called in parallel via Promise.all), share it.
+    const inflight = this.quoteSummaryInFlight.get(key);
+    if (inflight) {
+      const fullData = await inflight;
+      const result: any = {};
+      for (const mod of modules) result[mod] = fullData[mod];
+      return result;
     }
-    const allModules = YahooFinanceService.SUMMARY_MODULES as unknown as string[];
-    const fullData = await this.withRetry(() => quoteSummaryFn(symbol, { modules: allModules }, YF_MODULE_OPTS));
-    this.quoteSummaryCache.set(key, fullData);
-    moduleQuoteSummaryCache.set(key, { data: fullData, expiresAt: Date.now() + QUOTE_SUMMARY_TTL_MS });
 
-    const result: any = {};
-    for (const mod of modules) {
-      result[mod] = (fullData as any)?.[mod];
+    // 4. Fetch ALL needed modules in one request and populate both caches.
+    const fetchPromise = (async () => {
+      await this.throttle();
+      const yahooFinance = await getYahooFinance();
+      const quoteSummaryFn = yahooFinance.quoteSummary;
+      if (!quoteSummaryFn) {
+        throw new Error('Yahoo Finance quoteSummary unavailable');
+      }
+      const allModules = YahooFinanceService.SUMMARY_MODULES as unknown as string[];
+      return await this.withRetry(() => quoteSummaryFn(symbol, { modules: allModules }, YF_MODULE_OPTS));
+    })();
+
+    this.quoteSummaryInFlight.set(key, fetchPromise);
+    try {
+      const fullData = await fetchPromise;
+      this.quoteSummaryCache.set(key, fullData);
+      moduleQuoteSummaryCache.set(key, { data: fullData, expiresAt: Date.now() + QUOTE_SUMMARY_TTL_MS });
+
+      const result: any = {};
+      for (const mod of modules) {
+        result[mod] = (fullData as any)?.[mod];
+      }
+      return result;
+    } catch (e: any) {
+      // Cache rate-limit failures so subsequent calls in this request fail immediately
+      // without making additional network attempts (preventing N×3s delays per report).
+      const isRateLimit = /too many requests|rate limit reached/i.test(e?.message || '');
+      if (isRateLimit) {
+        this.quoteSummaryCache.set(key, RATE_LIMIT_MARKER);
+      }
+      throw e;
+    } finally {
+      this.quoteSummaryInFlight.delete(key);
     }
-    return result;
   }
 
   async getStockPrice(symbol: string): Promise<any> {
