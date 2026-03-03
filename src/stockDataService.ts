@@ -878,14 +878,22 @@ class YahooFinanceService implements StockDataService {
         // "Unexpected token 'T', "Too Many Requests " is not valid JSON".
         const isRateLimit = /too many requests|status 429/i.test(message);
         if (isRateLimit) {
-          // On a rate-limit, clear the stale crumb so the NEXT request starts
-          // with fresh Yahoo Finance auth.  We do NOT sleep here — sleeping for
-          // many seconds per call on a Vercel serverless function with a 300 s
-          // timeout would cascade into FUNCTION_INVOCATION_TIMEOUT.
+          // Clear the stale crumb so the retry (or the next request) starts
+          // with fresh Yahoo Finance authentication.
           await clearYahooCrumb();
-          throw new Error(
-            'Yahoo Finance rate limit reached. Please wait a moment and try again.'
-          );
+          if (attempt >= this.maxRetries) {
+            throw new Error(
+              'Yahoo Finance rate limit reached. Please wait a moment and try again.'
+            );
+          }
+          // Fixed 3 s delay before retrying a 429.  We deliberately use a
+          // short fixed delay (not exponential) so that the per-call overhead
+          // stays bounded: with maxRetries=1 and ~3 Yahoo Finance calls per
+          // report, worst-case added latency is 3 × 3 s = 9 s — well inside
+          // Vercel's 300 s function timeout.
+          await new Promise((resolve) => setTimeout(resolve, 3000));
+          attempt += 1;
+          continue;
         }
         const shouldRetry = /crumb|fetch failed|network|ECONNRESET|ETIMEDOUT/i.test(message);
         if (attempt >= this.maxRetries || !shouldRetry) {
