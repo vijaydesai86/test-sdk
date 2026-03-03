@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getToolDefinitionsByName, executeTool } from '@/app/lib/stockTools';
-import { createStockService, StockDataService } from '@/app/lib/stockDataService';
+import { createStockService, StockDataService, normalizeProvider } from '@/app/lib/stockDataService';
 
 // GitHub Models API — new endpoint (azure endpoint deprecated Oct 2025)
 // Works with PATs from github.com/settings/personal-access-tokens (models:read scope)
@@ -44,6 +44,13 @@ interface ChatMessage {
 // Store conversation history per session
 const sessions = new Map<string, ChatMessage[]>();
 
+const DATA_SOURCE_NAME = (() => {
+  const p = normalizeProvider();
+  if (p === 'finnhub') return 'Finnhub';
+  if (p === 'hybrid') return 'Alpha Vantage / Finnhub';
+  return 'Alpha Vantage';
+})();
+
 const SYSTEM_PROMPT = `You are an elite buy-side equity research analyst. Produce institutional-quality, data-driven financial research — thorough, precise, and immediately actionable.
 
 **NON-NEGOTIABLE RULES:**
@@ -57,7 +64,7 @@ const SYSTEM_PROMPT = `You are an elite buy-side equity research analyst. Produc
 - Single-stock deep dive: get_stock_price + get_company_overview + get_basic_financials + get_earnings_history + get_income_statement + get_balance_sheet + get_cash_flow + get_price_history.
 - Peer comparison: search_stock for peers → batch get_company_overview + get_basic_financials + get_stock_price.
 - Sector/theme report: search_stock → batch get_company_overview + get_stock_price + get_basic_financials.
-- News-driven theme: not available in Alpha-only mode.
+- News-driven theme: use get_company_news or search_news (available in Finnhub/hybrid mode).
 - Investment allocation: batch full data for all candidates → quantitative scoring → exact $ amounts, stop-losses, rebalancing triggers.
 
 **4. Never skip a tool** when that data would strengthen the analysis. If a tool fails due to missing API keys, say so explicitly and continue with available data only.
@@ -73,7 +80,7 @@ const SYSTEM_PROMPT = `You are an elite buy-side equity research analyst. Produc
 - Show all calculations explicitly: FCF = Op.CF − CapEx = $X − $Y = $Z.
 - Scoring matrix for allocations: Growth 25% / Profitability 20% / Moat 20% / Valuation 20% / Momentum 15%.
 - Numbers: prices 2 decimals, % 1 decimal, large numbers 2 sig figs ($2.3B).
-- Cite "Source: Alpha Vantage" after data-heavy sections.
+- Cite "Source: ${DATA_SOURCE_NAME}" after data-heavy sections.
 - Length matches request: price query = 2–3 lines; full sector report = 1,000+ words.
 `;
 
@@ -818,19 +825,29 @@ export async function POST(request: NextRequest) {
     const githubToken = process.env.GITHUB_TOKEN || process.env.GH_TOKEN || process.env.COPILOT_GITHUB_TOKEN;
     const proxyKey = process.env.OPENAI_API_KEY || process.env.OPENAI_TOKEN;
 
-    // Initialize stock service (always uses real Alpha Vantage API)
-    const dataProvider = (process.env.STOCK_DATA_PROVIDER || 'alphavantage').toLowerCase();
+    // Initialize stock service — validate that the required API key is present
+    const dataProvider = normalizeProvider();
     const alphaVantageKey = process.env.ALPHA_VANTAGE_API_KEY;
-    if (dataProvider !== 'yfinance' && !alphaVantageKey) {
+    const finnhubKey = process.env.FINNHUB_API_KEY;
+    if (dataProvider === 'finnhub' && !finnhubKey) {
       return NextResponse.json(
         {
-          error: 'Alpha Vantage API key not configured',
-          details: 'Please set ALPHA_VANTAGE_API_KEY environment variable for Alpha Vantage or hybrid mode.',
+          error: 'Finnhub API key not configured',
+          details: 'Please set FINNHUB_API_KEY in your Vercel environment variables.',
         },
         { status: 503 }
       );
     }
-    const stockService: StockDataService = createStockService(alphaVantageKey);
+    if (dataProvider !== 'finnhub' && !alphaVantageKey) {
+      return NextResponse.json(
+        {
+          error: 'Alpha Vantage API key not configured',
+          details: 'Please set ALPHA_VANTAGE_API_KEY in your Vercel environment variables.',
+        },
+        { status: 503 }
+      );
+    }
+    const stockService: StockDataService = createStockService(alphaVantageKey, finnhubKey);
 
     const reportRequest = parseReportRequest(message);
     const timeframe = parseTimeframe(message);

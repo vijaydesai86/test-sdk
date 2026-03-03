@@ -1,6 +1,6 @@
 import { promises as fs } from 'fs';
 import path from 'path';
-import { StockDataService } from './stockDataService';
+import { StockDataService, normalizeProvider } from './stockDataService';
 import { buildSectorReport, buildStockReport, buildPeerReport, buildComparisonReport, saveReport } from './reportGenerator';
 
 /**
@@ -35,13 +35,16 @@ const stopwords = new Set([
 const REPORTS_DIR = process.env.REPORTS_DIR || (process.env.VERCEL ? '/tmp/reports' : 'reports');
 const CACHE_DIR = path.join(REPORTS_DIR, 'cache');
 const CACHE_TTL_MS = Number(process.env.STOCK_CACHE_TTL_MS || 1000 * 60 * 60 * 24 * 7);
-const DEFAULT_SOURCE = (process.env.STOCK_DATA_PROVIDER || 'alphavantage').toLowerCase() === 'yfinance'
-  ? 'Yahoo Finance'
-  : 'Alpha Vantage';
+const DEFAULT_SOURCE = (() => {
+  const p = normalizeProvider();
+  if (p === 'finnhub') return 'Finnhub';
+  if (p === 'hybrid') return 'Alpha Vantage / Finnhub';
+  return 'Alpha Vantage';
+})();
 const SOURCE_LEGEND = (() => {
-  const provider = (process.env.STOCK_DATA_PROVIDER || 'alphavantage').toLowerCase();
-  if (provider === 'hybrid') return '_Legend: Alpha Vantage is primary; Yahoo Finance fills gaps._';
-  if (provider === 'yfinance') return '_Legend: Yahoo Finance provider._';
+  const provider = normalizeProvider();
+  if (provider === 'hybrid') return '_Legend: Alpha Vantage is primary; Finnhub fills gaps._';
+  if (provider === 'finnhub') return '_Legend: Finnhub provider._';
   return '_Legend: Alpha Vantage provider._';
 })();
 
@@ -880,14 +883,10 @@ export async function executeTool(
             const message = error?.message || 'Unavailable';
             if (isRateLimit(message)) {
               rateLimitHit = true;
-              notes.push(
-                /yahoo finance|rate limit reached/i.test(message)
-                  ? 'Yahoo Finance rate limit reached; remaining sections skipped.'
-                  : 'Alpha Vantage rate limit reached; remaining sections skipped.'
-              );
+              notes.push('Rate limit reached; remaining sections skipped.');
               return cachedValue !== null ? (cachedValue as T) : (undefined as T);
             }
-            if (!message.includes('Alpha-only mode')) {
+            if (!message.includes('Alpha-only mode') && !message.includes('free tier') && !message.includes('not available via') && !message.includes('not available in')) {
               notes.push(`${label}: ${message}`);
             }
             if (cachedValue && typeof cachedValue === 'object' && '__source' in cachedValue) {
@@ -1057,14 +1056,10 @@ export async function executeTool(
             const message = error?.message || 'Unavailable';
             if (isRateLimit(message)) {
               rateLimitHit = true;
-              notes.push(
-                /yahoo finance|rate limit reached/i.test(message)
-                  ? 'Yahoo Finance rate limit reached; remaining sections skipped.'
-                  : 'Alpha Vantage rate limit reached; remaining sections skipped.'
-              );
+              notes.push('Rate limit reached; remaining sections skipped.');
               return cachedValue !== null ? (cachedValue as T) : (undefined as T);
             }
-            if (!message.includes('Alpha-only mode')) {
+            if (!message.includes('Alpha-only mode') && !message.includes('free tier') && !message.includes('not available via') && !message.includes('not available in')) {
               notes.push(`${label}: ${message}`);
             }
           if (cachedValue && typeof cachedValue === 'object') {
@@ -1147,7 +1142,7 @@ export async function executeTool(
         const defaultLimit = process.env.VERCEL ? 3 : 4;
         const limit = Math.min(Number(args.limit || defaultLimit), defaultLimit);
         const notes: string[] = [];
-        notes.push('Universe limited to the top matches to respect Alpha Vantage free-tier rate limits.');
+        notes.push(`Universe limited to the top matches to respect ${DEFAULT_SOURCE} free-tier rate limits.`);
 
         const { tokens, phrases } = buildThemeTokens(query);
         const searchTerms = buildSearchQueries(query);
@@ -1188,8 +1183,8 @@ export async function executeTool(
             }
           } catch (error: any) {
             const message = error?.message || 'Unknown error';
-            if (message.includes('frequency') || message.includes('Thank you for using Alpha Vantage')) {
-              notes.push('Alpha Vantage rate limit reached; remaining symbols skipped.');
+            if (message.includes('frequency') || message.includes('Thank you for using Alpha Vantage') || /rate limit|too many requests/i.test(message)) {
+              notes.push(`${DEFAULT_SOURCE} rate limit reached; remaining symbols skipped.`);
               break;
             }
             notes.push(`${candidate.symbol}: ${message}`);
@@ -1201,9 +1196,9 @@ export async function executeTool(
         const universe = items.map((item) => item.symbol);
 
         if (universe.length > 0) {
-          notes.push(`Universe built from Alpha Vantage symbol search for "${query}".`);
+          notes.push(`Universe built from ${DEFAULT_SOURCE} symbol search for "${query}".`);
         } else {
-          notes.push('No tickers matched the theme keywords on Alpha Vantage. Try a more specific query.');
+          notes.push(`No tickers matched the theme keywords on ${DEFAULT_SOURCE}. Try a more specific query.`);
         }
 
         const content = buildSectorReport({

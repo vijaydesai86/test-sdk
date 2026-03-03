@@ -1483,9 +1483,9 @@ export function buildComparisonReport(data: ComparisonReportData): string {
   const sources = data.sources || {};
   const provider = (process.env.STOCK_DATA_PROVIDER || 'alphavantage').toLowerCase();
   const sourceLegend = provider === 'hybrid'
-    ? '_Legend: Alpha Vantage is primary; Yahoo Finance fills gaps._'
-    : provider === 'yfinance'
-      ? '_Legend: Yahoo Finance provider._'
+    ? '_Legend: Alpha Vantage is primary; Finnhub fills gaps._'
+    : provider === 'finnhub'
+      ? '_Legend: Finnhub provider._'
       : '_Legend: Alpha Vantage provider._';
   const items = data.items;
 

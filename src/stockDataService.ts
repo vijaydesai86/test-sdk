@@ -1,217 +1,76 @@
+/**
+ * Stock Data Service
+ *
+ * Multi-provider stock data layer with per-request caching and throttling.
+ *
+ * Provider selection via STOCK_DATA_PROVIDER environment variable:
+ *   'alphavantage' (default) — Alpha Vantage REST API
+ *                              Free tier: 25 requests/day
+ *                              https://www.alphavantage.co  (set ALPHA_VANTAGE_API_KEY)
+ *   'finnhub'                — Finnhub REST API
+ *                              Free tier: 60 requests/min, real-time data
+ *                              https://finnhub.io           (set FINNHUB_API_KEY)
+ *   'hybrid'                 — AlphaVantage primary, Finnhub fallback
+ *                              Requires both ALPHA_VANTAGE_API_KEY and FINNHUB_API_KEY
+ *
+ * Other free providers you can add using the same pattern:
+ *   - Polygon.io           free: 5 req/min, delayed data       POLYGON_API_KEY
+ *   - Financial Modeling Prep  free: 250 req/day                FMP_API_KEY
+ *   - Twelve Data          free: 800 req/day                    TWELVE_DATA_API_KEY
+ *   - Marketstack          free: 100 req/month                  MARKETSTACK_API_KEY
+ */
 import axios from 'axios';
-type YahooFinanceModule = typeof import('yahoo-finance2');
-type YahooFinanceClient = {
-  quote?: (symbol: string | string[], queryOpts?: any, moduleOpts?: any) => Promise<any>;
-  quoteSummary?: (symbol: string, queryOpts?: any, moduleOpts?: any) => Promise<any>;
-  historical?: (symbol: string, queryOpts?: any, moduleOpts?: any) => Promise<any>;
-  chart?: (symbol: string, queryOpts?: any, moduleOpts?: any) => Promise<any>;
-  search?: (query: string, queryOpts?: any, moduleOpts?: any) => Promise<any>;
-  fundamentalsTimeSeries?: (symbol: string, queryOpts?: any, moduleOpts?: any) => Promise<any>;
+
+// ─── Shared Utilities ──────────────────────────────────────────────────────
+
+const attachSource = (data: any, source: string): any => {
+  if (data && typeof data === 'object') (data as any).__source = source;
+  return data;
 };
 
-// Module options passed to every yahoo-finance2 call to skip strict schema
-// validation and avoid FailedYahooValidationError on partially returned data.
-const YF_MODULE_OPTS = { validateResult: false };
-
-let yahooFinanceModule: YahooFinanceModule | null = null;
-let yahooFinanceClient: YahooFinanceClient | null = null;
-let yahooFinanceConfigured = false;
-
-// Reference to getCrumbClear from yahoo-finance2's internal getCrumb.js module.
-// getCrumb.js maintains two module-level singletons:
-//   - crumb: the last known crumb string
-//   - promise: the in-flight (or previously rejected) crumb-fetch Promise
-// If the crumb fetch ever rejects, 'promise' is left pointing to that rejected
-// Promise.  getCrumb() then returns the same rejected Promise on every
-// subsequent call without retrying — making withRetry() completely futile.
-// getCrumbClear() is the ONLY function that zeros both singletons.
-let getCrumbClearFn: ((cookieJar: any) => Promise<void>) | null = null;
-
-/**
- * Load getCrumbClear from yahoo-finance2's ESM getCrumb module.
- * The function is not re-exported from the package's main entry so we derive
- * its absolute file URL from the resolved CJS path and import it directly,
- * which bypasses the package.json exports restriction while sharing the same
- * ESM module instance (and therefore the same singleton variables).
- * Must be called AFTER import('yahoo-finance2') so the module is already
- * cached — the same file URL then returns the cached instance.
- */
-const tryLoadGetCrumbClear = async (): Promise<void> => {
-  if (getCrumbClearFn) return;
-  try {
-    const { createRequire } = await import('module');
-    const { pathToFileURL } = await import('url');
-    const _req = createRequire(pathToFileURL(process.cwd() + '/package.json').href);
-    const yf2CjsPath = _req.resolve('yahoo-finance2');
-    const esmGetCrumbPath = yf2CjsPath
-      .replace('/dist/cjs/', '/dist/esm/')
-      .replace('index-node.js', 'lib/getCrumb.js');
-    const crumbMod = await import(pathToFileURL(esmGetCrumbPath).href);
-    if (typeof crumbMod.getCrumbClear === 'function') {
-      getCrumbClearFn = crumbMod.getCrumbClear;
-    }
-  } catch {
-    // Non-fatal: clearYahooCrumb() falls back to cookie-jar replacement only.
-  }
+const parseRangeToDays = (range = '1y'): number => {
+  const lower = range.toLowerCase();
+  if (lower.includes('max')) return 365 * 20;
+  if (lower.includes('5y')) return 365 * 5;
+  if (lower.includes('3y')) return 365 * 3;
+  if (lower.includes('1y')) return 365;
+  if (lower.includes('6m')) return 180;
+  if (lower.includes('3m')) return 90;
+  if (lower.includes('1m')) return 30;
+  if (lower.includes('1w')) return 7;
+  return 365;
 };
 
-// Module-level caches shared across all YahooFinanceService instances.
-// Vercel serverless function instances can handle multiple requests before recycling,
-// so this avoids redundant Yahoo Finance API calls for the same symbol within the TTL.
-const DEFAULT_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
-const CACHE_TTL_MS = Number(process.env.YFINANCE_CACHE_TTL_MS || DEFAULT_CACHE_TTL_MS);
-const moduleQuoteSummaryCache = new Map<string, { data: any; expiresAt: number }>();
+// ─── Response Cache ────────────────────────────────────────────────────────
 
-// Module-level chart cache — chart() doesn't require crumb authentication and is
-// much less rate-limited than quoteSummary. We use it for price data.
-const moduleChartCache = new Map<string, { data: any; expiresAt: number }>();
+interface CacheEntry {
+  data: any;
+  expiresAt: number;
+}
 
-// Module-level throttle timestamp — persists across requests in the same warm
-// serverless instance, mirroring how AlphaVantageService.sharedCache works.
-let moduleLastYahooRequestAt = 0;
+class ResponseCache {
+  private readonly store = new Map<string, CacheEntry>();
 
-const loadYahooModule = async (): Promise<YahooFinanceModule> => {
-  try {
-    // Static module specifier — allows nft/webpack to trace this dependency
-    // so the package is included in the deployment's node_modules.
-    const mod = await import('yahoo-finance2') as unknown as YahooFinanceModule;
-    await tryLoadGetCrumbClear();
-    return mod;
-  } catch (e: any) {
-    throw new Error(`Unable to load yahoo-finance2 module: ${e?.message || e}`);
-  }
-};
-
-const configureYahooFinance = (mod: any) => {
-  if (yahooFinanceConfigured) return;
-  const yf = mod?.default || mod;
-  try {
-    // Suppress the interactive survey notice that would otherwise print on every call.
-    if (typeof yf?.suppressNotices === 'function') {
-      yf.suppressNotices(['yahooSurvey']);
-    }
-    // Serialize requests (concurrency=1) to avoid triggering Yahoo Finance rate limits
-    // from concurrent calls. Use query1 host — it has a different (less aggressive)
-    // rate-limit policy for v10/quoteSummary than the default query2 host.
-    if (typeof yf?.setGlobalConfig === 'function') {
-      yf.setGlobalConfig({
-        YF_QUERY_HOST: process.env.YFINANCE_QUERY_HOST || 'query1.finance.yahoo.com',
-        queue: { concurrency: 1 }, // serialize requests to reduce rate-limit risk
-        validation: { logErrors: false, logOptionsErrors: false },
-      });
-    }
-    // Suppress the deprecated historical()→chart() mapping notice; we call chart() directly.
-    if (typeof yf?.suppressNotices === 'function') {
-      yf.suppressNotices(['yahooSurvey', 'ripHistorical']);
-    }
-  } catch {
-    // Non-fatal — continue even if configuration fails.
-  }
-  yahooFinanceConfigured = true;
-};
-
-/**
- * Fully reset yahoo-finance2's crumb state so the next request performs a
- * fresh authentication round-trip to Yahoo Finance.
- *
- * getCrumb.js keeps two module-level singletons:
- *   - crumb: the last known crumb string
- *   - promise: the in-flight (or previously rejected) crumb-fetch Promise
- *
- * If the crumb fetch ever rejects, 'promise' is left set to that rejected
- * Promise.  getCrumb() then immediately returns the same rejected Promise on
- * every subsequent call without retrying — making all withRetry() attempts
- * completely futile.  getCrumbClear() resets both singletons; simply replacing
- * the cookieJar (our previous implementation) was not sufficient.
- */
-const clearYahooCrumb = async (): Promise<void> => {
-  try {
-    const mod = yahooFinanceModule as any;
-    const instance = mod?.default;
-    if (typeof instance?.setGlobalConfig !== 'function') return;
-    const { ExtendedCookieJar } = mod;
-    if (typeof ExtendedCookieJar !== 'function') return;
-    // Step 1: reset the module-level 'crumb' and 'promise' singletons.
-    if (getCrumbClearFn && instance._opts?.cookieJar) {
-      await getCrumbClearFn(instance._opts.cookieJar);
-    }
-    // Step 2: install a fresh cookie jar with no previously-set session cookies.
-    instance.setGlobalConfig({ cookieJar: new ExtendedCookieJar() });
-  } catch {
-    // best-effort
-  }
-};
-
-const buildYahooClient = (mod: any): YahooFinanceClient => {
-  const sources: any[] = [
-    mod,
-    mod?.default,
-    mod?.default?.default,
-    mod?.default?.default?.default,
-    mod?.YahooFinance,
-    mod?.default?.YahooFinance,
-  ];
-
-  const createCandidates = [
-    mod,
-    mod?.createYahooFinance,
-    mod?.default?.createYahooFinance,
-    mod?.default,
-    mod?.default?.default,
-    mod?.YahooFinance,
-    mod?.default?.YahooFinance,
-  ];
-
-  for (const candidate of createCandidates) {
-    if (typeof candidate !== 'function') continue;
-    try {
-      const instance = candidate();
-      if (instance) sources.push(instance);
-    } catch {
-      try {
-        const instance = new candidate();
-        if (instance) sources.push(instance);
-      } catch {
-        // ignore
-      }
-    }
+  get(key: string): any | null {
+    const entry = this.store.get(key);
+    if (!entry || entry.expiresAt < Date.now()) return null;
+    return entry.data;
   }
 
-  const findFn = (name: keyof YahooFinanceClient) => {
-    for (const source of sources) {
-      const fn = source?.[name];
-      if (typeof fn === 'function') {
-        return fn.bind(source);
-      }
-    }
-    return undefined;
-  };
-
-  return {
-    quote: findFn('quote'),
-    quoteSummary: findFn('quoteSummary'),
-    historical: findFn('historical'),
-    chart: findFn('chart'),
-    search: findFn('search'),
-    fundamentalsTimeSeries: findFn('fundamentalsTimeSeries'),
-  };
-};
-
-const getYahooFinance = async (): Promise<YahooFinanceClient> => {
-  if (yahooFinanceClient) return yahooFinanceClient;
-  if (!yahooFinanceModule) {
-    yahooFinanceModule = await loadYahooModule();
+  set(key: string, data: any, ttlMs: number): void {
+    this.store.set(key, { data, expiresAt: Date.now() + ttlMs });
   }
-  configureYahooFinance(yahooFinanceModule as any);
-  const client = buildYahooClient(yahooFinanceModule as any);
-  // Only require chart (no crumb needed) — quoteSummary may be rate-limited
-  if (!client.chart) {
-    const modKeys = Object.keys((yahooFinanceModule as any) || {}).join(', ');
-    throw new Error(`Yahoo Finance client missing required methods. Module keys: ${modKeys || 'none'}`);
+
+  async getOrFetch(key: string, ttlMs: number, fetcher: () => Promise<any>): Promise<any> {
+    const cached = this.get(key);
+    if (cached !== null) return cached;
+    const data = await fetcher();
+    if (ttlMs > 0) this.set(key, data, ttlMs);
+    return data;
   }
-  yahooFinanceClient = client;
-  return client;
-};
+}
+
+// ─── Service Interface ─────────────────────────────────────────────────────
 
 export interface StockDataService {
   getStockPrice(symbol: string): Promise<any>;
@@ -238,276 +97,126 @@ export interface StockDataService {
   searchNews(query: string, days?: number): Promise<any>;
 }
 
-type Provider = 'alphavantage' | 'yfinance' | 'hybrid';
-const PROVIDER_ENV = (process.env.STOCK_DATA_PROVIDER || 'alphavantage').toLowerCase() as Provider;
-const SOURCE_YAHOO = 'Yahoo Finance';
+// ─── Alpha Vantage ─────────────────────────────────────────────────────────
 
-const attachSource = (data: any, source: string) => {
-  if (data && typeof data === 'object') {
-    (data as any).__source = source;
-  }
-  return data;
-};
-
-const pickNumber = (value: any) => {
-  if (value === undefined || value === null) return null;
-  const num = Number(value);
-  return Number.isNaN(num) ? null : num;
-};
-
-const toPercentLabel = (value?: number | null) => {
-  if (value === null || value === undefined || Number.isNaN(value)) return 'N/A';
-  return `${(value * 100).toFixed(2)}%`;
-};
-
-const parseRangeToPeriod = (range?: string) => {
-  const now = Date.now();
-  const dayMs = 24 * 60 * 60 * 1000;
-  const lower = (range || '').toLowerCase();
-  const years = lower.includes('max') ? 20
-    : lower.includes('5y') ? 5
-    : lower.includes('3y') ? 3
-    : lower.includes('1y') ? 1
-    : lower.includes('6m') ? 0.5
-    : lower.includes('3m') ? 0.25
-    : lower.includes('1m') ? 1 / 12
-    : lower.includes('1w') ? 1 / 52
-    : 1;
-  const periodMs = years * 365 * dayMs;
-  return {
-    period1: new Date(now - periodMs),
-    period2: new Date(now),
-  };
-};
+const AV_SOURCE = 'Alpha Vantage';
 
 /**
- * Stock data service using Alpha Vantage API (free tier)
- * Note: Alpha Vantage free tier has a limit of 5 API calls per minute
+ * Alpha Vantage stock data provider.
+ * Free tier: 25 requests/day — great for demos and low-frequency lookups.
+ * Get a key at https://www.alphavantage.co/support/#api-key
+ * Required env var: ALPHA_VANTAGE_API_KEY
  */
 export class AlphaVantageService implements StockDataService {
-  private apiKey: string;
-  private baseUrl = 'https://www.alphavantage.co/query';
-  private cache = new Map<string, { expiresAt: number; data: any }>();
-  private lastRequestAt = new Map<string, number>();
-  private static sharedCache = new Map<string, { expiresAt: number; data: any }>();
-  private minIntervals = {
-    alphavantage: Number(process.env.ALPHA_VANTAGE_MIN_INTERVAL_MS || 1200),
-  };
+  private readonly baseUrl = 'https://www.alphavantage.co/query';
+  private readonly minIntervalMs: number;
+  private lastRequestAt = 0;
+  private static readonly sharedCache = new ResponseCache();
 
-  constructor(apiKey?: string) {
-    this.apiKey = apiKey || process.env.ALPHA_VANTAGE_API_KEY || 'demo';
+  constructor(private readonly apiKey = process.env.ALPHA_VANTAGE_API_KEY ?? 'demo') {
+    this.minIntervalMs = Number(process.env.ALPHA_VANTAGE_MIN_INTERVAL_MS ?? 1200);
   }
 
-  private buildCacheKey(prefix: string, params: Record<string, string>): string {
-    const sorted: Record<string, string> = {};
-    Object.keys(params).sort().forEach((key) => {
-      sorted[key] = params[key];
+  private async throttle(): Promise<void> {
+    if (this.minIntervalMs <= 0) return;
+    const wait = this.minIntervalMs - (Date.now() - this.lastRequestAt);
+    if (wait > 0) await new Promise<void>((r) => setTimeout(r, wait));
+    this.lastRequestAt = Date.now();
+  }
+
+  private async request(params: Record<string, string>, ttlMs = 0): Promise<any> {
+    const cacheKey = `av:${JSON.stringify(Object.fromEntries(Object.entries(params).sort()))}`;
+    return AlphaVantageService.sharedCache.getOrFetch(cacheKey, ttlMs, async () => {
+      await this.throttle();
+      const { data } = await axios.get(this.baseUrl, {
+        params: { ...params, apikey: this.apiKey },
+        timeout: 10_000,
+      });
+      if (data?.Note) throw new Error(data.Note);
+      if (data?.Information) throw new Error(data.Information);
+      if (data?.['Error Message']) throw new Error(data['Error Message']);
+      return data;
     });
-    return `${prefix}:${JSON.stringify(sorted)}`;
-  }
-
-  private async throttle(provider: string, minIntervalMs: number): Promise<void> {
-    if (minIntervalMs <= 0) return;
-    const last = this.lastRequestAt.get(provider) || 0;
-    const now = Date.now();
-    const wait = minIntervalMs - (now - last);
-    if (wait > 0) {
-      await new Promise((resolve) => setTimeout(resolve, wait));
-    }
-    this.lastRequestAt.set(provider, Date.now());
-  }
-
-  private async fetchWithCache(
-    cacheKey: string,
-    ttlMs: number,
-    fetcher: () => Promise<any>
-  ): Promise<any> {
-    if (ttlMs > 0) {
-      const cached = this.cache.get(cacheKey) || AlphaVantageService.sharedCache.get(cacheKey);
-      if (cached && cached.expiresAt > Date.now()) {
-        this.cache.set(cacheKey, cached);
-        return cached.data;
-      }
-    }
-
-    const data = await fetcher();
-    if (ttlMs > 0) {
-      const entry = { expiresAt: Date.now() + ttlMs, data };
-      this.cache.set(cacheKey, entry);
-      AlphaVantageService.sharedCache.set(cacheKey, entry);
-    }
-    return data;
-  }
-
-  private async makeRequest(
-    params: Record<string, string>,
-    options: { ttlMs?: number; cacheKey?: string } = {}
-  ): Promise<any> {
-    const cacheKey = options.cacheKey || this.buildCacheKey('alphavantage', params);
-    const ttlMs = options.ttlMs || 0;
-
-    return this.fetchWithCache(cacheKey, ttlMs, async () => {
-      await this.throttle('alphavantage', this.minIntervals.alphavantage);
-      try {
-        const response = await axios.get(this.baseUrl, {
-          params: {
-            ...params,
-            apikey: this.apiKey,
-          },
-          timeout: 10000,
-        });
-        const data = response.data;
-        if (data?.Note) {
-          throw new Error(data.Note);
-        }
-        if (data?.Information) {
-          throw new Error(data.Information);
-        }
-        if (data?.['Error Message']) {
-          throw new Error(data['Error Message']);
-        }
-        return data;
-      } catch (error: any) {
-        console.error('API request failed:', error.message);
-        throw new Error(`Failed to fetch data: ${error.message}`);
-      }
-    });
-  }
-
-
-  private buildBasicFinancialsFallback(overview: any): any {
-    if (!overview) return null;
-    const revenue = Number(overview.revenueTTM);
-    const grossProfit = Number(overview.grossProfitTTM);
-    const grossMarginTTM = Number.isFinite(revenue) && revenue !== 0 && Number.isFinite(grossProfit)
-      ? grossProfit / revenue
-      : overview.profitMargin;
-
-    return {
-      symbol: overview.symbol || overview.Symbol,
-      metric: {
-        peBasicExclExtraTTM: overview.peRatio,
-        epsTTM: overview.eps,
-        revenueGrowthTTM: overview.quarterlyRevenueGrowth,
-        epsGrowthTTM: overview.quarterlyEarningsGrowth,
-        grossMarginTTM,
-        operatingMarginTTM: overview.operatingMargin,
-        roeTTM: overview.returnOnEquity,
-        revenuePerShareTTM: overview.revenuePerShare,
-      },
-      series: {},
-    };
   }
 
   async getStockPrice(symbol: string): Promise<any> {
-    const data = await this.makeRequest(
-      {
-        function: 'GLOBAL_QUOTE',
-        symbol: symbol.toUpperCase(),
-      },
-      { ttlMs: 30000 }
+    const data = await this.request(
+      { function: 'GLOBAL_QUOTE', symbol: symbol.toUpperCase() },
+      30_000
     );
-
-    if (data['Global Quote']) {
-      const quote = data['Global Quote'];
-      return {
-        symbol: quote['01. symbol'],
-        price: quote['05. price'],
-        change: quote['09. change'],
-        changePercent: quote['10. change percent'],
-        volume: quote['06. volume'],
-        latestTradingDay: quote['07. latest trading day'],
-      };
-    }
-    throw new Error('Unable to fetch stock price');
+    const q = data['Global Quote'];
+    if (!q) throw new Error('Unable to fetch stock price');
+    return attachSource(
+      {
+        symbol: q['01. symbol'],
+        price: q['05. price'],
+        change: q['09. change'],
+        changePercent: q['10. change percent'],
+        volume: q['06. volume'],
+        latestTradingDay: q['07. latest trading day'],
+      },
+      AV_SOURCE
+    );
   }
 
-  async getPriceHistory(symbol: string, range: string = 'daily'): Promise<any> {
+  async getPriceHistory(symbol: string, range = 'daily'): Promise<any> {
     const now = new Date();
-    const normalizedRange = range.toLowerCase();
-    const rangeConfig = (() => {
-      if (['1w', '1week', 'week'].includes(normalizedRange)) {
-        return { functionName: 'TIME_SERIES_DAILY', outputsize: 'compact', days: 7 };
-      }
-      if (['1m', '1month', 'month'].includes(normalizedRange)) {
-        return { functionName: 'TIME_SERIES_DAILY', outputsize: 'compact', days: 30 };
-      }
-      if (['3m', '3month', 'quarter'].includes(normalizedRange)) {
-        return { functionName: 'TIME_SERIES_DAILY', outputsize: 'compact', days: 90 };
-      }
-      if (['6m', '6month'].includes(normalizedRange)) {
-        return { functionName: 'TIME_SERIES_DAILY', outputsize: 'compact', days: 180 };
-      }
-      if (['1y', '1year', 'year'].includes(normalizedRange)) {
-        return { functionName: 'TIME_SERIES_WEEKLY', outputsize: 'full', days: 365 };
-      }
-      if (['3y', '3year'].includes(normalizedRange)) {
-        return { functionName: 'TIME_SERIES_WEEKLY', outputsize: 'full', days: 365 * 3 };
-      }
-      if (['5y', '5year'].includes(normalizedRange)) {
-        return { functionName: 'TIME_SERIES_WEEKLY', outputsize: 'full', days: 365 * 5 };
-      }
-      if (['max', 'all'].includes(normalizedRange)) {
-        return { functionName: 'TIME_SERIES_MONTHLY', outputsize: 'full', days: null };
-      }
-      if (normalizedRange === 'weekly') {
-        return { functionName: 'TIME_SERIES_WEEKLY', outputsize: 'full', days: null };
-      }
-      if (normalizedRange === 'monthly') {
-        return { functionName: 'TIME_SERIES_MONTHLY', outputsize: 'full', days: null };
-      }
-      return { functionName: 'TIME_SERIES_DAILY', outputsize: 'compact', days: null };
+    const norm = range.toLowerCase();
+    const cfg = (() => {
+      if (['1w', '1week', 'week'].includes(norm))
+        return { fn: 'TIME_SERIES_DAILY', size: 'compact', days: 7 };
+      if (['1m', '1month', 'month'].includes(norm))
+        return { fn: 'TIME_SERIES_DAILY', size: 'compact', days: 30 };
+      if (['3m', '3month', 'quarter'].includes(norm))
+        return { fn: 'TIME_SERIES_DAILY', size: 'compact', days: 90 };
+      if (['6m', '6month'].includes(norm))
+        return { fn: 'TIME_SERIES_DAILY', size: 'compact', days: 180 };
+      if (['1y', '1year', 'year'].includes(norm))
+        return { fn: 'TIME_SERIES_WEEKLY', size: 'full', days: 365 };
+      if (['3y', '3year'].includes(norm))
+        return { fn: 'TIME_SERIES_WEEKLY', size: 'full', days: 365 * 3 };
+      if (['5y', '5year'].includes(norm))
+        return { fn: 'TIME_SERIES_WEEKLY', size: 'full', days: 365 * 5 };
+      if (['max', 'all'].includes(norm))
+        return { fn: 'TIME_SERIES_MONTHLY', size: 'full', days: null as null };
+      if (norm === 'weekly') return { fn: 'TIME_SERIES_WEEKLY', size: 'full', days: null as null };
+      if (norm === 'monthly') return { fn: 'TIME_SERIES_MONTHLY', size: 'full', days: null as null };
+      return { fn: 'TIME_SERIES_DAILY', size: 'compact', days: null as null };
     })();
 
-    const data = await this.makeRequest(
-      {
-        function: rangeConfig.functionName,
-        symbol: symbol.toUpperCase(),
-        outputsize: rangeConfig.outputsize,
-      },
-      { ttlMs: 60 * 60 * 1000 }
+    const data = await this.request(
+      { function: cfg.fn, symbol: symbol.toUpperCase(), outputsize: cfg.size },
+      60 * 60 * 1000
     );
+    const tsKey = Object.keys(data).find((k) => k.includes('Time Series'));
+    if (!tsKey) throw new Error('Unable to fetch price history');
 
-    // Parse the time series data
-    const timeSeriesKey = Object.keys(data).find(key => key.includes('Time Series'));
-    if (timeSeriesKey) {
-      const timeSeries = data[timeSeriesKey];
-      const cutoff = rangeConfig.days
-        ? new Date(now.getTime() - rangeConfig.days * 24 * 60 * 60 * 1000)
-        : null;
-      const prices = Object.entries(timeSeries)
-        .filter(([date]) => {
-          if (!cutoff) return true;
-          const parsed = new Date(date);
-          return !Number.isNaN(parsed.getTime()) && parsed >= cutoff;
-        })
-        .map(([date, values]: [string, any]) => ({
-          date,
-          open: values['1. open'],
-          high: values['2. high'],
-          low: values['3. low'],
-          close: values['4. close'],
-          volume: values['5. volume'],
-        }));
-      return {
-        symbol: symbol.toUpperCase(),
-        prices,
-      };
-    }
-    throw new Error('Unable to fetch price history');
+    const cutoff = cfg.days ? new Date(now.getTime() - cfg.days * 86_400_000) : null;
+    const prices = Object.entries(data[tsKey])
+      .filter(([date]) => {
+        if (!cutoff) return true;
+        const d = new Date(date);
+        return !Number.isNaN(d.getTime()) && d >= cutoff;
+      })
+      .map(([date, v]: [string, any]) => ({
+        date,
+        open: v['1. open'],
+        high: v['2. high'],
+        low: v['3. low'],
+        close: v['4. close'],
+        volume: v['5. volume'],
+      }));
+    return attachSource({ symbol: symbol.toUpperCase(), prices }, AV_SOURCE);
   }
 
   async getCompanyOverview(symbol: string): Promise<any> {
-    const data = await this.makeRequest(
-      {
-        function: 'OVERVIEW',
-        symbol: symbol.toUpperCase(),
-      },
-      { ttlMs: 6 * 60 * 60 * 1000 }
+    const data = await this.request(
+      { function: 'OVERVIEW', symbol: symbol.toUpperCase() },
+      6 * 60 * 60 * 1000
     );
-
-    if (data.Symbol) {
-      return {
+    if (!data.Symbol) throw new Error('Unable to fetch company overview');
+    return attachSource(
+      {
         symbol: data.Symbol,
         name: data.Name,
         description: data.Description,
@@ -550,169 +259,163 @@ export class AlphaVantageService implements StockDataService {
         analystRatingStrongSell: data.AnalystRatingStrongSell,
         exDividendDate: data.ExDividendDate,
         dividendDate: data.DividendDate,
-      };
-    }
-    throw new Error('Unable to fetch company overview');
+      },
+      AV_SOURCE
+    );
   }
 
   async getBasicFinancials(symbol: string): Promise<any> {
     const overview = await this.getCompanyOverview(symbol).catch(() => null);
-    const fallback = this.buildBasicFinancialsFallback(overview);
-    if (fallback) return fallback;
-    return { symbol: symbol.toUpperCase(), metric: {}, series: {} };
+    if (!overview) return { symbol: symbol.toUpperCase(), metric: {}, series: {} };
+    const revenue = Number(overview.revenueTTM);
+    const grossProfit = Number(overview.grossProfitTTM);
+    const grossMarginTTM =
+      Number.isFinite(revenue) && revenue !== 0 && Number.isFinite(grossProfit)
+        ? grossProfit / revenue
+        : overview.profitMargin;
+    return {
+      symbol: overview.symbol || overview.Symbol,
+      metric: {
+        peBasicExclExtraTTM: overview.peRatio,
+        epsTTM: overview.eps,
+        revenueGrowthTTM: overview.quarterlyRevenueGrowth,
+        epsGrowthTTM: overview.quarterlyEarningsGrowth,
+        grossMarginTTM,
+        operatingMarginTTM: overview.operatingMargin,
+        roeTTM: overview.returnOnEquity,
+        revenuePerShareTTM: overview.revenuePerShare,
+      },
+      series: {},
+    };
   }
 
   async getInsiderTrading(symbol: string): Promise<any> {
-    const overviewData = await this.makeRequest(
-      {
-        function: 'OVERVIEW',
-        symbol: symbol.toUpperCase(),
-      },
-      { ttlMs: 6 * 60 * 60 * 1000 }
+    const overview = await this.request(
+      { function: 'OVERVIEW', symbol: symbol.toUpperCase() },
+      6 * 60 * 60 * 1000
     );
-
     const result: any = {
       symbol: symbol.toUpperCase(),
-      insiderOwnership: overviewData.PercentInsiders ? `${overviewData.PercentInsiders}%` : 'N/A',
-      institutionalOwnership: overviewData.PercentInstitutions ? `${overviewData.PercentInstitutions}%` : 'N/A',
-      sharesOutstanding: overviewData.SharesOutstanding || 'N/A',
-      sharesFloat: overviewData.SharesFloat || 'N/A',
-      shortRatio: overviewData.ShortRatio || 'N/A',
-      shortPercentFloat: overviewData.ShortPercentFloat ? `${overviewData.ShortPercentFloat}%` : 'N/A',
-      shortPercentOutstanding: overviewData.ShortPercentOutstanding ? `${overviewData.ShortPercentOutstanding}%` : 'N/A',
+      insiderOwnership: overview.PercentInsiders ? `${overview.PercentInsiders}%` : 'N/A',
+      institutionalOwnership: overview.PercentInstitutions ? `${overview.PercentInstitutions}%` : 'N/A',
+      sharesOutstanding: overview.SharesOutstanding || 'N/A',
+      sharesFloat: overview.SharesFloat || 'N/A',
+      shortRatio: overview.ShortRatio || 'N/A',
+      shortPercentFloat: overview.ShortPercentFloat ? `${overview.ShortPercentFloat}%` : 'N/A',
     };
-
     try {
-      const txnData = await this.makeRequest({
-        function: 'INSIDER_TRANSACTIONS',
-        symbol: symbol.toUpperCase(),
-      }, { ttlMs: 6 * 60 * 60 * 1000 });
-      if (txnData.data && Array.isArray(txnData.data) && txnData.data.length > 0) {
-        result.recentTransactions = txnData.data.slice(0, 15).map((t: any) => ({
+      const txn = await this.request(
+        { function: 'INSIDER_TRANSACTIONS', symbol: symbol.toUpperCase() },
+        6 * 60 * 60 * 1000
+      );
+      if (Array.isArray(txn?.data) && txn.data.length > 0) {
+        result.recentTransactions = txn.data.slice(0, 15).map((t: any) => ({
           transactionDate: t.transaction_date,
           insider: t.executive,
           title: t.executive_title,
           transactionType: t.acquisition_or_disposal === 'A' ? 'Purchase' : 'Sale',
           shares: t.shares,
           sharePrice: t.share_price,
-          totalValue: t.shares && t.share_price ? (Number(t.shares) * Number(t.share_price)).toFixed(0) : 'N/A',
+          totalValue:
+            t.shares && t.share_price
+              ? (Number(t.shares) * Number(t.share_price)).toFixed(0)
+              : 'N/A',
         }));
       }
     } catch {
-      // Premium endpoint unavailable — ownership data above is still returned
+      // Premium endpoint — ownership data above is still returned
     }
-
-    return result;
+    return attachSource(result, AV_SOURCE);
   }
 
   async getAnalystRatings(symbol: string): Promise<any> {
-    const data = await this.makeRequest(
-      {
-        function: 'OVERVIEW',
-        symbol: symbol.toUpperCase(),
-      },
-      { ttlMs: 6 * 60 * 60 * 1000 }
+    const data = await this.request(
+      { function: 'OVERVIEW', symbol: symbol.toUpperCase() },
+      6 * 60 * 60 * 1000
     );
-
-    return {
-      symbol: symbol.toUpperCase(),
-      analystTargetPrice: data.AnalystTargetPrice || 'N/A',
-      strongBuy: data.AnalystRatingStrongBuy || 'N/A',
-      buy: data.AnalystRatingBuy || 'N/A',
-      hold: data.AnalystRatingHold || 'N/A',
-      sell: data.AnalystRatingSell || 'N/A',
-      strongSell: data.AnalystRatingStrongSell || 'N/A',
-      movingAverage50Day: data['50DayMovingAverage'] || 'N/A',
-      upside: data.AnalystTargetPrice && data['50DayMovingAverage']
-        ? `${(((Number(data.AnalystTargetPrice) / Number(data['50DayMovingAverage'])) - 1) * 100).toFixed(1)}% (vs 50-day MA)`
-        : 'N/A',
-    };
+    return attachSource(
+      {
+        symbol: symbol.toUpperCase(),
+        analystTargetPrice: data.AnalystTargetPrice || 'N/A',
+        strongBuy: data.AnalystRatingStrongBuy || 'N/A',
+        buy: data.AnalystRatingBuy || 'N/A',
+        hold: data.AnalystRatingHold || 'N/A',
+        sell: data.AnalystRatingSell || 'N/A',
+        strongSell: data.AnalystRatingStrongSell || 'N/A',
+        movingAverage50Day: data['50DayMovingAverage'] || 'N/A',
+        upside:
+          data.AnalystTargetPrice && data['50DayMovingAverage']
+            ? `${(((Number(data.AnalystTargetPrice) / Number(data['50DayMovingAverage'])) - 1) * 100).toFixed(1)}% (vs 50-day MA)`
+            : 'N/A',
+      },
+      AV_SOURCE
+    );
   }
 
-  async getAnalystRecommendations(symbol: string): Promise<any> {
-    throw new Error('Analyst recommendations unavailable in Alpha-only mode');
+  async getAnalystRecommendations(_symbol: string): Promise<any> {
+    throw new Error('Analyst recommendations unavailable in Alpha Vantage');
   }
 
   async getPriceTargets(symbol: string): Promise<any> {
     const overview = await this.getCompanyOverview(symbol).catch(() => null);
-    return {
-      symbol: symbol.toUpperCase(),
-      targetMean: overview?.analystTargetPrice ?? null,
-    };
+    return attachSource(
+      { symbol: symbol.toUpperCase(), targetMean: overview?.analystTargetPrice ?? null },
+      AV_SOURCE
+    );
   }
 
   async getPeers(symbol: string): Promise<any> {
     const overview = await this.getCompanyOverview(symbol).catch(() => null);
-    const rawQueries = [overview?.industry, overview?.sector, overview?.name, symbol]
-      .filter(Boolean)
-      .map((value) => String(value).trim())
-      .filter(Boolean);
-    const queries = Array.from(new Set(rawQueries)).slice(0, 2);
+    const queries = Array.from(
+      new Set(
+        [overview?.industry, overview?.sector, overview?.name, symbol]
+          .filter(Boolean)
+          .map((v) => String(v).trim())
+      )
+    ).slice(0, 2);
     const results = await Promise.all(
-      queries.map((query) => this.searchStock(query).catch(() => ({ results: [] })))
+      queries.map((q) => this.searchStock(q).catch(() => ({ results: [] })))
     );
-    const peers = results
-      .flatMap((result) => result.results || [])
-      .map((item: any) => item.symbol)
-      .filter(Boolean);
-    return {
-      symbol: symbol.toUpperCase(),
-      peers: Array.from(new Set(peers)),
-    };
+    const peers = Array.from(
+      new Set(
+        results.flatMap((r) => r.results || []).map((item: any) => item.symbol).filter(Boolean)
+      )
+    );
+    return attachSource({ symbol: symbol.toUpperCase(), peers }, AV_SOURCE);
   }
 
   async searchStock(query: string): Promise<any> {
-    const alphaResults = await this.makeRequest(
-      {
-        function: 'SYMBOL_SEARCH',
-        keywords: query,
-      },
-      { ttlMs: 60 * 60 * 1000 }
-    );
-
-    if (alphaResults?.Note) {
-      throw new Error(alphaResults.Note);
-    }
-    if (alphaResults?.['Error Message']) {
-      throw new Error(alphaResults['Error Message']);
-    }
-
-    const alphaMatches = alphaResults?.bestMatches || [];
-    const combined = alphaMatches.map((match: any) => ({
-      symbol: match['1. symbol'],
-      name: match['2. name'],
-      type: match['3. type'],
-      region: match['4. region'],
-      currency: match['8. currency'],
+    const data = await this.request({ function: 'SYMBOL_SEARCH', keywords: query }, 60 * 60 * 1000);
+    const matches = (data?.bestMatches || []).map((m: any) => ({
+      symbol: m['1. symbol'],
+      name: m['2. name'],
+      type: m['3. type'],
+      region: m['4. region'],
+      currency: m['8. currency'],
       source: 'alphavantage',
     }));
-
     const seen = new Set<string>();
-    const results = combined.filter((item: { symbol?: string }) => {
+    const unique = matches.filter((item: any) => {
       if (!item.symbol) return false;
-      const key = item.symbol.toUpperCase();
-      if (seen.has(key)) return false;
-      seen.add(key);
+      const k = item.symbol.toUpperCase();
+      if (seen.has(k)) return false;
+      seen.add(k);
       return true;
     });
-
-    const usResults = results.filter((item: { region?: string; currency?: string; exchange?: string; type?: string }) => {
+    const usResults = unique.filter((item: any) => {
       const region = String(item.region || '').toLowerCase();
       const currency = String(item.currency || '').toUpperCase();
-      const exchange = String(item.exchange || '').toUpperCase();
       const type = String(item.type || '').toLowerCase();
       if (type && !type.includes('equity')) return false;
-      return region.includes('united states')
-        || currency === 'USD'
-        || ['NYSE', 'NASDAQ', 'AMEX'].some((label) => exchange.includes(label));
+      return (
+        region.includes('united states') ||
+        currency === 'USD' ||
+        ['NYSE', 'NASDAQ', 'AMEX'].some((x) => (item.exchange || '').includes(x))
+      );
     });
-
     const filtered = usResults.length
       ? usResults
-      : results.filter((item: { type?: string }) => {
-      const type = String(item.type || '').toLowerCase();
-      return !type || type.includes('equity');
-    });
+      : unique.filter((item: any) => { const t = String(item.type || '').toLowerCase(); return !t || t.includes('equity'); });
     return { results: filtered };
   }
 
@@ -721,16 +424,13 @@ export class AlphaVantageService implements StockDataService {
   }
 
   async getEarningsHistory(symbol: string): Promise<any> {
-    const data = await this.makeRequest(
-      {
-        function: 'EARNINGS',
-        symbol: symbol.toUpperCase(),
-      },
-      { ttlMs: 6 * 60 * 60 * 1000 }
+    const data = await this.request(
+      { function: 'EARNINGS', symbol: symbol.toUpperCase() },
+      6 * 60 * 60 * 1000
     );
-
-    if (data.quarterlyEarnings) {
-      return {
+    if (!data.quarterlyEarnings) throw new Error('Unable to fetch earnings history');
+    return attachSource(
+      {
         symbol: symbol.toUpperCase(),
         annualEarnings: (data.annualEarnings || []).slice(0, 10).map((e: any) => ({
           fiscalYear: e.fiscalDateEnding,
@@ -743,22 +443,19 @@ export class AlphaVantageService implements StockDataService {
           surprise: e.surprise,
           surprisePercentage: e.surprisePercentage,
         })),
-      };
-    }
-    throw new Error('Unable to fetch earnings history');
+      },
+      AV_SOURCE
+    );
   }
 
   async getIncomeStatement(symbol: string): Promise<any> {
-    const data = await this.makeRequest(
-      {
-        function: 'INCOME_STATEMENT',
-        symbol: symbol.toUpperCase(),
-      },
-      { ttlMs: 6 * 60 * 60 * 1000 }
+    const data = await this.request(
+      { function: 'INCOME_STATEMENT', symbol: symbol.toUpperCase() },
+      6 * 60 * 60 * 1000
     );
-
-    if (data.quarterlyReports) {
-      return {
+    if (!data.quarterlyReports) throw new Error('Unable to fetch income statement');
+    return attachSource(
+      {
         symbol: symbol.toUpperCase(),
         annualReports: (data.annualReports || []).slice(0, 5).map((r: any) => ({
           fiscalYear: r.fiscalDateEnding,
@@ -776,22 +473,19 @@ export class AlphaVantageService implements StockDataService {
           netIncome: r.netIncome,
           ebitda: r.ebitda,
         })),
-      };
-    }
-    throw new Error('Unable to fetch income statement');
+      },
+      AV_SOURCE
+    );
   }
 
   async getBalanceSheet(symbol: string): Promise<any> {
-    const data = await this.makeRequest(
-      {
-        function: 'BALANCE_SHEET',
-        symbol: symbol.toUpperCase(),
-      },
-      { ttlMs: 6 * 60 * 60 * 1000 }
+    const data = await this.request(
+      { function: 'BALANCE_SHEET', symbol: symbol.toUpperCase() },
+      6 * 60 * 60 * 1000
     );
-
-    if (data.quarterlyReports) {
-      return {
+    if (!data.quarterlyReports) throw new Error('Unable to fetch balance sheet');
+    return attachSource(
+      {
         symbol: symbol.toUpperCase(),
         quarterlyReports: data.quarterlyReports.slice(0, 4).map((r: any) => ({
           fiscalQuarter: r.fiscalDateEnding,
@@ -801,699 +495,531 @@ export class AlphaVantageService implements StockDataService {
           cashAndEquivalents: r.cashAndCashEquivalentsAtCarryingValue,
           longTermDebt: r.longTermDebt,
         })),
-      };
-    }
-    throw new Error('Unable to fetch balance sheet');
+      },
+      AV_SOURCE
+    );
   }
 
   async getCashFlow(symbol: string): Promise<any> {
-    const data = await this.makeRequest(
-      {
-        function: 'CASH_FLOW',
-        symbol: symbol.toUpperCase(),
-      },
-      { ttlMs: 6 * 60 * 60 * 1000 }
+    const data = await this.request(
+      { function: 'CASH_FLOW', symbol: symbol.toUpperCase() },
+      6 * 60 * 60 * 1000
     );
-
-    if (data.quarterlyReports) {
-      return {
+    if (!data.quarterlyReports) throw new Error('Unable to fetch cash flow');
+    return attachSource(
+      {
         symbol: symbol.toUpperCase(),
         quarterlyReports: data.quarterlyReports.slice(0, 4).map((r: any) => ({
           fiscalQuarter: r.fiscalDateEnding,
           operatingCashflow: r.operatingCashflow,
           capitalExpenditures: r.capitalExpenditures,
-          freeCashFlow: r.operatingCashflow && r.capitalExpenditures
-            ? (Number(r.operatingCashflow) - Math.abs(Number(r.capitalExpenditures))).toString()
-            : 'N/A',
+          freeCashFlow:
+            r.operatingCashflow && r.capitalExpenditures
+              ? (Number(r.operatingCashflow) - Math.abs(Number(r.capitalExpenditures))).toString()
+              : 'N/A',
           dividendPayout: r.dividendPayout,
         })),
-      };
-    }
-    throw new Error('Unable to fetch cash flow data');
+      },
+      AV_SOURCE
+    );
   }
 
   async getSectorPerformance(): Promise<any> {
-    const data = await this.makeRequest(
+    const data = await this.request({ function: 'SECTOR' }, 15 * 60 * 1000);
+    return attachSource(
       {
-        function: 'SECTOR',
+        realTimePerformance: data['Rank A: Real-Time Performance'] || {},
+        oneDayPerformance: data['Rank B: 1 Day Performance'] || {},
+        fiveDayPerformance: data['Rank C: 5 Day Performance'] || {},
+        oneMonthPerformance: data['Rank D: 1 Month Performance'] || {},
+        threeMonthPerformance: data['Rank E: 3 Month Performance'] || {},
+        yearToDatePerformance: data['Rank F: Year-to-Date (YTD) Performance'] || {},
+        oneYearPerformance: data['Rank G: 1 Year Performance'] || {},
       },
-      { ttlMs: 15 * 60 * 1000 }
+      AV_SOURCE
     );
-
-    return {
-      realTimePerformance: data['Rank A: Real-Time Performance'] || {},
-      oneDayPerformance: data['Rank B: 1 Day Performance'] || {},
-      fiveDayPerformance: data['Rank C: 5 Day Performance'] || {},
-      oneMonthPerformance: data['Rank D: 1 Month Performance'] || {},
-      threeMonthPerformance: data['Rank E: 3 Month Performance'] || {},
-      yearToDatePerformance: data['Rank F: Year-to-Date (YTD) Performance'] || {},
-      oneYearPerformance: data['Rank G: 1 Year Performance'] || {},
-    };
   }
 
-  async getStocksBySector(sector: string): Promise<any> {
-    throw new Error('Sector screening unavailable in Alpha-only mode');
+  async getStocksBySector(_sector: string): Promise<any> {
+    throw new Error('Sector stock list unavailable in Alpha Vantage free tier');
   }
 
-  async screenStocks(filters: Record<string, string | number | undefined>): Promise<any> {
-    throw new Error('Stock screening unavailable in Alpha-only mode');
+  async screenStocks(_filters: Record<string, string | number | undefined>): Promise<any> {
+    throw new Error('Stock screening unavailable in Alpha Vantage free tier');
   }
 
   async getTopGainersLosers(): Promise<any> {
-    const data = await this.makeRequest(
+    const data = await this.request({ function: 'TOP_GAINERS_LOSERS' }, 5 * 60 * 1000);
+    return attachSource(
       {
-        function: 'TOP_GAINERS_LOSERS',
+        topGainers: (data.top_gainers || []).slice(0, 10).map((s: any) => ({
+          ticker: s.ticker, price: s.price, changeAmount: s.change_amount,
+          changePercentage: s.change_percentage, volume: s.volume,
+        })),
+        topLosers: (data.top_losers || []).slice(0, 10).map((s: any) => ({
+          ticker: s.ticker, price: s.price, changeAmount: s.change_amount,
+          changePercentage: s.change_percentage, volume: s.volume,
+        })),
+        mostActive: (data.most_actively_traded || []).slice(0, 10).map((s: any) => ({
+          ticker: s.ticker, price: s.price, changeAmount: s.change_amount,
+          changePercentage: s.change_percentage, volume: s.volume,
+        })),
       },
-      { ttlMs: 5 * 60 * 1000 }
+      AV_SOURCE
     );
-
-    return {
-      topGainers: (data.top_gainers || []).slice(0, 10).map((s: any) => ({
-        ticker: s.ticker,
-        price: s.price,
-        changeAmount: s.change_amount,
-        changePercentage: s.change_percentage,
-        volume: s.volume,
-      })),
-      topLosers: (data.top_losers || []).slice(0, 10).map((s: any) => ({
-        ticker: s.ticker,
-        price: s.price,
-        changeAmount: s.change_amount,
-        changePercentage: s.change_percentage,
-        volume: s.volume,
-      })),
-      mostActive: (data.most_actively_traded || []).slice(0, 10).map((s: any) => ({
-        ticker: s.ticker,
-        price: s.price,
-        changeAmount: s.change_amount,
-        changePercentage: s.change_percentage,
-        volume: s.volume,
-      })),
-    };
   }
 
-  async getNewsSentiment(symbol: string): Promise<any> {
-    throw new Error('News sentiment unavailable in Alpha-only mode');
+  async getNewsSentiment(_symbol: string): Promise<any> {
+    throw new Error('News sentiment unavailable in Alpha Vantage free tier');
   }
-
-  async getCompanyNews(symbol: string, days: number = 30): Promise<any> {
-    throw new Error('Company news unavailable in Alpha-only mode');
+  async getCompanyNews(_symbol: string, _days?: number): Promise<any> {
+    throw new Error('Company news unavailable in Alpha Vantage free tier');
   }
-
-  async searchNews(query: string, days: number = 30): Promise<any> {
-    throw new Error('News search unavailable in Alpha-only mode');
+  async searchNews(_query: string, _days?: number): Promise<any> {
+    throw new Error('News search unavailable in Alpha Vantage free tier');
   }
 }
 
-// Sentinel stored in quoteSummaryCache to record a rate-limit failure without
-// making additional network calls.  Any section that reads from quoteSummary
-// after a 429 failure will throw the friendly error immediately.
-const RATE_LIMIT_MARKER = Symbol('RATE_LIMIT_MARKER');
+// ─── Finnhub Provider ──────────────────────────────────────────────────────
 
-class YahooFinanceService implements StockDataService {
-  // Use module-level timestamp so throttle spans across requests in a warm instance,
-  // preventing burst requests after a cold start from triggering Yahoo Finance rate limits.
-  private get lastRequestAt() { return moduleLastYahooRequestAt; }
-  private set lastRequestAt(v: number) { moduleLastYahooRequestAt = v; }
-  private minIntervalMs = Number(process.env.YFINANCE_MIN_INTERVAL_MS || 1500);
-  private maxRetries = Number(process.env.YFINANCE_MAX_RETRIES || 3);
-  // Instance-level cache: shares quoteSummary data within a single request.
-  // Module-level moduleQuoteSummaryCache (above) shares data across requests.
-  private quoteSummaryCache = new Map<string, any>();
-  // In-flight promise map: prevents duplicate concurrent quoteSummary fetches
-  // (e.g. when multiple data sections are fetched in parallel via Promise.all).
-  private quoteSummaryInFlight = new Map<string, Promise<any>>();
+const FH_SOURCE = 'Finnhub';
 
-  // All quoteSummary modules needed by this service.
-  private static SUMMARY_MODULES = [
-    'summaryProfile',
-    'price',
-    'defaultKeyStatistics',
-    'financialData',
-    'summaryDetail',
-    'calendarEvents',
-    'recommendationTrend',
-    'earningsHistory',
-    'incomeStatementHistory',
-    'balanceSheetHistory',
-    'cashflowStatementHistory',
-  ] as const;
+/**
+ * Finnhub stock data provider.
+ * Free tier: 60 requests/minute — real-time data, financials, news, and more.
+ * Get a key at https://finnhub.io/register
+ * Required env var: FINNHUB_API_KEY
+ *
+ * What the free plan covers:
+ *   Real-time quotes, OHLCV candles, company profiles, financials,
+ *   earnings, insider transactions, analyst ratings, price targets,
+ *   peer lists, company news, and market news with sentiment.
+ */
+export class FinnhubService implements StockDataService {
+  private readonly baseUrl = 'https://finnhub.io/api/v1';
+  private readonly minIntervalMs: number;
+  private lastRequestAt = 0;
+  private static readonly sharedCache = new ResponseCache();
 
-  private async throttle() {
+  constructor(private readonly apiKey = process.env.FINNHUB_API_KEY ?? '') {
+    this.minIntervalMs = Number(process.env.FINNHUB_MIN_INTERVAL_MS ?? 1000);
+  }
+
+  private async throttle(): Promise<void> {
     if (this.minIntervalMs <= 0) return;
-    const now = Date.now();
-    const wait = this.minIntervalMs - (now - this.lastRequestAt);
-    if (wait > 0) {
-      await new Promise((resolve) => setTimeout(resolve, wait));
-    }
+    const wait = this.minIntervalMs - (Date.now() - this.lastRequestAt);
+    if (wait > 0) await new Promise<void>((r) => setTimeout(r, wait));
     this.lastRequestAt = Date.now();
   }
 
-  private async withRetry<T>(action: () => Promise<T>): Promise<T> {
-    let attempt = 0;
-    while (attempt <= this.maxRetries) {
-      try {
-        return await action();
-      } catch (error: any) {
-        const message = String(error?.message || error);
-        // Detect crumb-specific errors that require clearing the cached crumb.
-        // These are distinct from general rate-limit errors — the crumb endpoint
-        // itself is blocked, not just the data endpoint.
-        const isCrumbError = /failed to get crumb|no set-cookie header/i.test(message);
-        // Detect general rate-limit errors (429 on data endpoints).
-        // Don't clear crumb for these — the crumb is fine, only the data endpoint is blocked.
-        const isRateLimit = /too many requests|status 429/i.test(message);
-
-        if (isCrumbError) {
-          // Crumb endpoint blocked: clear cached crumb so next attempt starts fresh.
-          await clearYahooCrumb();
-          if (attempt >= this.maxRetries) {
-            throw new Error(
-              'Yahoo Finance rate limit reached. Please wait a moment and try again.'
-            );
-          }
-          // Long delay for crumb errors — the auth system is rate-limited.
-          const delay = 30000 + attempt * 15000; // 30s, 45s, 60s
-          await new Promise((resolve) => setTimeout(resolve, delay));
-          attempt += 1;
-          continue;
-        }
-
-        if (isRateLimit) {
-          // Data endpoint rate-limited: do NOT clear crumb (it's still valid).
-          // Just wait longer and retry with the same session.
-          if (attempt >= this.maxRetries) {
-            throw new Error(
-              'Yahoo Finance rate limit reached. Please wait a moment and try again.'
-            );
-          }
-          // Longer progressive back-off: 30 s → 45 s → 60 s.
-          // Yahoo Finance's per-IP rate limiter needs substantial cooling time.
-          const delay = 30000 + attempt * 15000; // 30s, 45s, 60s
-          await new Promise((resolve) => setTimeout(resolve, delay));
-          attempt += 1;
-          continue;
-        }
-
-        const shouldRetry = /crumb|fetch failed|network|ECONNRESET|ETIMEDOUT/i.test(message);
-        if (attempt >= this.maxRetries || !shouldRetry) {
-          throw error;
-        }
-        // Short back-off for transient network errors only.
-        const wait = this.minIntervalMs * (attempt + 1);
-        await new Promise((resolve) => setTimeout(resolve, wait));
-        attempt += 1;
-      }
-    }
-    throw new Error('Yahoo Finance request failed after retries');
-  }
-
-  private async getQuoteSummary(symbol: string, modules: string[]) {
-    const key = symbol.toUpperCase();
-
-    // 1. Check module-level cache (survives across requests in the same serverless instance).
-    const moduleEntry = moduleQuoteSummaryCache.get(key);
-    if (moduleEntry && moduleEntry.expiresAt > Date.now()) {
-      const result: any = {};
-      for (const mod of modules) result[mod] = moduleEntry.data[mod];
-      return result;
-    }
-
-    // 2. Check instance-level cache (within one request).
-    //    Also handles the RATE_LIMIT_MARKER sentinel: if a previous call in this
-    //    same request already got a 429, fail immediately without hitting Yahoo Finance.
-    if (this.quoteSummaryCache.has(key)) {
-      const cached = this.quoteSummaryCache.get(key);
-      if (cached === RATE_LIMIT_MARKER) {
-        throw new Error(
-          'Yahoo Finance rate limit reached. Please wait a moment and try again.'
-        );
-      }
-      const result: any = {};
-      for (const mod of modules) result[mod] = cached[mod];
-      return result;
-    }
-
-    // 3. Single-flight deduplication: if a fetch is already in-progress for this
-    //    symbol (e.g. two sections called in parallel via Promise.all), share it.
-    const inflight = this.quoteSummaryInFlight.get(key);
-    if (inflight) {
-      const fullData = await inflight;
-      const result: any = {};
-      for (const mod of modules) result[mod] = fullData[mod];
-      return result;
-    }
-
-    // 4. Fetch ALL needed modules in one request and populate both caches.
-    const fetchPromise = (async () => {
-      await this.throttle();
-      const yahooFinance = await getYahooFinance();
-      const quoteSummaryFn = yahooFinance.quoteSummary;
-      if (!quoteSummaryFn) {
-        throw new Error('Yahoo Finance quoteSummary unavailable');
-      }
-      const allModules = YahooFinanceService.SUMMARY_MODULES as unknown as string[];
-      return await this.withRetry(() => quoteSummaryFn(symbol, { modules: allModules }, YF_MODULE_OPTS));
-    })();
-
-    this.quoteSummaryInFlight.set(key, fetchPromise);
+  private async get(path: string, params: Record<string, string> = {}): Promise<any> {
+    if (!this.apiKey) throw new Error('FINNHUB_API_KEY is not configured');
+    await this.throttle();
     try {
-      const fullData = await fetchPromise;
-      this.quoteSummaryCache.set(key, fullData);
-      moduleQuoteSummaryCache.set(key, { data: fullData, expiresAt: Date.now() + CACHE_TTL_MS });
-
-      const result: any = {};
-      for (const mod of modules) {
-        result[mod] = (fullData as any)?.[mod];
-      }
-      return result;
-    } catch (e: any) {
-      // Cache rate-limit failures so subsequent calls in this request fail immediately
-      // without making additional network attempts (preventing N×3s delays per report).
-      const isRateLimit = /too many requests|rate limit reached/i.test(e?.message || '');
-      if (isRateLimit) {
-        this.quoteSummaryCache.set(key, RATE_LIMIT_MARKER);
-      }
-      throw e;
-    } finally {
-      this.quoteSummaryInFlight.delete(key);
-    }
-  }
-
-  // Chart data cache — chart() doesn't need crumb authentication and provides
-  // price + history data. This is our primary data source to avoid rate limits.
-  private chartCache = new Map<string, any>();
-  private chartInFlight = new Map<string, Promise<any>>();
-
-  // Fetch chart data (NO CRUMB NEEDED - primary data source)
-  private async getChartData(symbol: string, range = '1y'): Promise<any> {
-    const key = `${symbol.toUpperCase()}:${range}`;
-
-    // Check module-level cache first
-    const moduleEntry = moduleChartCache.get(key);
-    if (moduleEntry && moduleEntry.expiresAt > Date.now()) {
-      return moduleEntry.data;
-    }
-
-    // Check instance-level cache (within same request — no expiration needed since
-    // instance is created fresh for each request and inherits from module cache)
-    if (this.chartCache.has(key)) {
-      return this.chartCache.get(key);
-    }
-
-    // Check in-flight requests
-    const inflight = this.chartInFlight.get(key);
-    if (inflight) {
-      return await inflight;
-    }
-
-    // Fetch from Yahoo Finance chart API (no crumb needed!)
-    const fetchPromise = (async () => {
-      await this.throttle();
-      const yahooFinance = await getYahooFinance();
-      const chartFn = yahooFinance.chart;
-      if (!chartFn) {
-        throw new Error('Yahoo Finance chart unavailable');
-      }
-      const { period1, period2 } = parseRangeToPeriod(range);
-      // chart() doesn't need crumb - much less rate-limited than quoteSummary
-      return await chartFn(symbol, { period1, period2, interval: '1d' }, YF_MODULE_OPTS);
-    })();
-
-    this.chartInFlight.set(key, fetchPromise);
-    try {
-      const data = await fetchPromise;
-      this.chartCache.set(key, data);
-      moduleChartCache.set(key, { data, expiresAt: Date.now() + CACHE_TTL_MS });
+      const { data } = await axios.get(`${this.baseUrl}${path}`, {
+        params: { ...params, token: this.apiKey },
+        timeout: 10_000,
+      });
       return data;
-    } finally {
-      this.chartInFlight.delete(key);
+    } catch (err: any) {
+      const msg = err?.response?.data?.error ?? err.message;
+      throw new Error(`Finnhub error on ${path}: ${msg}`);
     }
+  }
+
+  private cache<T>(key: string, ttlMs: number, path: string, params: Record<string, string> = {}): Promise<T> {
+    return FinnhubService.sharedCache.getOrFetch(key, ttlMs, () => this.get(path, params)) as Promise<T>;
   }
 
   async getStockPrice(symbol: string): Promise<any> {
-    // Use chart() instead of quoteSummary() — chart doesn't need crumb authentication
-    // and is much less rate-limited. It provides regularMarketPrice in meta.
-    try {
-      const chartData = await this.getChartData(symbol, '5d');
-      const meta = chartData?.meta || {};
-      const marketPrice = meta.regularMarketPrice ?? null;
-      const previousClose = meta.chartPreviousClose ?? meta.previousClose ?? null;
-      const change = marketPrice && previousClose ? marketPrice - previousClose : null;
-      const changePct = change && previousClose ? (change / previousClose) * 100 : null;
-      return attachSource({
-        symbol: symbol.toUpperCase(),
-        price: typeof marketPrice === 'number' ? marketPrice.toFixed(2) : marketPrice,
-        change: typeof change === 'number' ? change.toFixed(2) : change,
-        changePercent: toPercentLabel(changePct),
-      }, SOURCE_YAHOO);
-    } catch (error: any) {
-      // If chart fails, try quoteSummary as fallback
-      const summary = await this.getQuoteSummary(symbol, ['price']);
-      const p = summary.price || {};
-      const marketPrice = p.regularMarketPrice ?? null;
-      const change = p.regularMarketChange ?? null;
-      const changePct = p.regularMarketChangePercent ?? null;
-      return attachSource({
-        symbol: symbol.toUpperCase(),
-        price: typeof marketPrice === 'number' ? marketPrice.toFixed(2) : marketPrice,
-        change: typeof change === 'number' ? change.toFixed(2) : change,
-        changePercent: toPercentLabel(changePct),
-      }, SOURCE_YAHOO);
-    }
+    const sym = symbol.toUpperCase();
+    const d = await this.cache<any>(`fh:quote:${sym}`, 30_000, '/quote', { symbol: sym });
+    if (d?.c == null) throw new Error(`Unable to fetch stock price for ${sym}`);
+    return attachSource(
+      {
+        symbol: sym,
+        price: d.c?.toFixed(2),
+        change: d.d?.toFixed(2) ?? null,
+        changePercent: d.dp != null ? `${d.dp.toFixed(2)}%` : 'N/A',
+        high: d.h, low: d.l, open: d.o, previousClose: d.pc, volume: d.v,
+        timestamp: d.t ? new Date(d.t * 1000).toISOString() : null,
+      },
+      FH_SOURCE
+    );
   }
 
   async getPriceHistory(symbol: string, range = '1y'): Promise<any> {
-    // Use cached chart data — chart() doesn't need crumb authentication
-    const chartData = await this.getChartData(symbol, range);
-    const prices = (chartData?.quotes || []).map((row: any) => ({
-      date: row.date?.toISOString?.().slice(0, 10) || String(row.date),
-      close: row.close,
+    const sym = symbol.toUpperCase();
+    const now = Math.floor(Date.now() / 1000);
+    const days = parseRangeToDays(range);
+    const resolution = days > 365 ? 'W' : 'D';
+    const d = await this.cache<any>(
+      `fh:candles:${sym}:${range}`, 60 * 60 * 1000, '/stock/candles',
+      { symbol: sym, resolution, from: String(now - days * 86_400), to: String(now) }
+    );
+    if (!d || d.s !== 'ok') throw new Error('Unable to fetch price history');
+    const prices = (d.t as number[]).map((ts, i) => ({
+      date: new Date(ts * 1000).toISOString().slice(0, 10),
+      open: d.o[i], high: d.h[i], low: d.l[i], close: d.c[i], volume: d.v[i],
     }));
-    return attachSource({ symbol: symbol.toUpperCase(), prices }, SOURCE_YAHOO);
+    return attachSource({ symbol: sym, prices }, FH_SOURCE);
   }
 
   async getCompanyOverview(symbol: string): Promise<any> {
-    // ONLY use chart() which doesn't need crumb authentication.
-    // Yahoo Finance's quoteSummary API is rate-limited from cloud IPs like Vercel.
-    let chartMeta: any = {};
-    try {
-      const chartData = await this.getChartData(symbol, '1y');
-      chartMeta = chartData?.meta || {};
-    } catch (error) {
-      // chart() failed - return minimal data
-      return attachSource({
-        symbol: symbol.toUpperCase(),
-        name: symbol.toUpperCase(),
-        marketCapitalization: null,
-        eps: null,
-        peRatio: null,
-        sector: null,
-        industry: null,
-        __note: 'Unable to fetch data from Yahoo Finance chart API',
-      }, SOURCE_YAHOO);
-    }
-
-    // chart() meta provides basic price data - return what we can
-    return attachSource({
-      symbol: symbol.toUpperCase(),
-      name: chartMeta.longName || chartMeta.shortName || chartMeta.symbol || symbol.toUpperCase(),
-      marketCapitalization: null, // Not available in chart()
-      eps: null, // Not available in chart()
-      peRatio: null, // Not available in chart()
-      sector: null, // Not available in chart()
-      industry: null, // Not available in chart()
-      '52WeekHigh': chartMeta.fiftyTwoWeekHigh ?? null,
-      '52WeekLow': chartMeta.fiftyTwoWeekLow ?? null,
-      '50DayMovingAverage': chartMeta.fiftyDayAverage ?? null,
-      '200DayMovingAverage': chartMeta.twoHundredDayAverage ?? null,
-      regularMarketPrice: chartMeta.regularMarketPrice ?? null,
-      previousClose: chartMeta.chartPreviousClose ?? chartMeta.previousClose ?? null,
-      currency: chartMeta.currency ?? 'USD',
-      exchangeName: chartMeta.exchangeName ?? null,
-      __note: 'Limited data available from Yahoo Finance chart API (quoteSummary is rate-limited from cloud providers)',
-    }, SOURCE_YAHOO);
+    const sym = symbol.toUpperCase();
+    const [profile, metrics] = await Promise.all([
+      this.cache<any>(`fh:profile:${sym}`, 6 * 60 * 60 * 1000, '/stock/profile2', { symbol: sym }),
+      this.getBasicFinancials(sym).catch(() => ({ metric: {} })),
+    ]);
+    if (!profile?.ticker) throw new Error(`Unable to fetch company overview for ${sym}`);
+    const m = metrics.metric ?? {};
+    return attachSource(
+      {
+        symbol: sym,
+        name: profile.name,
+        description: `${profile.name} is a ${profile.finnhubIndustry ?? 'public'} company listed on ${profile.exchange ?? 'an exchange'}.`,
+        sector: profile.finnhubIndustry ?? null,
+        industry: profile.finnhubIndustry ?? null,
+        marketCapitalization: profile.marketCapitalization ? String(Math.round(profile.marketCapitalization * 1e6)) : null,
+        eps: m.epsNormalizedAnnual ?? null,
+        peRatio: m.peNormalizedAnnual ?? null,
+        forwardPE: m.peTTM ?? null,
+        beta: m.beta ?? null,
+        '52WeekHigh': m['52WeekHigh'] ?? null,
+        '52WeekLow': m['52WeekLow'] ?? null,
+        dividendYield: m.dividendYieldIndicatedAnnual ?? null,
+        profitMargin: m.netProfitMarginTTM != null ? m.netProfitMarginTTM / 100 : null,
+        returnOnEquity: m.roeTTM != null ? m.roeTTM / 100 : null,
+        sharesOutstanding: profile.shareOutstanding ? String(Math.round(profile.shareOutstanding * 1e6)) : null,
+        exchange: profile.exchange ?? null,
+        ipoDate: profile.ipo ?? null,
+        webUrl: profile.weburl ?? null,
+        logo: profile.logo ?? null,
+        currency: profile.currency ?? 'USD',
+      },
+      FH_SOURCE
+    );
   }
 
   async getBasicFinancials(symbol: string): Promise<any> {
-    const overview = await this.getCompanyOverview(symbol);
-    const revenue = pickNumber(overview.revenueTTM);
-    const grossProfit = pickNumber(overview.grossProfitTTM);
-    const grossMarginTTM = revenue && grossProfit ? grossProfit / revenue : pickNumber(overview.profitMargin);
-    return attachSource({
-      symbol: symbol.toUpperCase(),
-      metric: {
-        peBasicExclExtraTTM: overview.peRatio,
-        epsTTM: overview.eps,
-        revenueGrowthTTM: overview.quarterlyRevenueGrowth,
-        epsGrowthTTM: overview.quarterlyEarningsGrowth,
-        grossMarginTTM,
-        operatingMarginTTM: overview.operatingMargin,
-        roeTTM: overview.returnOnEquity,
-        revenuePerShareTTM: overview.revenuePerShare,
+    const sym = symbol.toUpperCase();
+    const d = await this.cache<any>(`fh:metrics:${sym}`, 6 * 60 * 60 * 1000, '/stock/metric', { symbol: sym, metric: 'all' });
+    const m = d?.metric ?? {};
+    return attachSource(
+      {
+        symbol: sym,
+        metric: {
+          peBasicExclExtraTTM: m.peTTM ?? null,
+          epsTTM: m.epsNormalizedAnnual ?? null,
+          revenueGrowthTTM: m.revenueGrowthTTMAnnual ?? null,
+          epsGrowthTTM: m.epsGrowth3Y ?? null,
+          grossMarginTTM: m.grossMarginTTM != null ? m.grossMarginTTM / 100 : null,
+          operatingMarginTTM: m.operatingMarginTTM != null ? m.operatingMarginTTM / 100 : null,
+          roeTTM: m.roeTTM != null ? m.roeTTM / 100 : null,
+          revenuePerShareTTM: m.revenuePerShareAnnual ?? null,
+          beta: m.beta ?? null,
+          '52WeekHigh': m['52WeekHigh'] ?? null,
+          '52WeekLow': m['52WeekLow'] ?? null,
+          debtToEquity: m.totalDebt_totalEquityAnnual ?? null,
+          priceToBook: m.pbAnnual ?? null,
+          currentRatio: m.currentRatioAnnual ?? null,
+          dividendYield: m.dividendYieldIndicatedAnnual ?? null,
+        },
+        series: {},
       },
-      series: {},
-    }, SOURCE_YAHOO);
+      FH_SOURCE
+    );
   }
 
   async getInsiderTrading(symbol: string): Promise<any> {
-    throw new Error('Insider trading unavailable via Yahoo Finance');
+    const sym = symbol.toUpperCase();
+    const d = await this.cache<any>(`fh:insider:${sym}`, 6 * 60 * 60 * 1000, '/stock/insider-transactions', { symbol: sym });
+    const transactions = (d?.data ?? []).slice(0, 15).map((t: any) => ({
+      transactionDate: t.transactionDate,
+      insider: t.name,
+      title: t.title ?? 'N/A',
+      transactionType: t.change > 0 ? 'Purchase' : 'Sale',
+      shares: Math.abs(t.change ?? 0),
+      sharePrice: t.transactionPrice ?? null,
+      totalValue: t.change && t.transactionPrice ? Math.abs(t.change * t.transactionPrice).toFixed(0) : 'N/A',
+    }));
+    return attachSource({ symbol: sym, recentTransactions: transactions }, FH_SOURCE);
   }
 
   async getAnalystRatings(symbol: string): Promise<any> {
-    // Yahoo Finance's quoteSummary requires crumb authentication which is blocked
-    // from cloud IPs. Return empty data instead of failing.
-    return attachSource({
-      symbol: symbol.toUpperCase(),
-      strongBuy: 'N/A',
-      buy: 'N/A',
-      hold: 'N/A',
-      sell: 'N/A',
-      strongSell: 'N/A',
-      movingAverage50Day: 'N/A',
-      __note: 'Analyst ratings require Yahoo Finance quoteSummary API which is rate-limited from cloud providers',
-    }, SOURCE_YAHOO);
+    const recs = await this.getAnalystRecommendations(symbol);
+    const latest = recs?.recommendations?.[0] ?? {};
+    return attachSource(
+      {
+        symbol: symbol.toUpperCase(),
+        strongBuy: latest.strongBuy ?? 'N/A',
+        buy: latest.buy ?? 'N/A',
+        hold: latest.hold ?? 'N/A',
+        sell: latest.sell ?? 'N/A',
+        strongSell: latest.strongSell ?? 'N/A',
+        period: latest.period ?? 'N/A',
+      },
+      FH_SOURCE
+    );
   }
 
   async getAnalystRecommendations(symbol: string): Promise<any> {
-    throw new Error('Analyst recommendations unavailable via Yahoo Finance');
+    const sym = symbol.toUpperCase();
+    const d = await this.cache<any[]>(`fh:recommendations:${sym}`, 6 * 60 * 60 * 1000, '/stock/recommendation', { symbol: sym });
+    return attachSource(
+      {
+        symbol: sym,
+        recommendations: (d ?? []).slice(0, 6).map((r: any) => ({
+          period: r.period,
+          strongBuy: r.strongBuy, buy: r.buy, hold: r.hold, sell: r.sell, strongSell: r.strongSell,
+        })),
+      },
+      FH_SOURCE
+    );
   }
 
   async getPriceTargets(symbol: string): Promise<any> {
-    // Yahoo Finance's quoteSummary requires crumb authentication which is blocked
-    // from cloud IPs. Return empty data instead of failing.
-    return attachSource({
-      symbol: symbol.toUpperCase(),
-      targetMean: null,
-      __note: 'Price targets require Yahoo Finance quoteSummary API which is rate-limited from cloud providers',
-    }, SOURCE_YAHOO);
+    const sym = symbol.toUpperCase();
+    const d = await this.cache<any>(`fh:priceTarget:${sym}`, 6 * 60 * 60 * 1000, '/stock/price-target', { symbol: sym });
+    return attachSource(
+      {
+        symbol: sym,
+        targetHigh: d?.targetHigh ?? null,
+        targetLow: d?.targetLow ?? null,
+        targetMean: d?.targetMean ?? null,
+        targetMedian: d?.targetMedian ?? null,
+        lastUpdated: d?.lastUpdated ?? null,
+      },
+      FH_SOURCE
+    );
   }
 
   async getPeers(symbol: string): Promise<any> {
-    throw new Error('Peers unavailable via Yahoo Finance');
+    const sym = symbol.toUpperCase();
+    const d = await this.cache<string[]>(`fh:peers:${sym}`, 6 * 60 * 60 * 1000, '/stock/peers', { symbol: sym });
+    return attachSource({ symbol: sym, peers: (d ?? []).filter((s) => s !== sym) }, FH_SOURCE);
   }
 
   async searchStock(query: string): Promise<any> {
-    await this.throttle();
-    const yahooFinance = await getYahooFinance();
-    const searchFn = yahooFinance.search;
-    if (!searchFn) {
-      throw new Error('Yahoo Finance search unavailable');
-    }
-    const data = await this.withRetry(() => searchFn(query, { newsCount: 0 }, YF_MODULE_OPTS));
-    const quotes = ((data as any)?.quotes || [])
-      .filter((item: any) => item?.symbol)
+    const d = await this.cache<any>(`fh:search:${query.toLowerCase()}`, 60 * 60 * 1000, '/search', { q: query });
+    const results = (d?.result ?? [])
+      .filter((item: any) => item?.type === 'Common Stock' && item?.symbol)
       .map((item: any) => ({
-        symbol: item.symbol,
-        name: item.longname || item.shortname || item.symbol,
-        type: 'Equity',
-        region: 'United States',
-        currency: 'USD',
-      }));
-    return { results: quotes };
+        symbol: item.displaySymbol ?? item.symbol,
+        name: item.description,
+        type: 'Equity', region: 'United States', currency: 'USD', source: 'finnhub',
+      }))
+      .slice(0, 10);
+    return { results };
   }
 
-  async searchCompanies(query: string): Promise<any> {
-    return this.searchStock(query);
-  }
+  async searchCompanies(query: string): Promise<any> { return this.searchStock(query); }
 
   async getEarningsHistory(symbol: string): Promise<any> {
-    // Yahoo Finance's quoteSummary requires crumb authentication which is blocked
-    // from cloud IPs. Return empty data instead of failing.
-    return attachSource({
-      symbol: symbol.toUpperCase(),
-      quarterlyEarnings: [],
-      __note: 'Earnings history requires Yahoo Finance quoteSummary API which is rate-limited from cloud providers',
-    }, SOURCE_YAHOO);
+    const sym = symbol.toUpperCase();
+    const d = await this.cache<any[]>(`fh:earnings:${sym}`, 6 * 60 * 60 * 1000, '/stock/earnings', { symbol: sym, limit: '20' });
+    return attachSource(
+      {
+        symbol: sym,
+        quarterlyEarnings: (d ?? []).map((e: any) => ({
+          fiscalQuarter: e.period,
+          reportedEPS: e.actual ?? null,
+          estimatedEPS: e.estimate ?? null,
+          surprise: e.surprise ?? null,
+          surprisePercentage: e.surprisePercent ?? null,
+        })),
+      },
+      FH_SOURCE
+    );
   }
 
   async getIncomeStatement(symbol: string): Promise<any> {
-    // Yahoo Finance's quoteSummary requires crumb authentication which is blocked
-    // from cloud IPs. Return empty data instead of failing.
-    return attachSource({
-      symbol: symbol.toUpperCase(),
-      annualReports: [],
-      __note: 'Income statement requires Yahoo Finance quoteSummary API which is rate-limited from cloud providers',
-    }, SOURCE_YAHOO);
+    const sym = symbol.toUpperCase();
+    const d = await this.cache<any>(`fh:income:${sym}`, 6 * 60 * 60 * 1000, '/financials', { symbol: sym, statement: 'ic', freq: 'quarterly' });
+    return attachSource(
+      {
+        symbol: sym,
+        quarterlyReports: (d?.financials ?? []).slice(0, 8).map((r: any) => ({
+          fiscalQuarter: r.period,
+          totalRevenue: r.revenue ?? null,
+          grossProfit: r.grossProfit ?? null,
+          operatingIncome: r.ebit ?? null,
+          netIncome: r.netIncome ?? null,
+          ebitda: r.ebitda ?? null,
+        })),
+      },
+      FH_SOURCE
+    );
   }
 
   async getBalanceSheet(symbol: string): Promise<any> {
-    // Yahoo Finance's quoteSummary requires crumb authentication which is blocked
-    // from cloud IPs. Return empty data instead of failing.
-    return attachSource({
-      symbol: symbol.toUpperCase(),
-      annualReports: [],
-      __note: 'Balance sheet requires Yahoo Finance quoteSummary API which is rate-limited from cloud providers',
-    }, SOURCE_YAHOO);
+    const sym = symbol.toUpperCase();
+    const d = await this.cache<any>(`fh:balance:${sym}`, 6 * 60 * 60 * 1000, '/financials', { symbol: sym, statement: 'bs', freq: 'quarterly' });
+    return attachSource(
+      {
+        symbol: sym,
+        quarterlyReports: (d?.financials ?? []).slice(0, 4).map((r: any) => ({
+          fiscalQuarter: r.period,
+          totalAssets: r.totalAssets ?? null,
+          totalLiabilities: r.totalLiabilities ?? null,
+          totalShareholderEquity: r.stockholdersEquity ?? null,
+          cashAndEquivalents: r.cashAndEquivalents ?? null,
+          longTermDebt: r.longTermDebt ?? null,
+        })),
+      },
+      FH_SOURCE
+    );
   }
 
   async getCashFlow(symbol: string): Promise<any> {
-    // Yahoo Finance's quoteSummary requires crumb authentication which is blocked
-    // from cloud IPs. Return empty data instead of failing.
-    return attachSource({
-      symbol: symbol.toUpperCase(),
-      annualReports: [],
-      __note: 'Cash flow requires Yahoo Finance quoteSummary API which is rate-limited from cloud providers',
-    }, SOURCE_YAHOO);
+    const sym = symbol.toUpperCase();
+    const d = await this.cache<any>(`fh:cashflow:${sym}`, 6 * 60 * 60 * 1000, '/financials', { symbol: sym, statement: 'cf', freq: 'quarterly' });
+    return attachSource(
+      {
+        symbol: sym,
+        quarterlyReports: (d?.financials ?? []).slice(0, 4).map((r: any) => ({
+          fiscalQuarter: r.period,
+          operatingCashflow: r.operatingCashFlow ?? null,
+          capitalExpenditures: r.capitalExpenditures ?? null,
+          freeCashFlow:
+            r.operatingCashFlow != null && r.capitalExpenditures != null
+              ? (r.operatingCashFlow - Math.abs(r.capitalExpenditures)).toString()
+              : 'N/A',
+        })),
+      },
+      FH_SOURCE
+    );
   }
 
   async getSectorPerformance(): Promise<any> {
-    throw new Error('Sector performance unavailable via Yahoo Finance');
+    throw new Error('Sector performance is not available via Finnhub');
   }
-
-  async getStocksBySector(sector: string): Promise<any> {
-    throw new Error('Sector screening unavailable via Yahoo Finance');
+  async getStocksBySector(_sector: string): Promise<any> {
+    throw new Error('Sector stock list is not available via Finnhub free tier');
   }
-
-  async screenStocks(filters: Record<string, string | number | undefined>): Promise<any> {
-    throw new Error('Screening unavailable via Yahoo Finance');
+  async screenStocks(_filters: Record<string, string | number | undefined>): Promise<any> {
+    throw new Error('Stock screening is not available via Finnhub free tier');
   }
-
   async getTopGainersLosers(): Promise<any> {
-    throw new Error('Top movers unavailable via Yahoo Finance');
+    throw new Error('Top gainers/losers is not available via Finnhub free tier');
   }
 
   async getNewsSentiment(symbol: string): Promise<any> {
-    throw new Error('News sentiment unavailable via Yahoo Finance');
+    const sym = symbol.toUpperCase();
+    const d = await this.cache<any>(`fh:sentiment:${sym}`, 30 * 60 * 1000, '/news-sentiment', { symbol: sym });
+    return attachSource(
+      {
+        symbol: sym,
+        buzz: d?.buzz ?? {},
+        sentiment: d?.sentiment ?? {},
+        companyNewsScore: d?.companyNewsScore ?? null,
+        sectorAverageBullishPercent: d?.sectorAverageBullishPercent ?? null,
+      },
+      FH_SOURCE
+    );
   }
 
-  async getCompanyNews(symbol: string, days?: number): Promise<any> {
-    throw new Error('Company news unavailable via Yahoo Finance');
+  async getCompanyNews(symbol: string, days = 30): Promise<any> {
+    const sym = symbol.toUpperCase();
+    const fmt = (d: Date) => d.toISOString().slice(0, 10);
+    const from = fmt(new Date(Date.now() - days * 86_400_000));
+    const to = fmt(new Date());
+    const d = await this.cache<any[]>(`fh:news:${sym}:${from}`, 30 * 60 * 1000, '/company-news', { symbol: sym, from, to });
+    return attachSource(
+      {
+        symbol: sym,
+        articles: (d ?? []).slice(0, 20).map((n: any) => ({
+          headline: n.headline, summary: n.summary, source: n.source,
+          url: n.url, datetime: new Date(n.datetime * 1000).toISOString(),
+        })),
+      },
+      FH_SOURCE
+    );
   }
 
-  async searchNews(query: string, days?: number): Promise<any> {
-    throw new Error('News search unavailable via Yahoo Finance');
+  async searchNews(query: string, _days = 7): Promise<any> {
+    const d = await this.cache<any[]>(`fh:marketnews:general`, 15 * 60 * 1000, '/news', { category: 'general' });
+    const q = query.toLowerCase();
+    const articles = (d ?? [])
+      .filter((n: any) => n.headline?.toLowerCase().includes(q) || n.summary?.toLowerCase().includes(q))
+      .slice(0, 10)
+      .map((n: any) => ({
+        headline: n.headline, summary: n.summary, source: n.source,
+        url: n.url, datetime: new Date(n.datetime * 1000).toISOString(),
+      }));
+    return attachSource({ query, articles }, FH_SOURCE);
   }
 }
 
+// ─── Hybrid Provider ───────────────────────────────────────────────────────
+
+/**
+ * Hybrid: AlphaVantage primary, Finnhub fallback.
+ * Needs both ALPHA_VANTAGE_API_KEY and FINNHUB_API_KEY.
+ */
 class HybridStockDataService implements StockDataService {
   constructor(
-    private primary: StockDataService,
-    private fallback: StockDataService
+    private readonly primary: StockDataService,
+    private readonly fallback: StockDataService
   ) {}
 
-  private async withFallback<T>(primaryCall: () => Promise<T>, fallbackCall: () => Promise<T>): Promise<T> {
-    try {
-      return await primaryCall();
-    } catch {
-      return fallbackCall();
-    }
+  private async try2<T>(a: () => Promise<T>, b: () => Promise<T>): Promise<T> {
+    try { return await a(); } catch { return b(); }
   }
 
-  getStockPrice(symbol: string) {
-    return this.withFallback(
-      () => this.primary.getStockPrice(symbol),
-      () => this.fallback.getStockPrice(symbol)
-    );
-  }
-  getPriceHistory(symbol: string, range?: string) {
-    return this.withFallback(
-      () => this.primary.getPriceHistory(symbol, range),
-      () => this.fallback.getPriceHistory(symbol, range)
-    );
-  }
-  getCompanyOverview(symbol: string) {
-    return this.withFallback(
-      () => this.primary.getCompanyOverview(symbol),
-      () => this.fallback.getCompanyOverview(symbol)
-    );
-  }
-  getBasicFinancials(symbol: string) {
-    return this.withFallback(
-      () => this.primary.getBasicFinancials(symbol),
-      () => this.fallback.getBasicFinancials(symbol)
-    );
-  }
-  getInsiderTrading(symbol: string) {
-    return this.withFallback(
-      () => this.primary.getInsiderTrading(symbol),
-      () => this.fallback.getInsiderTrading(symbol)
-    );
-  }
-  getAnalystRatings(symbol: string) {
-    return this.withFallback(
-      () => this.primary.getAnalystRatings(symbol),
-      () => this.fallback.getAnalystRatings(symbol)
-    );
-  }
-  getAnalystRecommendations(symbol: string) {
-    return this.withFallback(
-      () => this.primary.getAnalystRecommendations(symbol),
-      () => this.fallback.getAnalystRecommendations(symbol)
-    );
-  }
-  getPriceTargets(symbol: string) {
-    return this.withFallback(
-      () => this.primary.getPriceTargets(symbol),
-      () => this.fallback.getPriceTargets(symbol)
-    );
-  }
-  getPeers(symbol: string) {
-    return this.withFallback(
-      () => this.primary.getPeers(symbol),
-      () => this.fallback.getPeers(symbol)
-    );
-  }
-  searchStock(query: string) {
-    return this.primary.searchStock(query);
-  }
-  searchCompanies(query: string) {
-    return this.primary.searchCompanies(query);
-  }
-  getEarningsHistory(symbol: string) {
-    return this.withFallback(
-      () => this.primary.getEarningsHistory(symbol),
-      () => this.fallback.getEarningsHistory(symbol)
-    );
-  }
-  getIncomeStatement(symbol: string) {
-    return this.withFallback(
-      () => this.primary.getIncomeStatement(symbol),
-      () => this.fallback.getIncomeStatement(symbol)
-    );
-  }
-  getBalanceSheet(symbol: string) {
-    return this.withFallback(
-      () => this.primary.getBalanceSheet(symbol),
-      () => this.fallback.getBalanceSheet(symbol)
-    );
-  }
-  getCashFlow(symbol: string) {
-    return this.withFallback(
-      () => this.primary.getCashFlow(symbol),
-      () => this.fallback.getCashFlow(symbol)
-    );
-  }
-  getSectorPerformance() {
-    return this.primary.getSectorPerformance();
-  }
-  getStocksBySector(sector: string) {
-    return this.primary.getStocksBySector(sector);
-  }
-  screenStocks(filters: Record<string, string | number | undefined>) {
-    return this.primary.screenStocks(filters);
-  }
-  getTopGainersLosers() {
-    return this.primary.getTopGainersLosers();
-  }
-  getNewsSentiment(symbol: string) {
-    return this.primary.getNewsSentiment(symbol);
-  }
-  getCompanyNews(symbol: string, days?: number) {
-    return this.primary.getCompanyNews(symbol, days);
-  }
-  searchNews(query: string, days?: number) {
-    return this.primary.searchNews(query, days);
-  }
+  getStockPrice(s: string) { return this.try2(() => this.primary.getStockPrice(s), () => this.fallback.getStockPrice(s)); }
+  getPriceHistory(s: string, r?: string) { return this.try2(() => this.primary.getPriceHistory(s, r), () => this.fallback.getPriceHistory(s, r)); }
+  getCompanyOverview(s: string) { return this.try2(() => this.primary.getCompanyOverview(s), () => this.fallback.getCompanyOverview(s)); }
+  getBasicFinancials(s: string) { return this.try2(() => this.primary.getBasicFinancials(s), () => this.fallback.getBasicFinancials(s)); }
+  getInsiderTrading(s: string) { return this.try2(() => this.primary.getInsiderTrading(s), () => this.fallback.getInsiderTrading(s)); }
+  getAnalystRatings(s: string) { return this.try2(() => this.primary.getAnalystRatings(s), () => this.fallback.getAnalystRatings(s)); }
+  getAnalystRecommendations(s: string) { return this.try2(() => this.primary.getAnalystRecommendations(s), () => this.fallback.getAnalystRecommendations(s)); }
+  getPriceTargets(s: string) { return this.try2(() => this.primary.getPriceTargets(s), () => this.fallback.getPriceTargets(s)); }
+  getPeers(s: string) { return this.try2(() => this.primary.getPeers(s), () => this.fallback.getPeers(s)); }
+  searchStock(q: string) { return this.try2(() => this.primary.searchStock(q), () => this.fallback.searchStock(q)); }
+  searchCompanies(q: string) { return this.try2(() => this.primary.searchCompanies(q), () => this.fallback.searchCompanies(q)); }
+  getEarningsHistory(s: string) { return this.try2(() => this.primary.getEarningsHistory(s), () => this.fallback.getEarningsHistory(s)); }
+  getIncomeStatement(s: string) { return this.try2(() => this.primary.getIncomeStatement(s), () => this.fallback.getIncomeStatement(s)); }
+  getBalanceSheet(s: string) { return this.try2(() => this.primary.getBalanceSheet(s), () => this.fallback.getBalanceSheet(s)); }
+  getCashFlow(s: string) { return this.try2(() => this.primary.getCashFlow(s), () => this.fallback.getCashFlow(s)); }
+  getSectorPerformance() { return this.try2(() => this.primary.getSectorPerformance(), () => this.fallback.getSectorPerformance()); }
+  getStocksBySector(sector: string) { return this.try2(() => this.primary.getStocksBySector(sector), () => this.fallback.getStocksBySector(sector)); }
+  screenStocks(f: Record<string, string | number | undefined>) { return this.try2(() => this.primary.screenStocks(f), () => this.fallback.screenStocks(f)); }
+  getTopGainersLosers() { return this.try2(() => this.primary.getTopGainersLosers(), () => this.fallback.getTopGainersLosers()); }
+  getNewsSentiment(s: string) { return this.try2(() => this.primary.getNewsSentiment(s), () => this.fallback.getNewsSentiment(s)); }
+  getCompanyNews(s: string, d?: number) { return this.try2(() => this.primary.getCompanyNews(s, d), () => this.fallback.getCompanyNews(s, d)); }
+  searchNews(q: string, d?: number) { return this.try2(() => this.primary.searchNews(q, d), () => this.fallback.searchNews(q, d)); }
 }
 
-export function createStockService(apiKey?: string): StockDataService {
-  const provider = PROVIDER_ENV;
-  if (provider === 'yfinance') {
-    return new YahooFinanceService();
+// ─── Factory ───────────────────────────────────────────────────────────────
+
+type Provider = 'alphavantage' | 'finnhub' | 'hybrid';
+
+/**
+ * Normalises the STOCK_DATA_PROVIDER value so that common
+ * mis-spellings (e.g. "finhub") map to the canonical form.
+ */
+export function normalizeProvider(raw?: string): string {
+  const p = (raw ?? process.env.STOCK_DATA_PROVIDER ?? 'alphavantage').toLowerCase().trim();
+  // Accept "finhub" as an alias for "finnhub" (common typo)
+  if (p === 'finhub') return 'finnhub';
+  return p;
+}
+
+/**
+ * Creates the appropriate StockDataService based on STOCK_DATA_PROVIDER.
+ *
+ * @param avApiKey  Alpha Vantage key (falls back to ALPHA_VANTAGE_API_KEY)
+ * @param fhApiKey  Finnhub key (falls back to FINNHUB_API_KEY)
+ */
+export function createStockService(avApiKey?: string, fhApiKey?: string): StockDataService {
+  const provider = normalizeProvider() as Provider;
+  switch (provider) {
+    case 'finnhub':
+      return new FinnhubService(fhApiKey);
+    case 'hybrid':
+      return new HybridStockDataService(new AlphaVantageService(avApiKey), new FinnhubService(fhApiKey));
+    default:
+      return new AlphaVantageService(avApiKey);
   }
-  if (provider === 'hybrid') {
-    return new HybridStockDataService(new AlphaVantageService(apiKey), new YahooFinanceService());
-  }
-  return new AlphaVantageService(apiKey);
 }
