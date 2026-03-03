@@ -62,7 +62,7 @@ async function main() {
     console.log('  - "Show me the EPS history for Microsoft"');
     console.log('  - "What are the top AI stocks?"');
     console.log('  - "How is the tech sector performing?"');
-    console.log('  - "Show me quarterly results for NVDA"');
+    console.log('  - "Show me quarterly results for a semiconductor stock"');
     console.log('  - "What are today\'s top gainers?"');
     console.log('\nType "quit" or "exit" to end the session\n');
     console.log('=' .repeat(70) + '\n');

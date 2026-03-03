@@ -1,10 +1,12 @@
 import axios from 'axios';
 type YahooFinanceModule = typeof import('yahoo-finance2');
 type YahooFinanceClient = {
-  quote?: (symbol: string, queryOpts?: any, moduleOpts?: any) => Promise<any>;
+  quote?: (symbol: string | string[], queryOpts?: any, moduleOpts?: any) => Promise<any>;
   quoteSummary?: (symbol: string, queryOpts?: any, moduleOpts?: any) => Promise<any>;
   historical?: (symbol: string, queryOpts?: any, moduleOpts?: any) => Promise<any>;
+  chart?: (symbol: string, queryOpts?: any, moduleOpts?: any) => Promise<any>;
   search?: (query: string, queryOpts?: any, moduleOpts?: any) => Promise<any>;
+  fundamentalsTimeSeries?: (symbol: string, queryOpts?: any, moduleOpts?: any) => Promise<any>;
 };
 
 // Module options passed to every yahoo-finance2 call to skip strict schema
@@ -53,12 +55,20 @@ const tryLoadGetCrumbClear = async (): Promise<void> => {
   }
 };
 
-// Module-level quoteSummary cache shared across all YahooFinanceService instances.
+// Module-level caches shared across all YahooFinanceService instances.
 // Vercel serverless function instances can handle multiple requests before recycling,
 // so this avoids redundant Yahoo Finance API calls for the same symbol within the TTL.
-const DEFAULT_QUOTE_SUMMARY_TTL_MS = 5 * 60 * 1000; // 5 minutes
-const QUOTE_SUMMARY_TTL_MS = Number(process.env.YFINANCE_CACHE_TTL_MS || DEFAULT_QUOTE_SUMMARY_TTL_MS);
+const DEFAULT_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const CACHE_TTL_MS = Number(process.env.YFINANCE_CACHE_TTL_MS || DEFAULT_CACHE_TTL_MS);
 const moduleQuoteSummaryCache = new Map<string, { data: any; expiresAt: number }>();
+
+// Module-level chart cache — chart() doesn't require crumb authentication and is
+// much less rate-limited than quoteSummary. We use it for price data.
+const moduleChartCache = new Map<string, { data: any; expiresAt: number }>();
+
+// Module-level throttle timestamp — persists across requests in the same warm
+// serverless instance, mirroring how AlphaVantageService.sharedCache works.
+let moduleLastYahooRequestAt = 0;
 
 const loadYahooModule = async (): Promise<YahooFinanceModule> => {
   try {
@@ -81,12 +91,18 @@ const configureYahooFinance = (mod: any) => {
       yf.suppressNotices(['yahooSurvey']);
     }
     // Serialize requests (concurrency=1) to avoid triggering Yahoo Finance rate limits
-    // from concurrent calls. Reduce validation noise in logs.
+    // from concurrent calls. Use query1 host — it has a different (less aggressive)
+    // rate-limit policy for v10/quoteSummary than the default query2 host.
     if (typeof yf?.setGlobalConfig === 'function') {
       yf.setGlobalConfig({
+        YF_QUERY_HOST: process.env.YFINANCE_QUERY_HOST || 'query1.finance.yahoo.com',
         queue: { concurrency: 1 }, // serialize requests to reduce rate-limit risk
         validation: { logErrors: false, logOptionsErrors: false },
       });
+    }
+    // Suppress the deprecated historical()→chart() mapping notice; we call chart() directly.
+    if (typeof yf?.suppressNotices === 'function') {
+      yf.suppressNotices(['yahooSurvey', 'ripHistorical']);
     }
   } catch {
     // Non-fatal — continue even if configuration fails.
@@ -175,7 +191,9 @@ const buildYahooClient = (mod: any): YahooFinanceClient => {
     quote: findFn('quote'),
     quoteSummary: findFn('quoteSummary'),
     historical: findFn('historical'),
+    chart: findFn('chart'),
     search: findFn('search'),
+    fundamentalsTimeSeries: findFn('fundamentalsTimeSeries'),
   };
 };
 
@@ -186,7 +204,8 @@ const getYahooFinance = async (): Promise<YahooFinanceClient> => {
   }
   configureYahooFinance(yahooFinanceModule as any);
   const client = buildYahooClient(yahooFinanceModule as any);
-  if (!client.quoteSummary || !client.historical) {
+  // Only require chart (no crumb needed) — quoteSummary may be rate-limited
+  if (!client.chart) {
     const modKeys = Object.keys((yahooFinanceModule as any) || {}).join(', ');
     throw new Error(`Yahoo Finance client missing required methods. Module keys: ${modKeys || 'none'}`);
   }
@@ -892,9 +911,12 @@ export class AlphaVantageService implements StockDataService {
 const RATE_LIMIT_MARKER = Symbol('RATE_LIMIT_MARKER');
 
 class YahooFinanceService implements StockDataService {
-  private lastRequestAt = 0;
-  private minIntervalMs = Number(process.env.YFINANCE_MIN_INTERVAL_MS || 500);
-  private maxRetries = Number(process.env.YFINANCE_MAX_RETRIES || 1);
+  // Use module-level timestamp so throttle spans across requests in a warm instance,
+  // preventing burst requests after a cold start from triggering Yahoo Finance rate limits.
+  private get lastRequestAt() { return moduleLastYahooRequestAt; }
+  private set lastRequestAt(v: number) { moduleLastYahooRequestAt = v; }
+  private minIntervalMs = Number(process.env.YFINANCE_MIN_INTERVAL_MS || 1500);
+  private maxRetries = Number(process.env.YFINANCE_MAX_RETRIES || 3);
   // Instance-level cache: shares quoteSummary data within a single request.
   // Module-level moduleQuoteSummaryCache (above) shares data across requests.
   private quoteSummaryCache = new Map<string, any>();
@@ -934,37 +956,50 @@ class YahooFinanceService implements StockDataService {
         return await action();
       } catch (error: any) {
         const message = String(error?.message || error);
-        // Detect rate-limit errors.  Yahoo Finance can manifest as:
-        //   1. SyntaxError from response.json() on plain-text "Too Many Requests" body
-        //   2. HTTPError with statusText "Too Many Requests" (status 429)
-        //   3. "Failed to get crumb, status 429" when the crumb endpoint is blocked
-        //   4. "No set-cookie header present" when the initial page fetch returns 429
-        //      (no cookies → getCrumb throws before even reaching the crumb endpoint)
-        const isRateLimit = /too many requests|status 429|no set-cookie header|failed to get crumb/i.test(message);
-        if (isRateLimit) {
-          // Properly reset getCrumb.js's module-level singletons ('crumb' and
-          // 'promise') so the retry performs a genuine new auth round-trip.
+        // Detect crumb-specific errors that require clearing the cached crumb.
+        // These are distinct from general rate-limit errors — the crumb endpoint
+        // itself is blocked, not just the data endpoint.
+        const isCrumbError = /failed to get crumb|no set-cookie header/i.test(message);
+        // Detect general rate-limit errors (429 on data endpoints).
+        // Don't clear crumb for these — the crumb is fine, only the data endpoint is blocked.
+        const isRateLimit = /too many requests|status 429/i.test(message);
+
+        if (isCrumbError) {
+          // Crumb endpoint blocked: clear cached crumb so next attempt starts fresh.
           await clearYahooCrumb();
           if (attempt >= this.maxRetries) {
             throw new Error(
               'Yahoo Finance rate limit reached. Please wait a moment and try again.'
             );
           }
-          // 5 s fixed delay before retrying a rate-limited request.
-          // Gives Yahoo Finance's per-IP/session rate limiter time to reset,
-          // and the fresh-session approach (new crumb + cookies) the best
-          // chance to succeed.  With maxRetries=1 and ~3 Yahoo Finance calls
-          // per report, worst-case added latency is 3 × 5 s = 15 s — well
-          // inside Vercel's 300 s function timeout.
-          await new Promise((resolve) => setTimeout(resolve, 5000));
+          // Long delay for crumb errors — the auth system is rate-limited.
+          const delay = 30000 + attempt * 15000; // 30s, 45s, 60s
+          await new Promise((resolve) => setTimeout(resolve, delay));
           attempt += 1;
           continue;
         }
+
+        if (isRateLimit) {
+          // Data endpoint rate-limited: do NOT clear crumb (it's still valid).
+          // Just wait longer and retry with the same session.
+          if (attempt >= this.maxRetries) {
+            throw new Error(
+              'Yahoo Finance rate limit reached. Please wait a moment and try again.'
+            );
+          }
+          // Longer progressive back-off: 30 s → 45 s → 60 s.
+          // Yahoo Finance's per-IP rate limiter needs substantial cooling time.
+          const delay = 30000 + attempt * 15000; // 30s, 45s, 60s
+          await new Promise((resolve) => setTimeout(resolve, delay));
+          attempt += 1;
+          continue;
+        }
+
         const shouldRetry = /crumb|fetch failed|network|ECONNRESET|ETIMEDOUT/i.test(message);
         if (attempt >= this.maxRetries || !shouldRetry) {
           throw error;
         }
-        // Short back-off for transient network errors only (not rate-limits).
+        // Short back-off for transient network errors only.
         const wait = this.minIntervalMs * (attempt + 1);
         await new Promise((resolve) => setTimeout(resolve, wait));
         attempt += 1;
@@ -1025,7 +1060,7 @@ class YahooFinanceService implements StockDataService {
     try {
       const fullData = await fetchPromise;
       this.quoteSummaryCache.set(key, fullData);
-      moduleQuoteSummaryCache.set(key, { data: fullData, expiresAt: Date.now() + QUOTE_SUMMARY_TTL_MS });
+      moduleQuoteSummaryCache.set(key, { data: fullData, expiresAt: Date.now() + CACHE_TTL_MS });
 
       const result: any = {};
       for (const mod of modules) {
@@ -1045,99 +1080,138 @@ class YahooFinanceService implements StockDataService {
     }
   }
 
+  // Chart data cache — chart() doesn't need crumb authentication and provides
+  // price + history data. This is our primary data source to avoid rate limits.
+  private chartCache = new Map<string, any>();
+  private chartInFlight = new Map<string, Promise<any>>();
+
+  // Fetch chart data (NO CRUMB NEEDED - primary data source)
+  private async getChartData(symbol: string, range = '1y'): Promise<any> {
+    const key = `${symbol.toUpperCase()}:${range}`;
+
+    // Check module-level cache first
+    const moduleEntry = moduleChartCache.get(key);
+    if (moduleEntry && moduleEntry.expiresAt > Date.now()) {
+      return moduleEntry.data;
+    }
+
+    // Check instance-level cache (within same request — no expiration needed since
+    // instance is created fresh for each request and inherits from module cache)
+    if (this.chartCache.has(key)) {
+      return this.chartCache.get(key);
+    }
+
+    // Check in-flight requests
+    const inflight = this.chartInFlight.get(key);
+    if (inflight) {
+      return await inflight;
+    }
+
+    // Fetch from Yahoo Finance chart API (no crumb needed!)
+    const fetchPromise = (async () => {
+      await this.throttle();
+      const yahooFinance = await getYahooFinance();
+      const chartFn = yahooFinance.chart;
+      if (!chartFn) {
+        throw new Error('Yahoo Finance chart unavailable');
+      }
+      const { period1, period2 } = parseRangeToPeriod(range);
+      // chart() doesn't need crumb - much less rate-limited than quoteSummary
+      return await chartFn(symbol, { period1, period2, interval: '1d' }, YF_MODULE_OPTS);
+    })();
+
+    this.chartInFlight.set(key, fetchPromise);
+    try {
+      const data = await fetchPromise;
+      this.chartCache.set(key, data);
+      moduleChartCache.set(key, { data, expiresAt: Date.now() + CACHE_TTL_MS });
+      return data;
+    } finally {
+      this.chartInFlight.delete(key);
+    }
+  }
+
   async getStockPrice(symbol: string): Promise<any> {
-    // Use the `price` module from quoteSummary instead of a separate quote() call.
-    // quoteSummary is already fetched (and cached) for getCompanyOverview, so this
-    // eliminates one extra crumb-authenticated round-trip to Yahoo Finance per report.
-    const summary = await this.getQuoteSummary(symbol, ['price']);
-    const p = summary.price || {};
-    const marketPrice = p.regularMarketPrice ?? null;
-    const change = p.regularMarketChange ?? null;
-    const changePct = p.regularMarketChangePercent ?? null;
-    return attachSource({
-      symbol: symbol.toUpperCase(),
-      price: typeof marketPrice === 'number' ? marketPrice.toFixed(2) : marketPrice,
-      change: typeof change === 'number' ? change.toFixed(2) : change,
-      changePercent: toPercentLabel(changePct),
-    }, SOURCE_YAHOO);
+    // Use chart() instead of quoteSummary() — chart doesn't need crumb authentication
+    // and is much less rate-limited. It provides regularMarketPrice in meta.
+    try {
+      const chartData = await this.getChartData(symbol, '5d');
+      const meta = chartData?.meta || {};
+      const marketPrice = meta.regularMarketPrice ?? null;
+      const previousClose = meta.chartPreviousClose ?? meta.previousClose ?? null;
+      const change = marketPrice && previousClose ? marketPrice - previousClose : null;
+      const changePct = change && previousClose ? (change / previousClose) * 100 : null;
+      return attachSource({
+        symbol: symbol.toUpperCase(),
+        price: typeof marketPrice === 'number' ? marketPrice.toFixed(2) : marketPrice,
+        change: typeof change === 'number' ? change.toFixed(2) : change,
+        changePercent: toPercentLabel(changePct),
+      }, SOURCE_YAHOO);
+    } catch (error: any) {
+      // If chart fails, try quoteSummary as fallback
+      const summary = await this.getQuoteSummary(symbol, ['price']);
+      const p = summary.price || {};
+      const marketPrice = p.regularMarketPrice ?? null;
+      const change = p.regularMarketChange ?? null;
+      const changePct = p.regularMarketChangePercent ?? null;
+      return attachSource({
+        symbol: symbol.toUpperCase(),
+        price: typeof marketPrice === 'number' ? marketPrice.toFixed(2) : marketPrice,
+        change: typeof change === 'number' ? change.toFixed(2) : change,
+        changePercent: toPercentLabel(changePct),
+      }, SOURCE_YAHOO);
+    }
   }
 
   async getPriceHistory(symbol: string, range = '1y'): Promise<any> {
-    const { period1, period2 } = parseRangeToPeriod(range);
-    await this.throttle();
-    const yahooFinance = await getYahooFinance();
-    const historicalFn = yahooFinance.historical;
-    if (!historicalFn) {
-      throw new Error('Yahoo Finance historical unavailable');
-    }
-    const results = await this.withRetry(() => historicalFn(symbol, { period1, period2, interval: '1d' }, YF_MODULE_OPTS));
-    const prices = (results || []).map((row: any) => ({
-      date: row.date?.toISOString?.().slice(0, 10) || row.date,
+    // Use cached chart data — chart() doesn't need crumb authentication
+    const chartData = await this.getChartData(symbol, range);
+    const prices = (chartData?.quotes || []).map((row: any) => ({
+      date: row.date?.toISOString?.().slice(0, 10) || String(row.date),
       close: row.close,
     }));
     return attachSource({ symbol: symbol.toUpperCase(), prices }, SOURCE_YAHOO);
   }
 
   async getCompanyOverview(symbol: string): Promise<any> {
-    const summary = await this.getQuoteSummary(symbol, [
-      'summaryProfile',
-      'price',
-      'defaultKeyStatistics',
-      'financialData',
-      'summaryDetail',
-      'calendarEvents',
-      'recommendationTrend',
-    ]);
-    const profile = summary.summaryProfile || {};
-    const stats = summary.defaultKeyStatistics || {};
-    const financials = summary.financialData || {};
-    const detail = summary.summaryDetail || {};
-    const price = summary.price || {};
-    const rec = summary.recommendationTrend?.trend?.[0] || {};
+    // ONLY use chart() which doesn't need crumb authentication.
+    // Yahoo Finance's quoteSummary API is rate-limited from cloud IPs like Vercel.
+    let chartMeta: any = {};
+    try {
+      const chartData = await this.getChartData(symbol, '1y');
+      chartMeta = chartData?.meta || {};
+    } catch (error) {
+      // chart() failed - return minimal data
+      return attachSource({
+        symbol: symbol.toUpperCase(),
+        name: symbol.toUpperCase(),
+        marketCapitalization: null,
+        eps: null,
+        peRatio: null,
+        sector: null,
+        industry: null,
+        __note: 'Unable to fetch data from Yahoo Finance chart API',
+      }, SOURCE_YAHOO);
+    }
 
+    // chart() meta provides basic price data - return what we can
     return attachSource({
       symbol: symbol.toUpperCase(),
-      name: price.longName || price.shortName || symbol.toUpperCase(),
-      description: profile.longBusinessSummary,
-      sector: profile.sector,
-      industry: profile.industry,
-      marketCapitalization: price.marketCap,
-      eps: stats.trailingEps,
-      peRatio: stats.trailingPE,
-      forwardPE: stats.forwardPE,
-      pegRatio: stats.pegRatio,
-      bookValue: stats.bookValue,
-      dividendPerShare: detail.dividendRate,
-      dividendYield: detail.dividendYield,
-      revenueTTM: financials.totalRevenue,
-      grossProfitTTM: financials.grossProfits,
-      '52WeekHigh': detail.fiftyTwoWeekHigh,
-      '52WeekLow': detail.fiftyTwoWeekLow,
-      '50DayMovingAverage': detail.fiftyDayAverage,
-      '200DayMovingAverage': detail.twoHundredDayAverage,
-      beta: stats.beta,
-      profitMargin: financials.profitMargins,
-      operatingMargin: financials.operatingMargins,
-      returnOnAssets: financials.returnOnAssets,
-      returnOnEquity: financials.returnOnEquity,
-      revenuePerShare: financials.revenuePerShare,
-      quarterlyEarningsGrowth: financials.earningsGrowth,
-      quarterlyRevenueGrowth: financials.revenueGrowth,
-      sharesOutstanding: stats.sharesOutstanding,
-      sharesFloat: stats.floatShares,
-      percentInsiders: stats.heldPercentInsiders,
-      percentInstitutions: stats.heldPercentInstitutions,
-      shortRatio: stats.shortRatio,
-      shortPercentFloat: stats.shortPercentOfFloat,
-      shortPercentOutstanding: stats.shortPercentOfFloat,
-      analystTargetPrice: financials.targetMeanPrice,
-      analystRatingStrongBuy: rec.strongBuy,
-      analystRatingBuy: rec.buy,
-      analystRatingHold: rec.hold,
-      analystRatingSell: rec.sell,
-      analystRatingStrongSell: rec.strongSell,
-      exDividendDate: detail.exDividendDate,
-      dividendDate: detail.dividendDate,
+      name: chartMeta.longName || chartMeta.shortName || chartMeta.symbol || symbol.toUpperCase(),
+      marketCapitalization: null, // Not available in chart()
+      eps: null, // Not available in chart()
+      peRatio: null, // Not available in chart()
+      sector: null, // Not available in chart()
+      industry: null, // Not available in chart()
+      '52WeekHigh': chartMeta.fiftyTwoWeekHigh ?? null,
+      '52WeekLow': chartMeta.fiftyTwoWeekLow ?? null,
+      '50DayMovingAverage': chartMeta.fiftyDayAverage ?? null,
+      '200DayMovingAverage': chartMeta.twoHundredDayAverage ?? null,
+      regularMarketPrice: chartMeta.regularMarketPrice ?? null,
+      previousClose: chartMeta.chartPreviousClose ?? chartMeta.previousClose ?? null,
+      currency: chartMeta.currency ?? 'USD',
+      exchangeName: chartMeta.exchangeName ?? null,
+      __note: 'Limited data available from Yahoo Finance chart API (quoteSummary is rate-limited from cloud providers)',
     }, SOURCE_YAHOO);
   }
 
@@ -1167,17 +1241,17 @@ class YahooFinanceService implements StockDataService {
   }
 
   async getAnalystRatings(symbol: string): Promise<any> {
-    const summary = await this.getQuoteSummary(symbol, ['recommendationTrend', 'summaryDetail']);
-    const trend = summary.recommendationTrend?.trend?.[0] || {};
-    const detail = summary.summaryDetail || {};
+    // Yahoo Finance's quoteSummary requires crumb authentication which is blocked
+    // from cloud IPs. Return empty data instead of failing.
     return attachSource({
       symbol: symbol.toUpperCase(),
-      strongBuy: trend.strongBuy ?? 'N/A',
-      buy: trend.buy ?? 'N/A',
-      hold: trend.hold ?? 'N/A',
-      sell: trend.sell ?? 'N/A',
-      strongSell: trend.strongSell ?? 'N/A',
-      movingAverage50Day: detail.fiftyDayAverage ?? 'N/A',
+      strongBuy: 'N/A',
+      buy: 'N/A',
+      hold: 'N/A',
+      sell: 'N/A',
+      strongSell: 'N/A',
+      movingAverage50Day: 'N/A',
+      __note: 'Analyst ratings require Yahoo Finance quoteSummary API which is rate-limited from cloud providers',
     }, SOURCE_YAHOO);
   }
 
@@ -1186,11 +1260,12 @@ class YahooFinanceService implements StockDataService {
   }
 
   async getPriceTargets(symbol: string): Promise<any> {
-    const summary = await this.getQuoteSummary(symbol, ['financialData']);
-    const financials = summary.financialData || {};
+    // Yahoo Finance's quoteSummary requires crumb authentication which is blocked
+    // from cloud IPs. Return empty data instead of failing.
     return attachSource({
       symbol: symbol.toUpperCase(),
-      targetMean: financials.targetMeanPrice ?? null,
+      targetMean: null,
+      __note: 'Price targets require Yahoo Finance quoteSummary API which is rate-limited from cloud providers',
     }, SOURCE_YAHOO);
   }
 
@@ -1223,63 +1298,42 @@ class YahooFinanceService implements StockDataService {
   }
 
   async getEarningsHistory(symbol: string): Promise<any> {
-    const summary = await this.getQuoteSummary(symbol, ['earningsHistory']);
-    const history = summary.earningsHistory?.history || [];
+    // Yahoo Finance's quoteSummary requires crumb authentication which is blocked
+    // from cloud IPs. Return empty data instead of failing.
     return attachSource({
       symbol: symbol.toUpperCase(),
-      quarterlyEarnings: history.map((row: any) => ({
-        fiscalQuarter: row.quarter,
-        reportedEPS: row.epsActual,
-      })),
+      quarterlyEarnings: [],
+      __note: 'Earnings history requires Yahoo Finance quoteSummary API which is rate-limited from cloud providers',
     }, SOURCE_YAHOO);
   }
 
   async getIncomeStatement(symbol: string): Promise<any> {
-    const summary = await this.getQuoteSummary(symbol, ['incomeStatementHistory']);
-    const reports = summary.incomeStatementHistory?.incomeStatementHistory || [];
+    // Yahoo Finance's quoteSummary requires crumb authentication which is blocked
+    // from cloud IPs. Return empty data instead of failing.
     return attachSource({
       symbol: symbol.toUpperCase(),
-      annualReports: reports.map((row: any) => ({
-        fiscalDateEnding: row.endDate,
-        totalRevenue: row.totalRevenue,
-        grossProfit: row.grossProfit,
-        operatingIncome: row.operatingIncome,
-        netIncome: row.netIncome,
-        ebitda: row.ebitda,
-      })),
+      annualReports: [],
+      __note: 'Income statement requires Yahoo Finance quoteSummary API which is rate-limited from cloud providers',
     }, SOURCE_YAHOO);
   }
 
   async getBalanceSheet(symbol: string): Promise<any> {
-    const summary = await this.getQuoteSummary(symbol, ['balanceSheetHistory']);
-    const reports = summary.balanceSheetHistory?.balanceSheetStatements || [];
+    // Yahoo Finance's quoteSummary requires crumb authentication which is blocked
+    // from cloud IPs. Return empty data instead of failing.
     return attachSource({
       symbol: symbol.toUpperCase(),
-      annualReports: reports.map((row: any) => ({
-        fiscalDateEnding: row.endDate,
-        totalAssets: row.totalAssets,
-        totalLiabilities: row.totalLiab,
-        totalShareholderEquity: row.totalStockholderEquity,
-        cashAndEquivalents: row.cash,
-        longTermDebt: row.longTermDebt,
-      })),
+      annualReports: [],
+      __note: 'Balance sheet requires Yahoo Finance quoteSummary API which is rate-limited from cloud providers',
     }, SOURCE_YAHOO);
   }
 
   async getCashFlow(symbol: string): Promise<any> {
-    const summary = await this.getQuoteSummary(symbol, ['cashflowStatementHistory']);
-    const reports = summary.cashflowStatementHistory?.cashflowStatements || [];
+    // Yahoo Finance's quoteSummary requires crumb authentication which is blocked
+    // from cloud IPs. Return empty data instead of failing.
     return attachSource({
       symbol: symbol.toUpperCase(),
-      annualReports: reports.map((row: any) => ({
-        fiscalDateEnding: row.endDate,
-        operatingCashflow: row.totalCashFromOperatingActivities,
-        capitalExpenditures: row.capitalExpenditures,
-        freeCashFlow: row.totalCashFromOperatingActivities && row.capitalExpenditures
-          ? (Number(row.totalCashFromOperatingActivities) - Math.abs(Number(row.capitalExpenditures))).toString()
-          : 'N/A',
-        dividendPayout: row.dividendsPaid,
-      })),
+      annualReports: [],
+      __note: 'Cash flow requires Yahoo Finance quoteSummary API which is rate-limited from cloud providers',
     }, SOURCE_YAHOO);
   }
 
