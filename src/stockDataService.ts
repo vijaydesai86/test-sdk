@@ -996,13 +996,24 @@ class HybridStockDataService implements StockDataService {
 type Provider = 'alphavantage' | 'finnhub' | 'hybrid';
 
 /**
+ * Normalises the STOCK_DATA_PROVIDER value so that common
+ * mis-spellings (e.g. "finhub") map to the canonical form.
+ */
+export function normalizeProvider(raw?: string): string {
+  const p = (raw ?? process.env.STOCK_DATA_PROVIDER ?? 'alphavantage').toLowerCase().trim();
+  // Accept "finhub" as an alias for "finnhub" (common typo)
+  if (p === 'finhub') return 'finnhub';
+  return p;
+}
+
+/**
  * Creates the appropriate StockDataService based on STOCK_DATA_PROVIDER.
  *
  * @param avApiKey  Alpha Vantage key (falls back to ALPHA_VANTAGE_API_KEY)
  * @param fhApiKey  Finnhub key (falls back to FINNHUB_API_KEY)
  */
 export function createStockService(avApiKey?: string, fhApiKey?: string): StockDataService {
-  const provider = (process.env.STOCK_DATA_PROVIDER ?? 'alphavantage').toLowerCase() as Provider;
+  const provider = normalizeProvider() as Provider;
   switch (provider) {
     case 'finnhub':
       return new FinnhubService(fhApiKey);

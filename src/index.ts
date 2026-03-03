@@ -1,7 +1,7 @@
 import { CopilotClient } from '@github/copilot-sdk';
 import * as readline from 'readline';
 import { createStockTools } from './stockTools';
-import { createStockService } from './stockDataService';
+import { createStockService, normalizeProvider } from './stockDataService';
 import * as dotenv from 'dotenv';
 
 // Load environment variables
@@ -10,7 +10,7 @@ dotenv.config();
 async function main() {
   console.log('🚀 Starting Stock Information Assistant with GitHub Copilot SDK...\n');
 
-  const provider = (process.env.STOCK_DATA_PROVIDER || 'alphavantage').toLowerCase();
+  const provider = normalizeProvider();
   const apiKey = process.env.ALPHA_VANTAGE_API_KEY;
   const finnhubKey = process.env.FINNHUB_API_KEY;
   if (provider === 'finnhub' && !finnhubKey) {

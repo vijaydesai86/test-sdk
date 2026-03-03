@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getToolDefinitionsByName, executeTool } from '@/app/lib/stockTools';
-import { createStockService, StockDataService } from '@/app/lib/stockDataService';
+import { createStockService, StockDataService, normalizeProvider } from '@/app/lib/stockDataService';
 
 // GitHub Models API — new endpoint (azure endpoint deprecated Oct 2025)
 // Works with PATs from github.com/settings/personal-access-tokens (models:read scope)
@@ -45,7 +45,7 @@ interface ChatMessage {
 const sessions = new Map<string, ChatMessage[]>();
 
 const DATA_SOURCE_NAME = (() => {
-  const p = (process.env.STOCK_DATA_PROVIDER ?? 'alphavantage').toLowerCase();
+  const p = normalizeProvider();
   if (p === 'finnhub') return 'Finnhub';
   if (p === 'hybrid') return 'Alpha Vantage / Finnhub';
   return 'Alpha Vantage';
@@ -826,7 +826,7 @@ export async function POST(request: NextRequest) {
     const proxyKey = process.env.OPENAI_API_KEY || process.env.OPENAI_TOKEN;
 
     // Initialize stock service — validate that the required API key is present
-    const dataProvider = (process.env.STOCK_DATA_PROVIDER || 'alphavantage').toLowerCase();
+    const dataProvider = normalizeProvider();
     const alphaVantageKey = process.env.ALPHA_VANTAGE_API_KEY;
     const finnhubKey = process.env.FINNHUB_API_KEY;
     if (dataProvider === 'finnhub' && !finnhubKey) {

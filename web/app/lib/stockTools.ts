@@ -1,6 +1,6 @@
 import { promises as fs } from 'fs';
 import path from 'path';
-import { StockDataService } from './stockDataService';
+import { StockDataService, normalizeProvider } from './stockDataService';
 import { buildSectorReport, buildStockReport, buildPeerReport, buildComparisonReport, saveReport } from './reportGenerator';
 
 /**
@@ -36,13 +36,13 @@ const REPORTS_DIR = process.env.REPORTS_DIR || (process.env.VERCEL ? '/tmp/repor
 const CACHE_DIR = path.join(REPORTS_DIR, 'cache');
 const CACHE_TTL_MS = Number(process.env.STOCK_CACHE_TTL_MS || 1000 * 60 * 60 * 24 * 7);
 const DEFAULT_SOURCE = (() => {
-  const p = (process.env.STOCK_DATA_PROVIDER || 'alphavantage').toLowerCase();
+  const p = normalizeProvider();
   if (p === 'finnhub') return 'Finnhub';
   if (p === 'hybrid') return 'Alpha Vantage / Finnhub';
   return 'Alpha Vantage';
 })();
 const SOURCE_LEGEND = (() => {
-  const provider = (process.env.STOCK_DATA_PROVIDER || 'alphavantage').toLowerCase();
+  const provider = normalizeProvider();
   if (provider === 'hybrid') return '_Legend: Alpha Vantage is primary; Finnhub fills gaps._';
   if (provider === 'finnhub') return '_Legend: Finnhub provider._';
   return '_Legend: Alpha Vantage provider._';

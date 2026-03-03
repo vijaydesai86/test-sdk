@@ -1,12 +1,12 @@
 import { NextResponse } from 'next/server';
 
 export const runtime = 'nodejs';
-import { createStockService } from '@/app/lib/stockDataService';
+import { createStockService, normalizeProvider } from '@/app/lib/stockDataService';
 
 export async function GET() {
   const results: Record<string, any> = {};
 
-  const provider = (process.env.STOCK_DATA_PROVIDER || 'alphavantage').toLowerCase();
+  const provider = normalizeProvider();
   const alphaVantageKey = process.env.ALPHA_VANTAGE_API_KEY;
   const finnhubKey = process.env.FINNHUB_API_KEY;
   if (provider === 'finnhub' && !finnhubKey) {
