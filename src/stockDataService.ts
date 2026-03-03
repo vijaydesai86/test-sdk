@@ -84,7 +84,7 @@ const configureYahooFinance = (mod: any) => {
     // from concurrent calls. Reduce validation noise in logs.
     if (typeof yf?.setGlobalConfig === 'function') {
       yf.setGlobalConfig({
-        queue: { concurrency: 1, timeout: 60 }, // timeout in seconds
+        queue: { concurrency: 1 }, // serialize requests to reduce rate-limit risk
         validation: { logErrors: false, logOptionsErrors: false },
       });
     }
