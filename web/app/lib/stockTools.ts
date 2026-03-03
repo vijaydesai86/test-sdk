@@ -1142,7 +1142,7 @@ export async function executeTool(
         const defaultLimit = process.env.VERCEL ? 3 : 4;
         const limit = Math.min(Number(args.limit || defaultLimit), defaultLimit);
         const notes: string[] = [];
-        notes.push('Universe limited to the top matches to respect Alpha Vantage free-tier rate limits.');
+        notes.push(`Universe limited to the top matches to respect ${DEFAULT_SOURCE} free-tier rate limits.`);
 
         const { tokens, phrases } = buildThemeTokens(query);
         const searchTerms = buildSearchQueries(query);
@@ -1183,8 +1183,8 @@ export async function executeTool(
             }
           } catch (error: any) {
             const message = error?.message || 'Unknown error';
-            if (message.includes('frequency') || message.includes('Thank you for using Alpha Vantage')) {
-              notes.push('Alpha Vantage rate limit reached; remaining symbols skipped.');
+            if (message.includes('frequency') || message.includes('Thank you for using Alpha Vantage') || /rate limit|too many requests/i.test(message)) {
+              notes.push(`${DEFAULT_SOURCE} rate limit reached; remaining symbols skipped.`);
               break;
             }
             notes.push(`${candidate.symbol}: ${message}`);
@@ -1196,9 +1196,9 @@ export async function executeTool(
         const universe = items.map((item) => item.symbol);
 
         if (universe.length > 0) {
-          notes.push(`Universe built from Alpha Vantage symbol search for "${query}".`);
+          notes.push(`Universe built from ${DEFAULT_SOURCE} symbol search for "${query}".`);
         } else {
-          notes.push('No tickers matched the theme keywords on Alpha Vantage. Try a more specific query.');
+          notes.push(`No tickers matched the theme keywords on ${DEFAULT_SOURCE}. Try a more specific query.`);
         }
 
         const content = buildSectorReport({

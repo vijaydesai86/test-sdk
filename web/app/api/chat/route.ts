@@ -44,6 +44,13 @@ interface ChatMessage {
 // Store conversation history per session
 const sessions = new Map<string, ChatMessage[]>();
 
+const DATA_SOURCE_NAME = (() => {
+  const p = (process.env.STOCK_DATA_PROVIDER ?? 'alphavantage').toLowerCase();
+  if (p === 'finnhub') return 'Finnhub';
+  if (p === 'hybrid') return 'Alpha Vantage / Finnhub';
+  return 'Alpha Vantage';
+})();
+
 const SYSTEM_PROMPT = `You are an elite buy-side equity research analyst. Produce institutional-quality, data-driven financial research — thorough, precise, and immediately actionable.
 
 **NON-NEGOTIABLE RULES:**
@@ -73,7 +80,7 @@ const SYSTEM_PROMPT = `You are an elite buy-side equity research analyst. Produc
 - Show all calculations explicitly: FCF = Op.CF − CapEx = $X − $Y = $Z.
 - Scoring matrix for allocations: Growth 25% / Profitability 20% / Moat 20% / Valuation 20% / Momentum 15%.
 - Numbers: prices 2 decimals, % 1 decimal, large numbers 2 sig figs ($2.3B).
-- Cite "Source: Alpha Vantage" after data-heavy sections.
+- Cite "Source: ${DATA_SOURCE_NAME}" after data-heavy sections.
 - Length matches request: price query = 2–3 lines; full sector report = 1,000+ words.
 `;
 
