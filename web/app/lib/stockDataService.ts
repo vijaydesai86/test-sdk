@@ -1,11 +1,12 @@
 import axios from 'axios';
 type YahooFinanceModule = typeof import('yahoo-finance2');
 type YahooFinanceClient = {
-  quote?: (symbol: string, queryOpts?: any, moduleOpts?: any) => Promise<any>;
+  quote?: (symbol: string | string[], queryOpts?: any, moduleOpts?: any) => Promise<any>;
   quoteSummary?: (symbol: string, queryOpts?: any, moduleOpts?: any) => Promise<any>;
   historical?: (symbol: string, queryOpts?: any, moduleOpts?: any) => Promise<any>;
   chart?: (symbol: string, queryOpts?: any, moduleOpts?: any) => Promise<any>;
   search?: (query: string, queryOpts?: any, moduleOpts?: any) => Promise<any>;
+  fundamentalsTimeSeries?: (symbol: string, queryOpts?: any, moduleOpts?: any) => Promise<any>;
 };
 
 // Module options passed to every yahoo-finance2 call to skip strict schema
@@ -63,6 +64,10 @@ const tryLoadGetCrumbClear = async (): Promise<void> => {
 const DEFAULT_QUOTE_SUMMARY_TTL_MS = 5 * 60 * 1000; // 5 minutes
 const QUOTE_SUMMARY_TTL_MS = Number(process.env.YFINANCE_CACHE_TTL_MS || DEFAULT_QUOTE_SUMMARY_TTL_MS);
 const moduleQuoteSummaryCache = new Map<string, { data: any; expiresAt: number }>();
+
+// Module-level chart cache — chart() doesn't require crumb authentication and is
+// much less rate-limited than quoteSummary. We use it for price data.
+const moduleChartCache = new Map<string, { data: any; expiresAt: number }>();
 
 // Module-level throttle timestamp — persists across requests in the same warm
 // serverless instance, mirroring how AlphaVantageService.sharedCache works.
@@ -196,6 +201,7 @@ const buildYahooClient = (mod: any): YahooFinanceClient => {
     historical: findFn('historical'),
     chart: findFn('chart'),
     search: findFn('search'),
+    fundamentalsTimeSeries: findFn('fundamentalsTimeSeries'),
   };
 };
 
@@ -206,7 +212,8 @@ const getYahooFinance = async (): Promise<YahooFinanceClient> => {
   }
   configureYahooFinance(yahooFinanceModule as any);
   const client = buildYahooClient(yahooFinanceModule as any);
-  if (!client.quoteSummary || !client.historical) {
+  // Only require chart (no crumb needed) — quoteSummary may be rate-limited
+  if (!client.chart) {
     const modKeys = Object.keys((yahooFinanceModule as any) || {}).join(', ');
     throw new Error(`Yahoo Finance client missing required methods. Module keys: ${modKeys || 'none'}`);
   }
@@ -1081,35 +1088,92 @@ class YahooFinanceService implements StockDataService {
     }
   }
 
+  // Chart data cache — chart() doesn't need crumb authentication and provides
+  // price + history data. This is our primary data source to avoid rate limits.
+  private chartCache = new Map<string, any>();
+  private chartInFlight = new Map<string, Promise<any>>();
+
+  // Fetch chart data (NO CRUMB NEEDED - primary data source)
+  private async getChartData(symbol: string, range = '1y'): Promise<any> {
+    const key = `${symbol.toUpperCase()}:${range}`;
+
+    // Check module-level cache first
+    const moduleEntry = moduleChartCache.get(key);
+    if (moduleEntry && moduleEntry.expiresAt > Date.now()) {
+      return moduleEntry.data;
+    }
+
+    // Check instance-level cache
+    if (this.chartCache.has(key)) {
+      return this.chartCache.get(key);
+    }
+
+    // Check in-flight requests
+    const inflight = this.chartInFlight.get(key);
+    if (inflight) {
+      return await inflight;
+    }
+
+    // Fetch from Yahoo Finance chart API (no crumb needed!)
+    const fetchPromise = (async () => {
+      await this.throttle();
+      const yahooFinance = await getYahooFinance();
+      const chartFn = yahooFinance.chart;
+      if (!chartFn) {
+        throw new Error('Yahoo Finance chart unavailable');
+      }
+      const { period1, period2 } = parseRangeToPeriod(range);
+      // chart() doesn't need crumb - much less rate-limited than quoteSummary
+      return await chartFn(symbol, { period1, period2, interval: '1d' }, YF_MODULE_OPTS);
+    })();
+
+    this.chartInFlight.set(key, fetchPromise);
+    try {
+      const data = await fetchPromise;
+      this.chartCache.set(key, data);
+      moduleChartCache.set(key, { data, expiresAt: Date.now() + QUOTE_SUMMARY_TTL_MS });
+      return data;
+    } finally {
+      this.chartInFlight.delete(key);
+    }
+  }
+
   async getStockPrice(symbol: string): Promise<any> {
-    // Use the `price` module from quoteSummary instead of a separate quote() call.
-    // quoteSummary is already fetched (and cached) for getCompanyOverview, so this
-    // eliminates one extra crumb-authenticated round-trip to Yahoo Finance per report.
-    const summary = await this.getQuoteSummary(symbol, ['price']);
-    const p = summary.price || {};
-    const marketPrice = p.regularMarketPrice ?? null;
-    const change = p.regularMarketChange ?? null;
-    const changePct = p.regularMarketChangePercent ?? null;
-    return attachSource({
-      symbol: symbol.toUpperCase(),
-      price: typeof marketPrice === 'number' ? marketPrice.toFixed(2) : marketPrice,
-      change: typeof change === 'number' ? change.toFixed(2) : change,
-      changePercent: toPercentLabel(changePct),
-    }, SOURCE_YAHOO);
+    // Use chart() instead of quoteSummary() — chart doesn't need crumb authentication
+    // and is much less rate-limited. It provides regularMarketPrice in meta.
+    try {
+      const chartData = await this.getChartData(symbol, '5d');
+      const meta = chartData?.meta || {};
+      const marketPrice = meta.regularMarketPrice ?? null;
+      const previousClose = meta.chartPreviousClose ?? meta.previousClose ?? null;
+      const change = marketPrice && previousClose ? marketPrice - previousClose : null;
+      const changePct = change && previousClose ? (change / previousClose) * 100 : null;
+      return attachSource({
+        symbol: symbol.toUpperCase(),
+        price: typeof marketPrice === 'number' ? marketPrice.toFixed(2) : marketPrice,
+        change: typeof change === 'number' ? change.toFixed(2) : change,
+        changePercent: toPercentLabel(changePct),
+      }, SOURCE_YAHOO);
+    } catch (error: any) {
+      // If chart fails, try quoteSummary as fallback
+      const summary = await this.getQuoteSummary(symbol, ['price']);
+      const p = summary.price || {};
+      const marketPrice = p.regularMarketPrice ?? null;
+      const change = p.regularMarketChange ?? null;
+      const changePct = p.regularMarketChangePercent ?? null;
+      return attachSource({
+        symbol: symbol.toUpperCase(),
+        price: typeof marketPrice === 'number' ? marketPrice.toFixed(2) : marketPrice,
+        change: typeof change === 'number' ? change.toFixed(2) : change,
+        changePercent: toPercentLabel(changePct),
+      }, SOURCE_YAHOO);
+    }
   }
 
   async getPriceHistory(symbol: string, range = '1y'): Promise<any> {
-    const { period1, period2 } = parseRangeToPeriod(range);
-    await this.throttle();
-    const yahooFinance = await getYahooFinance();
-    // Use chart() directly — historical() was removed by Yahoo and the deprecated
-    // wrapper that remapped it produces noisy log output on every call.
-    const chartFn = yahooFinance.chart;
-    if (!chartFn) {
-      throw new Error('Yahoo Finance chart unavailable');
-    }
-    const result = await this.withRetry(() => chartFn(symbol, { period1, period2, interval: '1d' }, YF_MODULE_OPTS));
-    const prices = (result?.quotes || []).map((row: any) => ({
+    // Use cached chart data — chart() doesn't need crumb authentication
+    const chartData = await this.getChartData(symbol, range);
+    const prices = (chartData?.quotes || []).map((row: any) => ({
       date: row.date?.toISOString?.().slice(0, 10) || String(row.date),
       close: row.close,
     }));
@@ -1117,15 +1181,45 @@ class YahooFinanceService implements StockDataService {
   }
 
   async getCompanyOverview(symbol: string): Promise<any> {
-    const summary = await this.getQuoteSummary(symbol, [
-      'summaryProfile',
-      'price',
-      'defaultKeyStatistics',
-      'financialData',
-      'summaryDetail',
-      'calendarEvents',
-      'recommendationTrend',
-    ]);
+    // First, get basic data from chart() which doesn't need crumb
+    let chartMeta: any = {};
+    try {
+      const chartData = await this.getChartData(symbol, '1y');
+      chartMeta = chartData?.meta || {};
+    } catch {
+      // chart() failed, continue with quoteSummary only
+    }
+
+    // Try to get detailed data from quoteSummary (needs crumb - may be rate-limited)
+    let summary: any = {};
+    try {
+      summary = await this.getQuoteSummary(symbol, [
+        'summaryProfile',
+        'price',
+        'defaultKeyStatistics',
+        'financialData',
+        'summaryDetail',
+        'calendarEvents',
+        'recommendationTrend',
+      ]);
+    } catch (error: any) {
+      // quoteSummary failed (likely rate-limited), use chart data only
+      const isRateLimit = /rate limit/i.test(error?.message || '');
+      if (!isRateLimit) {
+        throw error;
+      }
+      // Return minimal data from chart() when rate-limited
+      return attachSource({
+        symbol: symbol.toUpperCase(),
+        name: chartMeta.symbol || symbol.toUpperCase(),
+        marketCapitalization: null,
+        eps: null,
+        peRatio: null,
+        sector: null,
+        industry: null,
+      }, SOURCE_YAHOO);
+    }
+
     const profile = summary.summaryProfile || {};
     const stats = summary.defaultKeyStatistics || {};
     const financials = summary.financialData || {};
@@ -1135,7 +1229,7 @@ class YahooFinanceService implements StockDataService {
 
     return attachSource({
       symbol: symbol.toUpperCase(),
-      name: price.longName || price.shortName || symbol.toUpperCase(),
+      name: price.longName || price.shortName || chartMeta.symbol || symbol.toUpperCase(),
       description: profile.longBusinessSummary,
       sector: profile.sector,
       industry: profile.industry,
