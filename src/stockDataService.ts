@@ -55,11 +55,11 @@ const tryLoadGetCrumbClear = async (): Promise<void> => {
   }
 };
 
-// Module-level quoteSummary cache shared across all YahooFinanceService instances.
+// Module-level caches shared across all YahooFinanceService instances.
 // Vercel serverless function instances can handle multiple requests before recycling,
 // so this avoids redundant Yahoo Finance API calls for the same symbol within the TTL.
-const DEFAULT_QUOTE_SUMMARY_TTL_MS = 5 * 60 * 1000; // 5 minutes
-const QUOTE_SUMMARY_TTL_MS = Number(process.env.YFINANCE_CACHE_TTL_MS || DEFAULT_QUOTE_SUMMARY_TTL_MS);
+const DEFAULT_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const CACHE_TTL_MS = Number(process.env.YFINANCE_CACHE_TTL_MS || DEFAULT_CACHE_TTL_MS);
 const moduleQuoteSummaryCache = new Map<string, { data: any; expiresAt: number }>();
 
 // Module-level chart cache — chart() doesn't require crumb authentication and is
@@ -1060,7 +1060,7 @@ class YahooFinanceService implements StockDataService {
     try {
       const fullData = await fetchPromise;
       this.quoteSummaryCache.set(key, fullData);
-      moduleQuoteSummaryCache.set(key, { data: fullData, expiresAt: Date.now() + QUOTE_SUMMARY_TTL_MS });
+      moduleQuoteSummaryCache.set(key, { data: fullData, expiresAt: Date.now() + CACHE_TTL_MS });
 
       const result: any = {};
       for (const mod of modules) {
@@ -1095,7 +1095,8 @@ class YahooFinanceService implements StockDataService {
       return moduleEntry.data;
     }
 
-    // Check instance-level cache
+    // Check instance-level cache (within same request — no expiration needed since
+    // instance is created fresh for each request and inherits from module cache)
     if (this.chartCache.has(key)) {
       return this.chartCache.get(key);
     }
@@ -1123,7 +1124,7 @@ class YahooFinanceService implements StockDataService {
     try {
       const data = await fetchPromise;
       this.chartCache.set(key, data);
-      moduleChartCache.set(key, { data, expiresAt: Date.now() + QUOTE_SUMMARY_TTL_MS });
+      moduleChartCache.set(key, { data, expiresAt: Date.now() + CACHE_TTL_MS });
       return data;
     } finally {
       this.chartInFlight.delete(key);
