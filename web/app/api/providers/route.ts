@@ -4,9 +4,9 @@ import { NextResponse } from 'next/server';
 const GITHUB_MODELS_CATALOG_URL = 'https://models.github.ai/catalog/models';
 
 const SAFE_DEFAULT = [
-  { value: 'openai/gpt-4.1', label: 'OpenAI GPT-4.1', rateLimitTier: 'high' },
-  { value: 'anthropic/claude-sonnet-4-6', label: 'Claude Sonnet 4.6', rateLimitTier: 'low' },
-  { value: 'google/gemini-3-flash', label: 'Gemini 3 Flash', rateLimitTier: 'low' },
+  { value: 'openai/gpt-4.1',       label: 'OpenAI GPT-4.1',      rateLimitTier: 'high' },
+  { value: 'openai/gpt-4.1-mini',  label: 'OpenAI GPT-4.1 Mini', rateLimitTier: 'low'  },
+  { value: 'google/gemini-3-flash', label: 'Gemini 3 Flash',      rateLimitTier: 'low'  },
 ];
 
 const DEFAULT_PROXY_MODELS = [
