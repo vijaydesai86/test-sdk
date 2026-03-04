@@ -159,11 +159,19 @@ const scoreSearchMatch = (query: string, item: any) => {
   if (name.startsWith(normalized)) score += 70;
   if (name.includes(normalized)) score += 50;
   if (symbol.startsWith(normalized)) score += 40;
+  // When the query string begins with the symbol, the query is likely a longer variant
+  // of that ticker (e.g. a user typed the company's informal name that shares its prefix
+  // with the symbol). Score proportionally to symbol length / query length so that a
+  // longer-matching symbol ranks above a shorter one for the same query.
+  if (symbol.length >= 3 && normalized.startsWith(symbol)) {
+    score += Math.round(60 * symbol.length / normalized.length);
+  }
   if (region.includes('united states')) score += 10;
   if (currency === 'USD') score += 10;
   if (type.includes('equity')) score += 5;
-  // Bonus: stripping common corporate suffixes leaves a name that exactly matches the query.
-  // e.g. "Apple Inc" → "apple" matches query "apple" (+40), but "Apple Hospitality REIT Inc" does not.
+  // When stripping common corporate suffixes from the name produces an exact match with
+  // the query, strongly prefer this result over others whose full name only partially
+  // overlaps. Works for any company regardless of suffix convention.
   const strippedName = name
     .replace(/[\s,]+(inc\.?|corp\.?|corporation|ltd\.?|limited|llc|plc|co\.?|group|holdings?|enterprises?|international|incorporated|technologies?|tech)\s*$/i, '')
     .trim();
@@ -991,12 +999,20 @@ export async function executeTool(
           ? args.companies
           : String(args.companies || '').split(',');
         const companies = companiesInput.map((item: string) => item.trim()).filter(Boolean);
-        if (companies.length < 2 || companies.length > 10) {
+        // Deduplicate preserving order (case-insensitive)
+        const seen = new Set<string>();
+        const uniqueCompanies = companies.filter((c) => {
+          const key = c.toLowerCase();
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+        if (uniqueCompanies.length < 2 || uniqueCompanies.length > 10) {
           return { success: false, error: 'Provide between 2 and 10 company names or tickers.' };
         }
 
         const resolved: { query: string; symbol?: string; candidates?: any[]; reason?: string }[] = [];
-        for (const query of companies) {
+        for (const query of uniqueCompanies) {
           const result = await resolveSymbolFromQuery(stockService, query);
           if (!result.ok || !result.symbol) {
             resolved.push({ query, candidates: result.candidates, reason: result.reason });
