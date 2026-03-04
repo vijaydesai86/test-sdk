@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getToolDefinitionsByName, executeTool } from '@/app/lib/stockTools';
 import { createStockService, StockDataService, normalizeProvider } from '@/app/lib/stockDataService';
+import { saveReport } from '@/app/lib/reportGenerator';
 
 // GitHub Models API — new endpoint (azure endpoint deprecated Oct 2025)
 // Works with PATs from github.com/settings/personal-access-tokens (models:read scope)
@@ -21,8 +22,8 @@ const DEFAULT_FALLBACK_MODELS = [
 // 20-stock reports (typically: 1 sector list + 2-3 batch rounds + 1 write round).
 const MAX_TOOL_ROUNDS = 30;
 const MAX_HISTORY_MESSAGE_CHARS = 4000;
-const TOOL_RESULT_MAX_DEPTH = 3;
-const TOOL_RESULT_MAX_ARRAY = 12;
+const TOOL_RESULT_MAX_DEPTH = 5;
+const TOOL_RESULT_MAX_ARRAY = 60;
 const TOOL_RESULT_MAX_KEYS = 40;
 const TOOL_RESULT_MAX_STRING = 500;
 
@@ -119,6 +120,33 @@ OUTPUT STANDARDS
 - Prices: 2 decimal places; percentages: 1 decimal; market caps: $B / $M
 - Cite data source after each data-heavy section
 - Non-report questions (price, quick analysis): 2–5 lines, no report structure needed
+
+══════════════════════════════════════════════════════
+RULE 5 — EMBED INTERACTIVE CHARTS IN EVERY SINGLE-STOCK REPORT
+══════════════════════════════════════════════════════
+
+After each major section, embed a \`\`\`chart code block containing a valid ECharts JSON option object.
+Required charts (use real values from tool results — no placeholders):
+
+1. Price History — right after ## 📊 Snapshot.
+   Source: get_price_history prices array. Use up to 52 evenly-spaced points. Format dates as "MMM 'YY".
+\`\`\`chart
+{"title":{"text":"Price History (1Y)","left":"center"},"tooltip":{"trigger":"axis"},"grid":{"left":45,"right":20,"top":40,"bottom":40},"xAxis":{"type":"category","boundaryGap":false,"data":["Mar '24","Apr '24","May '24"]},"yAxis":{"type":"value","scale":true},"series":[{"name":"Close","type":"line","smooth":true,"symbol":"none","data":[820.5,850.2,790.0]}]}
+\`\`\`
+
+2. Quarterly Revenue — inside ## 💰 Financials, after the table.
+   Source: get_income_statement quarterlyReports (last 4 quarters). Divide revenue by 1 000 000 → show as $M.
+\`\`\`chart
+{"title":{"text":"Quarterly Revenue ($M)","left":"center"},"tooltip":{"trigger":"axis"},"xAxis":{"type":"category","data":["Q1'25","Q2'25","Q3'25","Q4'25"]},"yAxis":{"type":"value","scale":true},"series":[{"name":"Revenue ($M)","type":"bar","data":[26044,30040,35082,39331]}]}
+\`\`\`
+
+3. Quarterly EPS — inside ## 📊 Earnings Trend, after the table.
+   Source: get_earnings_history quarterlyEarnings (last 4–8 quarters).
+\`\`\`chart
+{"title":{"text":"Quarterly EPS","left":"center"},"tooltip":{"trigger":"axis"},"xAxis":{"type":"category","data":["Q1'25","Q2'25","Q3'25","Q4'25"]},"yAxis":{"type":"value","scale":true},"series":[{"name":"EPS","type":"bar","data":[0.61,0.68,0.78,0.89]}]}
+\`\`\`
+
+Omit a chart only when the underlying tool returned no data at all.
 `;
 
 const COMPACT_SYSTEM_PROMPT = `You are a buy-side equity research analyst. Real data only — never invent or estimate figures.
@@ -136,6 +164,11 @@ SINGLE-STOCK REPORT SECTIONS:
 
 COMPARISON REPORT SECTIONS:
   Snapshot Table • Key Metrics Table • Balance & Cash Table • Analyst View • Verdict
+
+CHARTS — include in every single-stock report using \`\`\`chart ECharts JSON blocks:
+- Price History line chart (after Snapshot) — from get_price_history, up to 52 points, dates as "MMM 'YY"
+- Quarterly Revenue bar chart (after Financials table) — from get_income_statement, revenue ÷ 1 000 000 = $M
+- Quarterly EPS bar chart (after Earnings table) — from get_earnings_history
 
 Always end a report with: save_report(title, content)
 
@@ -242,6 +275,50 @@ function isSmallContextModel(model?: string | null): boolean {
 function isToolCallLike(content: string | null | undefined): boolean {
   if (!content) return false;
   return /"name"\s*:\s*"functions\./.test(content) || /"arguments"\s*:\s*\{/.test(content);
+}
+
+/**
+ * When the LLM writes save_report("title", `content`) or save_report("title", "content")
+ * as plain text instead of making a proper tool call, extract the arguments so the server
+ * can execute the save itself and return a proper artifact.
+ */
+function extractSaveReportCall(
+  text: string
+): { title: string; reportContent: string; stripped: string } | null {
+  const CALL_PREFIX = 'save_report(';
+  const callIdx = text.indexOf(CALL_PREFIX);
+  if (callIdx === -1) return null;
+
+  const inner = text.slice(callIdx + CALL_PREFIX.length).trimStart();
+
+  // Extract title (single or double quoted)
+  const titleMatch = inner.match(/^["']([^"']+)["']\s*,\s*/);
+  if (!titleMatch) return null;
+
+  const title = titleMatch[1];
+  const afterTitle = inner.slice(titleMatch[0].length);
+
+  let reportContent: string;
+  if (afterTitle.startsWith('`')) {
+    // Template-literal style: the closing delimiter is the backtick immediately before the
+    // trailing `)` at the end of the text — anchoring to `\s*)\s*$` is robust against
+    // backticks appearing inside the report content (e.g. inline code spans).
+    const closingMatch = afterTitle.match(/`\s*\)\s*$/);
+    if (!closingMatch || closingMatch.index === undefined || closingMatch.index === 0) return null;
+    reportContent = afterTitle.slice(1, closingMatch.index);
+  } else if (afterTitle.startsWith('"')) {
+    const closingMatch = afterTitle.match(/"\s*\)\s*$/);
+    if (!closingMatch || closingMatch.index === undefined || closingMatch.index === 0) return null;
+    reportContent = afterTitle.slice(1, closingMatch.index);
+  } else {
+    return null;
+  }
+
+  if (!reportContent.trim()) return null;
+
+  // Everything before the save_report(...) call is the conversational part
+  const stripped = text.slice(0, callIdx).trimEnd();
+  return { title, reportContent, stripped };
 }
 
 function buildFallbackModels(requestedModel: string): string[] {
@@ -639,6 +716,37 @@ export async function POST(request: NextRequest) {
         throw err;
       }
       break;
+    }
+
+    // If the model wrote save_report(...) as plain text instead of calling it as a tool,
+    // execute the save now so the report still appears as a proper artifact.
+    if (!reportArtifact && assistantContent) {
+      const extracted = extractSaveReportCall(assistantContent);
+      if (extracted) {
+        const rawTitle = extracted.title
+          .toLowerCase()
+          .replace(/[^a-z0-9\-]/g, '-')
+          .replace(/-+/g, '-')
+          .replace(/^-|-$/g, '');
+        const title = rawTitle || 'report';
+        try {
+          const saved = await saveReport(extracted.reportContent, title);
+          reportArtifact = {
+            filename: saved.filename,
+            content: extracted.reportContent,
+            downloadUrl: `/api/reports/${saved.filename}`,
+          };
+          // Strip the raw save_report(...) call from the displayed response
+          assistantContent = extracted.stripped || assistantContent;
+        } catch (saveErr: any) {
+          console.warn('Failed to save plain-text report artifact', {
+            title: extracted.title,
+            contentLength: extracted.reportContent.length,
+            error: saveErr?.message,
+          });
+          // Leave content unchanged so the user still sees the report text
+        }
+      }
     }
 
     // Save conversation history

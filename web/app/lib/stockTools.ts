@@ -386,10 +386,30 @@ export async function executeTool(
         const symbol = args.symbol || '';
         const range = args.range || 'daily';
         const history = await stockService.getPriceHistory(symbol, range);
+        const rawPrices: any[] = history.prices || [];
+        // Sort chronologically (oldest → newest) so the LLM always sees time moving
+        // left-to-right regardless of provider ordering, then downsample to ≤52 points
+        // (≈ weekly granularity for a 1-year range) to keep token usage manageable while
+        // covering the full requested period with both endpoints always included.
+        const sorted = [...rawPrices].sort((a, b) =>
+          String(a.date).localeCompare(String(b.date))
+        );
+        const MAX_CHART_POINTS = 52;
+        const sampled =
+          sorted.length <= MAX_CHART_POINTS
+            ? sorted
+            : (() => {
+                const result: any[] = [];
+                const step = (sorted.length - 1) / (MAX_CHART_POINTS - 1);
+                for (let i = 0; i < MAX_CHART_POINTS; i++) {
+                  result.push(sorted[Math.round(i * step)]);
+                }
+                return result;
+              })();
         return {
           success: true,
-          data: history,
-          message: `Retrieved ${history.prices?.length || 0} ${range} price points for ${symbol}`,
+          data: { ...history, prices: sampled },
+          message: `Retrieved ${sampled.length} price points for ${symbol} (${range})`,
         };
       }
       case 'get_company_overview': {
