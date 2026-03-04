@@ -319,7 +319,7 @@ function buildBarChart(title: string, label: string, items: { symbol: string; va
   });
 }
 
-function buildPerformanceChart(items: ComparisonReportItem[], title: string): string {
+function buildComparisonPerformanceChart(items: ComparisonReportItem[], title: string): string {
   const series = items
     .map((item) => {
       const prices = item.priceHistory?.prices || [];
@@ -1501,7 +1501,7 @@ export function buildComparisonReport(data: ComparisonReportData): string {
     ['left', 'right', 'right', 'left']
   );
 
-  const performanceChart = buildPerformanceChart(
+  const performanceChart = buildComparisonPerformanceChart(
     items.map((item) => ({ symbol: item.symbol, priceHistory: item.priceHistory } as ComparisonReportItem)),
     `Price Performance (${data.range}, Indexed)`
   );

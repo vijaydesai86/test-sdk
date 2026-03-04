@@ -87,10 +87,12 @@ function ChartBlock({ option }: { option: Record<string, unknown> }) {
     };
   }, [option]);
 
-  return <div ref={containerRef} className="my-4 w-full" style={{ height: '280px' }} />;
+  return <div ref={containerRef} className="my-4 w-full" style={{ height: `${CHART_HEIGHT}px` }} />;
 }
 
 const DEFAULT_MODEL = 'openai/gpt-4.1';
+const CHART_HEIGHT = 280;
+const MAX_TEXTAREA_HEIGHT = 160;
 const TOOL_CALL_WARNING =
   'Model returned tool calls as plain text. Switch to a tool-calling model from the dropdown.';
 const isToolCallText = (content: string) =>
@@ -101,6 +103,35 @@ const QUICK_PROMPTS = [
   { label: '📊 NVDA stock report', prompt: 'Generate a full stock report for NVDA' },
   { label: '⚖️ Compare NVDA, AMD, INTC', prompt: 'Compare companies NVDA, AMD, INTC' },
 ];
+
+function MarkdownContent({ content }: { content: string }) {
+  return (
+    <div className="prose prose-sm dark:prose-invert max-w-none break-words">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          code({ className, children, ...props }) {
+            const match = /language-(\w+)/.exec(className ?? '');
+            if (match?.[1] === 'mermaid') {
+              return <MermaidBlock chart={String(children).trim()} />;
+            }
+            if (match?.[1] === 'chart' || match?.[1] === 'echarts') {
+              try {
+                const option = JSON.parse(String(children)) as Record<string, unknown>;
+                return <ChartBlock option={option} />;
+              } catch {
+                return <code className={className} {...props}>{children}</code>;
+              }
+            }
+            return <code className={className} {...props}>{children}</code>;
+          },
+        }}
+      >
+        {content}
+      </ReactMarkdown>
+    </div>
+  );
+}
 
 export default function ChatInterface() {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -152,7 +183,7 @@ export default function ChatInterface() {
     const el = textareaRef.current;
     if (!el) return;
     el.style.height = 'auto';
-    el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
+    el.style.height = `${Math.min(el.scrollHeight, MAX_TEXTAREA_HEIGHT)}px`;
   }, [input]);
 
   const sendPrompt = async (prompt: string) => {
@@ -305,33 +336,6 @@ export default function ChatInterface() {
       setError(err instanceof Error ? err.message : 'Failed to delete report');
     }
   };
-
-  const MarkdownContent = ({ content }: { content: string }) => (
-    <div className="prose prose-sm dark:prose-invert max-w-none break-words">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        components={{
-          code({ className, children, ...props }) {
-            const match = /language-(\w+)/.exec(className ?? '');
-            if (match?.[1] === 'mermaid') {
-              return <MermaidBlock chart={String(children).trim()} />;
-            }
-            if (match?.[1] === 'chart' || match?.[1] === 'echarts') {
-              try {
-                const option = JSON.parse(String(children)) as Record<string, unknown>;
-                return <ChartBlock option={option} />;
-              } catch {
-                return <code className={className} {...props}>{children}</code>;
-              }
-            }
-            return <code className={className} {...props}>{children}</code>;
-          },
-        }}
-      >
-        {content}
-      </ReactMarkdown>
-    </div>
-  );
 
   return (
     <>
@@ -640,28 +644,7 @@ export default function ChatInterface() {
               {reportLoading ? (
                 <p className="text-sm text-slate-400 dark:text-gray-500">Loading report&#8230;</p>
               ) : (
-                <div className="prose prose-sm dark:prose-invert max-w-none">
-                  <ReactMarkdown
-                    remarkPlugins={[remarkGfm]}
-                    components={{
-                      code({ className, children, ...props }) {
-                        const match = /language-(\w+)/.exec(className ?? '');
-                        if (match?.[1] === 'mermaid') return <MermaidBlock chart={String(children).trim()} />;
-                        if (match?.[1] === 'chart' || match?.[1] === 'echarts') {
-                          try {
-                            const option = JSON.parse(String(children)) as Record<string, unknown>;
-                            return <ChartBlock option={option} />;
-                          } catch {
-                            return <code className={className} {...props}>{children}</code>;
-                          }
-                        }
-                        return <code className={className} {...props}>{children}</code>;
-                      },
-                    }}
-                  >
-                    {reportPreview}
-                  </ReactMarkdown>
-                </div>
+                <MarkdownContent content={reportPreview} />
               )}
             </div>
           </div>
