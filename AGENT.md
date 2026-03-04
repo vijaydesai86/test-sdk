@@ -109,14 +109,7 @@ These are the tools the LLM calls to gather raw data. Each is a pure data fetche
 
 ### Legacy / Fallback Tools
 
-| Tool | Status | When used |
-|---|---|---|
-| `generate_stock_report` | ⚠️ Legacy — present in `REPORT_TOOL_NAMES` as last-resort fallback only | If ALL individual data tools return errors/nulls and no data can be gathered |
-| `generate_comparison_report` | ⚠️ Legacy — same | Same last-resort scenario for comparison requests |
-| `generate_sector_report` | Active | LLM may call this for sector/theme reports |
-| `generate_peer_report` | Active | LLM may call this for peer-group reports |
-
-> ⚠️ **Do NOT call `generate_stock_report` or `generate_comparison_report` for normal user-facing reports.** They are included in `REPORT_TOOL_NAMES` solely so the LLM has a last-resort escape hatch when all individual data tools fail. In the happy path the LLM collects data via the individual tools above, reasons over it, and writes the report itself via `save_report`. Calling a generator tool short-circuits LLM reasoning and produces template-only output with no qualitative analysis.
+All `generate_*_report` tools (`generate_stock_report`, `generate_comparison_report`, `generate_sector_report`, `generate_peer_report`) have been **removed**. The LLM gathers data using individual tools and writes reports itself, then saves via `save_report`.
 
 ---
 
@@ -182,11 +175,9 @@ If both `ALPHA_VANTAGE_API_KEY` and `FINNHUB_API_KEY` are present, the service a
 
 ```
 selectToolNames(message)
-  → isReport? (keywords: report/compare/comparison/analysis)
-      Yes → REPORT_TOOL_NAMES   (all individual data tools + save_report +
-                                  generate_sector_report + generate_peer_report)
-      No  → DEFAULT_TOOL_NAMES  (5 basic tools for quick queries)
-  → always includes save_report for report queries
+  → isReport? (keywords: report/compare/comparison/analysis/analyses)
+      Yes → REPORT_TOOL_NAMES   (all individual data tools + save_report)
+      No  → DEFAULT_TOOL_NAMES  (11 tools for quick queries)
 ```
 
 ### LLM Tool-Calling Loop
@@ -204,7 +195,6 @@ These constraints exist for correctness and data integrity. Violating them produ
 
 | Rule | Reason |
 |---|---|
-| **Never call `generate_stock_report` or `generate_comparison_report` for user-facing reports** | They bypass LLM reasoning and produce lower-quality, template-filled output |
 | **Never pass raw company names to data APIs** | APIs require exact tickers — always resolve via `search_stock` first |
 | **Never invent, estimate, or guess data** | If a field is unavailable after exhausting relevant tools, mark it genuinely unavailable — do not fabricate values |
 | **Never mark a field N/A without trying all relevant tools first** | Multiple tools may cover the same field; exhaust them before giving up |
