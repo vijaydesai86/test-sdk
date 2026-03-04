@@ -609,7 +609,7 @@ function buildToolDefinitions() {
         parameters: {
           type: 'object',
           properties: {
-            companies: { type: 'array', items: { type: 'string' }, description: 'Company names or tickers (2-6 items)' },
+            companies: { type: 'array', items: { type: 'string' }, description: 'Company names or tickers (2-10 items). Company names are automatically resolved to the correct ticker symbol.' },
             range: { type: 'string', description: 'Price history range for charts (e.g., "1y", "3y", "5y", "max"). Default is "1y"' },
           },
           required: ['companies'],
@@ -985,8 +985,8 @@ export async function executeTool(
           ? args.companies
           : String(args.companies || '').split(',');
         const companies = companiesInput.map((item: string) => item.trim()).filter(Boolean);
-        if (companies.length < 2 || companies.length > 6) {
-          return { success: false, error: 'Provide between 2 and 6 company names or tickers.' };
+        if (companies.length < 2 || companies.length > 10) {
+          return { success: false, error: 'Provide between 2 and 10 company names or tickers.' };
         }
 
         const resolved: { query: string; symbol?: string; candidates?: any[]; reason?: string }[] = [];

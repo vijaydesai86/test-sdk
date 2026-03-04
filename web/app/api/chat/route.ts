@@ -211,17 +211,22 @@ function parseReportRequest(message: string) {
     }
   }
 
+  // Only treat as a sector/theme report when the query has 3+ words or sector-like keywords.
+  // Two-word company names (e.g. "Apple Inc", "Berkshire Hathaway") fall through to LLM.
   const genericMatch = text.match(/report\s+for\s+(.+)$/i);
   if (genericMatch) {
     const query = genericMatch[1].trim();
-    if (query.includes(' ') || /sector|theme|stocks?/i.test(query)) {
+    const wordCount = query.split(/\s+/).length;
+    if (wordCount >= 3 || /sector|theme|stocks?|industry|space|market/i.test(query)) {
       return { type: 'sector' as const, query };
     }
   }
 
-  const stockMatch = text.match(/report\s+(?:for|on)\s+([a-zA-Z]{1,6})\s*$/i);
+  // Only direct-route clear all-uppercase ticker symbols (e.g. AAPL, MSFT, NVDA).
+  // Company names and mixed-case input fall through to the LLM which resolves them via search_stock.
+  const stockMatch = text.match(/report\s+(?:for|on)\s+([A-Z]{1,5})\s*$/);
   if (stockMatch) {
-    return { type: 'stock' as const, symbol: stockMatch[1].toUpperCase() };
+    return { type: 'stock' as const, symbol: stockMatch[1] };
   }
 
   return null;
