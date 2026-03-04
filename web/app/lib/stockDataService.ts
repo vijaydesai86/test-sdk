@@ -963,14 +963,95 @@ class HybridStockDataService implements StockDataService {
     private readonly fallback: StockDataService
   ) {}
 
+  /** Simple try-primary-then-fallback for methods where merging is unnecessary. */
   private async try2<T>(a: () => Promise<T>, b: () => Promise<T>): Promise<T> {
     try { return await a(); } catch { return b(); }
   }
 
+  /**
+   * For every key in `patch` where `base` has null / undefined / 'N/A',
+   * fill it with the patch value (if the patch value is real).
+   * Base always wins on fields it already has a real value for.
+   */
+  private static patchNulls<T extends Record<string, any>>(base: T, patch: T): T {
+    const out: Record<string, any> = { ...base };
+    for (const [k, v] of Object.entries(patch)) {
+      if ((out[k] === null || out[k] === undefined || out[k] === 'N/A') &&
+          v !== null && v !== undefined && v !== 'N/A') {
+        out[k] = v;
+      }
+    }
+    return out as T;
+  }
+
+  /**
+   * Fetch from primary first.  If primary fails OR the optional `isIncomplete`
+   * predicate says the result has critical gaps, also call the fallback provider
+   * and patch-merge the results so neither source's null gaps survive.
+   */
+  private async tryMerge<T extends Record<string, any>>(
+    a: () => Promise<T>,
+    b: () => Promise<T>,
+    isIncomplete?: (result: T) => boolean
+  ): Promise<T> {
+    let primary: T | null = null;
+    try { primary = await a(); } catch { /* fall through */ }
+
+    if (primary && (!isIncomplete || !isIncomplete(primary))) return primary;
+
+    let secondary: T | null = null;
+    try { secondary = await b(); } catch { /* fall through */ }
+
+    if (!primary && !secondary) throw new Error('Both providers unavailable');
+    if (!primary) return secondary!;
+    if (!secondary) return primary;
+    return HybridStockDataService.patchNulls(primary, secondary);
+  }
+
   getStockPrice(s: string) { return this.try2(() => this.primary.getStockPrice(s), () => this.fallback.getStockPrice(s)); }
   getPriceHistory(s: string, r?: string) { return this.try2(() => this.primary.getPriceHistory(s, r), () => this.fallback.getPriceHistory(s, r)); }
-  getCompanyOverview(s: string) { return this.try2(() => this.primary.getCompanyOverview(s), () => this.fallback.getCompanyOverview(s)); }
-  getBasicFinancials(s: string) { return this.try2(() => this.primary.getBasicFinancials(s), () => this.fallback.getBasicFinancials(s)); }
+
+  /** Merge company overview from both providers: primary wins, secondary fills null/N/A gaps.
+   * Both AV and FH normalize this field to `marketCapitalization`. */
+  getCompanyOverview(s: string) {
+    return this.tryMerge(
+      () => this.primary.getCompanyOverview(s),
+      () => this.fallback.getCompanyOverview(s),
+      (r) => !r?.sector || !r?.marketCapitalization
+    );
+  }
+
+  /**
+   * Merge basic financials including the nested `metric` sub-object.
+   * AV derives metrics from OVERVIEW (may be absent on free tier);
+   * Finnhub pulls from /stock/metric (always populated on free tier).
+   * The three metrics checked are the ones AV most commonly fails to derive.
+   * Merging ensures grossMarginTTM, roeTTM, and operatingMarginTTM are always filled.
+   */
+  async getBasicFinancials(s: string): Promise<any> {
+    let primary: any = null;
+    try { primary = await this.primary.getBasicFinancials(s); } catch { /* fall through */ }
+
+    const hasKeyMetrics = primary?.metric?.grossMarginTTM != null
+      && primary?.metric?.roeTTM != null
+      && primary?.metric?.operatingMarginTTM != null;
+    if (hasKeyMetrics) return primary;
+
+    let secondary: any = null;
+    try { secondary = await this.fallback.getBasicFinancials(s); } catch { /* fall through */ }
+
+    if (!primary && !secondary) throw new Error('Both providers unavailable for basic financials');
+    if (!primary) return secondary;
+    if (!secondary) return primary;
+
+    const merged = HybridStockDataService.patchNulls(primary, secondary);
+    merged.metric = HybridStockDataService.patchNulls(
+      primary.metric ?? {},
+      secondary.metric ?? {}
+    );
+    return merged;
+  }
+
   getInsiderTrading(s: string) { return this.try2(() => this.primary.getInsiderTrading(s), () => this.fallback.getInsiderTrading(s)); }
   getAnalystRatings(s: string) { return this.try2(() => this.primary.getAnalystRatings(s), () => this.fallback.getAnalystRatings(s)); }
   getAnalystRecommendations(s: string) { return this.try2(() => this.primary.getAnalystRecommendations(s), () => this.fallback.getAnalystRecommendations(s)); }
@@ -1014,12 +1095,18 @@ export function normalizeProvider(raw?: string): string {
  */
 export function createStockService(avApiKey?: string, fhApiKey?: string): StockDataService {
   const provider = normalizeProvider() as Provider;
+  const avKey = avApiKey ?? process.env.ALPHA_VANTAGE_API_KEY;
+  const fhKey = fhApiKey ?? process.env.FINNHUB_API_KEY;
   switch (provider) {
     case 'finnhub':
-      return new FinnhubService(fhApiKey);
+      return new FinnhubService(fhKey);
     case 'hybrid':
-      return new HybridStockDataService(new AlphaVantageService(avApiKey), new FinnhubService(fhApiKey));
+      return new HybridStockDataService(new AlphaVantageService(avKey), new FinnhubService(fhKey));
     default:
-      return new AlphaVantageService(avApiKey);
+      // Auto-upgrade to hybrid when a Finnhub key is also configured — use every source available
+      if (fhKey) {
+        return new HybridStockDataService(new AlphaVantageService(avKey), new FinnhubService(fhKey));
+      }
+      return new AlphaVantageService(avKey);
   }
 }

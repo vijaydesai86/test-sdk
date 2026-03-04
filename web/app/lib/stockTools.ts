@@ -86,7 +86,7 @@ const setCachedValue = (cache: SymbolCache, key: string, data: any) => {
  * without additional API calls, eliminating rate-limit-induced N/As.
  */
 const cacheToolResult = async (symbol: string, key: string, data: any) => {
-  if (!symbol || data === null || data === undefined) return;
+  if (!symbol || data == null) return;
   try {
     const upperSymbol = symbol.toUpperCase();
     const cache = await loadSymbolCache(upperSymbol);
@@ -1083,59 +1083,11 @@ export async function executeTool(
         const universe = resolved.map((row) => row.symbol as string);
         const notes: string[] = [];
         const sourceMap: Record<string, Record<string, string>> = {};
-        let rateLimitHit = false;
         const isRateLimit = (message: string) =>
           message.includes('frequency') ||
           message.includes('Thank you for using Alpha Vantage') ||
           /rate limit|too many requests/i.test(message);
-        const safeFetch = async <T>(
-          symbol: string,
-          cache: SymbolCache,
-          label: string,
-          key: string,
-          request: Promise<T>
-        ) => {
-        const cachedValue = getCachedValue(cache, key);
-        if (cachedValue !== null) {
-          if (cachedValue && typeof cachedValue === 'object') {
-            const sourceValue = '__source' in cachedValue
-              ? String((cachedValue as any).__source)
-              : DEFAULT_SOURCE;
-            sourceMap[symbol] = sourceMap[symbol] || {};
-            sourceMap[symbol][label] = sourceValue;
-          }
-          return cachedValue as T;
-        }
-          if (rateLimitHit) return undefined as T;
-        try {
-          const result = await request;
-          if (result && typeof result === 'object') {
-            const sourceValue = '__source' in result ? String((result as any).__source) : DEFAULT_SOURCE;
-            sourceMap[symbol] = sourceMap[symbol] || {};
-            sourceMap[symbol][label] = sourceValue;
-          }
-          setCachedValue(cache, key, result);
-          return result;
-        } catch (error: any) {
-            const message = error?.message || 'Unavailable';
-            if (isRateLimit(message)) {
-              rateLimitHit = true;
-              notes.push('Rate limit reached; remaining sections skipped.');
-              return cachedValue !== null ? (cachedValue as T) : (undefined as T);
-            }
-            if (!message.includes('Alpha-only mode') && !message.includes('free tier') && !message.includes('not available via') && !message.includes('not available in')) {
-              notes.push(`${label}: ${message}`);
-            }
-          if (cachedValue && typeof cachedValue === 'object') {
-            const sourceValue = '__source' in cachedValue
-              ? String((cachedValue as any).__source)
-              : DEFAULT_SOURCE;
-            sourceMap[symbol] = sourceMap[symbol] || {};
-            sourceMap[symbol][label] = sourceValue;
-          }
-          return cachedValue !== null ? (cachedValue as T) : (undefined as T);
-        }
-      };
+
         const buildBasicFinancialsFallback = (overview: any) => {
           if (!overview) return undefined;
           const revenue = Number(overview.revenueTTM);
@@ -1162,16 +1114,61 @@ export async function executeTool(
         const items: any[] = [];
         for (const symbol of universe) {
           const cache = await loadSymbolCache(symbol);
-          const price = await safeFetch(symbol, cache, 'Price', 'price', stockService.getStockPrice(symbol));
-          const overview = await safeFetch(symbol, cache, 'Company overview', 'overview', stockService.getCompanyOverview(symbol));
-          const basicFinancialsFetched = await safeFetch(symbol, cache, 'Basic financials', 'basicFinancials', stockService.getBasicFinancials(symbol));
+          // Per-symbol rate-limit flag: one symbol hitting its limit never blocks others.
+          let symbolRateLimitHit = false;
+          const safeFetch = async <T>(label: string, key: string, request: Promise<T>) => {
+            const cachedValue = getCachedValue(cache, key);
+            if (cachedValue !== null) {
+              if (cachedValue && typeof cachedValue === 'object') {
+                const sourceValue = '__source' in cachedValue
+                  ? String((cachedValue as any).__source)
+                  : DEFAULT_SOURCE;
+                sourceMap[symbol] = sourceMap[symbol] || {};
+                sourceMap[symbol][label] = sourceValue;
+              }
+              return cachedValue as T;
+            }
+            if (symbolRateLimitHit) return undefined as T;
+            try {
+              const result = await request;
+              if (result && typeof result === 'object') {
+                const sourceValue = '__source' in result ? String((result as any).__source) : DEFAULT_SOURCE;
+                sourceMap[symbol] = sourceMap[symbol] || {};
+                sourceMap[symbol][label] = sourceValue;
+              }
+              setCachedValue(cache, key, result);
+              return result;
+            } catch (error: any) {
+              const message = error?.message || 'Unavailable';
+              if (isRateLimit(message)) {
+                symbolRateLimitHit = true;
+                notes.push(`${symbol}: rate limit reached; remaining sections skipped.`);
+                return undefined as T;
+              }
+              if (!message.includes('Alpha-only mode') && !message.includes('free tier') && !message.includes('not available via') && !message.includes('not available in')) {
+                notes.push(`${symbol} - ${label}: ${message}`);
+              }
+              if (cachedValue && typeof cachedValue === 'object') {
+                const sourceValue = '__source' in cachedValue
+                  ? String((cachedValue as any).__source)
+                  : DEFAULT_SOURCE;
+                sourceMap[symbol] = sourceMap[symbol] || {};
+                sourceMap[symbol][label] = sourceValue;
+              }
+              return undefined as T;
+            }
+          };
+
+          const price = await safeFetch('Price', 'price', stockService.getStockPrice(symbol));
+          const overview = await safeFetch('Company overview', 'overview', stockService.getCompanyOverview(symbol));
+          const basicFinancialsFetched = await safeFetch('Basic financials', 'basicFinancials', stockService.getBasicFinancials(symbol));
           const basicFinancials = basicFinancialsFetched ?? (overview ? buildBasicFinancialsFallback(overview) : undefined);
-          const priceHistory = await safeFetch(symbol, cache, 'Price history', `priceHistory:${range}`, stockService.getPriceHistory(symbol, range));
-          const incomeStatement = await safeFetch(symbol, cache, 'Income statement', 'incomeStatement', stockService.getIncomeStatement(symbol));
-          const balanceSheet = await safeFetch(symbol, cache, 'Balance sheet', 'balanceSheet', stockService.getBalanceSheet(symbol));
-          const cashFlow = await safeFetch(symbol, cache, 'Cash flow', 'cashFlow', stockService.getCashFlow(symbol));
-          const analystRatings = await safeFetch(symbol, cache, 'Analyst ratings', 'analystRatings', stockService.getAnalystRatings(symbol));
-          const priceTargets = await safeFetch(symbol, cache, 'Price targets', 'priceTargets', stockService.getPriceTargets(symbol));
+          const priceHistory = await safeFetch('Price history', `priceHistory:${range}`, stockService.getPriceHistory(symbol, range));
+          const incomeStatement = await safeFetch('Income statement', 'incomeStatement', stockService.getIncomeStatement(symbol));
+          const balanceSheet = await safeFetch('Balance sheet', 'balanceSheet', stockService.getBalanceSheet(symbol));
+          const cashFlow = await safeFetch('Cash flow', 'cashFlow', stockService.getCashFlow(symbol));
+          const analystRatings = await safeFetch('Analyst ratings', 'analystRatings', stockService.getAnalystRatings(symbol));
+          const priceTargets = await safeFetch('Price targets', 'priceTargets', stockService.getPriceTargets(symbol));
           items.push({
             symbol,
             price,
