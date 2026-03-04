@@ -23,7 +23,7 @@ const DEFAULT_FALLBACK_MODELS = [
 const MAX_TOOL_ROUNDS = 30;
 const MAX_HISTORY_MESSAGE_CHARS = 4000;
 const TOOL_RESULT_MAX_DEPTH = 5;
-const TOOL_RESULT_MAX_ARRAY = 60;
+const TOOL_RESULT_MAX_ARRAY = 20;
 const TOOL_RESULT_MAX_KEYS = 40;
 const TOOL_RESULT_MAX_STRING = 500;
 
@@ -140,56 +140,54 @@ OUTPUT STANDARDS
 RULE 5 — EMBED ALL 7 INTERACTIVE CHARTS IN EVERY SINGLE-STOCK REPORT
 ══════════════════════════════════════════════════════
 
-Embed \`\`\`chart code blocks with valid ECharts JSON. Use ONLY real values from tool results — no placeholders.
-Omit a chart only when the tool returned zero data points.
+Embed \`\`\`chart code blocks with valid ECharts JSON. Real values only — no placeholders. Omit only if tool returned zero data.
 
-CHART 1 — Price History (line) — place right after ## 📊 Snapshot AND again in ## 📈 Price & EPS Trends
-  Source: get_price_history → prices[]. Use up to 52 evenly-spaced points oldest→newest. Format dates "MMM 'YY".
+CHART 1 — Price History (line) — right after ## 📊 Snapshot AND in ## 📈 Price & EPS Trends
+  Source: get_price_history → prices[] (up to 20 pts, oldest→newest, dates "MMM 'YY").
 \`\`\`chart
-{"title":{"text":"Price History (1Y)","left":"center"},"tooltip":{"trigger":"axis"},"grid":{"left":45,"right":20,"top":40,"bottom":40},"xAxis":{"type":"category","boundaryGap":false,"data":["Mar '24","Jun '24","Sep '24","Dec '24","Mar '25"]},"yAxis":{"type":"value","scale":true},"series":[{"name":"Close","type":"line","smooth":true,"symbol":"none","lineStyle":{"color":"#6366f1","width":2},"areaStyle":{"color":{"type":"linear","x":0,"y":0,"x2":0,"y2":1,"colorStops":[{"offset":0,"color":"rgba(99,102,241,0.25)"},{"offset":1,"color":"rgba(255,255,255,0)"}]}},"data":[820.5,850.2,790.0,910.3,875.6]}]}
+{"title":{"text":"Price History (1Y)","left":"center"},"tooltip":{"trigger":"axis"},"xAxis":{"type":"category","boundaryGap":false,"data":["Mar '24","Sep '24","Mar '25"]},"yAxis":{"type":"value","scale":true},"series":[{"name":"Close","type":"line","smooth":true,"symbol":"none","data":[128.5,145.2,135.8]}]}
 \`\`\`
 
-CHART 2 — Quarterly EPS (bar) — place in ## 📈 Price & EPS Trends AND in ## 📊 Earnings Trend
-  Source: get_earnings_history → quarterlyEarnings[]. Use last 8 quarters oldest→newest.
+CHART 2 — Quarterly EPS (bar) — in ## 📈 Price & EPS Trends AND ## 📊 Earnings Trend
+  Source: get_earnings_history → quarterlyEarnings[] (last 8 qtrs, oldest→newest).
 \`\`\`chart
-{"title":{"text":"Quarterly EPS","left":"center"},"tooltip":{"trigger":"axis"},"grid":{"left":45,"right":20,"top":40,"bottom":40},"xAxis":{"type":"category","data":["Q1'23","Q2'23","Q3'23","Q4'23","Q1'24","Q2'24","Q3'24","Q4'24"]},"yAxis":{"type":"value","scale":true},"series":[{"name":"Reported EPS","type":"bar","barMaxWidth":32,"data":[0.45,0.51,0.58,0.61,0.68,0.72,0.78,0.89]}]}
+{"title":{"text":"Quarterly EPS","left":"center"},"tooltip":{"trigger":"axis"},"xAxis":{"type":"category","data":["Q2'23","Q3'23","Q4'23","Q1'24"]},"yAxis":{"type":"value","scale":true},"series":[{"name":"EPS","type":"bar","barMaxWidth":32,"data":[0.58,0.61,0.68,0.78]}]}
 \`\`\`
 
-CHART 3 — P/E Trend TTM (line) — place in ## 📈 Price & EPS Trends
-  Compute from price history + earnings: for each earnings quarter sum last 4 EPS → ttmEPS, find closest price, PE = price/ttmEPS.
-  Only include points where ttmEPS > 0.
+CHART 3 — P/E Trend TTM (line) — in ## 📈 Price & EPS Trends
+  Compute: for each earnings quarter, ttmEPS = sum of last 4 EPS; PE = closest price / ttmEPS (skip if ttmEPS ≤ 0).
 \`\`\`chart
-{"title":{"text":"P/E Trend (TTM)","left":"center"},"tooltip":{"trigger":"axis"},"grid":{"left":45,"right":20,"top":40,"bottom":40},"xAxis":{"type":"category","data":["Q1'24","Q2'24","Q3'24","Q4'24"]},"yAxis":{"type":"value","scale":true,"name":"P/E"},"series":[{"name":"P/E TTM","type":"line","smooth":true,"symbol":"circle","symbolSize":6,"data":[32.1,35.4,38.2,37.2]}]}
+{"title":{"text":"P/E Trend (TTM)","left":"center"},"tooltip":{"trigger":"axis"},"xAxis":{"type":"category","data":["Q2'23","Q3'23","Q4'23","Q1'24"]},"yAxis":{"type":"value","scale":true,"name":"P/E"},"series":[{"name":"P/E TTM","type":"line","smooth":true,"data":[35.4,38.2,37.2,32.1]}]}
 \`\`\`
 
-CHART 4 — Revenue Trend (bar) — place in ## 📊 Revenue & Margin Trends
-  Source: get_income_statement → quarterlyReports[]. Last 8 quarters oldest→newest. Revenue ÷ 1,000,000 = $M.
+CHART 4 — Revenue Trend (bar) — in ## 📊 Revenue & Margin Trends
+  Source: get_income_statement → quarterlyReports[] (last 8 qtrs). Revenue ÷ 1,000,000 = $M.
 \`\`\`chart
-{"title":{"text":"Quarterly Revenue ($M)","left":"center"},"tooltip":{"trigger":"axis"},"grid":{"left":55,"right":20,"top":40,"bottom":40},"xAxis":{"type":"category","data":["Q1'23","Q2'23","Q3'23","Q4'23","Q1'24","Q2'24","Q3'24","Q4'24"]},"yAxis":{"type":"value","scale":true},"series":[{"name":"Revenue ($M)","type":"bar","barMaxWidth":32,"data":[6051,13507,18120,22103,26044,30040,35082,39331]}]}
+{"title":{"text":"Quarterly Revenue ($M)","left":"center"},"tooltip":{"trigger":"axis"},"xAxis":{"type":"category","data":["Q2'23","Q3'23","Q4'23","Q1'24"]},"yAxis":{"type":"value","scale":true},"series":[{"name":"Revenue ($M)","type":"bar","barMaxWidth":32,"data":[13507,18120,22103,26044]}]}
 \`\`\`
 
-CHART 5 — Margin Trends (two lines) — place in ## 📊 Revenue & Margin Trends
+CHART 5 — Margin Trends (two lines) — in ## 📊 Revenue & Margin Trends
   Source: get_income_statement → quarterlyReports[]. Gross Margin = grossProfit/totalRevenue×100. Op Margin = operatingIncome/totalRevenue×100.
 \`\`\`chart
-{"title":{"text":"Margin Trends (%)","left":"center"},"tooltip":{"trigger":"axis"},"grid":{"left":45,"right":20,"top":40,"bottom":50},"xAxis":{"type":"category","data":["Q1'23","Q2'23","Q3'23","Q4'23","Q1'24","Q2'24","Q3'24","Q4'24"]},"yAxis":{"type":"value","axisLabel":{"formatter":"{value}%"}},"legend":{"bottom":0},"series":[{"name":"Gross Margin","type":"line","smooth":true,"data":[64.6,68.2,70.1,73.8,74.6,75.1,74.6,73.5]},{"name":"Op Margin","type":"line","smooth":true,"data":[22.6,37.6,42.1,52.3,54.1,62.1,61.9,62.8]}]}
+{"title":{"text":"Margin Trends (%)","left":"center"},"tooltip":{"trigger":"axis"},"xAxis":{"type":"category","data":["Q2'23","Q3'23","Q4'23","Q1'24"]},"yAxis":{"type":"value","axisLabel":{"formatter":"{value}%"}},"legend":{"bottom":0},"series":[{"name":"Gross Margin","type":"line","smooth":true,"data":[68.2,70.1,73.8,74.6]},{"name":"Op Margin","type":"line","smooth":true,"data":[37.6,42.1,52.3,54.1]}]}
 \`\`\`
 
-CHART 6 — Analyst Target Distribution (bar) — place in ## 🔮 Analyst View
+CHART 6 — Analyst Targets (bar) — in ## 🔮 Analyst View
   Source: get_price_targets → targetLow, targetMean, targetMedian, targetHigh.
 \`\`\`chart
-{"title":{"text":"Analyst Price Targets","left":"center"},"tooltip":{"trigger":"axis"},"grid":{"left":55,"right":20,"top":40,"bottom":40},"xAxis":{"type":"category","data":["Low","Mean","Median","High"]},"yAxis":{"type":"value","scale":true,"name":"Price ($)"},"series":[{"name":"Target","type":"bar","barMaxWidth":48,"data":[130.0,175.5,172.0,220.0]}]}
+{"title":{"text":"Analyst Price Targets","left":"center"},"tooltip":{"trigger":"axis"},"xAxis":{"type":"category","data":["Low","Mean","Median","High"]},"yAxis":{"type":"value","scale":true,"name":"Price ($)"},"series":[{"name":"Target","type":"bar","barMaxWidth":48,"data":[130.0,175.5,172.0,220.0]}]}
 \`\`\`
 
-CHART 7 — Scorecard Radar — place in ## ✅ Scorecard
-  Compute 5 scores (all clamped 0–100) from tool results. Skip any metric that is null/unavailable and average the rest.
-  • Growth        = average(revenueGrowthTTM%, epsGrowthTTM%) from basicFinancials.metric — already in % units
-  • Profitability  = average(grossMarginTTM%, operatingMarginTTM%, roeTTM%) from basicFinancials.metric — already in % units
-  • Valuation      = clamp(100 − (peRatio ÷ 50) × 100, 0, 100) — peRatio from companyOverview.peRatio or basicFinancials.metric.peBasicExclExtraTTM
-  • Momentum       = clamp(50 + price_vs_200DMA_pct, 0, 100) — price_vs_200DMA_pct = (currentPrice − 200DMA) / 200DMA × 100; 200DMA from basicFinancials.metric["200DayAveragePriceReturn"] or companyOverview["200DayMovingAverage"]
-  • Moat           = average(grossMarginTTM%, operatingMarginTTM%, analyst_buy_pct) where analyst_buy_pct = (strongBuy+buy) / (strongBuy+buy+hold+sell+strongSell) × 100 from analystRatings
-  Then write the computed scores as bullet points below the ## ✅ Scorecard heading, then embed the radar chart.
+CHART 7 — Scorecard Radar — in ## ✅ Scorecard
+  Compute 5 scores (0–100, exclude null values, average remaining):
+  • Growth = average(revenueGrowthTTM%, epsGrowthTTM%) from basicFinancials.metric
+  • Profitability = average(grossMarginTTM%, operatingMarginTTM%, roeTTM%) from basicFinancials.metric
+  • Valuation = clamp(100 − (peRatio/50)×100, 0, 100)
+  • Momentum = clamp(50 + (price−200DMA)/200DMA×100, 0, 100) — 200DMA from basicFinancials or companyOverview
+  • Moat = average(grossMarginTTM%, operatingMarginTTM%, analystBuyPct) where analystBuyPct = (strongBuy+buy)/total×100
+  Write scores as bullets then embed:
 \`\`\`chart
-{"title":{"text":"Scorecard Radar","left":"center"},"tooltip":{"trigger":"item"},"radar":{"indicator":[{"name":"Growth","max":100},{"name":"Profitability","max":100},{"name":"Valuation","max":100},{"name":"Momentum","max":100},{"name":"Moat","max":100}],"radius":"65%","splitNumber":4,"axisName":{"color":"#334155","fontSize":12},"splitLine":{"lineStyle":{"color":"#cbd5e8"}},"splitArea":{"areaStyle":{"color":["#f8fafc","#eef2ff"]}}},"series":[{"name":"Scorecard","type":"radar","data":[{"value":[73.2,45.7,25.7,0.0,48.3],"name":"Scorecard"}],"areaStyle":{"opacity":0.2},"lineStyle":{"width":2},"symbolSize":6}]}
+{"title":{"text":"Scorecard Radar","left":"center"},"tooltip":{"trigger":"item"},"radar":{"indicator":[{"name":"Growth","max":100},{"name":"Profitability","max":100},{"name":"Valuation","max":100},{"name":"Momentum","max":100},{"name":"Moat","max":100}],"radius":"65%"},"series":[{"name":"Scorecard","type":"radar","data":[{"value":[73,46,26,50,48],"name":"Score"}],"areaStyle":{"opacity":0.2},"lineStyle":{"width":2}}]}
 \`\`\`
 `;
 
@@ -213,7 +211,7 @@ COMPARISON REPORT SECTIONS:
   Snapshot Table • Key Metrics Table • Balance & Cash Table • Analyst View • Verdict
 
 ALL 7 CHARTS required in every single-stock report (use \`\`\`chart ECharts JSON, real values only):
-1. Price History line — after Snapshot — get_price_history prices[], ≤52 pts oldest→newest, dates "MMM 'YY"
+1. Price History line — after Snapshot — get_price_history prices[], ≤20 pts oldest→newest, dates "MMM 'YY"
 2. Quarterly EPS bar — in Price & EPS Trends AND Earnings Trend — get_earnings_history quarterlyEarnings[], last 8 qtrs
 3. P/E Trend TTM line — in Price & EPS Trends — compute price/ttmEPS per quarter from price history + earnings
 4. Revenue Trend bar — in Revenue & Margin Trends — get_income_statement quarterlyReports[], revenue ÷ 1M = $M

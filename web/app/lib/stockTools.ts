@@ -388,13 +388,13 @@ export async function executeTool(
         const history = await stockService.getPriceHistory(symbol, range);
         const rawPrices: any[] = history.prices || [];
         // Sort chronologically (oldest → newest) so the LLM always sees time moving
-        // left-to-right regardless of provider ordering, then downsample to ≤52 points
-        // (≈ weekly granularity for a 1-year range) to keep token usage manageable while
-        // covering the full requested period with both endpoints always included.
+        // left-to-right regardless of provider ordering, then downsample to ≤20 points
+        // (both endpoints always included) to keep token usage manageable while
+        // covering the full requested period.
         const sorted = [...rawPrices].sort((a, b) =>
           String(a.date).localeCompare(String(b.date))
         );
-        const MAX_CHART_POINTS = 52;
+        const MAX_CHART_POINTS = 20;
         const sampled =
           sorted.length <= MAX_CHART_POINTS
             ? sorted
