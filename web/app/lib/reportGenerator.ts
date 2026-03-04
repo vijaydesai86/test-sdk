@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { promises as fs } from 'fs';
 import path from 'path';
 
@@ -21,42 +22,6 @@ export interface StockReportData {
   peers?: any;
   newsSentiment?: any;
   companyNews?: { articles?: any[] };
-}
-
-export interface SectorReportItem {
-  symbol: string;
-  price?: any;
-  overview?: any;
-  basicFinancials?: any;
-  analystRatings?: any;
-  priceTargets?: any;
-  newsSentiment?: any;
-}
-
-export interface SectorReportData {
-  query: string;
-  generatedAt: string;
-  universe: string[];
-  items: SectorReportItem[];
-  notes?: string[];
-}
-
-export interface PeerReportItem {
-  symbol: string;
-  price?: any;
-  overview?: any;
-  basicFinancials?: any;
-  priceTargets?: any;
-  priceHistory?: { prices?: PricePoint[] };
-}
-
-export interface PeerReportData {
-  symbol: string;
-  generatedAt: string;
-  range: string;
-  universe: string[];
-  items: PeerReportItem[];
-  notes?: string[];
 }
 
 export interface ComparisonReportItem {
@@ -314,20 +279,6 @@ function buildMarginChart(incomeStatement?: any): string {
   });
 }
 
-function buildPeerTable(items: SectorReportItem[]): string {
-  if (items.length === 0) return '';
-  const header = '| Symbol | Price | Market Cap | P/E | Analyst Target |';
-  const divider = '|---|---:|---:|---:|---:|';
-  const rows = items.map((item) => {
-    const price = item.price?.price || 'N/A';
-    const marketCap = item.overview?.marketCapitalization || 'N/A';
-    const pe = item.overview?.peRatio || item.basicFinancials?.metric?.peBasicExclExtraTTM || 'N/A';
-    const target = item.priceTargets?.targetMean || item.analystRatings?.analystTargetPrice || 'N/A';
-    return `| ${item.symbol} | ${price} | ${marketCap} | ${pe} | ${target} |`;
-  });
-  return [header, divider, ...rows].join('\n');
-}
-
 function buildTargetDistribution(priceTargets?: any): string {
   if (!priceTargets) return '';
   const low = toNumber(priceTargets.targetLow);
@@ -368,7 +319,7 @@ function buildBarChart(title: string, label: string, items: { symbol: string; va
   });
 }
 
-function buildPerformanceChart(items: PeerReportItem[], title: string): string {
+function buildComparisonPerformanceChart(items: ComparisonReportItem[], title: string): string {
   const series = items
     .map((item) => {
       const prices = item.priceHistory?.prices || [];
@@ -770,17 +721,6 @@ function formatRatingSummary(item: any): string {
   }
 
   return `SB ${strongBuy ?? 0} / B ${buy ?? 0} / H ${hold ?? 0} / S ${sell ?? 0} / SS ${strongSell ?? 0}`;
-}
-
-function getEpsValue(item: any): number | null {
-  return toNumber(item.basicFinancials?.metric?.epsTTM ?? item.overview?.eps);
-}
-
-function getTargetUpside(item: any): number | null {
-  const price = toNumber(item.price?.price);
-  const target = toNumber(item.priceTargets?.targetMean || item.analystRatings?.analystTargetPrice);
-  if (!price || !target) return null;
-  return ((target - price) / price) * 100;
 }
 
 function clampScore(value: number): number {
@@ -1254,216 +1194,6 @@ export function buildStockReport(data: StockReportData): string {
   return sections.filter(Boolean).join('\n\n');
 }
 
-export function buildSectorReport(data: SectorReportData): string {
-  const header = `# Sector/Thematic Report: ${data.query}`;
-  const notes = data.notes?.length ? data.notes.map((n) => `- ${n}`).join('\n') : '';
-  const stopwords = new Set(['stocks', 'stock', 'sector', 'theme', 'report', 'the', 'and', 'for', 'of', 'in']);
-  const terms = data.query
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, ' ')
-    .split(/\s+/)
-    .filter((token) => token && !stopwords.has(token));
-
-  const scored = data.items.map((item) => {
-    const scoreData: StockReportData = {
-      symbol: item.symbol,
-      generatedAt: data.generatedAt,
-      price: item.price || {},
-      priceHistory: undefined,
-      companyOverview: item.overview,
-      basicFinancials: item.basicFinancials,
-      earningsHistory: undefined,
-      incomeStatement: undefined,
-      balanceSheet: undefined,
-      cashFlow: undefined,
-      analystRatings: item.analystRatings,
-      analystRecommendations: undefined,
-      priceTargets: item.priceTargets,
-      peers: undefined,
-      newsSentiment: item.newsSentiment,
-      companyNews: undefined,
-    };
-    const scorecard = computeScorecard(scoreData);
-    return { item, score: scorecard.composite };
-  });
-
-  const inclusionRows = data.items.map((item) => {
-    const name = item.overview?.name || item.symbol;
-    const text = [
-      item.overview?.name,
-      item.overview?.sector,
-      item.overview?.industry,
-      item.overview?.description,
-    ]
-      .filter(Boolean)
-      .join(' ')
-      .toLowerCase();
-    const matched = terms.filter((term) => text.includes(term));
-    const reason = matched.length
-      ? `Matched terms: ${Array.from(new Set(matched)).join(', ')}`
-      : 'Matched via symbol search';
-    return `| ${name} (${item.symbol}) | ${reason} |`;
-  });
-  const inclusionSection = inclusionRows.length
-    ? ['| Company (Ticker) | Why Included |', '|---|---|', ...inclusionRows].join('\n')
-    : '_No companies matched the query._';
-
-  const overviewRows = data.items.map((item) => {
-    const name = item.overview?.name || item.symbol;
-    const description = item.overview?.description || '';
-    const firstSentence = description.split('. ').shift();
-    const role = firstSentence
-      ? `${firstSentence}.`
-      : (item.overview?.industry || item.overview?.sector || 'Overview unavailable');
-    return {
-      name: `${name} (${item.symbol})`,
-      role,
-      price: toNumber(item.price?.price),
-      eps: toNumber(item.basicFinancials?.metric?.epsTTM ?? item.overview?.eps),
-      pe: toNumber(item.overview?.peRatio ?? item.basicFinancials?.metric?.peBasicExclExtraTTM),
-    };
-  });
-  const overviewColumns = [
-    { key: 'role', label: 'Role in Sector', format: (row: any) => row.role },
-    {
-      key: 'price',
-      label: 'Price',
-      format: (row: any) => (row.price === null ? null : row.price.toFixed(2)),
-      optional: true,
-    },
-    {
-      key: 'eps',
-      label: 'EPS',
-      format: (row: any) => (row.eps === null ? null : row.eps.toFixed(2)),
-      optional: true,
-    },
-    {
-      key: 'pe',
-      label: 'P/E',
-      format: (row: any) => (row.pe === null ? null : row.pe.toFixed(1)),
-      optional: true,
-    },
-  ];
-  const activeOverviewColumns = overviewColumns.filter((column: any) => {
-    if (!column.optional) return true;
-    return overviewRows.some((row: any) => column.format(row) !== null);
-  });
-  const overviewHeader = ['Company (Ticker)', ...activeOverviewColumns.map((column: any) => column.label)];
-  const overviewSection = overviewRows.length
-    ? [
-        `| ${overviewHeader.join(' | ')} |`,
-        `| ${overviewHeader.map(() => '---').join(' | ')} |`,
-        ...overviewRows.map((row) => {
-          const values = activeOverviewColumns.map((column: any) => column.format(row) ?? 'Unavailable');
-          return `| ${[row.name, ...values].join(' | ')} |`;
-        }),
-      ].join('\n')
-    : '_Company overview unavailable._';
-
-  const dependencyRows = data.items.map((item) => {
-    const name = item.overview?.name || item.symbol;
-    const industry = item.overview?.industry;
-    const sector = item.overview?.sector;
-    const dependency = industry || sector
-      ? `Industry: ${industry || 'Unavailable'}; Sector: ${sector || 'Unavailable'}`
-      : 'Dependency data unavailable';
-    return `| ${name} (${item.symbol}) | ${dependency} |`;
-  });
-  const dependencySection = dependencyRows.length
-    ? ['| Company (Ticker) | Dependencies |', '|---|---|', ...dependencyRows].join('\n')
-    : '_Dependency data unavailable._';
-
-  const analystRows = data.items.map((item) => {
-    const name = item.overview?.name || item.symbol;
-    const ratings = item.analystRatings || item.overview || {};
-    const counts = [
-      toNumber(ratings.strongBuy ?? ratings.analystRatingStrongBuy),
-      toNumber(ratings.buy ?? ratings.analystRatingBuy),
-      toNumber(ratings.hold ?? ratings.analystRatingHold),
-      toNumber(ratings.sell ?? ratings.analystRatingSell),
-      toNumber(ratings.strongSell ?? ratings.analystRatingStrongSell),
-    ];
-    const hasRatings = counts.some((value) => value !== null);
-    const rating = hasRatings
-      ? `SB ${counts[0] ?? 0} / B ${counts[1] ?? 0} / H ${counts[2] ?? 0} / S ${counts[3] ?? 0} / SS ${counts[4] ?? 0}`
-      : null;
-    const target = toNumber(item.priceTargets?.targetMean || ratings.analystTargetPrice);
-    const price = toNumber(item.price?.price);
-    const upside = price && target ? `${(((target - price) / price) * 100).toFixed(1)}%` : null;
-    return {
-      name: `${name} (${item.symbol})`,
-      rating,
-      target,
-      upside,
-    };
-  });
-  const hasAnalystData = analystRows.some((row) => row.rating || row.target !== null);
-  const analystSection = hasAnalystData
-    ? [
-        '| Company (Ticker) | Analyst Ratings | Target Mean | Upside |',
-        '|---|---|---:|---:|',
-        ...analystRows.map((row) => {
-          const rating = row.rating ?? 'Unavailable';
-          const target = row.target === null ? 'Unavailable' : row.target.toFixed(2);
-          const upside = row.upside ?? 'Unavailable';
-          return `| ${row.name} | ${rating} | ${target} | ${upside} |`;
-        }),
-      ].join('\n')
-    : '_Analyst ratings are not provided by Alpha Vantage for this theme._';
-
-  const scoredSorted = scored.filter((row) => row.score !== null).sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
-  const scoreCount = scoredSorted.length;
-  const recommendationRows = scored.map((row) => {
-    const name = row.item.overview?.name || row.item.symbol;
-    if (row.score === null || scoreCount === 0) {
-      return `| ${name} (${row.item.symbol}) | Unavailable | Unavailable | Insufficient data |`;
-    }
-    const rank = scoredSorted.findIndex((sorted) => sorted.item.symbol === row.item.symbol) + 1;
-    const percentile = scoreCount > 1 ? 1 - (rank - 1) / (scoreCount - 1) : 1;
-    const recommendation = percentile >= 0.67
-      ? 'Overweight'
-      : percentile >= 0.34
-        ? 'Neutral'
-        : 'Underweight';
-    return `| ${name} (${row.item.symbol}) | ${row.score.toFixed(1)} | ${rank} | ${recommendation} |`;
-  });
-  const recommendationSection = recommendationRows.length
-    ? ['| Company (Ticker) | Score | Rank | Recommendation |', '|---|---:|---:|---|', ...recommendationRows].join('\n')
-    : '_Recommendations unavailable._';
-
-  const sectorCounts = data.items.reduce((acc: Record<string, number>, item) => {
-    const sector = item.overview?.sector || 'Uncategorized';
-    acc[sector] = (acc[sector] || 0) + 1;
-    return acc;
-  }, {});
-  const sectorMix = Object.entries(sectorCounts)
-    .map(([sector, count]) => `${sector} (${count})`)
-    .join(', ');
-
-  const sections = [
-    header,
-    `Generated: ${data.generatedAt}`,
-    '## 🧭 Sector Summary',
-    `- Query: ${data.query}`,
-    `- Universe Size: ${data.universe.length}`,
-    sectorMix ? `- Sector Mix: ${sectorMix}` : null,
-    notes ? `- Notes:\n${notes}` : null,
-    '## ✅ Companies Included',
-    inclusionSection,
-    '## 🧾 Company Overview',
-    overviewSection,
-    '## 🔗 Dependencies',
-    dependencySection,
-    '## 🧠 Analyst View',
-    analystSection,
-    '## ✅ Recommendations',
-    recommendationSection,
-    '_Not financial advice. Use this as a starting point for diligence._',
-  ].filter(Boolean) as string[];
-
-  return sections.join('\n\n');
-}
-
 export async function saveReport(content: string, title: string, directory = DEFAULT_REPORTS_DIR) {
   const safeTitle = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -1771,8 +1501,8 @@ export function buildComparisonReport(data: ComparisonReportData): string {
     ['left', 'right', 'right', 'left']
   );
 
-  const performanceChart = buildPerformanceChart(
-    items.map((item) => ({ symbol: item.symbol, priceHistory: item.priceHistory } as PeerReportItem)),
+  const performanceChart = buildComparisonPerformanceChart(
+    items.map((item) => ({ symbol: item.symbol, priceHistory: item.priceHistory } as ComparisonReportItem)),
     `Price Performance (${data.range}, Indexed)`
   );
   const scatterChart = buildValuationGrowthScatter(items);
@@ -1813,201 +1543,6 @@ export function buildComparisonReport(data: ComparisonReportData): string {
     validScores.length < scored.length
       ? '_Some companies lack composite scores; weights are normalized across available scores._'
       : '_Indicative allocation is derived from normalized composite scores. It is not investment advice._',
-  ].filter(Boolean) as string[];
-
-  return sections.join('\n\n');
-}
-
-export function buildPeerReport(data: PeerReportData): string {
-  const header = `# Peer Comparison Report: ${data.symbol}`;
-  const notes = data.notes?.length ? data.notes.map((note) => `- ${note}`).join('\n') : '';
-
-  const scored = data.items.map((item) => {
-    const scoreData: StockReportData = {
-      symbol: item.symbol,
-      generatedAt: data.generatedAt,
-      price: item.price || {},
-      priceHistory: item.priceHistory,
-      companyOverview: item.overview,
-      basicFinancials: item.basicFinancials,
-      earningsHistory: undefined,
-      incomeStatement: undefined,
-      balanceSheet: undefined,
-      cashFlow: undefined,
-      analystRatings: undefined,
-      analystRecommendations: undefined,
-      priceTargets: item.priceTargets,
-      peers: undefined,
-      newsSentiment: undefined,
-      companyNews: undefined,
-    };
-    const scorecard = computeScorecard(scoreData);
-    return { item, score: scorecard.composite };
-  });
-
-  const inclusionRows = data.items.map((item) => {
-    const name = item.overview?.name || item.symbol;
-    const reason = item.symbol.toUpperCase() === data.symbol.toUpperCase()
-      ? 'Base company'
-      : 'Peer comparison set';
-    return `| ${name} (${item.symbol}) | ${reason} |`;
-  });
-  const inclusionSection = inclusionRows.length
-    ? ['| Company (Ticker) | Why Included |', '|---|---|', ...inclusionRows].join('\n')
-    : '_Peer universe unavailable._';
-
-  const snapshotRows = data.items.map((item) => {
-    const name = item.overview?.name || item.symbol;
-    return {
-      name: `${name} (${item.symbol})`,
-      price: toNumber(item.price?.price),
-      marketCap: item.overview?.marketCapitalization ?? null,
-      eps: getEpsValue(item),
-      pe: toNumber(item.overview?.peRatio ?? item.basicFinancials?.metric?.peBasicExclExtraTTM),
-      target: toNumber(item.priceTargets?.targetMean ?? item.overview?.analystTargetPrice),
-      upside: getTargetUpside(item),
-    };
-  });
-  const snapshotColumns = [
-    {
-      key: 'price',
-      label: 'Price',
-      format: (row: any) => (row.price === null ? null : row.price.toFixed(2)),
-      optional: true,
-    },
-    {
-      key: 'marketCap',
-      label: 'Market Cap',
-      format: (row: any) => (row.marketCap === null ? null : formatMarketCap(row.marketCap)),
-      optional: true,
-    },
-    {
-      key: 'eps',
-      label: 'EPS',
-      format: (row: any) => (row.eps === null ? null : row.eps.toFixed(2)),
-      optional: true,
-    },
-    {
-      key: 'pe',
-      label: 'P/E',
-      format: (row: any) => (row.pe === null ? null : row.pe.toFixed(1)),
-      optional: true,
-    },
-    {
-      key: 'target',
-      label: 'Target Mean',
-      format: (row: any) => (row.target === null ? null : row.target.toFixed(2)),
-      optional: true,
-    },
-    {
-      key: 'upside',
-      label: 'Upside',
-      format: (row: any) => (row.upside === null ? null : `${row.upside.toFixed(1)}%`),
-      optional: true,
-    },
-  ];
-  const activeSnapshotColumns = snapshotColumns.filter((column: any) => {
-    if (!column.optional) return true;
-    return snapshotRows.some((row: any) => column.format(row) !== null);
-  });
-  const snapshotHeader = ['Company (Ticker)', ...activeSnapshotColumns.map((column: any) => column.label)];
-  const snapshotSection = snapshotRows.length
-    ? [
-        `| ${snapshotHeader.join(' | ')} |`,
-        `| ${snapshotHeader.map(() => '---').join(' | ')} |`,
-        ...snapshotRows.map((row) => {
-          const values = activeSnapshotColumns.map((column: any) => column.format(row) ?? 'Unavailable');
-          return `| ${[row.name, ...values].join(' | ')} |`;
-        }),
-      ].join('\n')
-    : '_Peer snapshot unavailable._';
-
-  const roleRows = data.items.map((item) => {
-    const name = item.overview?.name || item.symbol;
-    const description = item.overview?.description || '';
-    const firstSentence = description.split('. ').shift();
-    const role = firstSentence ? `${firstSentence}.` : (item.overview?.industry || item.overview?.sector || 'Role unavailable');
-    return `| ${name} (${item.symbol}) | ${role} |`;
-  });
-  const roleSection = roleRows.length
-    ? ['| Company (Ticker) | Role in Peer Set |', '|---|---|', ...roleRows].join('\n')
-    : '_Role data unavailable._';
-
-  const analystRows = data.items.map((item) => {
-    const name = item.overview?.name || item.symbol;
-    const ratings = item.overview || {};
-    const counts = [
-      toNumber(ratings.analystRatingStrongBuy),
-      toNumber(ratings.analystRatingBuy),
-      toNumber(ratings.analystRatingHold),
-      toNumber(ratings.analystRatingSell),
-      toNumber(ratings.analystRatingStrongSell),
-    ];
-    const hasRatings = counts.some((value) => value !== null);
-    const rating = hasRatings
-      ? `SB ${counts[0] ?? 0} / B ${counts[1] ?? 0} / H ${counts[2] ?? 0} / S ${counts[3] ?? 0} / SS ${counts[4] ?? 0}`
-      : null;
-    const target = toNumber(item.priceTargets?.targetMean ?? item.overview?.analystTargetPrice);
-    const price = toNumber(item.price?.price);
-    const upside = price && target ? ((target - price) / price) * 100 : null;
-    return {
-      name: `${name} (${item.symbol})`,
-      rating,
-      target,
-      upside,
-    };
-  });
-  const hasAnalystData = analystRows.some((row) => row.rating || row.target !== null);
-  const analystSection = hasAnalystData
-    ? [
-        '| Company (Ticker) | Analyst Ratings | Target Mean | Upside |',
-        '|---|---|---:|---:|',
-        ...analystRows.map((row) => {
-          const rating = row.rating ?? 'Unavailable';
-          const target = row.target === null ? 'Unavailable' : row.target.toFixed(2);
-          const upside = row.upside === null ? 'Unavailable' : `${row.upside.toFixed(1)}%`;
-          return `| ${row.name} | ${rating} | ${target} | ${upside} |`;
-        }),
-      ].join('\n')
-    : '_Analyst ratings are not provided by Alpha Vantage for this peer set._';
-
-  const scoredSorted = scored.filter((row) => row.score !== null).sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
-  const scoreCount = scoredSorted.length;
-  const recommendationRows = scored.map((row) => {
-    const name = row.item.overview?.name || row.item.symbol;
-    if (row.score === null || scoreCount === 0) {
-      return `| ${name} (${row.item.symbol}) | Unavailable | Unavailable | Insufficient data |`;
-    }
-    const rank = scoredSorted.findIndex((sorted) => sorted.item.symbol === row.item.symbol) + 1;
-    const percentile = scoreCount > 1 ? 1 - (rank - 1) / (scoreCount - 1) : 1;
-    const recommendation = percentile >= 0.67
-      ? 'Overweight'
-      : percentile >= 0.34
-        ? 'Neutral'
-        : 'Underweight';
-    return `| ${name} (${row.item.symbol}) | ${row.score.toFixed(1)} | ${rank} | ${recommendation} |`;
-  });
-  const recommendationSection = recommendationRows.length
-    ? ['| Company (Ticker) | Score | Rank | Recommendation |', '|---|---:|---:|---|', ...recommendationRows].join('\n')
-    : '_Recommendations unavailable._';
-
-  const universeList = data.items.map((item) => `${item.overview?.name || item.symbol} (${item.symbol})`).join(', ');
-  const sections = [
-    header,
-    `Generated: ${data.generatedAt}`,
-    `Universe: ${universeList || 'Unavailable'}`,
-    '## ✅ Companies Included',
-    inclusionSection,
-    '## 🧾 Company Snapshot',
-    snapshotSection,
-    '## 🧭 Role in Peer Set',
-    roleSection,
-    '## 🧠 Analyst View',
-    analystSection,
-    '## ✅ Recommendations',
-    recommendationSection,
-    notes ? `## 📝 Notes\n${notes}` : null,
-    '_Not financial advice. Use this as a starting point for diligence._',
   ].filter(Boolean) as string[];
 
   return sections.join('\n\n');

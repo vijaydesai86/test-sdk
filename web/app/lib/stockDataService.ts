@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unused-vars */
 import axios from 'axios';
 type YahooFinanceModule = typeof import('yahoo-finance2');
 type YahooFinanceClient = {
@@ -620,7 +621,7 @@ export class AlphaVantageService implements StockDataService {
     };
   }
 
-  async getAnalystRecommendations(symbol: string): Promise<any> {
+  async getAnalystRecommendations(_symbol: string): Promise<any> {
     throw new Error('Analyst recommendations unavailable in Alpha-only mode');
   }
 
@@ -842,11 +843,11 @@ export class AlphaVantageService implements StockDataService {
     };
   }
 
-  async getStocksBySector(sector: string): Promise<any> {
+  async getStocksBySector(_sector: string): Promise<any> {
     throw new Error('Sector screening unavailable in Alpha-only mode');
   }
 
-  async screenStocks(filters: Record<string, string | number | undefined>): Promise<any> {
+  async screenStocks(_filters: Record<string, string | number | undefined>): Promise<any> {
     throw new Error('Stock screening unavailable in Alpha-only mode');
   }
 
@@ -1191,7 +1192,7 @@ class YahooFinanceService implements StockDataService {
     }, SOURCE_YAHOO);
   }
 
-  async getAnalystRecommendations(symbol: string): Promise<any> {
+  async getAnalystRecommendations(_symbol: string): Promise<any> {
     throw new Error('Analyst recommendations unavailable via Yahoo Finance');
   }
 
@@ -1297,11 +1298,11 @@ class YahooFinanceService implements StockDataService {
     throw new Error('Sector performance unavailable via Yahoo Finance');
   }
 
-  async getStocksBySector(sector: string): Promise<any> {
+  async getStocksBySector(_sector: string): Promise<any> {
     throw new Error('Sector screening unavailable via Yahoo Finance');
   }
 
-  async screenStocks(filters: Record<string, string | number | undefined>): Promise<any> {
+  async screenStocks(_filters: Record<string, string | number | undefined>): Promise<any> {
     throw new Error('Screening unavailable via Yahoo Finance');
   }
 

@@ -1,7 +1,8 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { promises as fs } from 'fs';
 import path from 'path';
 import { StockDataService } from './stockDataService';
-import { buildSectorReport, buildStockReport, buildPeerReport, buildComparisonReport, saveReport } from './reportGenerator';
+import { buildStockReport, buildComparisonReport, saveReport } from './reportGenerator';
 
 /**
  * OpenAI-compatible tool definitions for stock information
@@ -18,19 +19,6 @@ export function getToolDefinitionsByName(toolNames?: string[]) {
   const allowList = new Set(toolNames);
   return definitions.filter((tool) => allowList.has(tool.function.name));
 }
-
-const stopwords = new Set([
-  'stocks',
-  'stock',
-  'sector',
-  'theme',
-  'report',
-  'the',
-  'and',
-  'for',
-  'of',
-  'in',
-]);
 
 const REPORTS_DIR = process.env.REPORTS_DIR || (process.env.VERCEL ? '/tmp/reports' : 'reports');
 const CACHE_DIR = path.join(REPORTS_DIR, 'cache');
@@ -74,72 +62,6 @@ const getCachedValue = (cache: SymbolCache, key: string) => {
 
 const setCachedValue = (cache: SymbolCache, key: string, data: any) => {
   cache[key] = { updatedAt: new Date().toISOString(), data };
-};
-
-const buildSearchQueries = (query: string) => {
-  const cleaned = query.toLowerCase().replace(/[^a-z0-9\s]/g, ' ');
-  const tokens = cleaned.split(/\s+/).filter((token) => token && !stopwords.has(token));
-  const phrases: string[] = [];
-  for (let i = 0; i < tokens.length; i += 1) {
-    if (i + 2 < tokens.length) {
-      phrases.push(`${tokens[i]} ${tokens[i + 1]} ${tokens[i + 2]}`);
-    }
-    if (i + 1 < tokens.length) {
-      phrases.push(`${tokens[i]} ${tokens[i + 1]}`);
-    }
-  }
-  const condensed = phrases.flatMap((phrase) => [phrase.replace(/\s+/g, ''), phrase.replace(/\s+/g, '-')]);
-  phrases.push(...condensed, ...tokens);
-  const unique = Array.from(new Set([query, ...phrases].filter(Boolean)));
-  return unique.slice(0, 8);
-};
-
-const buildThemeTokens = (query: string) => {
-  const cleaned = query.toLowerCase().replace(/[^a-z0-9\s]/g, ' ');
-  const tokens = cleaned.split(/\s+/).filter((token) => token && !stopwords.has(token));
-  const phrases: string[] = [];
-  for (let i = 0; i < tokens.length; i += 1) {
-    if (i + 1 < tokens.length) {
-      phrases.push(`${tokens[i]} ${tokens[i + 1]}`);
-    }
-    if (i + 2 < tokens.length) {
-      phrases.push(`${tokens[i]} ${tokens[i + 1]} ${tokens[i + 2]}`);
-    }
-  }
-  return { tokens, phrases };
-};
-
-const scoreThemeMatch = (
-  overview: any,
-  tokens: string[],
-  phrases: string[]
-) => {
-  const text = [
-    overview?.name,
-    overview?.sector,
-    overview?.industry,
-    overview?.description,
-  ]
-    .filter(Boolean)
-    .join(' ')
-    .toLowerCase();
-  if (!text) return 0;
-  const tokenMatches = tokens.filter((token) => text.includes(token));
-  const phraseMatches = phrases.filter((phrase) => text.includes(phrase));
-  const tokenScore = tokenMatches.length;
-  const phraseScore = phraseMatches.length * 2;
-  const meaningfulTokens = tokens.filter((token) => token.length > 2);
-  const meaningfulMatches = meaningfulTokens.filter((token) => text.includes(token));
-  if (meaningfulTokens.length > 0 && meaningfulMatches.length === 0 && phraseMatches.length === 0) {
-    return 0;
-  }
-  if (meaningfulTokens.length >= 2 && meaningfulMatches.length < 2 && phraseMatches.length === 0) {
-    return 0;
-  }
-  if (tokens.length === 1 && tokenScore === 0 && phraseMatches.length === 0) {
-    return 0;
-  }
-  return tokenScore + phraseScore;
 };
 
 const scoreSearchMatch = (query: string, item: any) => {
@@ -195,78 +117,6 @@ const resolveSymbolFromQuery = async (stockService: StockDataService, query: str
       return { ok: true, symbol: cleanedQuery.toUpperCase(), candidates: [] };
     }
     return { ok: false, reason: error.message || 'Search failed', candidates: [] };
-  }
-};
-
-const expandUniverseFromQuery = async (
-  query: string,
-  limit: number,
-  notes: string[],
-  stockService: StockDataService
-) => {
-  const queries = buildSearchQueries(query);
-  if (queries.length === 0) return [] as string[];
-  const results = await Promise.all(
-    queries.map((term) => stockService.searchStock(term).catch(() => ({ results: [] })))
-  );
-  const rawItems = results.flatMap((result: any) => (result.results || []) as any[]);
-  const uniqueItems = Array.from(
-    new Map(rawItems.filter((item) => item?.symbol).map((item) => [item.symbol, item])).values()
-  );
-  const usItems = uniqueItems.filter((item) => {
-    const region = String(item.region || '').toLowerCase();
-    const currency = String(item.currency || '').toUpperCase();
-    const type = String(item.type || '').toLowerCase();
-    return region.includes('united states') || currency === 'USD' || type.includes('equity');
-  });
-  const candidates = (usItems.length ? usItems : uniqueItems).slice(0, Math.max(limit * 2, 10));
-  const terms = buildSearchQueries(query).map((term) => term.toLowerCase());
-  const matches = candidates
-    .filter((item) => {
-      const text = [item.name, item.symbol]
-        .filter(Boolean)
-        .join(' ')
-        .toLowerCase();
-      return text && terms.some((term) => text.includes(term));
-    })
-    .map((item) => item.symbol);
-  const universe = Array.from(new Set(matches.filter(Boolean))) as string[];
-  if (universe.length > 0) {
-    notes.push(`Universe built from keyword-filtered search for "${query}".`);
-    return universe.slice(0, limit);
-  }
-  const fallback = candidates.map((item) => item.symbol).filter(Boolean).slice(0, limit);
-  if (fallback.length > 0) {
-    notes.push(`Universe built from symbol search fallback for "${query}".`);
-  }
-  return fallback;
-};
-
-const expandUniverseFromTopMovers = async (
-  query: string,
-  limit: number,
-  notes: string[],
-  stockService: StockDataService
-) => {
-  try {
-    const movers = await stockService.getTopGainersLosers();
-    const candidates = Array.from(new Set([
-      ...(movers.topGainers || []).map((item: any) => item.ticker),
-      ...(movers.topLosers || []).map((item: any) => item.ticker),
-      ...(movers.mostActive || []).map((item: any) => item.ticker),
-    ].filter(Boolean)));
-    const trimmed = candidates.slice(0, limit);
-    if (trimmed.length > 0) {
-      notes.push(`Universe built from top movers due to limited matches for "${query}".`);
-      return trimmed;
-    }
-    if (candidates.length > 0) {
-      notes.push(`Universe built from top movers due to limited matches for "${query}".`);
-      return candidates.slice(0, limit);
-    }
-    return [];
-  } catch {
-    return [];
   }
 };
 
@@ -472,62 +322,6 @@ function buildToolDefinitions() {
     {
       type: 'function' as const,
       function: {
-        name: 'get_sector_performance',
-        description: 'Get real-time performance for all 11 GICS market sectors across multiple timeframes (1D, 5D, 1M, 3M, YTD, 1Y).',
-        parameters: {
-          type: 'object',
-          properties: {},
-          required: [],
-        },
-      },
-    },
-    {
-      type: 'function' as const,
-      function: {
-        name: 'get_stocks_by_sector',
-        description: 'Screen stocks by sector name using real-time data. For themes, use search_companies or search_news to build a list.',
-        parameters: {
-          type: 'object',
-          properties: {
-            sector: { type: 'string', description: 'Sector name (e.g. Technology, Healthcare)' },
-          },
-          required: ['sector'],
-        },
-      },
-    },
-    {
-      type: 'function' as const,
-      function: {
-        name: 'screen_stocks',
-        description: 'Screen stocks with filters like sector, industry, market cap thresholds, and limit.',
-        parameters: {
-          type: 'object',
-          properties: {
-            sector: { type: 'string', description: 'Sector name filter (optional)' },
-            industry: { type: 'string', description: 'Industry name filter (optional)' },
-            marketCapMoreThan: { type: 'number', description: 'Minimum market cap (optional)' },
-            marketCapLowerThan: { type: 'number', description: 'Maximum market cap (optional)' },
-            limit: { type: 'number', description: 'Max results (optional, default 20)' },
-          },
-          required: [],
-        },
-      },
-    },
-    {
-      type: 'function' as const,
-      function: {
-        name: 'get_top_gainers_losers',
-        description: "Get today's top 10 gaining stocks, top 10 losing stocks, and 10 most actively traded US stocks.",
-        parameters: {
-          type: 'object',
-          properties: {},
-          required: [],
-        },
-      },
-    },
-    {
-      type: 'function' as const,
-      function: {
         name: 'get_news_sentiment',
         description: 'Get the latest news headlines and AI sentiment scores (Bullish/Bearish/Neutral) for a US stock.',
         parameters: {
@@ -551,35 +345,6 @@ function buildToolDefinitions() {
             days: { type: 'number', description: 'Lookback window in days (optional)' },
           },
           required: ['symbol'],
-        },
-      },
-    },
-    {
-      type: 'function' as const,
-      function: {
-        name: 'search_news',
-        description: 'Search recent market news by keyword or company name.',
-        parameters: {
-          type: 'object',
-          properties: {
-            query: { type: 'string', description: 'Keyword or company name to search' },
-            days: { type: 'number', description: 'Lookback window in days (optional)' },
-          },
-          required: ['query'],
-        },
-      },
-    },
-    {
-      type: 'function' as const,
-      function: {
-        name: 'search_companies',
-        description: 'Search US-listed companies by keyword across multiple data sources.',
-        parameters: {
-          type: 'object',
-          properties: {
-            query: { type: 'string', description: 'Company name or keyword to search for' },
-          },
-          required: ['query'],
         },
       },
     },
@@ -610,37 +375,6 @@ function buildToolDefinitions() {
             range: { type: 'string', description: 'Price history range for charts (e.g., "1y", "3y", "5y", "max"). Default is "1y"' },
           },
           required: ['companies'],
-        },
-      },
-    },
-    {
-      type: 'function' as const,
-      function: {
-        name: 'generate_sector_report',
-        description: 'Generate a comprehensive sector/theme report and save it as a markdown artifact.',
-        parameters: {
-          type: 'object',
-          properties: {
-            query: { type: 'string', description: 'Sector or theme query (e.g. "AI data center")' },
-            limit: { type: 'number', description: 'Max companies to include (optional, default 12)' },
-          },
-          required: ['query'],
-        },
-      },
-    },
-    {
-      type: 'function' as const,
-      function: {
-        name: 'generate_peer_report',
-        description: 'Generate a comprehensive peer comparison report and save it as a markdown artifact.',
-        parameters: {
-          type: 'object',
-          properties: {
-            symbol: { type: 'string', description: 'Ticker symbol (e.g. AMD)' },
-            limit: { type: 'number', description: 'Max peers to include (optional, default 8)' },
-            range: { type: 'string', description: 'Price history range for charts (e.g., "1y", "3y", "5y", "max"). Default is "5y"' },
-          },
-          required: ['symbol'],
         },
       },
     },
@@ -769,38 +503,6 @@ export async function executeTool(
           message: `Retrieved cash flow data for ${args.symbol}`,
         };
       }
-      case 'get_sector_performance': {
-        const sectorPerf = await stockService.getSectorPerformance();
-        return {
-          success: true,
-          data: sectorPerf,
-          message: 'Retrieved sector performance data',
-        };
-      }
-      case 'get_stocks_by_sector': {
-        const sectorStocks = await stockService.getStocksBySector(args.sector || '');
-        return {
-          success: true,
-          data: sectorStocks,
-          message: `Retrieved stocks for sector: ${args.sector}`,
-        };
-      }
-      case 'screen_stocks': {
-        const results = await stockService.screenStocks(args);
-        return {
-          success: true,
-          data: results,
-          message: 'Retrieved stock screener results',
-        };
-      }
-      case 'get_top_gainers_losers': {
-        const gainersLosers = await stockService.getTopGainersLosers();
-        return {
-          success: true,
-          data: gainersLosers,
-          message: 'Retrieved top gainers, losers, and most active stocks',
-        };
-      }
       case 'get_news_sentiment': {
         const news = await stockService.getNewsSentiment(args.symbol || '');
         return {
@@ -815,22 +517,6 @@ export async function executeTool(
           success: true,
           data: news,
           message: `Retrieved company news for ${args.symbol}`,
-        };
-      }
-      case 'search_news': {
-        const news = await stockService.searchNews(args.query || '', args.days ? Number(args.days) : undefined);
-        return {
-          success: true,
-          data: news,
-          message: `Retrieved news for query: ${args.query}`,
-        };
-      }
-      case 'search_companies': {
-        const results = await stockService.searchCompanies(args.query || '');
-        return {
-          success: true,
-          data: results,
-          message: `Found companies for "${args.query || ''}"`,
         };
       }
       case 'generate_stock_report': {
@@ -1140,142 +826,6 @@ export async function executeTool(
           success: true,
           data: { content, ...saved, downloadUrl: `/api/reports/${saved.filename}` },
           message: `Saved comparison report to ${saved.filePath}`,
-        };
-      }
-      case 'generate_sector_report': {
-        const query = args.query || '';
-        const defaultLimit = process.env.VERCEL ? 3 : 4;
-        const limit = Math.min(Number(args.limit || defaultLimit), defaultLimit);
-        const notes: string[] = [];
-        notes.push('Universe limited to the top matches to respect Alpha Vantage free-tier rate limits.');
-
-        const { tokens, phrases } = buildThemeTokens(query);
-        const searchTerms = buildSearchQueries(query);
-        const searchResults = await Promise.all(
-          searchTerms.map((term) => stockService.searchStock(term).catch(() => ({ results: [] })))
-        );
-        const candidates = searchResults
-          .flatMap((result) => result.results || [])
-          .filter((item: any) => item?.symbol)
-          .slice(0, Math.max(limit * 4, 8));
-        const uniqueCandidates = Array.from(
-          new Map(candidates.map((item: any) => [item.symbol, item])).values()
-        );
-
-        const scoredItems: any[] = [];
-        for (const candidate of uniqueCandidates) {
-          try {
-            const overview = await stockService.getCompanyOverview(candidate.symbol);
-            const matchScore = scoreThemeMatch(overview, tokens, phrases);
-            if (matchScore === 0) continue;
-            const price = await stockService.getStockPrice(candidate.symbol).catch(() => null);
-            const basicFinancials = await stockService.getBasicFinancials(candidate.symbol).catch(() => null);
-            const analystRatings = overview ? { ...overview } : null;
-            const priceTargets = overview?.analystTargetPrice
-              ? { targetMean: overview.analystTargetPrice }
-              : null;
-            scoredItems.push({
-              symbol: candidate.symbol,
-              price,
-              overview,
-              basicFinancials,
-              analystRatings,
-              priceTargets,
-              matchScore,
-            });
-            if (scoredItems.length >= limit) {
-              break;
-            }
-          } catch (error: any) {
-            const message = error?.message || 'Unknown error';
-            if (message.includes('frequency') || message.includes('Thank you for using Alpha Vantage')) {
-              notes.push('Alpha Vantage rate limit reached; remaining symbols skipped.');
-              break;
-            }
-            notes.push(`${candidate.symbol}: ${message}`);
-          }
-        }
-
-        const sortedItems = scoredItems.sort((a, b) => b.matchScore - a.matchScore);
-        const items = sortedItems.slice(0, limit).map(({ matchScore, ...item }) => item);
-        const universe = items.map((item) => item.symbol);
-
-        if (universe.length > 0) {
-          notes.push(`Universe built from Alpha Vantage symbol search for "${query}".`);
-        } else {
-          notes.push('No tickers matched the theme keywords on Alpha Vantage. Try a more specific query.');
-        }
-
-        const content = buildSectorReport({
-          query,
-          generatedAt: new Date().toISOString(),
-          universe,
-          items,
-          notes,
-        });
-        const saved = await saveReport(content, `${query}-sector-report`);
-        return {
-          success: true,
-          data: { content, ...saved, downloadUrl: `/api/reports/${saved.filename}` },
-          message: `Saved sector report to ${saved.filePath}`,
-        };
-      }
-      case 'generate_peer_report': {
-        const symbol = args.symbol || '';
-        const range = args.range || '5y';
-        const defaultLimit = process.env.VERCEL ? 4 : 6;
-        const limit = Math.min(Number(args.limit || defaultLimit), defaultLimit);
-        const notes: string[] = [];
-
-        let peerSymbols: string[] = [];
-        try {
-          const peers = await stockService.getPeers(symbol);
-          peerSymbols = (peers.peers || []).filter((peer: string) => peer && peer !== symbol).slice(0, limit);
-        } catch (error: any) {
-          notes.push(`Peers unavailable: ${error.message}`);
-          try {
-            const search = await stockService.searchStock(symbol);
-            peerSymbols = (search.results || []).map((item: any) => item.symbol).filter(Boolean).slice(0, limit);
-          } catch (searchError: any) {
-            notes.push(`Peer fallback unavailable: ${searchError.message}`);
-          }
-        }
-
-        const universe = [symbol.toUpperCase(), ...peerSymbols].slice(0, limit + 1);
-        const items = await Promise.all(
-          universe.map(async (ticker) => {
-            const [price, overview, basicFinancials, priceTargets, priceHistory] = await Promise.all([
-              stockService.getStockPrice(ticker).catch(() => null),
-              stockService.getCompanyOverview(ticker).catch(() => null),
-              stockService.getBasicFinancials(ticker).catch(() => null),
-              stockService.getPriceTargets(ticker).catch(() => null),
-              stockService.getPriceHistory(ticker, range).catch(() => null),
-            ]);
-            return { symbol: ticker, price, overview, basicFinancials, priceTargets, priceHistory };
-          })
-        );
-
-        const reportBody = buildPeerReport({
-          symbol: symbol.toUpperCase(),
-          generatedAt: new Date().toISOString(),
-          range,
-          universe,
-          items,
-          notes,
-        });
-
-        const content = notes.length
-          ? reportBody.replace(
-              '## 📌 Universe Snapshot',
-              `## ⚠️ Data Gaps\n${notes.map((item) => `- ${item}`).join('\n')}\n\n## 📌 Universe Snapshot`
-            )
-          : reportBody;
-
-        const saved = await saveReport(content, `${symbol}-peer-report`);
-        return {
-          success: true,
-          data: { content, ...saved, downloadUrl: `/api/reports/${saved.filename}` },
-          message: `Saved peer report to ${saved.filePath}`,
         };
       }
       default:

@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { NextResponse } from 'next/server';
 
 const GITHUB_MODELS_CATALOG_URL = 'https://models.github.ai/catalog/models';
