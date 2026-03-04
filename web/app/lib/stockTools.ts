@@ -936,7 +936,8 @@ export async function executeTool(
 
         const price = await safeFetch('Price', 'price', stockService.getStockPrice(symbol));
         const companyOverview = await safeFetch('Company overview', 'overview', stockService.getCompanyOverview(symbol));
-        const basicFinancials = companyOverview ? buildBasicFinancialsFallback(companyOverview) : undefined;
+        const basicFinancialsFetched = await safeFetch('Basic financials', 'basicFinancials', stockService.getBasicFinancials(symbol));
+        const basicFinancials = basicFinancialsFetched ?? (companyOverview ? buildBasicFinancialsFallback(companyOverview) : undefined);
         const priceHistory = await safeFetch('Price history', `priceHistory:${range}`, stockService.getPriceHistory(symbol, range));
         const earningsHistory = await safeFetch('Earnings history', 'earningsHistory', stockService.getEarningsHistory(symbol));
         const incomeStatement = await safeFetch('Income statement', 'incomeStatement', stockService.getIncomeStatement(symbol));
@@ -1122,7 +1123,8 @@ export async function executeTool(
           const cache = await loadSymbolCache(symbol);
           const price = await safeFetch(symbol, cache, 'Price', 'price', stockService.getStockPrice(symbol));
           const overview = await safeFetch(symbol, cache, 'Company overview', 'overview', stockService.getCompanyOverview(symbol));
-          const basicFinancials = overview ? buildBasicFinancialsFallback(overview) : undefined;
+          const basicFinancialsFetched = await safeFetch(symbol, cache, 'Basic financials', 'basicFinancials', stockService.getBasicFinancials(symbol));
+          const basicFinancials = basicFinancialsFetched ?? (overview ? buildBasicFinancialsFallback(overview) : undefined);
           const priceHistory = await safeFetch(symbol, cache, 'Price history', `priceHistory:${range}`, stockService.getPriceHistory(symbol, range));
           const incomeStatement = await safeFetch(symbol, cache, 'Income statement', 'incomeStatement', stockService.getIncomeStatement(symbol));
           const balanceSheet = await safeFetch(symbol, cache, 'Balance sheet', 'balanceSheet', stockService.getBalanceSheet(symbol));

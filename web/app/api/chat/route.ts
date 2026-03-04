@@ -95,6 +95,7 @@ Rules:
 - If a tool result is missing key fields, call another tool (e.g. search_stock) to get the real value. Never guess or invent data.
 - Use tables for comparisons and show calculations.
 - Return report paths when asked for reports.
+- For comparison reports: call search_stock for each company name first (all in one parallel round), then pass the resolved ticker symbols to generate_comparison_report. Never pass unresolved names or user typos directly to generate_comparison_report.
 
 Keep answers concise unless the user requests depth.`;
 
@@ -215,13 +216,12 @@ function parseReportRequest(message: string) {
     }
   }
 
-  // Only treat as a sector/theme report when the query has 3+ words or sector-like keywords.
-  // Two-word company names (e.g. "Apple Inc", "Berkshire Hathaway") fall through to LLM.
+  // Only treat as a sector/theme report when the query contains explicit sector/theme keywords.
+  // Multi-word company names and comparison queries (e.g. "apple google meta") fall through to LLM.
   const genericMatch = text.match(/report\s+for\s+(.+)$/i);
   if (genericMatch) {
     const query = genericMatch[1].trim();
-    const wordCount = query.split(/\s+/).length;
-    if (wordCount >= 3 || /sector|theme|stocks?|industry|space|market/i.test(query)) {
+    if (/sector|theme|stocks?|industry|space|market/i.test(query)) {
       return { type: 'sector' as const, query };
     }
   }
@@ -586,6 +586,7 @@ const REPORT_TOOL_NAMES = [
   'generate_stock_report',
   'generate_sector_report',
   'generate_peer_report',
+  'generate_comparison_report',
 ];
 
 const MAX_TOOLS_NON_REPORT = 10;
@@ -609,6 +610,7 @@ function selectToolNames(message: string) {
 
   if (text.includes('peer') || text.includes('compare')) {
     selected.add('get_peers');
+    selected.add('generate_comparison_report');
   }
 
   if (text.includes('price') || text.includes('quote') || text.includes('trend')) {
@@ -967,7 +969,7 @@ export async function POST(request: NextRequest) {
     }
 
 
-    if (lowerMessage.includes('compare') || lowerMessage.includes('peers')) {
+    if (lowerMessage.includes('peer')) {
       const compareSymbol = await resolveSymbolFromMessage(message, stockService);
       if (compareSymbol) {
         const limit = parseLimitFromMessage(message, 8);
