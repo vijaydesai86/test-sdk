@@ -621,6 +621,27 @@ function buildToolDefinitions() {
     {
       type: 'function' as const,
       function: {
+        name: 'save_report',
+        description: 'Save a completed markdown report as a downloadable artifact file. Call this AFTER you have gathered all data with individual tools and composed the full report markdown yourself. This is how every report gets saved — you write it, then save it here.',
+        parameters: {
+          type: 'object',
+          properties: {
+            title: {
+              type: 'string',
+              description: 'Filename-safe title, lowercase with hyphens, e.g. "aapl-stock-report" or "aapl-msft-nvda-comparison".',
+            },
+            content: {
+              type: 'string',
+              description: 'The complete markdown report you have written.',
+            },
+          },
+          required: ['title', 'content'],
+        },
+      },
+    },
+    {
+      type: 'function' as const,
+      function: {
         name: 'generate_stock_report',
         description: 'Generate a comprehensive stock research report and save it as a markdown artifact.',
         parameters: {
@@ -889,6 +910,24 @@ export async function executeTool(
           success: true,
           data: results,
           message: `Found companies for "${args.query || ''}"`,
+        };
+      }
+      case 'save_report': {
+        const rawTitle = String(args.title || 'report')
+          .toLowerCase()
+          .replace(/[^a-z0-9\-]/g, '-')
+          .replace(/-+/g, '-')
+          .replace(/^-|-$/g, '');
+        const title = rawTitle || 'report';
+        const content = String(args.content || '');
+        if (!content.trim()) {
+          return { success: false, error: 'Report content cannot be empty.' };
+        }
+        const saved = await saveReport(content, title);
+        return {
+          success: true,
+          data: { content, ...saved, downloadUrl: `/api/reports/${saved.filename}` },
+          message: `Report saved: ${saved.filePath}`,
         };
       }
       case 'generate_stock_report': {
