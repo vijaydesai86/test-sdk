@@ -79,6 +79,24 @@ const setCachedValue = (cache: SymbolCache, key: string, data: any) => {
   cache[key] = { updatedAt: new Date().toISOString(), data };
 };
 
+/**
+ * Write a single data value to the file-based symbol cache.
+ * Called by individual tool handlers so that data pre-fetched by the LLM
+ * (e.g. during comparison report setup) is available to report generators
+ * without additional API calls, eliminating rate-limit-induced N/As.
+ */
+const cacheToolResult = async (symbol: string, key: string, data: any) => {
+  if (!symbol || data === null || data === undefined) return;
+  try {
+    const upperSymbol = symbol.toUpperCase();
+    const cache = await loadSymbolCache(upperSymbol);
+    setCachedValue(cache, key, data);
+    await saveSymbolCache(upperSymbol, cache);
+  } catch {
+    // best-effort; do not fail the tool call on cache write errors
+  }
+};
+
 const buildSearchQueries = (query: string) => {
   const cleaned = query.toLowerCase().replace(/[^a-z0-9\s]/g, ' ');
   const tokens = cleaned.split(/\s+/).filter((token) => token && !stopwords.has(token));
@@ -683,35 +701,44 @@ export async function executeTool(
         };
       }
       case 'get_stock_price': {
-        const price = await stockService.getStockPrice(args.symbol || '');
+        const symbol = args.symbol || '';
+        const price = await stockService.getStockPrice(symbol);
+        await cacheToolResult(symbol, 'price', price);
         return {
           success: true,
           data: price,
-          message: `Current price for ${args.symbol}: $${price.price} (${price.changePercent})`,
+          message: `Current price for ${symbol}: $${price.price} (${price.changePercent})`,
         };
       }
       case 'get_price_history': {
-        const history = await stockService.getPriceHistory(args.symbol || '', args.range || 'daily');
+        const symbol = args.symbol || '';
+        const range = args.range || 'daily';
+        const history = await stockService.getPriceHistory(symbol, range);
+        await cacheToolResult(symbol, `priceHistory:${range}`, history);
         return {
           success: true,
           data: history,
-          message: `Retrieved ${history.prices?.length || 0} ${args.range || 'daily'} price points for ${args.symbol}`,
+          message: `Retrieved ${history.prices?.length || 0} ${range} price points for ${symbol}`,
         };
       }
       case 'get_company_overview': {
-        const overview = await stockService.getCompanyOverview(args.symbol || '');
+        const symbol = args.symbol || '';
+        const overview = await stockService.getCompanyOverview(symbol);
+        await cacheToolResult(symbol, 'overview', overview);
         return {
           success: true,
           data: overview,
-          message: `Retrieved company overview for ${overview.name} (${args.symbol})`,
+          message: `Retrieved company overview for ${overview.name} (${symbol})`,
         };
       }
       case 'get_basic_financials': {
-        const metrics = await stockService.getBasicFinancials(args.symbol || '');
+        const symbol = args.symbol || '';
+        const metrics = await stockService.getBasicFinancials(symbol);
+        await cacheToolResult(symbol, 'basicFinancials', metrics);
         return {
           success: true,
           data: metrics,
-          message: `Retrieved basic financials for ${args.symbol}`,
+          message: `Retrieved basic financials for ${symbol}`,
         };
       }
       case 'get_insider_trading': {
@@ -723,27 +750,33 @@ export async function executeTool(
         };
       }
       case 'get_analyst_ratings': {
-        const ratings = await stockService.getAnalystRatings(args.symbol || '');
+        const symbol = args.symbol || '';
+        const ratings = await stockService.getAnalystRatings(symbol);
+        await cacheToolResult(symbol, 'analystRatings', ratings);
         return {
           success: true,
           data: ratings,
-          message: `Retrieved analyst ratings for ${args.symbol}`,
+          message: `Retrieved analyst ratings for ${symbol}`,
         };
       }
       case 'get_analyst_recommendations': {
-        const recs = await stockService.getAnalystRecommendations(args.symbol || '');
+        const symbol = args.symbol || '';
+        const recs = await stockService.getAnalystRecommendations(symbol);
+        await cacheToolResult(symbol, 'analystRecommendations', recs);
         return {
           success: true,
           data: recs,
-          message: `Retrieved analyst recommendations for ${args.symbol}`,
+          message: `Retrieved analyst recommendations for ${symbol}`,
         };
       }
       case 'get_price_targets': {
-        const targets = await stockService.getPriceTargets(args.symbol || '');
+        const symbol = args.symbol || '';
+        const targets = await stockService.getPriceTargets(symbol);
+        await cacheToolResult(symbol, 'priceTargets', targets);
         return {
           success: true,
           data: targets,
-          message: `Retrieved price targets for ${args.symbol}`,
+          message: `Retrieved price targets for ${symbol}`,
         };
       }
       case 'get_peers': {
@@ -755,35 +788,43 @@ export async function executeTool(
         };
       }
       case 'get_earnings_history': {
-        const earnings = await stockService.getEarningsHistory(args.symbol || '');
+        const symbol = args.symbol || '';
+        const earnings = await stockService.getEarningsHistory(symbol);
+        await cacheToolResult(symbol, 'earningsHistory', earnings);
         return {
           success: true,
           data: earnings,
-          message: `Retrieved earnings history for ${args.symbol}`,
+          message: `Retrieved earnings history for ${symbol}`,
         };
       }
       case 'get_income_statement': {
-        const income = await stockService.getIncomeStatement(args.symbol || '');
+        const symbol = args.symbol || '';
+        const income = await stockService.getIncomeStatement(symbol);
+        await cacheToolResult(symbol, 'incomeStatement', income);
         return {
           success: true,
           data: income,
-          message: `Retrieved income statement for ${args.symbol}`,
+          message: `Retrieved income statement for ${symbol}`,
         };
       }
       case 'get_balance_sheet': {
-        const balanceSheet = await stockService.getBalanceSheet(args.symbol || '');
+        const symbol = args.symbol || '';
+        const balanceSheet = await stockService.getBalanceSheet(symbol);
+        await cacheToolResult(symbol, 'balanceSheet', balanceSheet);
         return {
           success: true,
           data: balanceSheet,
-          message: `Retrieved balance sheet for ${args.symbol}`,
+          message: `Retrieved balance sheet for ${symbol}`,
         };
       }
       case 'get_cash_flow': {
-        const cashFlow = await stockService.getCashFlow(args.symbol || '');
+        const symbol = args.symbol || '';
+        const cashFlow = await stockService.getCashFlow(symbol);
+        await cacheToolResult(symbol, 'cashFlow', cashFlow);
         return {
           success: true,
           data: cashFlow,
-          message: `Retrieved cash flow data for ${args.symbol}`,
+          message: `Retrieved cash flow data for ${symbol}`,
         };
       }
       case 'get_sector_performance': {
