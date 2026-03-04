@@ -183,9 +183,29 @@ function isToolCallLike(content: string | null | undefined): boolean {
   return /"name"\s*:\s*"functions\./.test(content) || /"arguments"\s*:\s*\{/.test(content);
 }
 
+function parseCompareRequest(message: string): string[] | null {
+  const text = message.trim();
+  if (!/compar/i.test(text)) return null;
+  // Extract comma- or "vs"-separated ticker/company tokens
+  const tickerPart = text
+    .replace(/^.*?compar(?:e|ison\s+of|ison)?\s+(?:companies?\s+)?/i, '')
+    .replace(/\s+report.*$/i, '');
+  const tokens = tickerPart
+    .split(/\s*(?:,|vs\.?|and|\s)\s*/i)
+    .map((t) => t.trim().toUpperCase())
+    .filter((t) => /^[A-Z]{2,6}$/.test(t));
+  return tokens.length >= 2 ? tokens : null;
+}
+
 function parseReportRequest(message: string) {
   const text = message.trim();
   const lower = text.toLowerCase();
+
+  const compareCompanies = parseCompareRequest(text);
+  if (compareCompanies) {
+    return { type: 'compare' as const, companies: compareCompanies };
+  }
+
   const sectorMatch = text.match(/(sector|theme)\s+report\s+for\s+(.+)$/i);
   if (sectorMatch) {
     return { type: 'sector' as const, query: sectorMatch[2].trim() };
@@ -434,11 +454,17 @@ export async function POST(request: NextRequest) {
 
       conversationMessages.push({ role: 'user', content: message });
 
-      const toolResult = await executeTool(
-        'generate_stock_report',
-        { symbol: reportRequest.symbol, range: timeframe || '5y' },
-        stockService
-      );
+      const toolResult = reportRequest.type === 'compare'
+        ? await executeTool(
+            'generate_comparison_report',
+            { companies: reportRequest.companies, range: timeframe || '1y' },
+            stockService
+          )
+        : await executeTool(
+            'generate_stock_report',
+            { symbol: reportRequest.symbol, range: timeframe || '5y' },
+            stockService
+          );
 
       if (!toolResult.success) {
         return NextResponse.json(
