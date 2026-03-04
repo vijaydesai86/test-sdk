@@ -237,32 +237,6 @@ function parseReportRequest(message: string) {
   return null;
 }
 
-function parseComparisonCompanies(message: string): string[] | null {
-  const match = message.match(/compare(?:\s+companies)?\s+(.+)/i);
-  if (!match) return null;
-  let list = match[1].trim();
-  const cutoffIndex = list.search(/\b(report|over|for|using|with|range|timeframe)\b/i);
-  if (cutoffIndex >= 0) {
-    list = list.slice(0, cutoffIndex).trim();
-  }
-  if (!list) return null;
-  const cleaned = list.replace(/\band\b/gi, ',');
-  const parts = cleaned.includes(',')
-    ? cleaned.split(',')
-    : cleaned.split(/\s+/);
-  const stopwords = new Set(['and', 'stocks', 'stock', 'companies', 'company', 'compare']);
-  const companies = parts
-    .map((item) => item.trim())
-    .filter(Boolean)
-    .map((item) => {
-      const tokens = item
-        .split(/\s+/)
-        .filter((token) => token && !stopwords.has(token.toLowerCase()));
-      return tokens.join(' ');
-    })
-    .filter((item) => item && !stopwords.has(item.toLowerCase()));
-  return companies.length >= 2 ? companies : null;
-}
 
 function parseAnalystTrendsRequest(message: string) {
   const match = message.match(/analyst\s+(?:rating|recommendation)?\s*trends?\s+for\s+([a-zA-Z]{1,6})/i)
@@ -992,18 +966,6 @@ export async function POST(request: NextRequest) {
       return handleDirectToolResponse('get_stocks_by_sector', { sector: sectorRequest.sector }, stockService, message, sessionId);
     }
 
-    if (lowerMessage.includes('compare')) {
-      const comparisonCompanies = parseComparisonCompanies(message);
-      if (comparisonCompanies) {
-        return handleDirectToolResponse(
-          'generate_comparison_report',
-          { companies: comparisonCompanies, range: timeframe || '1y' },
-          stockService,
-          message,
-          sessionId
-        );
-      }
-    }
 
     if (lowerMessage.includes('compare') || lowerMessage.includes('peers')) {
       const compareSymbol = await resolveSymbolFromMessage(message, stockService);
