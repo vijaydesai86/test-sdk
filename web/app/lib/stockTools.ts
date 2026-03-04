@@ -1,7 +1,7 @@
 import { promises as fs } from 'fs';
 import path from 'path';
 import { StockDataService } from './stockDataService';
-import { buildSectorReport, buildStockReport, buildPeerReport, buildComparisonReport, saveReport } from './reportGenerator';
+import { buildStockReport, buildComparisonReport, saveReport } from './reportGenerator';
 
 /**
  * OpenAI-compatible tool definitions for stock information
@@ -1206,9 +1206,9 @@ export async function executeTool(
           notes.push('No tickers matched the theme keywords on Alpha Vantage. Try a more specific query.');
         }
 
-        const content = buildSectorReport({
-          query,
+        const content = buildComparisonReport({
           generatedAt: new Date().toISOString(),
+          range: '1y',
           universe,
           items,
           notes,
@@ -1255,8 +1255,7 @@ export async function executeTool(
           })
         );
 
-        const reportBody = buildPeerReport({
-          symbol: symbol.toUpperCase(),
+        const reportBody = buildComparisonReport({
           generatedAt: new Date().toISOString(),
           range,
           universe,
