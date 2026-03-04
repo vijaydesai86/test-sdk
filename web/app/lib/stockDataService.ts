@@ -906,17 +906,32 @@ export class FinnhubService implements StockDataService {
 
   async getNewsSentiment(symbol: string): Promise<any> {
     const sym = symbol.toUpperCase();
-    const d = await this.cache<any>(`fh:sentiment:${sym}`, 30 * 60 * 1000, '/news-sentiment', { symbol: sym });
-    return attachSource(
-      {
-        symbol: sym,
-        buzz: d?.buzz ?? {},
-        sentiment: d?.sentiment ?? {},
-        companyNewsScore: d?.companyNewsScore ?? null,
-        sectorAverageBullishPercent: d?.sectorAverageBullishPercent ?? null,
-      },
-      FH_SOURCE
-    );
+    try {
+      const d = await this.cache<any>(`fh:sentiment:${sym}`, 30 * 60 * 1000, '/news-sentiment', { symbol: sym });
+      return attachSource(
+        {
+          symbol: sym,
+          buzz: d?.buzz ?? {},
+          sentiment: d?.sentiment ?? {},
+          companyNewsScore: d?.companyNewsScore ?? null,
+          sectorAverageBullishPercent: d?.sectorAverageBullishPercent ?? null,
+        },
+        FH_SOURCE
+      );
+    } catch (err: any) {
+      // /news-sentiment requires a Finnhub paid plan. The Finnhub API returns a specific
+      // error message "You don't have access to this resource." for plan-gated endpoints.
+      // Return a graceful empty response so the LLM can continue without treating it as
+      // a hard error. Any other error (network, auth key missing, etc.) is re-thrown.
+      const msg: string = err?.message ?? '';
+      if (msg.includes("don't have access") || msg.includes("do not have access") || msg.includes("You don't have access")) {
+        return attachSource(
+          { symbol: sym, available: false, note: 'News sentiment requires a Finnhub paid plan.' },
+          FH_SOURCE
+        );
+      }
+      throw err;
+    }
   }
 
   async getCompanyNews(symbol: string, days = 30): Promise<any> {
