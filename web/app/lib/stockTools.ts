@@ -84,78 +84,10 @@ const scoreSearchMatch = (query: string, item: any) => {
   return score;
 };
 
-// Well-known company names that are commonly used in prompts but whose ticker symbols
-// are not obvious from search scoring (e.g. "Google" → Alphabet/GOOGL).
-export const WELL_KNOWN_TICKERS: Record<string, string> = {
-  'google': 'GOOGL',
-  'alphabet': 'GOOGL',
-  'microsoft': 'MSFT',
-  'apple': 'AAPL',
-  'amazon': 'AMZN',
-  'meta': 'META',
-  'facebook': 'META',
-  'netflix': 'NFLX',
-  'tesla': 'TSLA',
-  'nvidia': 'NVDA',
-  'amd': 'AMD',
-  'intel': 'INTC',
-  'salesforce': 'CRM',
-  'oracle': 'ORCL',
-  'ibm': 'IBM',
-  'qualcomm': 'QCOM',
-  'broadcom': 'AVGO',
-  'paypal': 'PYPL',
-  'adobe': 'ADBE',
-  'spotify': 'SPOT',
-  'uber': 'UBER',
-  'lyft': 'LYFT',
-  'airbnb': 'ABNB',
-  'coinbase': 'COIN',
-  'shopify': 'SHOP',
-  'twitter': 'X',
-  'snap': 'SNAP',
-  'pinterest': 'PINS',
-  'palantir': 'PLTR',
-  'snowflake': 'SNOW',
-  'datadog': 'DDOG',
-  'cloudflare': 'NET',
-  'crowdstrike': 'CRWD',
-  'palo alto': 'PANW',
-  'fortinet': 'FTNT',
-  'boeing': 'BA',
-  'ford': 'F',
-  'gm': 'GM',
-  'general motors': 'GM',
-  'walmart': 'WMT',
-  'target': 'TGT',
-  'costco': 'COST',
-  'home depot': 'HD',
-  'jpmorgan': 'JPM',
-  'jp morgan': 'JPM',
-  'goldman sachs': 'GS',
-  'bank of america': 'BAC',
-  'wells fargo': 'WFC',
-  'visa': 'V',
-  'mastercard': 'MA',
-  'berkshire': 'BRK.B',
-  'johnson & johnson': 'JNJ',
-  'johnson and johnson': 'JNJ',
-  'pfizer': 'PFE',
-  'moderna': 'MRNA',
-  'exxon': 'XOM',
-  'chevron': 'CVX',
-};
-
 const resolveSymbolFromQuery = async (stockService: StockDataService, query: string) => {
   const trimmed = query.trim();
   if (!trimmed) {
     return { ok: false, reason: 'Empty query', candidates: [] as any[] };
-  }
-
-  // Fast path: check well-known company names before hitting the search API
-  const lowerTrimmed = trimmed.toLowerCase();
-  if (WELL_KNOWN_TICKERS[lowerTrimmed]) {
-    return { ok: true, symbol: WELL_KNOWN_TICKERS[lowerTrimmed], candidates: [] };
   }
 
   const stopwordSet = new Set(['stocks', 'stock', 'companies', 'company', 'compare', 'and']);

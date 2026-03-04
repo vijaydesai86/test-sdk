@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { NextRequest, NextResponse } from 'next/server';
-import { getToolDefinitionsByName, executeTool, WELL_KNOWN_TICKERS } from '@/app/lib/stockTools';
+import { getToolDefinitionsByName, executeTool } from '@/app/lib/stockTools';
 import { createStockService, StockDataService } from '@/app/lib/stockDataService';
 
 // GitHub Models API — new endpoint (azure endpoint deprecated Oct 2025)
@@ -58,11 +58,13 @@ const SYSTEM_PROMPT = `You are an elite buy-side equity research analyst. Produc
 - Company comparison report: call generate_comparison_report with the list of ticker symbols.
 - Data-only query: call the relevant data tool (get_stock_price, get_company_overview, etc.) and answer directly.
 
-**4. Resolve company names to tickers first.** If the user mentions company names (e.g. "Google", "Microsoft", "Apple") instead of tickers, call search_stock for each name to find the correct ticker symbol, then use those tickers in generate_stock_report or generate_comparison_report. Never guess a ticker — always confirm it with search_stock.
+**4. Resolve company names to tickers first.** If the user mentions company names (e.g. "Google", "Microsoft", "Apple") instead of tickers, call search_stock for each name to find the correct ticker symbol, then use those tickers in generate_stock_report or generate_comparison_report. Never guess a ticker — always confirm it with search_stock. This works for ANY company worldwide — never say you cannot resolve a name.
 
 **5. Never skip a tool** when that data would strengthen the analysis. If a tool fails due to missing API keys, say so explicitly and continue with available data only.
 
 **6. Report requests.** When a user asks for a report on one stock, call generate_stock_report. When asked to compare companies, call generate_comparison_report. Always return the saved artifact path.
+
+**7. Never claim you are rate-limited or cannot access real-time data.** Always attempt tool calls first. If a tool returns an error, report that specific error — do not substitute training-knowledge responses.
 
 **OUTPUT STANDARDS:**
 - Tables for all comparisons of 2+ stocks or metrics — no empty cells.
@@ -76,9 +78,9 @@ const SYSTEM_PROMPT = `You are an elite buy-side equity research analyst. Produc
 const COMPACT_SYSTEM_PROMPT = `You are a buy-side equity research analyst.
 
 Rules:
-- Fetch data via tools before stating facts.
+- Always call tools before stating any fact — never use training knowledge for stock data.
 - Batch tool calls in a single round.
-- If given company names instead of tickers (e.g. "Google", "Microsoft"), call search_stock for each name first to get the correct ticker symbol, then use those tickers in report/comparison tools.
+- For company names (e.g. "Google", "Tesla", "Samsung"), call search_stock for each name to get the confirmed ticker, then use those tickers in report/comparison tools. This works for any company — never say you cannot resolve a name or are rate-limited.
 - Use tables for comparisons and show calculations.
 - Return report paths when asked for reports.
 
@@ -186,28 +188,25 @@ function isToolCallLike(content: string | null | undefined): boolean {
   return /"name"\s*:\s*"functions\./.test(content) || /"arguments"\s*:\s*\{/.test(content);
 }
 
+// Words that appear in compare prompts but are never ticker symbols.
 const COMPARE_STOP_WORDS = new Set([
-  'stock', 'stocks', 'company', 'companies', 'compare', 'comparison', 'and', 'the', 'a', 'an', 'of', 'for', 'on', 'report', 'vs', 'versus',
+  'stock', 'stocks', 'company', 'companies', 'compare', 'comparison',
+  'and', 'the', 'a', 'an', 'of', 'for', 'on', 'report', 'vs', 'versus',
 ]);
 
 function parseCompareRequest(message: string): string[] | null {
   const text = message.trim();
   if (!/compar/i.test(text)) return null;
-  // Extract comma- or "vs"-separated ticker/company tokens
+  // Extract tokens after the "compare" keyword
   const tickerPart = text
     .replace(/^.*?compar(?:e|ison\s+of|ison)?\s+(?:companies?\s+)?/i, '')
     .replace(/\s+report.*$/i, '');
+  // Only accept tokens the user typed as explicit uppercase ticker symbols.
+  // Company names (mixed-case or all-lowercase) are intentionally excluded so
+  // the LLM resolves them via search_stock — no hard-coded mappings needed.
   const tokens = tickerPart
     .split(/\s*(?:,|vs\.?|and|\s)\s*/i)
-    .map((t) => t.trim())
-    .filter((t) => t && !COMPARE_STOP_WORDS.has(t.toLowerCase()))
-    .map((t) => {
-      // Resolve well-known company names (e.g. "google" → "GOOGL")
-      const ticker = WELL_KNOWN_TICKERS[t.toLowerCase()];
-      if (ticker) return ticker;
-      return t.toUpperCase();
-    })
-    .filter((t) => /^[A-Z]{2,6}$/.test(t));
+    .filter((t) => t && !COMPARE_STOP_WORDS.has(t.toLowerCase()) && /^[A-Z]{2,6}$/.test(t));
   return tokens.length >= 2 ? tokens : null;
 }
 
