@@ -1,165 +1,102 @@
 # 🚀 Quick Start Guide
 
-Get the Stock Information Assistant running in 5 minutes!
+Get the Equity Research Console running in 5 minutes.
 
-## Prerequisites Check
+## Prerequisites
 
-Before you start, make sure you have:
+- Node.js 18+ (`node --version`)
+- npm (`npm --version`)
+- A GitHub Copilot subscription (or bring your own OpenAI key)
 
-- ✅ Node.js 18 or higher installed (`node --version`)
-- ✅ npm installed (`npm --version`)
-- ✅ Git installed
+---
 
-## Option 1: Run the CLI (Fastest)
+## Option A: Deploy to Vercel (Recommended)
 
-### Step 1: Clone and Setup
+1. Click the **Deploy** button in [README.md](README.md)
+2. Import the repo in Vercel, set **Root Directory** to `web`
+3. Add environment variables:
+   - `GITHUB_TOKEN` — create at [github.com/settings/tokens](https://github.com/settings/tokens) (classic PAT, no specific scopes needed, or fine-grained with "Models" read permission)
+   - `ALPHA_VANTAGE_API_KEY` — free from [alphavantage.co](https://www.alphavantage.co/support/#api-key)
+4. Deploy — done!
+
+---
+
+## Option B: Run Locally
+
+### 1 · Clone and install
 
 ```bash
-# Clone the repository
 git clone https://github.com/vijaydesai86/test-sdk.git
-cd test-sdk
-
-# Install dependencies
+cd test-sdk/web
 npm install
+```
 
-# Build the project
+### 2 · Configure environment
+
+```bash
+cp .env.example .env.local
+```
+
+Edit `.env.local`:
+```env
+GITHUB_TOKEN=your_github_pat_here
+ALPHA_VANTAGE_API_KEY=your_alpha_vantage_key_here
+# Optional for richer data:
+# FINNHUB_API_KEY=your_finnhub_key_here
+```
+
+### 3 · Start dev server
+
+```bash
+npm run dev
+```
+
+Open [http://localhost:3000](http://localhost:3000)
+
+---
+
+## Option C: CLI (Node.js REPL)
+
+```bash
+# From repo root
+npm install
 npm run build
-```
-
-### Step 2: Install GitHub Copilot CLI
-
-```bash
-# Install globally
-npm install -g @github/copilot-cli
-
-# Authenticate
-copilot auth login
-```
-
-### Step 3: Run the CLI
-
-```bash
 npm run dev
 ```
 
-That's it! Start asking questions about stocks.
+---
 
-### Example Questions:
+## Example Prompts
+
 ```
-You: What is the current price of Apple stock?
-You: Show me Microsoft's EPS and PE ratio
-You: Search for Tesla stock
-```
-
-## Option 2: Run the Web Interface
-
-### Step 1: Setup (same as above)
-
-```bash
-git clone https://github.com/vijaydesai86/test-sdk.git
-cd test-sdk
-npm install
+Generate a full stock report for Apple
+Generate a full stock report for NVDA
+Compare Apple, Microsoft, Google, Amazon and Meta
+Generate a sector report for AI data center stocks
+What are today's top gainers and losers?
+Show me Tesla vs Rivian comparison
+Get the latest news for Nvidia
 ```
 
-### Step 2: Install GitHub Copilot CLI
-
-```bash
-npm install -g @github/copilot-cli
-copilot auth login
-```
-
-### Step 3: Start the Web Server
-
-```bash
-cd web
-npm install
-npm run dev
-```
-
-### Step 4: Open in Browser
-
-Open http://localhost:3000 in your browser and start chatting!
-
-## Setting Up Stock Data API
-
-All stock data is served from the real Alpha Vantage API — no mock data.
-
-### Step 1: Get API Key
-
-1. Visit https://www.alphavantage.co/support/#api-key
-2. Sign up for a free API key (takes 1 minute)
-
-### Step 2: Configure
-
-For CLI:
-```bash
-# Create .env file in root directory
-cat <<EOF > .env
-ALPHA_VANTAGE_API_KEY=your_key_here
-EOF
-```
-
-For Web:
-```bash
-# Create .env.local file in web directory
-cd web
-cat <<EOF > .env.local
-GITHUB_TOKEN=your_github_token_here
-ALPHA_VANTAGE_API_KEY=your_key_here
-# Optional: OPENAI_API_KEY=your_openai_key_here
-EOF
-```
-
-### Step 3: Restart
-
-Restart the application to use real-time stock data!
+---
 
 ## Troubleshooting
 
-### ❌ "Command not found: copilot"
+| Error | Fix |
+|---|---|
+| `GitHub Models API authentication failed` | Check `GITHUB_TOKEN` is set and valid |
+| `Alpha Vantage API key not configured` | Set `ALPHA_VANTAGE_API_KEY` |
+| Rate limit (Alpha Vantage free tier) | Wait 1 minute; free tier allows 5 calls/min |
+| Port 3000 in use | `PORT=3001 npm run dev` |
+| Report shows no data | Check env vars; try a stock with more data (e.g. AAPL, MSFT) |
 
-**Solution**: Install the Copilot CLI
-```bash
-npm install -g @github/copilot-cli
-```
+---
 
-### ❌ "Failed to authenticate"
+## What's Next
 
-**Solution**: Log in to GitHub Copilot
-```bash
-copilot auth login
-```
+- See [AGENT.md](AGENT.md) for full technical architecture and extension guide
+- Customize tools in `web/app/lib/stockTools.ts`
+- Customize the UI in `web/app/components/ChatInterface.tsx`
+- Add a Finnhub key for analyst ratings, peers, and richer financial data
 
-### ❌ "You don't have a Copilot subscription"
-
-**Solutions**:
-1. Sign up for GitHub Copilot at https://github.com/features/copilot
-2. Or use BYOK (Bring Your Own Key) - see [BYOK docs](https://github.com/github/copilot-sdk/blob/main/docs/auth/byok.md)
-
-### ❌ "Port 3000 already in use"
-
-**Solution**: Use a different port
-```bash
-PORT=3001 npm run dev
-```
-
-### ❌ "API rate limit exceeded"
-
-**Solution**: Alpha Vantage free tier has 5 calls/minute
-- Wait a minute before making more requests
-- Or upgrade to premium plan
-
-## Need Help?
-
-1. Check the full [README.md](README.md) for detailed information
-2. See [DEPLOYMENT.md](DEPLOYMENT.md) for deployment options
-3. Open an issue on GitHub
-
-## What's Next?
-
-- 📊 Try different stock queries
-- 🔧 Customize the tools in `src/stockTools.ts`
-- 🎨 Modify the web UI in `web/app/components/ChatInterface.tsx`
-- 🚀 Deploy to production (see DEPLOYMENT.md)
-
-Happy stock tracking! 📈
+Happy researching! 📈

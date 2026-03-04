@@ -123,9 +123,15 @@ function buildPriceChart(prices: PricePoint[] = []): string {
 
   const min = Math.min(...filtered.values);
   const max = Math.max(...filtered.values);
-  const trend = filtered.values.length >= 2
-    ? filtered.values[filtered.values.length - 1] >= filtered.values[0]
-    : true;
+  // Determine trend direction via median of second half vs first half (more robust than first-to-last).
+  const mid = Math.floor(filtered.values.length / 2);
+  const half1 = filtered.values.slice(0, mid);
+  const half2 = filtered.values.slice(mid);
+  const median = (arr: number[]) => {
+    const sorted = [...arr].sort((a, b) => a - b);
+    return sorted[Math.floor(sorted.length / 2)];
+  };
+  const trend = half1.length === 0 || median(half2) >= median(half1);
   const lineColor = trend ? '#6366f1' : '#ef4444';
 
   return buildChartBlock({

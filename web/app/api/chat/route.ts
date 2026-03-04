@@ -223,8 +223,9 @@ function parseReportRequest(message: string) {
   }
 
   // Only direct-route clear all-uppercase ticker symbols (e.g. AAPL, MSFT, NVDA).
+  // Trailing words are ignored so "report for AAPL please" still matches.
   // Company names and mixed-case input fall through to the LLM which resolves them via search_stock.
-  const stockMatch = text.match(/report\s+(?:for|on)\s+([A-Z]{1,5})\s*$/);
+  const stockMatch = text.match(/report\s+(?:for|on)\s+([A-Z]{1,5})\b/);
   if (stockMatch) {
     return { type: 'stock' as const, symbol: stockMatch[1] };
   }

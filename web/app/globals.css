@@ -1,8 +1,8 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #f8fafc;
+  --foreground: #0f172a;
 }
 
 @theme inline {
@@ -14,114 +14,156 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+    --background: #020617;
+    --foreground: #f1f5f9;
   }
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: Inter, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
-/* Markdown / research report styles */
+/* ── Scrollbar styling (Webkit) ── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 9999px; }
+.dark ::-webkit-scrollbar-thumb { background: #334155; }
+::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+
+/* ═══════════════════════════════════════
+   RESEARCH REPORT — PROSE STYLES
+   Works across all screen sizes
+══════════════════════════════════════ */
+
+/* Headings */
 .prose h1, .prose h2, .prose h3, .prose h4 {
   font-weight: 700;
-  margin-top: 1.25rem;
+  margin-top: 1.4rem;
   margin-bottom: 0.5rem;
   line-height: 1.3;
 }
-.prose h1 { font-size: 1.5rem; border-bottom: 2px solid #3b82f6; padding-bottom: 0.3rem; }
-.prose h2 { font-size: 1.25rem; border-bottom: 1px solid #e5e7eb; padding-bottom: 0.2rem; }
-.prose h3 { font-size: 1.05rem; color: #1d4ed8; }
-.prose h4 { font-size: 0.95rem; color: #374151; }
-.dark .prose h2 { border-bottom-color: #4b5563; }
-.dark .prose h3 { color: #93c5fd; }
+.prose h1 {
+  font-size: clamp(1.15rem, 3vw, 1.5rem);
+  border-bottom: 2px solid #6366f1;
+  padding-bottom: 0.35rem;
+  color: #1e293b;
+}
+.prose h2 {
+  font-size: clamp(1rem, 2.5vw, 1.2rem);
+  border-bottom: 1px solid #e2e8f0;
+  padding-bottom: 0.2rem;
+  color: #1e293b;
+}
+.prose h3 {
+  font-size: clamp(0.9rem, 2vw, 1.05rem);
+  color: #4f46e5;
+}
+.prose h4 {
+  font-size: 0.9rem;
+  color: #374151;
+}
+.dark .prose h1 { color: #f1f5f9; border-bottom-color: #6366f1; }
+.dark .prose h2 { color: #e2e8f0; border-bottom-color: #334155; }
+.dark .prose h3 { color: #818cf8; }
 .dark .prose h4 { color: #d1d5db; }
-.prose p { margin-bottom: 0.6rem; line-height: 1.65; }
-.prose ul { list-style-type: disc; padding-left: 1.5rem; margin-bottom: 0.6rem; }
-.prose ol { list-style-type: decimal; padding-left: 1.5rem; margin-bottom: 0.6rem; }
-.prose li { margin-bottom: 0.25rem; line-height: 1.6; }
+
+/* Body text */
+.prose p { margin-bottom: 0.65rem; line-height: 1.7; font-size: clamp(0.8rem, 1.8vw, 0.875rem); }
+.prose ul { list-style-type: disc; padding-left: 1.25rem; margin-bottom: 0.65rem; }
+.prose ol { list-style-type: decimal; padding-left: 1.25rem; margin-bottom: 0.65rem; }
+.prose li { margin-bottom: 0.3rem; line-height: 1.6; font-size: clamp(0.8rem, 1.8vw, 0.875rem); }
 .prose strong { font-weight: 700; }
 .prose em { font-style: italic; }
-/* Research report tables */
+
+/* ── Tables — responsive on all screens ── */
 .prose table {
   border-collapse: collapse;
   width: 100%;
   margin-bottom: 1.25rem;
-  font-size: 0.82rem;
-  overflow-x: auto;
-  display: block;
-  border-radius: 6px;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+  font-size: clamp(0.72rem, 1.6vw, 0.8rem);
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.07);
 }
-.prose th, .prose td {
+/* table wrapper div handles horizontal scroll */
+.prose table th, .prose table td {
   border: 1px solid #e2e8f0;
-  padding: 0.45rem 0.85rem;
+  padding: clamp(0.3rem, 1.2vw, 0.5rem) clamp(0.5rem, 1.5vw, 0.9rem);
   text-align: left;
   white-space: nowrap;
 }
-.prose th {
-  background: linear-gradient(135deg, #1e40af 0%, #3b82f6 100%);
+.prose table th {
+  background: linear-gradient(135deg, #4f46e5 0%, #6366f1 100%);
   color: #fff;
   font-weight: 600;
-  font-size: 0.78rem;
+  font-size: clamp(0.68rem, 1.4vw, 0.75rem);
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
 }
-.prose tr:nth-child(even) td { background-color: #f8fafc; }
-.prose tr:hover td { background-color: #eff6ff; }
-.dark .prose th {
-  background: linear-gradient(135deg, #1e3a5f 0%, #2563eb 100%);
-  border-color: #374151;
+.prose table tr:nth-child(even) td { background-color: #f8fafc; }
+.prose table tr:hover td { background-color: #eef2ff; transition: background 0.15s; }
+.dark .prose table th {
+  background: linear-gradient(135deg, #312e81 0%, #4338ca 100%);
+  border-color: #334155;
 }
-.dark .prose td {
-  border-color: #374151;
-  background-color: transparent;
-}
-.dark .prose tr:nth-child(even) td { background-color: #1f2937; }
-.dark .prose tr:hover td { background-color: #1e3a5f; }
+.dark .prose table td { border-color: #334155; }
+.dark .prose table tr:nth-child(even) td { background-color: #1e293b; }
+.dark .prose table tr:hover td { background-color: #1e3a5f; }
+
+/* ── Code ── */
 .prose code {
   background-color: #f1f5f9;
-  border-radius: 4px;
+  border-radius: 5px;
   padding: 0.15rem 0.4rem;
   font-size: 0.82em;
-  font-family: 'JetBrains Mono', 'Fira Code', monospace;
-  color: #0f172a;
+  font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+  color: #4338ca;
   border: 1px solid #e2e8f0;
 }
-.dark .prose code {
-  background-color: #1e293b;
-  color: #e2e8f0;
-  border-color: #374151;
-}
+.dark .prose code { background-color: #1e293b; color: #a5b4fc; border-color: #334155; }
 .prose pre {
   background-color: #0f172a;
   color: #e2e8f0;
-  border-radius: 6px;
+  border-radius: 8px;
   padding: 1rem;
   overflow-x: auto;
   margin-bottom: 1rem;
+  font-size: 0.8rem;
 }
+
+/* ── Dividers ── */
 .prose hr {
   border: none;
-  border-top: 2px solid #e2e8f0;
+  border-top: 1px solid #e2e8f0;
   margin: 1.5rem 0;
 }
-.dark .prose hr {
-  border-top-color: #374151;
-}
-/* Blockquotes as callout boxes */
+.dark .prose hr { border-top-color: #334155; }
+
+/* ── Blockquotes as callout boxes ── */
 .prose blockquote {
-  border-left: 4px solid #3b82f6;
-  background-color: #eff6ff;
+  border-left: 3px solid #6366f1;
+  background-color: #eef2ff;
   padding: 0.75rem 1rem;
   margin: 1rem 0;
-  border-radius: 0 6px 6px 0;
+  border-radius: 0 8px 8px 0;
   font-style: normal;
+  font-size: 0.875rem;
 }
-.dark .prose blockquote {
-  background-color: #1e3a5f;
-  border-left-color: #60a5fa;
+.dark .prose blockquote { background-color: #1e1b4b; border-left-color: #818cf8; }
+
+/* ── Links ── */
+.prose a { color: #4f46e5; text-decoration: underline; }
+.dark .prose a { color: #818cf8; }
+
+/* ── Mobile: tighten spacing ── */
+@media (max-width: 640px) {
+  .prose h1 { margin-top: 1rem; }
+  .prose h2 { margin-top: 0.9rem; }
+  .prose h3 { margin-top: 0.75rem; }
+  .prose blockquote { padding: 0.5rem 0.75rem; }
 }
