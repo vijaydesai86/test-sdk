@@ -233,10 +233,19 @@ export default function ChatInterface() {
       ]);
 
       const report = data['report'] as { filename?: string; content?: string; downloadUrl?: string } | null;
-      if (report?.filename && report?.content) {
+      const reports = data['reports'] as { filename?: string; content?: string; downloadUrl?: string }[] | null;
+      const allReports = reports?.length
+        ? reports
+        : report?.filename && report?.content ? [report] : [];
+      if (allReports.length > 0) {
         setSavedReports((prev) => {
-          if (prev.find((r) => r.filename === report.filename)) return prev;
-          return [...prev, { filename: report.filename!, content: report.content, downloadUrl: report.downloadUrl }];
+          let updated = prev;
+          for (const r of allReports) {
+            if (r.filename && r.content && !updated.find((s) => s.filename === r.filename)) {
+              updated = [...updated, { filename: r.filename, content: r.content, downloadUrl: r.downloadUrl }];
+            }
+          }
+          return updated;
         });
       }
     } catch (err: unknown) {

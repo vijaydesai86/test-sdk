@@ -24,13 +24,15 @@ const stopwords = new Set([
 const REPORTS_DIR = process.env.REPORTS_DIR || (process.env.VERCEL ? '/tmp/reports' : 'reports');
 const CACHE_DIR = path.join(REPORTS_DIR, 'cache');
 const CACHE_TTL_MS = Number(process.env.STOCK_CACHE_TTL_MS || 1000 * 60 * 60 * 24 * 7);
-const DEFAULT_SOURCE = (process.env.STOCK_DATA_PROVIDER || 'alphavantage').toLowerCase() === 'yfinance'
-  ? 'Yahoo Finance'
-  : 'Alpha Vantage';
+const DEFAULT_SOURCE = (() => {
+  const provider = (process.env.STOCK_DATA_PROVIDER || 'alphavantage').toLowerCase();
+  if (provider === 'finnhub') return 'Finnhub';
+  return 'Alpha Vantage';
+})();
 const SOURCE_LEGEND = (() => {
   const provider = (process.env.STOCK_DATA_PROVIDER || 'alphavantage').toLowerCase();
-  if (provider === 'hybrid') return '_Legend: Alpha Vantage is primary; Yahoo Finance fills gaps._';
-  if (provider === 'yfinance') return '_Legend: Yahoo Finance provider._';
+  if (provider === 'hybrid') return '_Legend: Alpha Vantage is primary; Finnhub fills gaps._';
+  if (provider === 'finnhub') return '_Legend: Finnhub provider._';
   return '_Legend: Alpha Vantage provider._';
 })();
 
