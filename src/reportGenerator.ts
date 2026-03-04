@@ -1049,7 +1049,7 @@ function computeScorecard(data: StockReportData) {
 
   const momentum = computeMomentum(data.priceHistory?.prices);
 
-  const components = {
+  const components: Record<string, number | null> = {
     growth,
     profitability,
     valuation,
@@ -1067,10 +1067,10 @@ function computeScorecard(data: StockReportData) {
 
   const available = Object.entries(components)
     .filter(([, value]) => value !== null)
-    .map(([key]) => key);
+    .map(([key]) => key as keyof typeof weights);
 
-  const totalWeight = available.reduce((sum, key) => sum + weights[key as keyof typeof weights], 0);
-  const composite = available.reduce((sum, key) => sum + (components[key as keyof typeof components] as number) * (weights[key as keyof typeof weights] / totalWeight), 0);
+  const totalWeight = available.reduce((sum, key) => sum + weights[key], 0);
+  const composite = available.reduce((sum, key) => sum + (components[key] as number) * (weights[key] / totalWeight), 0);
 
   return {
     components,
@@ -1635,7 +1635,7 @@ export async function saveReport(content: string, title: string, directory = DEF
 export function buildComparisonReport(data: ComparisonReportData): string {
   const header = `# Company Comparison Report`;
   const notes = data.notes?.length ? data.notes.map((note) => `- ${note}`).join('\n') : '';
-  const sources = data.sources || {};
+  const sources: Record<string, Record<string, string>> = data.sources || {};
   const provider = (process.env.STOCK_DATA_PROVIDER || 'alphavantage').toLowerCase();
   const sourceLegend = provider === 'hybrid'
     ? '_Legend: Alpha Vantage is primary; Finnhub fills gaps._'
@@ -1905,7 +1905,7 @@ export function buildComparisonReport(data: ComparisonReportData): string {
   const sourceRows = Object.entries(sources).map(([symbol, map]) => {
     const lookup = items.find((item) => item.symbol === symbol);
     const name = lookup?.overview?.name || symbol;
-    const pick = (key: string) => (map as Record<string, string>)[key] || 'N/A';
+    const pick = (key: string) => map[key] || 'N/A';
     return [
       `${name} (${symbol})`,
       pick('Price'),
