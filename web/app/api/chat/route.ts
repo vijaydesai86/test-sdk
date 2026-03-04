@@ -228,10 +228,12 @@ function parseReportRequest(message: string) {
 
   // Only direct-route clear all-uppercase ticker symbols (e.g. AAPL, MSFT, NVDA).
   // Trailing words are ignored so "report for AAPL please" still matches.
-  // Company names and mixed-case input fall through to the LLM which resolves them via search_stock.
-  const stockMatch = text.match(/report\s+(?:for|on)\s+([A-Z]{1,5})\b/);
-  if (stockMatch) {
-    return { type: 'stock' as const, symbol: stockMatch[1] };
+  // Company names, mixed-case input, and comparison/multi-stock requests fall through to the LLM.
+  if (!lower.includes('compare') && !lower.includes('comparison')) {
+    const stockMatch = text.match(/report\s+(?:for|on)\s+([A-Z]{1,5})\b/);
+    if (stockMatch) {
+      return { type: 'stock' as const, symbol: stockMatch[1] };
+    }
   }
 
   return null;
@@ -608,7 +610,7 @@ function selectToolNames(message: string) {
     selected.add('search_companies');
   }
 
-  if (text.includes('peer') || text.includes('compare')) {
+  if (text.includes('peer') || text.includes('compare') || text.includes('comparison')) {
     selected.add('get_peers');
     selected.add('generate_comparison_report');
   }
