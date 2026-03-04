@@ -1,4 +1,4 @@
-import { CopilotClient } from '@github/copilot-sdk';
+import { CopilotClient, approveAll } from '@github/copilot-sdk';
 import * as readline from 'readline';
 import { createStockTools } from './stockTools';
 import { createStockService } from './stockDataService';
@@ -12,7 +12,7 @@ async function main() {
 
   const provider = (process.env.STOCK_DATA_PROVIDER || 'alphavantage').toLowerCase();
   const apiKey = process.env.ALPHA_VANTAGE_API_KEY;
-  if (provider !== 'yfinance' && !apiKey) {
+  if (provider !== 'finnhub' && !apiKey) {
     console.error('❌ ALPHA_VANTAGE_API_KEY is required for Alpha Vantage or hybrid mode.');
     process.exit(1);
   }
@@ -33,7 +33,8 @@ async function main() {
     // Create a session
     console.log('📝 Creating chat session...');
     session = await client.createSession({
-      model: 'gpt-4o', // Use GPT-4o or other available model
+      model: 'gpt-4o',
+      onPermissionRequest: approveAll,
     });
     console.log('✅ Chat session created\n');
 

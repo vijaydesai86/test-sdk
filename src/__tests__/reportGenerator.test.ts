@@ -35,10 +35,10 @@ describe('reportGenerator', () => {
       notes: ['Universe built from search'],
     });
 
-    expect(report).toContain('## ✨ Executive Summary');
-    expect(report).toContain('## 🧠 AI Stack Overview');
-    expect(report).toContain('## 📊 Company Metrics');
-    expect(report).toContain('Indicative Allocation');
+    expect(report).toContain('## 🧭 Sector Summary');
+    expect(report).toContain('## 🧾 Company Overview');
+    expect(report).toContain('## ✅ Recommendations');
+    expect(report).toContain('Companies Included');
   });
 
   it('saves report to disk', async () => {
@@ -75,8 +75,8 @@ describe('reportGenerator', () => {
     });
 
     expect(report).toContain('Peer Comparison Report');
-    expect(report).toContain('Comparison Table');
-    expect(report).toContain('Moat Signals');
-    expect(report).toContain('News Highlights');
+    expect(report).toContain('Company Snapshot');
+    expect(report).toContain('Role in Peer Set');
+    expect(report).toContain('Analyst View');
   });
 });

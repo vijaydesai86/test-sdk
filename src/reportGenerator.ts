@@ -1069,8 +1069,8 @@ function computeScorecard(data: StockReportData) {
     .filter(([, value]) => value !== null)
     .map(([key]) => key);
 
-  const totalWeight = available.reduce((sum, key) => sum + weights[key], 0);
-  const composite = available.reduce((sum, key) => sum + (components[key] as number) * (weights[key] / totalWeight), 0);
+  const totalWeight = available.reduce((sum, key) => sum + weights[key as keyof typeof weights], 0);
+  const composite = available.reduce((sum, key) => sum + (components[key as keyof typeof components] as number) * (weights[key as keyof typeof weights] / totalWeight), 0);
 
   return {
     components,
@@ -1638,9 +1638,9 @@ export function buildComparisonReport(data: ComparisonReportData): string {
   const sources = data.sources || {};
   const provider = (process.env.STOCK_DATA_PROVIDER || 'alphavantage').toLowerCase();
   const sourceLegend = provider === 'hybrid'
-    ? '_Legend: Alpha Vantage is primary; Yahoo Finance fills gaps._'
-    : provider === 'yfinance'
-      ? '_Legend: Yahoo Finance provider._'
+    ? '_Legend: Alpha Vantage is primary; Finnhub fills gaps._'
+    : provider === 'finnhub'
+      ? '_Legend: Finnhub provider._'
       : '_Legend: Alpha Vantage provider._';
   const items = data.items;
 
@@ -1902,6 +1902,30 @@ export function buildComparisonReport(data: ComparisonReportData): string {
     ['left', 'right', 'right', 'left']
   );
 
+  const sourceRows = Object.entries(sources).map(([symbol, map]) => {
+    const lookup = items.find((item) => item.symbol === symbol);
+    const name = lookup?.overview?.name || symbol;
+    const pick = (key: string) => (map as Record<string, string>)[key] || 'N/A';
+    return [
+      `${name} (${symbol})`,
+      pick('Price'),
+      pick('Company overview'),
+      pick('Price history'),
+      pick('Income statement'),
+      pick('Balance sheet'),
+      pick('Cash flow'),
+      pick('Analyst ratings'),
+      pick('Price targets'),
+    ];
+  });
+  const sourceTable = sourceRows.length
+    ? buildTable(
+        ['Company', 'Price', 'Overview', 'Price History', 'Income', 'Balance', 'Cash Flow', 'Analyst', 'Targets'],
+        sourceRows,
+        ['left', 'center', 'center', 'center', 'center', 'center', 'center', 'center', 'center']
+      )
+    : '';
+
   const performanceChart = buildPerformanceChart(
     items.map((item) => ({ symbol: item.symbol, priceHistory: item.priceHistory } as PeerReportItem)),
     `Price Performance (${data.range}, Indexed)`
@@ -2143,26 +2167,3 @@ export function buildPeerReport(data: PeerReportData): string {
 
   return sections.join('\n\n');
 }
-  const sourceRows = Object.entries(sources).map(([symbol, map]) => {
-    const lookup = items.find((item) => item.symbol === symbol);
-    const name = lookup?.overview?.name || symbol;
-    const pick = (key: string) => map[key] || 'N/A';
-    return [
-      `${name} (${symbol})`,
-      pick('Price'),
-      pick('Company overview'),
-      pick('Price history'),
-      pick('Income statement'),
-      pick('Balance sheet'),
-      pick('Cash flow'),
-      pick('Analyst ratings'),
-      pick('Price targets'),
-    ];
-  });
-  const sourceTable = sourceRows.length
-    ? buildTable(
-        ['Company', 'Price', 'Overview', 'Price History', 'Income', 'Balance', 'Cash Flow', 'Analyst', 'Targets'],
-        sourceRows,
-        ['left', 'center', 'center', 'center', 'center', 'center', 'center', 'center', 'center']
-      )
-    : '';

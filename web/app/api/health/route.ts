@@ -11,7 +11,7 @@ export async function GET() {
 
   const provider = (process.env.STOCK_DATA_PROVIDER || 'alphavantage').toLowerCase();
   const alphaVantageKey = process.env.ALPHA_VANTAGE_API_KEY;
-  if (provider !== 'yfinance' && !alphaVantageKey) {
+  if (provider !== 'finnhub' && !alphaVantageKey) {
     results.alphaVantage = { ok: false, error: 'ALPHA_VANTAGE_API_KEY not set' };
   } else {
     const service = createStockService(alphaVantageKey);
