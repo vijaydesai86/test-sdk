@@ -14,7 +14,7 @@ const FALLBACK_MODEL = process.env.COPILOT_FALLBACK_MODEL || DEFAULT_MODEL;
 const AUTO_DOWNGRADE_GPT5 = process.env.AUTO_DOWNGRADE_GPT5 !== 'false';
 const DEFAULT_FALLBACK_MODELS = [
   DEFAULT_MODEL,
-  'anthropic/claude-sonnet-4-6',
+  'anthropic/claude-sonnet-4-5',
   'google/gemini-3-flash',
 ];
 // Allow enough rounds for multi-stock research. With parallel batching, each round
@@ -315,7 +315,7 @@ async function callGitHubModelsAPI(
       err.statusCode = 429;
       throw err;
     }
-    if (response.status === 400) {
+    if (response.status === 400 || response.status === 404) {
       let errorCode = '';
       try {
         const errorJson = JSON.parse(errorText);

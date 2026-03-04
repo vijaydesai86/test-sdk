@@ -7,7 +7,7 @@ const GITHUB_MODELS_CATALOG_URL = 'https://models.github.ai/catalog/models';
 // Contains one confirmed-working model per supported provider.
 const SAFE_DEFAULT = [
   { value: 'openai/gpt-4.1',              label: 'OpenAI GPT-4.1',        rateLimitTier: 'high' },
-  { value: 'anthropic/claude-sonnet-4-6', label: 'Claude Sonnet 4.6',     rateLimitTier: 'low'  },
+  { value: 'anthropic/claude-sonnet-4-5', label: 'Claude Sonnet 4.5',     rateLimitTier: 'low'  },
   { value: 'google/gemini-3-flash',       label: 'Gemini 3 Flash',        rateLimitTier: 'low'  },
 ];
 
