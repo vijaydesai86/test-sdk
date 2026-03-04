@@ -11,11 +11,9 @@ const OPENAI_PROXY_BASE_URL =
 const DEFAULT_MODEL = process.env.COPILOT_MODEL || 'openai/gpt-4.1';
 const FALLBACK_MODEL = process.env.COPILOT_FALLBACK_MODEL || DEFAULT_MODEL;
 const AUTO_DOWNGRADE_GPT5 = process.env.AUTO_DOWNGRADE_GPT5 !== 'false';
-const DEFAULT_FALLBACK_MODELS = [
-  DEFAULT_MODEL,
-  'anthropic/claude-sonnet-4-6',
-  'google/gemini-3-flash',
-];
+// Only fall back to the env-configured model. Never hardcode model IDs that may not exist.
+// If a user-selected model fails with 429, they see a clear message to switch via the dropdown.
+const DEFAULT_FALLBACK_MODELS = [DEFAULT_MODEL];
 // Allow enough rounds for multi-stock research. With parallel batching, each round
 // can execute dozens of tool calls simultaneously — so 30 rounds is ample even for
 // 20-stock reports (typically: 1 sector list + 2-3 batch rounds + 1 write round).
