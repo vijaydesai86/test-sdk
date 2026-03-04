@@ -121,20 +121,41 @@ function buildPriceChart(prices: PricePoint[] = []): string {
   const filtered = filterSeries(labels, values);
   if (filtered.labels.length === 0) return '';
 
+  const min = Math.min(...filtered.values);
+  const max = Math.max(...filtered.values);
+  // Determine trend direction via median of second half vs first half (more robust than first-to-last).
+  const mid = Math.floor(filtered.values.length / 2);
+  const half1 = filtered.values.slice(0, mid);
+  const half2 = filtered.values.slice(mid);
+  const median = (arr: number[]) => {
+    const sorted = [...arr].sort((a, b) => a - b);
+    return sorted[Math.floor(sorted.length / 2)];
+  };
+  const trend = half1.length === 0 || median(half2) >= median(half1);
+  const lineColor = trend ? '#6366f1' : '#ef4444';
+
   return buildChartBlock({
     title: { text: 'Price History', left: 'center' },
     tooltip: { trigger: 'axis' },
     grid: { left: 40, right: 20, top: 50, bottom: 40 },
-    xAxis: { type: 'category', data: filtered.labels },
-    yAxis: { type: 'value', scale: true },
+    xAxis: { type: 'category', data: filtered.labels, boundaryGap: false },
+    yAxis: { type: 'value', scale: true, min: Number((min * 0.97).toFixed(2)), max: Number((max * 1.03).toFixed(2)) },
     series: [
       {
-        name: 'Closing Price (Daily)',
+        name: 'Close Price',
         type: 'line',
         smooth: true,
-        symbol: 'circle',
-        symbolSize: 6,
-        areaStyle: { opacity: 0.2 },
+        symbol: 'none',
+        lineStyle: { color: lineColor, width: 2 },
+        areaStyle: {
+          color: {
+            type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
+            colorStops: [
+              { offset: 0, color: trend ? 'rgba(99,102,241,0.25)' : 'rgba(239,68,68,0.2)' },
+              { offset: 1, color: 'rgba(255,255,255,0)' },
+            ],
+          },
+        },
         data: filtered.values,
       },
     ],
@@ -554,39 +575,48 @@ function applyAxisTheme(axis: any): any {
     ...axis,
     axisLine: {
       ...(axis.axisLine || {}),
-      lineStyle: { color: '#94a3b8', ...(axis.axisLine?.lineStyle || {}) },
+      lineStyle: { color: '#cbd5e1', ...(axis.axisLine?.lineStyle || {}) },
     },
     axisTick: {
       ...(axis.axisTick || {}),
-      lineStyle: { color: '#94a3b8', ...(axis.axisTick?.lineStyle || {}) },
+      show: false,
+      lineStyle: { color: '#cbd5e1', ...(axis.axisTick?.lineStyle || {}) },
     },
-    axisLabel: { color: '#475569', fontSize: 11, ...(axis.axisLabel || {}) },
+    axisLabel: { color: '#64748b', fontSize: 11, ...(axis.axisLabel || {}) },
     splitLine: {
       ...(axis.splitLine || {}),
-      lineStyle: { color: '#e2e8f0', ...(axis.splitLine?.lineStyle || {}) },
+      lineStyle: { color: '#f1f5f9', type: 'dashed', ...(axis.splitLine?.lineStyle || {}) },
     },
   };
 }
 
 function applyChartTheme(option: Record<string, any>): Record<string, any> {
   const base = {
-    backgroundColor: '#ffffff',
-    color: ['#6366f1', '#14b8a6', '#f59e0b', '#ef4444', '#0ea5e9', '#a855f7'],
+    backgroundColor: 'transparent',
+    color: ['#6366f1', '#10b981', '#f59e0b', '#ef4444', '#3b82f6', '#a855f7', '#14b8a6', '#f97316'],
     textStyle: {
       fontFamily: 'Inter, system-ui, -apple-system, Segoe UI, sans-serif',
-      color: '#0f172a',
+      color: '#1e293b',
     },
     title: {
       left: 'center',
-      top: 8,
-      textStyle: { color: '#0f172a', fontSize: 14, fontWeight: 600 },
+      top: 6,
+      textStyle: { color: '#1e293b', fontSize: 13, fontWeight: 600 },
     },
     tooltip: {
       backgroundColor: '#0f172a',
-      borderColor: '#1e293b',
-      textStyle: { color: '#f8fafc' },
+      borderColor: '#334155',
+      borderWidth: 1,
+      padding: [8, 12],
+      textStyle: { color: '#f1f5f9', fontSize: 12 },
+      extraCssText: 'border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,0.3)',
     },
-    legend: { textStyle: { color: '#475569' } },
+    legend: {
+      textStyle: { color: '#64748b', fontSize: 11 },
+      icon: 'circle',
+      itemWidth: 8,
+      itemHeight: 8,
+    },
   };
 
   const themed = { ...base, ...option };
@@ -605,8 +635,8 @@ function applyChartTheme(option: Record<string, any>): Record<string, any> {
     grid: {
       left: 50,
       right: 24,
-      top: 40,
-      bottom: 50,
+      top: 36,
+      bottom: 44,
       containLabel: true,
       ...(option.grid || {}),
     },

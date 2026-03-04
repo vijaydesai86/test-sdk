@@ -44,55 +44,103 @@ interface ChatMessage {
 // Store conversation history per session
 const sessions = new Map<string, ChatMessage[]>();
 
-const DATA_SOURCE_NAME = (() => {
-  const p = normalizeProvider();
-  if (p === 'finnhub') return 'Finnhub';
-  if (p === 'hybrid') return 'Alpha Vantage / Finnhub';
-  return 'Alpha Vantage';
-})();
 
-const SYSTEM_PROMPT = `You are an elite buy-side equity research analyst. Produce institutional-quality, data-driven financial research — thorough, precise, and immediately actionable.
+const SYSTEM_PROMPT = `You are an elite buy-side equity research analyst. You have access to real-time financial data tools. Your job is to gather data intelligently and produce institutional-quality research.
 
-**NON-NEGOTIABLE RULES:**
+══════════════════════════════════════════════════════
+YOU ARE THE INTELLIGENCE — NOT A DISPATCHER
+══════════════════════════════════════════════════════
 
-**1. Fetch before you write.** Never state a fact about a stock without first calling the relevant tool. No estimates, no speculation, no filler.
+For every report or analysis request, YOU gather the data yourself using individual tools, YOU reason about it, YOU fill every gap, and YOU write the full report. End every report by calling save_report(title, content) to create the downloadable artifact.
 
-**2. Batch all parallel calls in ONE round.** Researching N stocks? Issue ALL tool calls simultaneously in a single response — never one at a time. This is critical for multi-stock reports.
+Do NOT call generate_stock_report or generate_comparison_report for user-facing reports — those are fallback-only tools. The LLM-composed report is always richer and more complete.
 
-**3. Match depth to the question.**
-- Price query: get_stock_price → short direct answer.
-- Single-stock deep dive: get_stock_price + get_company_overview + get_basic_financials + get_earnings_history + get_income_statement + get_balance_sheet + get_cash_flow + get_price_history.
-- Peer comparison: search_stock for peers → batch get_company_overview + get_basic_financials + get_stock_price.
-- Sector/theme report: search_stock → batch get_company_overview + get_stock_price + get_basic_financials.
-- News-driven theme: use get_company_news or search_news (available in Finnhub/hybrid mode).
-- Investment allocation: batch full data for all candidates → quantitative scoring → exact $ amounts, stop-losses, rebalancing triggers.
+══════════════════════════════════════════════════════
+RULE 1 — BATCH ALL CALLS IN ONE ROUND
+══════════════════════════════════════════════════════
 
-**4. Never skip a tool** when that data would strengthen the analysis. If a tool fails due to missing API keys, say so explicitly and continue with available data only.
+Issue EVERY tool call you need simultaneously in a single response. For N companies, fire all N × tools at once. Never call tools one at a time when they can be parallelised.
 
-**5. No hardcoded lists.** Always derive sector, theme, and peer lists from tools like search_stock.
+══════════════════════════════════════════════════════
+RULE 2 — USE EVERY RELEVANT TOOL
+══════════════════════════════════════════════════════
 
-**6. Report requests.** When a user asks for a full report, call generate_stock_report or generate_sector_report and return the saved artifact path.
+For each stock in a report, call ALL of these in one parallel round:
+  get_stock_price • get_company_overview • get_basic_financials
+  get_earnings_history • get_income_statement • get_balance_sheet • get_cash_flow
+  get_price_history(range:"1y") • get_analyst_ratings • get_analyst_recommendations
+  get_price_targets • get_peers • get_insider_trading • get_news_sentiment
 
-**OUTPUT STANDARDS:**
-- Tables for all comparisons of 2+ stocks or metrics — no empty cells.
-- ### headers for sections in deep research.
-- Emoji section markers: 📊 📈 💰 🏦 🔍 ⚠️ ✅ — bold key metrics.
-- Show all calculations explicitly: FCF = Op.CF − CapEx = $X − $Y = $Z.
-- Scoring matrix for allocations: Growth 25% / Profitability 20% / Moat 20% / Valuation 20% / Momentum 15%.
-- Numbers: prices 2 decimals, % 1 decimal, large numbers 2 sig figs ($2.3B).
-- Cite "Source: ${DATA_SOURCE_NAME}" after data-heavy sections.
-- Length matches request: price query = 2–3 lines; full sector report = 1,000+ words.
+For company names (not exact tickers): call search_stock first to resolve the real ticker, then fire all data tools.
+
+══════════════════════════════════════════════════════
+RULE 3 — FILL EVERY GAP BEFORE WRITING
+══════════════════════════════════════════════════════
+
+After each tool round, scan every field in every result. If any key metric is null or 'N/A':
+  1. Try get_basic_financials for the ticker — it has margins, ROE, PE, growth rates.
+  2. Try get_company_overview — it has revenue, market cap, sector, EPS.
+  3. Try search_stock — it often fills sector/industry gaps.
+  4. Only mark a field as unavailable if ALL relevant tools have been tried and returned nothing.
+
+Never invent, estimate, or guess. Real data or genuinely unavailable — nothing in between.
+
+══════════════════════════════════════════════════════
+RULE 4 — WRITE THE REPORT YOURSELF
+══════════════════════════════════════════════════════
+
+After data is complete, compose the full markdown and call save_report. Use these structures:
+
+SINGLE-STOCK REPORT:
+  # {SYMBOL} — {Name} Equity Research Report
+  ## 📊 Snapshot        — price, change%, mkt cap, sector, industry, 52-wk high/low
+  ## 🏢 Business        — description, business model, revenue segments, peer set
+  ## 📈 Key Metrics     — PE, EPS, gross margin, operating margin, ROE, revenue growth, FCF yield, net debt/equity
+  ## 💰 Financials      — income statement (4 qtrs, table), balance sheet highlights, FCF = OpCF − CapEx = $X
+  ## 📊 Earnings Trend  — EPS actual vs estimate, beat/miss, last 4 quarters (table)
+  ## 🔮 Analyst View    — buy/hold/sell counts, mean target, upside %, high/low targets
+  ## ⚠️ Risks           — macro, competitive, regulatory, company-specific risks
+  ## ✅ Scorecard       — Growth / Profitability / Valuation / Momentum (scored) + overall verdict
+
+COMPARISON REPORT:
+  # Comparison: {Company A} vs {Company B} vs …
+  ## 📊 Snapshot        — name, ticker, price, change%, mkt cap, sector (table)
+  ## 📈 Key Metrics     — PE, EPS, gross margin, op margin, ROE, revenue growth (table)
+  ## 🏦 Balance & Cash  — total assets, total debt, cash, FCF (table)
+  ## 🔮 Analyst View    — mean target, upside%, buy/hold/sell per company (table)
+  ## ✅ Verdict         — winner per category + overall pick with rationale
+
+══════════════════════════════════════════════════════
+OUTPUT STANDARDS
+══════════════════════════════════════════════════════
+- Tables for every multi-company comparison — write "—" only after all tools exhausted
+- Bold key metrics; emoji section markers; ### sub-headers inside long sections
+- Show FCF calculations: FCF = OpCF − CapEx = $X − $Y = $Z
+- Prices: 2 decimal places; percentages: 1 decimal; market caps: $B / $M
+- Cite data source after each data-heavy section
+- Non-report questions (price, quick analysis): 2–5 lines, no report structure needed
 `;
 
-const COMPACT_SYSTEM_PROMPT = `You are a buy-side equity research analyst.
+const COMPACT_SYSTEM_PROMPT = `You are a buy-side equity research analyst. Real data only — never invent or estimate figures.
 
-Rules:
-- Fetch data via tools before stating facts.
-- Batch tool calls in a single round.
-- Use tables for comparisons and show calculations.
-- Return report paths when asked for reports.
+YOU ARE THE REPORT WRITER. For every report or analysis: gather data with individual tools, fill every gap, compose the full markdown yourself, then call save_report(title, content). Do NOT use generate_stock_report or generate_comparison_report.
 
-Keep answers concise unless the user requests depth.`;
+DATA RULES:
+1. Batch ALL tool calls in one parallel round — never sequential when parallelisable.
+2. For each stock call simultaneously: get_stock_price, get_company_overview, get_basic_financials, get_earnings_history, get_income_statement, get_balance_sheet, get_cash_flow, get_price_history(range:"1y"), get_analyst_ratings, get_analyst_recommendations, get_price_targets, get_peers, get_news_sentiment.
+3. For company names: call search_stock first to resolve the ticker.
+4. After results arrive — scan for null/'N/A' and make targeted follow-up calls before writing. N/A only when every tool has been tried and returned nothing real.
+
+SINGLE-STOCK REPORT SECTIONS:
+  Snapshot • Business • Key Metrics • Financials (4-qtr table) • Earnings Trend • Analyst View • Risks • Scorecard
+
+COMPARISON REPORT SECTIONS:
+  Snapshot Table • Key Metrics Table • Balance & Cash Table • Analyst View • Verdict
+
+Always end a report with: save_report(title, content)
+
+Keep non-report answers concise (2–5 lines).`;
+
 
 /**
  * Trim conversation history to prevent token limit errors (413) on subsequent turns.
@@ -196,232 +244,6 @@ function isToolCallLike(content: string | null | undefined): boolean {
   return /"name"\s*:\s*"functions\./.test(content) || /"arguments"\s*:\s*\{/.test(content);
 }
 
-function parseReportRequest(message: string) {
-  const text = message.trim();
-  const lower = text.toLowerCase();
-  const sectorMatch = text.match(/(sector|theme)\s+report\s+for\s+(.+)$/i);
-  if (sectorMatch) {
-    return { type: 'sector' as const, query: sectorMatch[2].trim() };
-  }
-
-  if (lower.includes('sector report') || lower.includes('theme report')) {
-    const queryMatch = text.match(/report\s+for\s+(.+)$/i);
-    if (queryMatch) {
-      return { type: 'sector' as const, query: queryMatch[1].trim() };
-    }
-  }
-
-  const genericMatch = text.match(/report\s+for\s+(.+)$/i);
-  if (genericMatch) {
-    const query = genericMatch[1].trim();
-    if (query.includes(' ') || /sector|theme|stocks?/i.test(query)) {
-      return { type: 'sector' as const, query };
-    }
-  }
-
-  const stockMatch = text.match(/report\s+(?:for|on)\s+([a-zA-Z]{1,6})\s*$/i);
-  if (stockMatch) {
-    return { type: 'stock' as const, symbol: stockMatch[1].toUpperCase() };
-  }
-
-  return null;
-}
-
-function parseComparisonCompanies(message: string): string[] | null {
-  const match = message.match(/compare(?:\s+companies)?\s+(.+)/i);
-  if (!match) return null;
-  let list = match[1].trim();
-  const cutoffIndex = list.search(/\b(report|over|for|using|with|range|timeframe)\b/i);
-  if (cutoffIndex >= 0) {
-    list = list.slice(0, cutoffIndex).trim();
-  }
-  if (!list) return null;
-  const cleaned = list.replace(/\band\b/gi, ',');
-  const parts = cleaned.includes(',')
-    ? cleaned.split(',')
-    : cleaned.split(/\s+/);
-  const stopwords = new Set(['and', 'stocks', 'stock', 'companies', 'company', 'compare']);
-  const companies = parts
-    .map((item) => item.trim())
-    .filter(Boolean)
-    .map((item) => {
-      const tokens = item
-        .split(/\s+/)
-        .filter((token) => token && !stopwords.has(token.toLowerCase()));
-      return tokens.join(' ');
-    })
-    .filter((item) => item && !stopwords.has(item.toLowerCase()));
-  return companies.length >= 2 ? companies : null;
-}
-
-function parseAnalystTrendsRequest(message: string) {
-  const match = message.match(/analyst\s+(?:rating|recommendation)?\s*trends?\s+for\s+([a-zA-Z]{1,6})/i)
-    || message.match(/([a-zA-Z]{1,6})\s+analyst\s+(?:rating|recommendation)?\s*trends?/i);
-  if (match) {
-    return { symbol: match[1].toUpperCase() };
-  }
-  return null;
-}
-
-function parseTimeframe(message: string) {
-  const match = message.match(/\b(1w|1m|3m|6m|1y|3y|5y|max)\b/i);
-  return match ? match[1].toLowerCase() : null;
-}
-
-function parseSymbolAfterKeyword(message: string, keyword: string) {
-  const regex = new RegExp(`${keyword}\\s+(?:for|of|on)?\\s*([a-zA-Z]{1,6})`, 'i');
-  const match = message.match(regex);
-  if (match) {
-    return { symbol: match[1].toUpperCase() };
-  }
-  return null;
-}
-
-function extractTicker(message: string) {
-  const ignore = new Set(['EPS', 'PE', 'ETF', 'USD', 'AI', 'IPO', 'NAV']);
-  const matches = message.match(/\$?([A-Z]{1,6})\b/g) || [];
-  for (const raw of matches) {
-    const symbol = raw.replace('$', '').toUpperCase();
-    if (!ignore.has(symbol)) {
-      return symbol;
-    }
-  }
-  return null;
-}
-
-function extractQuery(message: string) {
-  const cleaned = message
-    .replace(/\b(show|me|the|price|quote|stock|shares|trend|history|for|of|on|in|report|analyst|rating|recommendation|target|news|sentiment|fundamentals|overview|financials|ratios|earnings|eps|income|balance|cash\s*flow|insider|peers|compare|top|gainers|losers|most|active|today|latest|sector|screen|search|company|companies)\b/gi, ' ')
-    .replace(/[^a-zA-Z&.\s]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-  return cleaned || message.trim();
-}
-
-async function resolveSymbolFromMessage(message: string, stockService: StockDataService) {
-  const ticker = extractTicker(message);
-  if (ticker) return ticker;
-  const query = extractQuery(message);
-  try {
-    const search = await stockService.searchStock(query);
-    const symbol = search?.results?.[0]?.symbol;
-    return symbol ? symbol.toUpperCase() : null;
-  } catch {
-    return null;
-  }
-}
-
-function parseMarketCapFilter(message: string) {
-  const match = message.match(/(market cap|mcap)\s+(over|above|greater than)\s+\$?(\d+(?:\.\d+)?)\s*([mbt])?/i);
-  const matchLow = message.match(/(market cap|mcap)\s+(under|below|less than)\s+\$?(\d+(?:\.\d+)?)\s*([mbt])?/i);
-  const scale = (value: number, suffix?: string) => {
-    if (!suffix) return value;
-    if (suffix.toLowerCase() === 'm') return value * 1e6;
-    if (suffix.toLowerCase() === 'b') return value * 1e9;
-    if (suffix.toLowerCase() === 't') return value * 1e12;
-    return value;
-  };
-  const filters: Record<string, number> = {};
-  if (match) {
-    filters.marketCapMoreThan = scale(Number(match[3]), match[4]);
-  }
-  if (matchLow) {
-    filters.marketCapLowerThan = scale(Number(matchLow[3]), matchLow[4]);
-  }
-  return filters;
-}
-
-function parseLimitFromMessage(message: string, fallback = 8) {
-  const match = message.match(/\b(?:top|limit|up to)\s+(\d{1,2})\b/i);
-  if (!match) return fallback;
-  const value = Number(match[1]);
-  if (Number.isNaN(value) || value <= 0) return fallback;
-  return Math.min(Math.max(value, 2), 20);
-}
-
-function parseSearchRequest(message: string) {
-  const match = message.match(/search\s+stock\s+(?:for\s+)?(.+)/i);
-  if (match) return { query: match[1].trim() };
-  const matchAlt = message.match(/find\s+stock\s+(?:for\s+)?(.+)/i);
-  if (matchAlt) return { query: matchAlt[1].trim() };
-  return null;
-}
-
-function parseNewsRequest(message: string) {
-  const match = message.match(/news\s+(?:for|on)\s+([a-zA-Z]{1,6})/i);
-  if (match) return { symbol: match[1].toUpperCase() };
-  return null;
-}
-
-function parseSectorRequest(message: string) {
-  const match = message.match(/sector\s+performance/i);
-  if (match) return { type: 'performance' as const };
-  const matchAlt = message.match(/stocks\s+in\s+([a-zA-Z\s&-]+)/i);
-  if (matchAlt) return { type: 'stocks' as const, sector: matchAlt[1].trim() };
-  return null;
-}
-
-async function handleDirectToolResponse(
-  toolName: string,
-  args: Record<string, any>,
-  stockService: StockDataService,
-  message: string,
-  sessionId?: string | null,
-  systemPrompt?: string,
-  format?: (data: any) => string
-) {
-  const currentSessionId = sessionId || Math.random().toString(36).substring(7);
-  let conversationMessages: ChatMessage[] = sessionId ? sessions.get(sessionId) || [] : [];
-  if (conversationMessages.length === 0) {
-    conversationMessages.push({ role: 'system', content: systemPrompt || COMPACT_SYSTEM_PROMPT });
-  }
-  conversationMessages.push({ role: 'user', content: message });
-
-  const toolResult = await executeTool(toolName, args, stockService);
-  if (!toolResult.success) {
-    return NextResponse.json(
-      { error: toolResult.error || toolResult.message || 'Request failed' },
-      { status: 500 }
-    );
-  }
-
-  const downloadUrl = toolResult.data?.downloadUrl as string | undefined;
-  const filename = toolResult.data?.filename as string | undefined;
-  const content = toolResult.data?.content as string | undefined;
-  const responseText = downloadUrl
-    ? `Report generated: ${downloadUrl}`
-    : format
-    ? format(toolResult.data)
-    : JSON.stringify(toolResult.data, null, 2);
-  conversationMessages.push({ role: 'assistant', content: responseText });
-  sessions.set(currentSessionId, conversationMessages);
-
-  return NextResponse.json({
-    response: responseText,
-    sessionId: currentSessionId,
-    model: DEFAULT_MODEL,
-    provider: 'direct',
-    report: filename && content ? { filename, content, downloadUrl } : null,
-    stats: {
-      rounds: 0,
-      toolCalls: 1,
-      toolsProvided: 0,
-    },
-  });
-}
-
-async function handleAnalystTrendRequest(
-  symbol: string,
-  stockService: StockDataService,
-  message: string,
-  sessionId?: string | null
-) {
-  return NextResponse.json(
-    { error: 'Analyst rating trends require a premium data provider and are unavailable in Alpha-only mode.' },
-    { status: 501 }
-  );
-}
-
 function buildFallbackModels(requestedModel: string): string[] {
   const fromEnv = (process.env.COPILOT_FALLBACK_MODELS || '')
     .split(',')
@@ -432,157 +254,8 @@ function buildFallbackModels(requestedModel: string): string[] {
   return Array.from(new Set(combined.filter(Boolean)));
 }
 
-function formatPriceResponse(data: any) {
-  if (!data) return '_No price data available._';
-  return [
-    `## 📊 ${data.symbol || ''} Price`,
-    `Price: ${data.price ?? 'N/A'}`,
-    `Change: ${data.change ?? 'N/A'} (${data.changePercent ?? 'N/A'})`,
-    `Volume: ${data.volume ?? 'N/A'}`,
-    `Last Close: ${data.latestTradingDay ?? 'N/A'}`,
-  ].join('\n');
-}
-
-function formatRatingsResponse(data: any) {
-  if (!data) return '_No ratings data available._';
-  return [
-    `## 🧭 Analyst Ratings — ${data.symbol || ''}`,
-    `Strong Buy: ${data.strongBuy ?? 'N/A'}`,
-    `Buy: ${data.buy ?? 'N/A'}`,
-    `Hold: ${data.hold ?? 'N/A'}`,
-    `Sell: ${data.sell ?? 'N/A'}`,
-    `Strong Sell: ${data.strongSell ?? 'N/A'}`,
-    `Target Price: ${data.analystTargetPrice ?? 'N/A'}`,
-  ].join('\n');
-}
-
-function formatMoversTable(title: string, rows: any[]) {
-  if (!rows || rows.length === 0) {
-    return [`### ${title}`, '_No data available._'].join('\n');
-  }
-  const tableRows = rows.map((row) => [
-    row.ticker ?? 'N/A',
-    row.price ?? 'N/A',
-    row.changeAmount ?? 'N/A',
-    row.changePercentage ?? 'N/A',
-    row.volume ?? 'N/A',
-  ].join(' | '));
-
-  return [
-    `### ${title}`,
-    '| Ticker | Price | Change | Change % | Volume |',
-    '|---|---:|---:|---:|---:|',
-    ...tableRows.map((row) => `| ${row} |`),
-  ].join('\n');
-}
-
-function formatTopMoversResponse(data: any, limit = 10) {
-  if (!data) return '_No movers data available._';
-  const topGainers = Array.isArray(data.topGainers) ? data.topGainers.slice(0, limit) : [];
-  const topLosers = Array.isArray(data.topLosers) ? data.topLosers.slice(0, limit) : [];
-  const mostActive = Array.isArray(data.mostActive) ? data.mostActive.slice(0, limit) : [];
-
-  return [
-    '## 📈 Market Movers',
-    formatMoversTable('Top Gainers', topGainers),
-    formatMoversTable('Top Losers', topLosers),
-    formatMoversTable('Most Active', mostActive),
-  ].join('\n\n');
-}
-
-async function handlePeerComparison(
-  symbol: string,
-  stockService: StockDataService,
-  message: string,
-  sessionId?: string | null
-) {
-  const currentSessionId = sessionId || Math.random().toString(36).substring(7);
-  let conversationMessages: ChatMessage[] = sessionId ? sessions.get(sessionId) || [] : [];
-  if (conversationMessages.length === 0) {
-    conversationMessages.push({ role: 'system', content: COMPACT_SYSTEM_PROMPT });
-  }
-  conversationMessages.push({ role: 'user', content: message });
-
-  let peers: string[] = [];
-  let fallbackNote = '';
-  try {
-    const peerResult = await stockService.getPeers(symbol);
-    peers = (peerResult?.peers || []).filter((peer: string) => peer && peer !== symbol).slice(0, 6);
-  } catch (error: any) {
-    fallbackNote = `Peers unavailable via Finnhub (${error.message || 'Unknown error'}). Using search results as proxy.`;
-    try {
-      const searchResult = await stockService.searchStock(symbol);
-      peers = (searchResult?.results || [])
-        .map((item: any) => item.symbol)
-        .filter((peer: string) => peer && peer !== symbol)
-        .slice(0, 6);
-    } catch {
-      peers = [];
-    }
-  }
-
-  const universe = [symbol, ...peers].slice(0, 8);
-  const rows = await Promise.all(
-    universe.map(async (ticker) => {
-      const [price, overview, basicFinancials, targets] = await Promise.all([
-        stockService.getStockPrice(ticker).catch(() => null),
-        stockService.getCompanyOverview(ticker).catch(() => null),
-        stockService.getBasicFinancials(ticker).catch(() => null),
-        stockService.getPriceTargets(ticker).catch(() => null),
-      ]);
-      const priceValue = Number(price?.price);
-      const targetValue = Number(targets?.targetMean || overview?.analystTargetPrice);
-      const upside = priceValue && targetValue
-        ? `${(((targetValue - priceValue) / priceValue) * 100).toFixed(1)}%`
-        : 'N/A';
-      return {
-        symbol: ticker,
-        price: price?.price ?? 'N/A',
-        marketCap: overview?.marketCapitalization ?? 'N/A',
-        pe: overview?.peRatio ?? basicFinancials?.metric?.peBasicExclExtraTTM ?? 'N/A',
-        target: targets?.targetMean ?? overview?.analystTargetPrice ?? 'N/A',
-        upside,
-      };
-    })
-  );
-
-  const table = [
-    '| Symbol | Price | Market Cap | P/E | Target Mean | Upside |',
-    '|---|---:|---:|---:|---:|---:|',
-    ...rows.map((row) => `| ${row.symbol} | ${row.price} | ${row.marketCap} | ${row.pe} | ${row.target} | ${row.upside} |`),
-  ].join('\n');
-
-  const responseText = [
-    `## 🔍 Peer Comparison — ${symbol}`,
-    fallbackNote,
-    table,
-  ].filter(Boolean).join('\n\n');
-
-  conversationMessages.push({ role: 'assistant', content: responseText });
-  sessions.set(currentSessionId, conversationMessages);
-
-  return NextResponse.json({
-    response: responseText,
-    sessionId: currentSessionId,
-    model: DEFAULT_MODEL,
-    provider: 'direct',
-    stats: {
-      rounds: 0,
-      toolCalls: universe.length * 4,
-      toolsProvided: 0,
-    },
-  });
-}
-
+// Tools available for quick questions (price, search, overview)
 const DEFAULT_TOOL_NAMES = [
-  'search_stock',
-  'get_stock_price',
-  'get_company_overview',
-  'get_basic_financials',
-  'get_analyst_ratings',
-];
-
-const REPORT_TOOL_NAMES = [
   'search_stock',
   'get_stock_price',
   'get_company_overview',
@@ -593,84 +266,44 @@ const REPORT_TOOL_NAMES = [
   'get_news_sentiment',
   'get_company_news',
   'get_price_history',
+  'get_peers',
+];
+
+// Full tool set for deep research, reports, and comparisons
+const REPORT_TOOL_NAMES = [
+  'search_stock',
+  'get_stock_price',
+  'get_company_overview',
+  'get_basic_financials',
+  'get_analyst_ratings',
+  'get_analyst_recommendations',
+  'get_price_targets',
+  'get_news_sentiment',
+  'get_company_news',
+  'search_news',
+  'get_price_history',
   'get_earnings_history',
   'get_income_statement',
   'get_balance_sheet',
   'get_cash_flow',
   'get_peers',
   'get_insider_trading',
-  'generate_stock_report',
-  'generate_sector_report',
-  'generate_peer_report',
+  'get_sector_performance',
+  'get_stocks_by_sector',
+  'get_top_gainers_losers',
+  'screen_stocks',
+  'search_companies',
+  'save_report',
 ];
 
-const MAX_TOOLS_NON_REPORT = 10;
+const MAX_TOOLS_NON_REPORT = 12;
 
-function selectToolNames(message: string) {
-  const text = message.toLowerCase();
-  const isReport = text.includes('report');
-  const selected = new Set(isReport ? REPORT_TOOL_NAMES : DEFAULT_TOOL_NAMES);
-
-  if (text.includes('report')) {
-    selected.add('generate_stock_report');
-    selected.add('generate_sector_report');
-  }
-
-  if (text.includes('sector') || text.includes('theme') || text.includes('screen')) {
-    selected.add('screen_stocks');
-    selected.add('get_stocks_by_sector');
-    selected.add('get_sector_performance');
-    selected.add('search_companies');
-  }
-
-  if (text.includes('peer') || text.includes('compare')) {
-    selected.add('get_peers');
-  }
-
-  if (text.includes('price') || text.includes('quote') || text.includes('trend')) {
-    selected.add('get_price_history');
-  }
-
-  if (text.includes('analyst') || text.includes('rating') || text.includes('recommendation')) {
-    selected.add('get_analyst_ratings');
-    selected.add('get_analyst_recommendations');
-    if (text.includes('target')) {
-      selected.add('get_price_targets');
-    }
-  }
-
-  if (text.includes('news') || text.includes('sentiment')) {
-    selected.add('get_news_sentiment');
-    selected.add('get_company_news');
-    selected.add('search_news');
-  }
-
-  if (text.includes('earnings')) {
-    selected.add('get_earnings_history');
-  }
-
-  if (text.includes('income')) {
-    selected.add('get_income_statement');
-  }
-
-  if (text.includes('balance')) {
-    selected.add('get_balance_sheet');
-  }
-
-  if (text.includes('cash flow')) {
-    selected.add('get_cash_flow');
-  }
-
-  if (text.includes('insider')) {
-    selected.add('get_insider_trading');
-  }
-
-  if (text.includes('top gainers') || text.includes('losers') || text.includes('most active')) {
-    selected.add('get_top_gainers_losers');
-  }
-
-  return { toolNames: Array.from(selected), isReport };
+function selectToolNames(message: string): { toolNames: string[]; isReport: boolean } {
+  const isReport = /\b(report|compare|comparison|analysis|analyses)\b/i.test(message);
+  const toolNames = isReport ? REPORT_TOOL_NAMES : DEFAULT_TOOL_NAMES;
+  return { toolNames, isReport };
 }
+
 async function callGitHubModelsAPI(
   messages: ChatMessage[],
   githubToken: string,
@@ -849,292 +482,6 @@ export async function POST(request: NextRequest) {
     }
     const stockService: StockDataService = createStockService(alphaVantageKey, finnhubKey);
 
-    const reportRequest = parseReportRequest(message);
-    const timeframe = parseTimeframe(message);
-    if (reportRequest) {
-      const currentSessionId = sessionId || Math.random().toString(36).substring(7);
-      let conversationMessages: ChatMessage[] = sessionId ? sessions.get(sessionId) || [] : [];
-      const systemPrompt = process.env.USE_FULL_SYSTEM_PROMPT === 'true'
-        ? SYSTEM_PROMPT
-        : COMPACT_SYSTEM_PROMPT;
-      if (conversationMessages.length === 0) {
-        conversationMessages.push({ role: 'system', content: systemPrompt });
-      }
-
-      conversationMessages.push({ role: 'user', content: message });
-
-      if (reportRequest.type === 'sector') {
-        const toolResult = await executeTool(
-          'generate_sector_report',
-          { query: reportRequest.query },
-          stockService
-        );
-
-        if (!toolResult.success) {
-          return NextResponse.json(
-            { error: toolResult.error || toolResult.message || 'Report generation failed' },
-            { status: 500 }
-          );
-        }
-
-        const downloadUrl = toolResult.data?.downloadUrl;
-        const filename = toolResult.data?.filename as string | undefined;
-        const content = toolResult.data?.content as string | undefined;
-        const responseText = downloadUrl
-          ? `Report generated: ${downloadUrl}`
-          : 'Report generated.';
-
-        conversationMessages.push({ role: 'assistant', content: responseText });
-        sessions.set(currentSessionId, conversationMessages);
-
-        console.info('Chat request stats', {
-          provider: provider || 'github',
-          model: model || DEFAULT_MODEL,
-          rounds: 0,
-          toolCalls: 1,
-          toolsProvided: 0,
-          directReport: reportRequest.type,
-        });
-
-        return NextResponse.json({
-          response: responseText,
-          sessionId: currentSessionId,
-          model: model || DEFAULT_MODEL,
-          provider: provider || 'github',
-          report: filename && content ? { filename, content, downloadUrl } : null,
-          stats: {
-            rounds: 0,
-            toolCalls: 1,
-            toolsProvided: 0,
-          },
-        });
-      }
-
-      const toolResult = await executeTool(
-        'generate_stock_report',
-        { symbol: reportRequest.symbol, range: timeframe || '5y' },
-        stockService
-      );
-
-      if (!toolResult.success) {
-        return NextResponse.json(
-          { error: toolResult.error || toolResult.message || 'Report generation failed' },
-          { status: 500 }
-        );
-      }
-
-      const downloadUrl = toolResult.data?.downloadUrl;
-      const filename = toolResult.data?.filename as string | undefined;
-      const content = toolResult.data?.content as string | undefined;
-      const responseText = downloadUrl
-        ? `Report generated: ${downloadUrl}`
-        : 'Report generated.';
-
-      conversationMessages.push({ role: 'assistant', content: responseText });
-      sessions.set(currentSessionId, conversationMessages);
-
-      console.info('Chat request stats', {
-        provider: provider || 'github',
-        model: model || DEFAULT_MODEL,
-        rounds: 0,
-        toolCalls: 1,
-        toolsProvided: 0,
-        directReport: reportRequest.type,
-      });
-
-      return NextResponse.json({
-        response: responseText,
-        sessionId: currentSessionId,
-        model: model || DEFAULT_MODEL,
-        provider: provider || 'github',
-        report: filename && content ? { filename, content, downloadUrl } : null,
-        stats: {
-          rounds: 0,
-          toolCalls: 1,
-          toolsProvided: 0,
-        },
-      });
-    }
-
-    const lowerMessage = message.toLowerCase();
-
-    const topMovers = lowerMessage.includes('top gainers') ||
-      lowerMessage.includes('top losers') ||
-      lowerMessage.includes('most active');
-    if (topMovers) {
-      const limit = parseLimitFromMessage(message, 10);
-      return handleDirectToolResponse(
-        'get_top_gainers_losers',
-        {},
-        stockService,
-        message,
-        sessionId,
-        undefined,
-        (data) => formatTopMoversResponse(data, limit)
-      );
-    }
-
-    const sectorRequest = parseSectorRequest(message);
-    if (sectorRequest?.type === 'performance') {
-      return handleDirectToolResponse('get_sector_performance', {}, stockService, message, sessionId);
-    }
-    if (sectorRequest?.type === 'stocks' && sectorRequest.sector) {
-      return handleDirectToolResponse('get_stocks_by_sector', { sector: sectorRequest.sector }, stockService, message, sessionId);
-    }
-
-    if (lowerMessage.includes('compare')) {
-      const comparisonCompanies = parseComparisonCompanies(message);
-      if (comparisonCompanies) {
-        return handleDirectToolResponse(
-          'generate_comparison_report',
-          { companies: comparisonCompanies, range: timeframe || '1y' },
-          stockService,
-          message,
-          sessionId
-        );
-      }
-    }
-
-    if (lowerMessage.includes('compare') || lowerMessage.includes('peers')) {
-      const compareSymbol = await resolveSymbolFromMessage(message, stockService);
-      if (compareSymbol) {
-        const limit = parseLimitFromMessage(message, 8);
-        return handleDirectToolResponse(
-          'generate_peer_report',
-          { symbol: compareSymbol, range: timeframe || '5y', limit },
-          stockService,
-          message,
-          sessionId
-        );
-      }
-    }
-
-    if (lowerMessage.includes('screen')) {
-      const sectorMatch = message.match(/sector\s+([a-zA-Z\s&-]+)/i);
-      const industryMatch = message.match(/industry\s+([a-zA-Z\s&-]+)/i);
-      const filters = {
-        sector: sectorMatch?.[1]?.trim(),
-        industry: industryMatch?.[1]?.trim(),
-        ...parseMarketCapFilter(message),
-      };
-      return handleDirectToolResponse('screen_stocks', filters, stockService, message, sessionId);
-    }
-
-    const searchRequest = parseSearchRequest(message);
-    if (searchRequest) {
-      return handleDirectToolResponse('search_stock', { query: searchRequest.query }, stockService, message, sessionId);
-    }
-
-    if (lowerMessage.includes('search companies')) {
-      const query = extractQuery(message);
-      return handleDirectToolResponse('search_companies', { query }, stockService, message, sessionId);
-    }
-
-    if (lowerMessage.includes('search news') || lowerMessage.includes('news about')) {
-      const query = extractQuery(message);
-      return handleDirectToolResponse('search_news', { query, days: 14 }, stockService, message, sessionId);
-    }
-
-    const newsRequest = parseNewsRequest(message);
-    if (newsRequest) {
-      return handleDirectToolResponse('get_company_news', { symbol: newsRequest.symbol, days: 14 }, stockService, message, sessionId);
-    }
-
-    const sentiment = parseSymbolAfterKeyword(message, 'sentiment');
-    if (sentiment) {
-      return handleDirectToolResponse('get_news_sentiment', { symbol: sentiment.symbol }, stockService, message, sessionId);
-    }
-
-    const shouldResolveSymbol = /(price|quote|history|trend|overview|fundamentals|ratios|financials|earnings|eps|income|balance|cash flow|insider|ratings|target|peer|news|sentiment)/i.test(message);
-    const inferredSymbol = shouldResolveSymbol ? await resolveSymbolFromMessage(message, stockService) : null;
-    if (inferredSymbol && lowerMessage.includes('analyst') && lowerMessage.includes('trend')) {
-      return handleAnalystTrendRequest(inferredSymbol, stockService, message, sessionId);
-    }
-    if (inferredSymbol && lowerMessage.includes('news')) {
-      return handleDirectToolResponse('get_company_news', { symbol: inferredSymbol, days: 14 }, stockService, message, sessionId);
-    }
-    if (inferredSymbol && lowerMessage.includes('sentiment')) {
-      return handleDirectToolResponse('get_news_sentiment', { symbol: inferredSymbol }, stockService, message, sessionId);
-    }
-
-    const symbolPrice = parseSymbolAfterKeyword(message, 'price') || parseSymbolAfterKeyword(message, 'quote');
-    const priceSymbol = symbolPrice?.symbol || inferredSymbol;
-    if (priceSymbol && (symbolPrice || lowerMessage.includes('price') || lowerMessage.includes('quote'))) {
-      return handleDirectToolResponse('get_stock_price', { symbol: priceSymbol }, stockService, message, sessionId, undefined, formatPriceResponse);
-    }
-
-    const priceHistory = parseSymbolAfterKeyword(message, 'history') || parseSymbolAfterKeyword(message, 'trend');
-    const historyRange = timeframe || '5y';
-    const historySymbol = priceHistory?.symbol || inferredSymbol;
-    if (historySymbol && (priceHistory || lowerMessage.includes('history') || lowerMessage.includes('trend'))) {
-      return handleDirectToolResponse('get_price_history', { symbol: historySymbol, range: historyRange }, stockService, message, sessionId);
-    }
-
-    const overview = parseSymbolAfterKeyword(message, 'overview') || parseSymbolAfterKeyword(message, 'fundamentals');
-    const overviewSymbol = overview?.symbol || inferredSymbol;
-    if (overviewSymbol && (overview || lowerMessage.includes('overview') || lowerMessage.includes('fundamentals'))) {
-      return handleDirectToolResponse('get_company_overview', { symbol: overviewSymbol }, stockService, message, sessionId);
-    }
-
-    const basicFinancials = parseSymbolAfterKeyword(message, 'ratios') || parseSymbolAfterKeyword(message, 'financials');
-    const financialsSymbol = basicFinancials?.symbol || inferredSymbol;
-    if (financialsSymbol && (basicFinancials || lowerMessage.includes('ratios') || lowerMessage.includes('financials'))) {
-      return handleDirectToolResponse('get_basic_financials', { symbol: financialsSymbol }, stockService, message, sessionId);
-    }
-
-    const earnings = parseSymbolAfterKeyword(message, 'earnings') || parseSymbolAfterKeyword(message, 'eps');
-    const earningsSymbol = earnings?.symbol || inferredSymbol;
-    if (earningsSymbol && (earnings || lowerMessage.includes('earnings') || lowerMessage.includes('eps'))) {
-      return handleDirectToolResponse('get_earnings_history', { symbol: earningsSymbol }, stockService, message, sessionId);
-    }
-
-    const income = parseSymbolAfterKeyword(message, 'income');
-    const incomeSymbol = income?.symbol || inferredSymbol;
-    if (incomeSymbol && (income || lowerMessage.includes('income'))) {
-      return handleDirectToolResponse('get_income_statement', { symbol: incomeSymbol }, stockService, message, sessionId);
-    }
-
-    const balance = parseSymbolAfterKeyword(message, 'balance');
-    const balanceSymbol = balance?.symbol || inferredSymbol;
-    if (balanceSymbol && (balance || lowerMessage.includes('balance'))) {
-      return handleDirectToolResponse('get_balance_sheet', { symbol: balanceSymbol }, stockService, message, sessionId);
-    }
-
-    const cashFlow = parseSymbolAfterKeyword(message, 'cash flow');
-    const cashFlowSymbol = cashFlow?.symbol || inferredSymbol;
-    if (cashFlowSymbol && (cashFlow || lowerMessage.includes('cash flow'))) {
-      return handleDirectToolResponse('get_cash_flow', { symbol: cashFlowSymbol }, stockService, message, sessionId);
-    }
-
-    const insider = parseSymbolAfterKeyword(message, 'insider');
-    const insiderSymbol = insider?.symbol || inferredSymbol;
-    if (insiderSymbol && (insider || lowerMessage.includes('insider'))) {
-      return handleDirectToolResponse('get_insider_trading', { symbol: insiderSymbol }, stockService, message, sessionId);
-    }
-
-    const analystRatings = parseSymbolAfterKeyword(message, 'analyst ratings') || parseSymbolAfterKeyword(message, 'ratings');
-    const ratingsSymbol = analystRatings?.symbol || inferredSymbol;
-    if (ratingsSymbol && (analystRatings || lowerMessage.includes('ratings'))) {
-      return handleDirectToolResponse('get_analyst_ratings', { symbol: ratingsSymbol }, stockService, message, sessionId, undefined, formatRatingsResponse);
-    }
-
-    const priceTargets = parseSymbolAfterKeyword(message, 'price targets') || parseSymbolAfterKeyword(message, 'targets');
-    const targetSymbol = priceTargets?.symbol || inferredSymbol;
-    if (targetSymbol && (priceTargets || lowerMessage.includes('target'))) {
-      return handleDirectToolResponse('get_price_targets', { symbol: targetSymbol }, stockService, message, sessionId);
-    }
-
-    const peers = parseSymbolAfterKeyword(message, 'peers') || parseSymbolAfterKeyword(message, 'peer');
-    const peersSymbol = peers?.symbol || inferredSymbol;
-    if (peersSymbol && (peers || lowerMessage.includes('peer'))) {
-      return handleDirectToolResponse('get_peers', { symbol: peersSymbol }, stockService, message, sessionId);
-    }
-
-    const analystTrendRequest = parseAnalystTrendsRequest(message);
-    if (analystTrendRequest) {
-      return handleAnalystTrendRequest(analystTrendRequest.symbol, stockService, message, sessionId);
-    }
-
     // Get or create conversation history
     let conversationMessages: ChatMessage[] = sessionId ? sessions.get(sessionId) || [] : [];
     const currentSessionId = sessionId || Math.random().toString(36).substring(7);
@@ -1167,6 +514,8 @@ export async function POST(request: NextRequest) {
     let rounds = 0;
     let totalToolCalls = 0;
     let assistantContent: string | null = null;
+    // Capture the first report artifact produced by any generate_*_report tool call
+    let reportArtifact: { filename: string; content: string; downloadUrl: string } | null = null;
     let activeModel = requestedModel;
     let activeProvider: 'github' | 'openai-proxy' = provider === 'openai-proxy' ? 'openai-proxy' : 'github';
     if (AUTO_DOWNGRADE_GPT5 && /gpt-5/i.test(activeModel) && activeProvider === 'github') {
@@ -1256,6 +605,20 @@ export async function POST(request: NextRequest) {
             const toolName = toolCall.function.name;
             const toolArgs = JSON.parse(toolCall.function.arguments);
             const toolResult = await executeTool(toolName, toolArgs, stockService);
+            // Capture report artifact from any generate_*_report tool call before compacting
+            if (
+              !reportArtifact &&
+              toolResult.success &&
+              toolResult.data?.filename &&
+              toolResult.data?.content &&
+              toolResult.data?.downloadUrl
+            ) {
+              reportArtifact = {
+                filename: toolResult.data.filename,
+                content: toolResult.data.content,
+                downloadUrl: toolResult.data.downloadUrl,
+              };
+            }
             return {
               role: 'tool' as const,
               tool_call_id: toolCall.id,
@@ -1294,6 +657,7 @@ export async function POST(request: NextRequest) {
       sessionId: currentSessionId,
       model: activeModel,
       provider: activeProvider,
+      report: reportArtifact,
       stats: {
         rounds,
         toolCalls: totalToolCalls,
