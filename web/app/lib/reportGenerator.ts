@@ -8,33 +8,33 @@ type EarningsPoint = { fiscalQuarter: string; reportedEPS: string | number };
 export interface StockReportData {
   symbol: string;
   generatedAt: string;
-  price: unknown;
+  price: any;
   priceHistory?: { prices?: PricePoint[] };
-  companyOverview?: unknown;
-  basicFinancials?: unknown;
+  companyOverview?: any;
+  basicFinancials?: any;
   earningsHistory?: { quarterlyEarnings?: EarningsPoint[] };
-  incomeStatement?: unknown;
-  balanceSheet?: unknown;
-  cashFlow?: unknown;
-  analystRatings?: unknown;
-  analystRecommendations?: unknown;
-  priceTargets?: unknown;
-  peers?: unknown;
-  newsSentiment?: unknown;
-  companyNews?: { articles?: unknown[] };
+  incomeStatement?: any;
+  balanceSheet?: any;
+  cashFlow?: any;
+  analystRatings?: any;
+  analystRecommendations?: any;
+  priceTargets?: any;
+  peers?: any;
+  newsSentiment?: any;
+  companyNews?: { articles?: any[] };
 }
 
 export interface ComparisonReportItem {
   symbol: string;
-  price?: unknown;
-  overview?: unknown;
-  basicFinancials?: unknown;
-  priceTargets?: unknown;
+  price?: any;
+  overview?: any;
+  basicFinancials?: any;
+  priceTargets?: any;
   priceHistory?: { prices?: PricePoint[] };
-  incomeStatement?: unknown;
-  balanceSheet?: unknown;
-  cashFlow?: unknown;
-  analystRatings?: unknown;
+  incomeStatement?: any;
+  balanceSheet?: any;
+  cashFlow?: any;
+  analystRatings?: any;
 }
 
 export interface ComparisonReportData {
@@ -721,17 +721,6 @@ function formatRatingSummary(item: any): string {
   }
 
   return `SB ${strongBuy ?? 0} / B ${buy ?? 0} / H ${hold ?? 0} / S ${sell ?? 0} / SS ${strongSell ?? 0}`;
-}
-
-function getEpsValue(item: any): number | null {
-  return toNumber(item.basicFinancials?.metric?.epsTTM ?? item.overview?.eps);
-}
-
-function getTargetUpside(item: any): number | null {
-  const price = toNumber(item.price?.price);
-  const target = toNumber(item.priceTargets?.targetMean || item.analystRatings?.analystTargetPrice);
-  if (!price || !target) return null;
-  return ((target - price) / price) * 100;
 }
 
 function clampScore(value: number): number {

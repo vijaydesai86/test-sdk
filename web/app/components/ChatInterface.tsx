@@ -52,8 +52,6 @@ function MermaidBlock({ chart }: { chart: string }) {
         primaryTextColor: '#0f172a',
         lineColor: '#4f46e5',
         tertiaryColor: '#eef2ff',
-        axisTextColor: '#334155',
-        gridColor: '#e2e8f0',
       },
     });
     mermaid
@@ -68,16 +66,13 @@ function MermaidBlock({ chart }: { chart: string }) {
           containerRef.current.textContent = 'Chart rendering failed.';
         }
       });
-
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [chart, chartId]);
 
-  return <div ref={containerRef} className="my-4" />;
+  return <div ref={containerRef} className="my-4 overflow-x-auto" />;
 }
 
-function ChartBlock({ option }: { option: Record<string, any> }) {
+function ChartBlock({ option }: { option: Record<string, unknown> }) {
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -92,7 +87,7 @@ function ChartBlock({ option }: { option: Record<string, any> }) {
     };
   }, [option]);
 
-  return <div ref={containerRef} className="my-4 w-full" style={{ height: '320px' }} />;
+  return <div ref={containerRef} className="my-4 w-full" style={{ height: '280px' }} />;
 }
 
 const DEFAULT_MODEL = 'openai/gpt-4.1';
@@ -101,6 +96,11 @@ const TOOL_CALL_WARNING =
 const isToolCallText = (content: string) =>
   /"name"\s*:\s*"functions\./.test(content) || /"arguments"\s*:\s*\{/.test(content);
 const SAMPLE_REPORT_LINK = '/reports/nvda-sample.md';
+
+const QUICK_PROMPTS = [
+  { label: '📊 NVDA stock report', prompt: 'Generate a full stock report for NVDA' },
+  { label: '⚖️ Compare NVDA, AMD, INTC', prompt: 'Compare companies NVDA, AMD, INTC' },
+];
 
 export default function ChatInterface() {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -116,42 +116,44 @@ export default function ChatInterface() {
   ]);
   const [modelsLoading, setModelsLoading] = useState(true);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [reportPreview, setReportPreview] = useState<string | null>(null);
   const [reportTitle, setReportTitle] = useState<string | null>(null);
   const [reportLoading, setReportLoading] = useState(false);
   const [reportUrl, setReportUrl] = useState<string | null>(null);
   const [deletedReports, setDeletedReports] = useState<Set<string>>(new Set());
   const [savedReports, setSavedReports] = useState<ReportItem[]>([]);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
-  // Fetch the live model catalog on mount
   useEffect(() => {
     fetch('/api/providers')
       .then((res) => res.json())
       .then((payload: { providers?: ProviderOption[] }) => {
-        if (!payload.providers || payload.providers.length === 0) return;
+        if (!payload.providers?.length) return;
         setAvailableProviders(payload.providers);
-        const defaultProvider = payload.providers.find((item) => item.available) || payload.providers[0];
+        const defaultProvider = payload.providers.find((p) => p.available) ?? payload.providers[0];
         setProvider(defaultProvider.id);
-        const nextModels = defaultProvider.models || [];
+        const nextModels = defaultProvider.models ?? [];
         setAvailableModels(nextModels);
         if (nextModels.length > 0 && !nextModels.find((m) => m.value === model)) {
           setModel(nextModels[0].value);
         }
       })
-      .catch(() => {
-        // Keep the fallback model already in state
-      })
+      .catch(() => { /* keep fallback model */ })
       .finally(() => setModelsLoading(false));
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const scrollToBottom = () => {
+  useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  };
+  }, [messages]);
 
   useEffect(() => {
-    scrollToBottom();
-  }, [messages]);
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
+  }, [input]);
 
   const sendPrompt = async (prompt: string) => {
     if (!prompt.trim() || isLoading) return;
@@ -163,72 +165,53 @@ export default function ChatInterface() {
     setIsLoading(true);
 
     try {
-      const response = await fetch('/api/chat', {
+      const res = await fetch('/api/chat', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          message: userMessage,
-          sessionId,
-          model,
-          provider,
-        }),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: userMessage, sessionId, model, provider }),
       });
 
-      const rawText = await response.text();
-      let data: any;
+      const rawText = await res.text();
+      let data: Record<string, unknown>;
       try {
-        data = rawText ? JSON.parse(rawText) : {};
+        data = rawText ? (JSON.parse(rawText) as Record<string, unknown>) : {};
       } catch {
         throw new Error(rawText || 'Failed to parse server response');
       }
 
-      if (!response.ok) {
-        const message = data.details
-          ? `${data.error || 'Failed to get response'} — ${data.details}`
-          : data.error || 'Failed to get response';
-        throw new Error(message);
+      if (!res.ok) {
+        const errMsg = typeof data['details'] === 'string'
+          ? `${String(data['error'] ?? 'Error')} \u2014 ${data['details']}`
+          : String(data['error'] ?? 'Failed to get response');
+        throw new Error(errMsg);
       }
 
-      const responseText = typeof data.response === 'string' ? data.response : '';
+      const responseText = typeof data['response'] === 'string' ? data['response'] : '';
       const assistantText = isToolCallText(responseText) ? TOOL_CALL_WARNING : responseText;
-      if (isToolCallText(responseText)) {
-        setError(TOOL_CALL_WARNING);
-      }
-      setSessionId(data.sessionId);
+      if (isToolCallText(responseText)) setError(TOOL_CALL_WARNING);
+
+      setSessionId(typeof data['sessionId'] === 'string' ? data['sessionId'] : null);
       setMessages((prev) => [
         ...prev,
         {
           role: 'assistant',
           content: assistantText,
-          model: data.model,
-          stats: data.stats,
+          model: typeof data['model'] === 'string' ? data['model'] : undefined,
+          stats: data['stats'] as Message['stats'],
         },
       ]);
-      if (data.report?.filename && data.report?.content) {
+
+      const report = data['report'] as { filename?: string; content?: string; downloadUrl?: string } | null;
+      if (report?.filename && report?.content) {
         setSavedReports((prev) => {
-          const existing = prev.find((item) => item.filename === data.report.filename);
-          if (existing) return prev;
-          return [
-            ...prev,
-            {
-              filename: data.report.filename,
-              content: data.report.content,
-              downloadUrl: data.report.downloadUrl,
-            },
-          ];
+          if (prev.find((r) => r.filename === report.filename)) return prev;
+          return [...prev, { filename: report.filename!, content: report.content, downloadUrl: report.downloadUrl }];
         });
       }
-    } catch (err: any) {
-      setError(err.message);
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: 'assistant',
-          content: `Error: ${err.message}`,
-        },
-      ]);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Unknown error';
+      setError(msg);
+      setMessages((prev) => [...prev, { role: 'assistant', content: `Error: ${msg}` }]);
     } finally {
       setIsLoading(false);
     }
@@ -239,34 +222,31 @@ export default function ChatInterface() {
     await sendPrompt(input);
   };
 
-  const exampleQuestions = [
-    'Generate a full stock report for NVDA',
-    'Generate a sector report for AI data center stocks',
-    'Compare peers for AMD with valuation and targets',
-    'What are today’s top gainers and losers?',
-  ];
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      void sendPrompt(input);
+    }
+  };
 
   const reportLinks = Array.from(
     new Set(
       messages
-        .filter((message) => message.role === 'assistant')
-        .flatMap((message) => message.content.match(/\/api\/reports\/[a-z0-9-]+\.md/gi) || [])
+        .filter((m) => m.role === 'assistant')
+        .flatMap((m) => m.content.match(/\/api\/reports\/[a-z0-9-]+\.md/gi) ?? [])
     )
   ).filter((link) => !deletedReports.has(link));
 
   const reportItems: ReportItem[] = [
     ...savedReports,
     ...reportLinks
-      .map((link) => ({
-        filename: link.split('/').pop() || link,
-        downloadUrl: link,
-      }))
-      .filter((item) => !savedReports.find((saved) => saved.filename === item.filename)),
+      .map((link) => ({ filename: link.split('/').pop() ?? link, downloadUrl: link }))
+      .filter((r) => !savedReports.find((s) => s.filename === r.filename)),
   ];
 
   const handleReportClick = async (item: ReportItem) => {
     setReportLoading(true);
-    setReportUrl(item.downloadUrl || null);
+    setReportUrl(item.downloadUrl ?? null);
     try {
       if (item.content) {
         setReportPreview(item.content);
@@ -275,16 +255,16 @@ export default function ChatInterface() {
       }
       if (!item.downloadUrl) {
         setReportPreview('Unable to load report preview.');
-        setReportTitle(item.filename || 'Report');
+        setReportTitle(item.filename ?? 'Report');
         return;
       }
-      const response = await fetch(item.downloadUrl);
-      const content = await response.text();
+      const res = await fetch(item.downloadUrl);
+      const content = await res.text();
       setReportPreview(content);
-      setReportTitle(item.filename || 'Report');
-    } catch (error) {
+      setReportTitle(item.filename ?? 'Report');
+    } catch {
       setReportPreview('Unable to load report preview.');
-      setReportTitle(item.filename || 'Report');
+      setReportTitle(item.filename ?? 'Report');
     } finally {
       setReportLoading(false);
     }
@@ -292,19 +272,17 @@ export default function ChatInterface() {
 
   const handleReportDownload = (item: ReportItem) => {
     if (!item.content) {
-      if (item.downloadUrl) {
-        window.open(item.downloadUrl, '_blank');
-      }
+      if (item.downloadUrl) window.open(item.downloadUrl, '_blank');
       return;
     }
     const blob = new Blob([item.content], { type: 'text/markdown;charset=utf-8' });
     const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = item.filename;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = item.filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
     URL.revokeObjectURL(url);
   };
 
@@ -312,367 +290,381 @@ export default function ChatInterface() {
     setError(null);
     try {
       if (item.downloadUrl) {
-        const response = await fetch(item.downloadUrl, { method: 'DELETE' });
-        const data = await response.json();
-        if (!response.ok) {
-          const message = data.error || 'Failed to delete report';
-          throw new Error(message);
-        }
+        const res = await fetch(item.downloadUrl, { method: 'DELETE' });
+        const data = await res.json() as Record<string, unknown>;
+        if (!res.ok) throw new Error(String(data['error'] ?? 'Failed to delete report'));
       }
-      setDeletedReports((prev) => new Set(prev).add(item.downloadUrl || item.filename));
-      setSavedReports((prev) => prev.filter((saved) => saved.filename !== item.filename));
+      setDeletedReports((prev) => new Set(prev).add(item.downloadUrl ?? item.filename));
+      setSavedReports((prev) => prev.filter((s) => s.filename !== item.filename));
       if (reportUrl === item.downloadUrl) {
         setReportUrl(null);
         setReportPreview(null);
         setReportTitle(null);
       }
-    } catch (err: any) {
-      setError(err.message || 'Failed to delete report');
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to delete report');
     }
   };
 
+  const MarkdownContent = ({ content }: { content: string }) => (
+    <div className="prose prose-sm dark:prose-invert max-w-none break-words">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          code({ className, children, ...props }) {
+            const match = /language-(\w+)/.exec(className ?? '');
+            if (match?.[1] === 'mermaid') {
+              return <MermaidBlock chart={String(children).trim()} />;
+            }
+            if (match?.[1] === 'chart' || match?.[1] === 'echarts') {
+              try {
+                const option = JSON.parse(String(children)) as Record<string, unknown>;
+                return <ChartBlock option={option} />;
+              } catch {
+                return <code className={className} {...props}>{children}</code>;
+              }
+            }
+            return <code className={className} {...props}>{children}</code>;
+          },
+        }}
+      >
+        {content}
+      </ReactMarkdown>
+    </div>
+  );
+
   return (
     <>
-      <div className="flex flex-col h-screen max-w-6xl mx-auto p-4 gap-4">
-      <div className="flex items-center justify-between bg-white dark:bg-gray-900 rounded-2xl shadow-sm p-6">
-        <div>
-          <h1 className="text-3xl font-semibold text-gray-900 dark:text-white">
-            Research Console
-          </h1>
-          <p className="text-sm text-gray-500 dark:text-gray-300">
-            Institutional-grade stock research with real-time data and report artifacts.
-          </p>
-        </div>
-        <div className="flex items-center gap-3">
-          <label htmlFor="provider-select" className="text-sm text-gray-500 dark:text-gray-400">
-            Provider
-          </label>
-          <select
-            id="provider-select"
-            value={provider}
-            onChange={(e) => {
-              const nextProvider = e.target.value as ProviderOption['id'];
-              setProvider(nextProvider);
-              setSessionId(null);
-              const selected = availableProviders.find((item) => item.id === nextProvider);
-              const nextModels = selected?.models || [];
-              setAvailableModels(nextModels);
-              if (nextModels.length > 0) {
-                const current = nextModels.find((m) => m.value === model);
-                setModel(current ? current.value : nextModels[0].value);
-              }
-            }}
-            disabled={modelsLoading}
-            className="text-sm px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-60"
-          >
-            {modelsLoading ? (
-              <option>Loading providers…</option>
-            ) : (
-              availableProviders.map((item) => (
-                <option key={item.id} value={item.id} disabled={!item.available}>
-                  {item.label}{item.available ? '' : ' (missing key)'}
-                </option>
-              ))
-            )}
-          </select>
-          <label htmlFor="model-select" className="text-sm text-gray-500 dark:text-gray-400">
-            Model
-          </label>
-          <select
-            id="model-select"
-            value={model}
-            onChange={(e) => {
-              setModel(e.target.value);
-              setSessionId(null);
-            }}
-            disabled={modelsLoading}
-            className="text-sm px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-60"
-          >
-            {modelsLoading ? (
-              <option>Loading models…</option>
-            ) : (
-              availableModels.map((m) => (
-                <option key={m.value} value={m.value}>{m.label}</option>
-              ))
-            )}
-          </select>
-        </div>
-      </div>
+      {sidebarOpen && (
+        <div
+          className="fixed inset-0 z-30 bg-black/40 lg:hidden"
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-[320px_1fr] gap-4 flex-1">
-        <aside className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm p-6 flex flex-col gap-6">
-          <div>
-            <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wide">Research Playbooks</h2>
-            <div className="mt-3 flex flex-wrap gap-2">
-              {exampleQuestions.map((question) => (
-                <button
-                  key={question}
-                  onClick={() => sendPrompt(question)}
-                  className="text-xs bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-200 px-3 py-1.5 rounded-full hover:bg-blue-100 dark:hover:bg-blue-800 transition-colors"
-                >
-                  {question}
-                </button>
-              ))}
-            </div>
+      <div className="flex flex-col h-screen bg-slate-50 dark:bg-gray-950">
+        <header className="shrink-0 flex items-center justify-between gap-3 px-4 py-3 bg-white dark:bg-gray-900 border-b border-slate-200 dark:border-gray-800 shadow-sm">
+          <div className="flex items-center gap-3 min-w-0">
+            <button
+              type="button"
+              aria-label="Open sidebar"
+              onClick={() => setSidebarOpen(true)}
+              className="lg:hidden p-1.5 rounded-md text-slate-500 hover:text-slate-700 dark:text-gray-400 dark:hover:text-white"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+              </svg>
+            </button>
+            <span className="text-base sm:text-lg font-semibold text-slate-900 dark:text-white truncate">
+              📈 Stock Research
+            </span>
           </div>
 
-          <div>
-            <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wide">Artifacts</h2>
-            <div className="mt-3 space-y-2 text-sm">
+          <div className="flex items-center gap-2 shrink-0">
+            {availableProviders.length > 1 && (
+              <select
+                value={provider}
+                onChange={(e) => {
+                  const next = e.target.value as ProviderOption['id'];
+                  setProvider(next);
+                  setSessionId(null);
+                  const sel = availableProviders.find((p) => p.id === next);
+                  const models = sel?.models ?? [];
+                  setAvailableModels(models);
+                  if (models.length > 0) setModel(models[0].value);
+                }}
+                disabled={modelsLoading}
+                className="text-xs px-2 py-1.5 rounded-lg border border-slate-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-slate-700 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-50 hidden sm:block"
+              >
+                {availableProviders.map((p) => (
+                  <option key={p.id} value={p.id} disabled={!p.available}>
+                    {p.label}{p.available ? '' : ' (unavailable)'}
+                  </option>
+                ))}
+              </select>
+            )}
+            <select
+              value={model}
+              onChange={(e) => { setModel(e.target.value); setSessionId(null); }}
+              disabled={modelsLoading}
+              className="text-xs px-2 py-1.5 rounded-lg border border-slate-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-slate-700 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-50 max-w-[130px] sm:max-w-none"
+            >
+              {modelsLoading
+                ? <option>Loading&#8230;</option>
+                : availableModels.map((m) => (
+                    <option key={m.value} value={m.value}>{m.label}</option>
+                  ))}
+            </select>
+          </div>
+        </header>
+
+        <div className="flex flex-1 overflow-hidden">
+          <aside
+            className={[
+              'shrink-0 w-72 bg-white dark:bg-gray-900 border-r border-slate-200 dark:border-gray-800 flex flex-col gap-5 p-4 overflow-y-auto',
+              'fixed inset-y-0 left-0 z-40 transition-transform duration-200 lg:static lg:translate-x-0',
+              sidebarOpen ? 'translate-x-0' : '-translate-x-full',
+            ].join(' ')}
+          >
+            <div className="flex items-center justify-between lg:hidden">
+              <span className="font-semibold text-slate-700 dark:text-white text-sm">Sidebar</span>
+              <button
+                type="button"
+                onClick={() => setSidebarOpen(false)}
+                className="text-slate-400 hover:text-slate-700 dark:hover:text-white"
+                aria-label="Close sidebar"
+              >
+                &#x2715;
+              </button>
+            </div>
+
+            <section>
+              <h2 className="text-xs font-semibold text-slate-400 dark:text-gray-500 uppercase tracking-widest mb-2">
+                Quick Research
+              </h2>
+              <div className="flex flex-col gap-1.5">
+                {QUICK_PROMPTS.map(({ label, prompt }) => (
+                  <button
+                    key={label}
+                    type="button"
+                    onClick={() => { setSidebarOpen(false); void sendPrompt(prompt); }}
+                    className="text-left text-sm px-3 py-2 rounded-lg bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-100 dark:hover:bg-indigo-800/50 transition-colors"
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </section>
+
+            <section className="flex-1">
+              <h2 className="text-xs font-semibold text-slate-400 dark:text-gray-500 uppercase tracking-widest mb-2">
+                Artifacts
+              </h2>
               {reportItems.length === 0 ? (
                 <div className="space-y-2">
-                  <p className="text-gray-500 dark:text-gray-400">
-                    No reports saved yet. Ask for a report to generate an artifact.
+                  <p className="text-xs text-slate-400 dark:text-gray-500">
+                    No reports yet. Ask for a stock or comparison report.
                   </p>
                   <button
                     type="button"
                     onClick={() => handleReportClick({ filename: 'nvda-sample.md', downloadUrl: SAMPLE_REPORT_LINK })}
-                    className="block w-full text-left truncate rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-2 text-blue-600 dark:text-blue-300 hover:bg-blue-50 dark:hover:bg-blue-900/30"
+                    className="text-xs w-full text-left px-3 py-2 rounded-lg border border-slate-200 dark:border-gray-700 text-indigo-600 dark:text-indigo-300 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 transition-colors truncate"
                   >
-                    Sample NVDA report (mock data)
+                    View sample NVDA report
                   </button>
                 </div>
               ) : (
-                reportItems.map((item) => (
-                  <div
-                    key={item.filename}
-                    className="flex items-center gap-2 rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-2"
-                  >
-                    <button
-                      type="button"
-                      onClick={() => handleReportClick(item)}
-                      className="flex-1 text-left truncate text-blue-600 dark:text-blue-300 hover:underline"
+                <ul className="space-y-1.5">
+                  {reportItems.map((item) => (
+                    <li
+                      key={item.filename}
+                      className="flex items-center gap-1 rounded-lg border border-slate-200 dark:border-gray-700 px-2 py-1.5 text-xs"
                     >
-                      {item.filename}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleReportDownload(item)}
-                      className="text-xs text-blue-600 hover:text-blue-800"
-                    >
-                      Download
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleReportDelete(item)}
-                      className="text-xs text-gray-500 hover:text-red-500"
-                    >
-                      Delete
-                    </button>
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
-
-
-          <div>
-            <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wide">Coverage Checklist</h2>
-            <ul className="mt-3 text-sm text-gray-600 dark:text-gray-400 space-y-2">
-              <li>• Price, EPS, and revenue trends</li>
-              <li>• Margin, valuation, and profitability metrics</li>
-              <li>• Peer comps and sector coverage</li>
-              <li>• Alpha Vantage data coverage</li>
-            </ul>
-          </div>
-        </aside>
-
-        <section className="flex flex-col bg-white dark:bg-gray-900 rounded-2xl shadow-sm p-6 overflow-y-auto">
-          {messages.length === 0 ? (
-            <div className="text-center text-gray-500 dark:text-gray-400 mt-10">
-              <div className="text-5xl mb-4">📑</div>
-              <h2 className="text-xl font-semibold mb-2">Start a research session</h2>
-              <p className="mb-4">Ask for a report or drill into a specific metric.</p>
-            </div>
-          ) : (
-            <div className="space-y-4">
-            {messages.map((message, index) => (
-              <div
-                key={index}
-                className={`flex ${
-                  message.role === 'user' ? 'justify-end' : 'justify-start'
-                }`}
-              >
-                <div
-                  className={`max-w-[80%] rounded-lg p-4 ${
-                    message.role === 'user'
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-gray-100 dark:bg-gray-700 text-gray-800 dark:text-white'
-                  }`}
-                >
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className="font-semibold">
-                      {message.role === 'user' ? 'You' : '🤖 Assistant'}
-                    </span>
-                    {message.role === 'assistant' && message.model && (
-                      <span className="text-xs px-2 py-0.5 rounded-full bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 font-mono">
-                        {message.model}
-                      </span>
-                    )}
-                    {message.role === 'assistant' && message.stats && (
-                      <span className="text-[10px] text-gray-500 dark:text-gray-300">
-                        Calls: {message.stats.rounds} · Tools: {message.stats.toolCalls}
-                      </span>
-                    )}
-                  </div>
-                  {message.role === 'assistant' ? (
-                    <div className="prose prose-sm dark:prose-invert max-w-none">
-                      <ReactMarkdown
-                        remarkPlugins={[remarkGfm]}
-                        components={{
-                          code({ className, children, ...props }) {
-                            const match = /language-(\w+)/.exec(className || '');
-                            if (match?.[1] === 'mermaid') {
-                              return <MermaidBlock chart={String(children).trim()} />;
-                            }
-                            if (match?.[1] === 'chart' || match?.[1] === 'echarts') {
-                              try {
-                                const option = JSON.parse(String(children));
-                                return <ChartBlock option={option} />;
-                              } catch {
-                                return (
-                                  <code className={className} {...props}>
-                                    {children}
-                                  </code>
-                                );
-                              }
-                            }
-                            return (
-                              <code className={className} {...props}>
-                                {children}
-                              </code>
-                            );
-                          },
-                        }}
+                      <button
+                        type="button"
+                        onClick={() => handleReportClick(item)}
+                        className="flex-1 text-left truncate text-indigo-600 dark:text-indigo-300 hover:underline"
                       >
-                        {message.content}
-                      </ReactMarkdown>
+                        {item.filename}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleReportDownload(item)}
+                        title="Download"
+                        className="text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-300 shrink-0 px-1"
+                      >
+                        &#x2193;
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleReportDelete(item)}
+                        title="Delete"
+                        className="text-slate-300 hover:text-red-500 shrink-0 px-1"
+                      >
+                        &#x2715;
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+
+            <section>
+              <h2 className="text-xs font-semibold text-slate-400 dark:text-gray-500 uppercase tracking-widest mb-2">
+                What&apos;s Supported
+              </h2>
+              <ul className="text-xs text-slate-500 dark:text-gray-400 space-y-1">
+                <li>&#x2022; Individual stock deep-dive reports</li>
+                <li>&#x2022; Side-by-side comparison reports</li>
+                <li>&#x2022; Price, EPS, revenue &amp; margin charts</li>
+                <li>&#x2022; Analyst targets &amp; scorecard</li>
+              </ul>
+            </section>
+          </aside>
+
+          <main className="flex-1 flex flex-col overflow-hidden">
+            <div className="flex-1 overflow-y-auto px-3 sm:px-6 py-4 space-y-4">
+              {messages.length === 0 && (
+                <div className="flex flex-col items-center justify-center h-full text-center gap-4 py-16">
+                  <div className="text-5xl">&#x1F4D1;</div>
+                  <div>
+                    <h2 className="text-xl font-semibold text-slate-700 dark:text-white mb-1">
+                      Start a research session
+                    </h2>
+                    <p className="text-sm text-slate-500 dark:text-gray-400 max-w-xs mx-auto">
+                      Ask for a stock report (e.g. <em>NVDA report</em>) or compare companies (e.g. <em>compare NVDA AMD INTC</em>).
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap justify-center gap-2">
+                    {QUICK_PROMPTS.map(({ label, prompt }) => (
+                      <button
+                        key={label}
+                        type="button"
+                        onClick={() => void sendPrompt(prompt)}
+                        className="text-sm px-4 py-2 rounded-full bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-200 dark:hover:bg-indigo-800 transition-colors"
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {messages.map((msg, i) => (
+                <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                  <div
+                    className={[
+                      'max-w-[90%] sm:max-w-[80%] rounded-2xl px-4 py-3 shadow-sm',
+                      msg.role === 'user'
+                        ? 'bg-indigo-600 text-white rounded-br-sm'
+                        : 'bg-white dark:bg-gray-800 text-slate-800 dark:text-slate-100 border border-slate-100 dark:border-gray-700 rounded-bl-sm',
+                    ].join(' ')}
+                  >
+                    {msg.role === 'assistant' && (
+                      <div className="flex items-center gap-2 mb-1.5">
+                        <span className="text-xs font-medium text-slate-400 dark:text-gray-500">Assistant</span>
+                        {msg.model && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-indigo-50 dark:bg-indigo-900/50 text-indigo-600 dark:text-indigo-300 font-mono">
+                            {msg.model.split('/').pop()}
+                          </span>
+                        )}
+                        {msg.stats && (
+                          <span className="text-[10px] text-slate-300 dark:text-gray-600">
+                            {msg.stats.rounds} rounds &#xB7; {msg.stats.toolCalls} calls
+                          </span>
+                        )}
+                      </div>
+                    )}
+                    {msg.role === 'assistant' ? (
+                      <MarkdownContent content={msg.content} />
+                    ) : (
+                      <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
+                    )}
+                  </div>
+                </div>
+              ))}
+
+              {isLoading && (
+                <div className="flex justify-start">
+                  <div className="bg-white dark:bg-gray-800 border border-slate-100 dark:border-gray-700 rounded-2xl rounded-bl-sm px-4 py-3 shadow-sm">
+                    <div className="flex items-center gap-1.5 text-slate-400 dark:text-gray-500 text-sm">
+                      <span className="animate-pulse">&#x25CF;</span>
+                      <span className="animate-pulse [animation-delay:150ms]">&#x25CF;</span>
+                      <span className="animate-pulse [animation-delay:300ms]">&#x25CF;</span>
+                      <span className="ml-1 text-xs">{model.split('/').pop()} thinking&#8230;</span>
                     </div>
-                  ) : (
-                    <div className="whitespace-pre-wrap">{message.content}</div>
-                  )}
-                </div>
-              </div>
-            ))}
-            {isLoading && (
-              <div className="flex justify-start">
-                <div className="bg-gray-100 dark:bg-gray-700 rounded-lg p-4">
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className="text-xs px-2 py-0.5 rounded-full bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 font-mono">
-                      {model}
-                    </span>
-                    <span className="text-xs text-gray-500 dark:text-gray-400">thinking…</span>
-                  </div>
-                  <div className="flex items-center space-x-2">
-                    <div className="animate-bounce">●</div>
-                    <div className="animate-bounce delay-100">●</div>
-                    <div className="animate-bounce delay-200">●</div>
                   </div>
                 </div>
-              </div>
-            )}
+              )}
               <div ref={messagesEndRef} />
             </div>
-          )}
 
-          <form onSubmit={handleSubmit} className="mt-6">
-            {error && (
-              <div className="mb-2 text-sm text-red-600 dark:text-red-400">
-                ⚠️ {error}
-              </div>
-            )}
-            <div className="flex gap-2">
-              <input
-                type="text"
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                placeholder="Ask for a stock report, sector analysis, or deep-dive metric..."
-                className="flex-1 px-4 py-3 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-                disabled={isLoading}
-              />
-              <button
-                type="submit"
-                disabled={isLoading || !input.trim()}
-                className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors font-semibold"
-              >
-                {isLoading ? 'Thinking...' : 'Send'}
-              </button>
-            </div>
-          </form>
-        </section>
-      </div>
-      </div>
-      {reportPreview && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6">
-        <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-xl max-w-5xl w-full max-h-[90vh] overflow-hidden flex flex-col">
-          <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200 dark:border-gray-700">
-            <div>
-              <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
-                {reportTitle || 'Report'}
-              </h3>
-              <p className="text-xs text-gray-500 dark:text-gray-400">Research report preview</p>
-            </div>
-            <div className="flex items-center gap-3">
-              {reportUrl && (
-                <a
-                  href={reportUrl}
-                  className="text-sm px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 text-blue-600 dark:text-blue-300 hover:bg-blue-50 dark:hover:bg-blue-900/30"
-                >
-                  Download
-                </a>
+            <div className="shrink-0 border-t border-slate-200 dark:border-gray-800 bg-white dark:bg-gray-900 px-3 sm:px-6 py-3">
+              {error && (
+                <p className="text-xs text-red-500 dark:text-red-400 mb-2 px-1">&#x26A0;&#xFE0F; {error}</p>
               )}
-              <button
-                type="button"
-                onClick={() => {
-                  setReportPreview(null);
-                  setReportTitle(null);
-                  setReportUrl(null);
-                }}
-                className="text-sm text-gray-500 hover:text-gray-700 dark:text-gray-300"
-              >
-                Close
-              </button>
+              <form onSubmit={handleSubmit} className="flex items-end gap-2">
+                <textarea
+                  ref={textareaRef}
+                  rows={1}
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  placeholder="Ask for a stock report or compare companies&#8230; (Enter to send, Shift+Enter for newline)"
+                  disabled={isLoading}
+                  className="flex-1 resize-none px-4 py-2.5 rounded-xl border border-slate-200 dark:border-gray-700 bg-slate-50 dark:bg-gray-800 text-slate-900 dark:text-white text-sm placeholder-slate-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-60 min-h-[44px] max-h-40"
+                />
+                <button
+                  type="submit"
+                  disabled={isLoading || !input.trim()}
+                  className="shrink-0 h-11 px-5 rounded-xl bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700 disabled:bg-slate-200 dark:disabled:bg-gray-700 disabled:text-slate-400 dark:disabled:text-gray-500 disabled:cursor-not-allowed transition-colors"
+                >
+                  {isLoading ? '&#8230;' : 'Send'}
+                </button>
+              </form>
+            </div>
+          </main>
+        </div>
+      </div>
+
+      {reportPreview !== null && (
+        <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 p-4 sm:p-8 overflow-y-auto">
+          <div className="relative w-full max-w-5xl bg-white dark:bg-gray-900 rounded-2xl shadow-2xl flex flex-col max-h-[90vh] mt-4 mb-4">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200 dark:border-gray-700 shrink-0">
+              <div className="min-w-0">
+                <h3 className="font-semibold text-slate-900 dark:text-white text-sm truncate">
+                  {reportTitle ?? 'Report'}
+                </h3>
+                <p className="text-xs text-slate-400 dark:text-gray-500">Research report preview</p>
+              </div>
+              <div className="flex items-center gap-2 shrink-0 ml-3">
+                {reportUrl && (
+                  <a
+                    href={reportUrl}
+                    download
+                    className="text-xs px-3 py-1.5 rounded-lg border border-slate-200 dark:border-gray-700 text-indigo-600 dark:text-indigo-300 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 transition-colors"
+                  >
+                    Download
+                  </a>
+                )}
+                <button
+                  type="button"
+                  onClick={() => { setReportPreview(null); setReportTitle(null); setReportUrl(null); }}
+                  className="text-xs px-3 py-1.5 rounded-lg bg-slate-100 dark:bg-gray-800 text-slate-600 dark:text-gray-300 hover:bg-slate-200 dark:hover:bg-gray-700 transition-colors"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+            <div className="overflow-y-auto px-5 py-4 flex-1">
+              {reportLoading ? (
+                <p className="text-sm text-slate-400 dark:text-gray-500">Loading report&#8230;</p>
+              ) : (
+                <div className="prose prose-sm dark:prose-invert max-w-none">
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm]}
+                    components={{
+                      code({ className, children, ...props }) {
+                        const match = /language-(\w+)/.exec(className ?? '');
+                        if (match?.[1] === 'mermaid') return <MermaidBlock chart={String(children).trim()} />;
+                        if (match?.[1] === 'chart' || match?.[1] === 'echarts') {
+                          try {
+                            const option = JSON.parse(String(children)) as Record<string, unknown>;
+                            return <ChartBlock option={option} />;
+                          } catch {
+                            return <code className={className} {...props}>{children}</code>;
+                          }
+                        }
+                        return <code className={className} {...props}>{children}</code>;
+                      },
+                    }}
+                  >
+                    {reportPreview}
+                  </ReactMarkdown>
+                </div>
+              )}
             </div>
           </div>
-          <div className="px-6 py-4 overflow-y-auto">
-            {reportLoading ? (
-              <p className="text-sm text-gray-500 dark:text-gray-400">Loading report…</p>
-            ) : (
-              <div className="prose dark:prose-invert max-w-none">
-                <ReactMarkdown
-                  remarkPlugins={[remarkGfm]}
-                  components={{
-                    code({ className, children, ...props }) {
-                      const match = /language-(\w+)/.exec(className || '');
-                      if (match?.[1] === 'mermaid') {
-                        return <MermaidBlock chart={String(children).trim()} />;
-                      }
-                      if (match?.[1] === 'chart' || match?.[1] === 'echarts') {
-                        try {
-                          const option = JSON.parse(String(children));
-                          return <ChartBlock option={option} />;
-                        } catch {
-                          return (
-                            <code className={className} {...props}>
-                              {children}
-                            </code>
-                          );
-                        }
-                      }
-                      return (
-                        <code className={className} {...props}>
-                          {children}
-                        </code>
-                      );
-                    },
-                  }}
-                >
-                  {reportPreview}
-                </ReactMarkdown>
-              </div>
-            )}
-          </div>
-        </div>
         </div>
       )}
     </>

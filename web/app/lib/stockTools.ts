@@ -20,19 +20,6 @@ export function getToolDefinitionsByName(toolNames?: string[]) {
   return definitions.filter((tool) => allowList.has(tool.function.name));
 }
 
-const stopwords = new Set([
-  'stocks',
-  'stock',
-  'sector',
-  'theme',
-  'report',
-  'the',
-  'and',
-  'for',
-  'of',
-  'in',
-]);
-
 const REPORTS_DIR = process.env.REPORTS_DIR || (process.env.VERCEL ? '/tmp/reports' : 'reports');
 const CACHE_DIR = path.join(REPORTS_DIR, 'cache');
 const CACHE_TTL_MS = Number(process.env.STOCK_CACHE_TTL_MS || 1000 * 60 * 60 * 24 * 7);
@@ -75,24 +62,6 @@ const getCachedValue = (cache: SymbolCache, key: string) => {
 
 const setCachedValue = (cache: SymbolCache, key: string, data: any) => {
   cache[key] = { updatedAt: new Date().toISOString(), data };
-};
-
-const buildSearchQueries = (query: string) => {
-  const cleaned = query.toLowerCase().replace(/[^a-z0-9\s]/g, ' ');
-  const tokens = cleaned.split(/\s+/).filter((token) => token && !stopwords.has(token));
-  const phrases: string[] = [];
-  for (let i = 0; i < tokens.length; i += 1) {
-    if (i + 2 < tokens.length) {
-      phrases.push(`${tokens[i]} ${tokens[i + 1]} ${tokens[i + 2]}`);
-    }
-    if (i + 1 < tokens.length) {
-      phrases.push(`${tokens[i]} ${tokens[i + 1]}`);
-    }
-  }
-  const condensed = phrases.flatMap((phrase) => [phrase.replace(/\s+/g, ''), phrase.replace(/\s+/g, '-')]);
-  phrases.push(...condensed, ...tokens);
-  const unique = Array.from(new Set([query, ...phrases].filter(Boolean)));
-  return unique.slice(0, 8);
 };
 
 const scoreSearchMatch = (query: string, item: any) => {

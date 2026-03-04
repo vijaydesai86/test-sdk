@@ -221,66 +221,9 @@ function parseReportRequest(message: string) {
   return null;
 }
 
-function parseComparisonCompanies(message: string): string[] | null {
-  const match = message.match(/compare(?:\s+companies)?\s+(.+)/i);
-  if (!match) return null;
-  let list = match[1].trim();
-  const cutoffIndex = list.search(/\b(report|over|for|using|with|range|timeframe)\b/i);
-  if (cutoffIndex >= 0) {
-    list = list.slice(0, cutoffIndex).trim();
-  }
-  if (!list) return null;
-  const cleaned = list.replace(/\band\b/gi, ',');
-  const parts = cleaned.includes(',')
-    ? cleaned.split(',')
-    : cleaned.split(/\s+/);
-  const stopwords = new Set(['and', 'stocks', 'stock', 'companies', 'company', 'compare']);
-  const companies = parts
-    .map((item) => item.trim())
-    .filter(Boolean)
-    .map((item) => {
-      const tokens = item
-        .split(/\s+/)
-        .filter((token) => token && !stopwords.has(token.toLowerCase()));
-      return tokens.join(' ');
-    })
-    .filter((item) => item && !stopwords.has(item.toLowerCase()));
-  return companies.length >= 2 ? companies : null;
-}
-
 function parseTimeframe(message: string) {
   const match = message.match(/\b(1w|1m|3m|6m|1y|3y|5y|max)\b/i);
   return match ? match[1].toLowerCase() : null;
-}
-
-function parseSymbolAfterKeyword(message: string, keyword: string) {
-  const regex = new RegExp(`${keyword}\\s+(?:for|of|on)?\\s*([a-zA-Z]{1,6})`, 'i');
-  const match = message.match(regex);
-  if (match) {
-    return { symbol: match[1].toUpperCase() };
-  }
-  return null;
-}
-
-function extractTicker(message: string) {
-  const ignore = new Set(['EPS', 'PE', 'ETF', 'USD', 'AI', 'IPO', 'NAV']);
-  const matches = message.match(/\$?([A-Z]{1,6})\b/g) || [];
-  for (const raw of matches) {
-    const symbol = raw.replace('$', '').toUpperCase();
-    if (!ignore.has(symbol)) {
-      return symbol;
-    }
-  }
-  return null;
-}
-
-function extractQuery(message: string) {
-  const cleaned = message
-    .replace(/\b(show|me|the|price|quote|stock|shares|trend|history|for|of|on|in|report|analyst|rating|recommendation|target|news|sentiment|fundamentals|overview|financials|ratios|earnings|eps|income|balance|cash\s*flow|insider|peers|compare|top|gainers|losers|most|active|today|latest|sector|screen|search|company|companies)\b/gi, ' ')
-    .replace(/[^a-zA-Z&.\s]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-  return cleaned || message.trim();
 }
 
 function buildFallbackModels(requestedModel: string): string[] {

@@ -27,7 +27,7 @@ export async function GET(
         'Content-Disposition': `attachment; filename="${filename}"`,
       },
     });
-  } catch (error: any) {
+  } catch {
     return NextResponse.json({ error: 'Report not found' }, { status: 404 });
   }
 }
@@ -49,8 +49,8 @@ export async function DELETE(
   try {
     await fs.unlink(resolved);
     return NextResponse.json({ success: true });
-  } catch (error: any) {
-    if (error?.code === 'ENOENT') {
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') {
       return NextResponse.json({ error: 'Report not found' }, { status: 404 });
     }
     return NextResponse.json({ error: 'Failed to delete report' }, { status: 500 });
