@@ -162,6 +162,12 @@ const scoreSearchMatch = (query: string, item: any) => {
   if (region.includes('united states')) score += 10;
   if (currency === 'USD') score += 10;
   if (type.includes('equity')) score += 5;
+  // Bonus: stripping common corporate suffixes leaves a name that exactly matches the query.
+  // e.g. "Apple Inc" → "apple" matches query "apple" (+40), but "Apple Hospitality REIT Inc" does not.
+  const strippedName = name
+    .replace(/[\s,]+(inc\.?|corp\.?|corporation|ltd\.?|limited|llc|plc|co\.?|group|holdings?|enterprises?|international|incorporated|technologies?|tech)\s*$/i, '')
+    .trim();
+  if (strippedName === normalized) score += 40;
   return score;
 };
 
