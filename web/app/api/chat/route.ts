@@ -14,7 +14,7 @@ const FALLBACK_MODEL = process.env.COPILOT_FALLBACK_MODEL || DEFAULT_MODEL;
 const AUTO_DOWNGRADE_GPT5 = process.env.AUTO_DOWNGRADE_GPT5 !== 'false';
 const DEFAULT_FALLBACK_MODELS = [
   DEFAULT_MODEL,
-  'anthropic/claude-sonnet-4-6',
+  'openai/gpt-4.1-mini',
   'google/gemini-3-flash',
 ];
 // Allow enough rounds for multi-stock research. With parallel batching, each round
@@ -55,12 +55,14 @@ const SYSTEM_PROMPT = `You are an elite buy-side equity research analyst. Produc
 
 **3. Match depth to the question.**
 - Individual stock report: call generate_stock_report with the ticker symbol.
-- Company comparison report: call generate_comparison_report with the list of tickers.
+- Company comparison report: call generate_comparison_report with the list of ticker symbols.
 - Data-only query: call the relevant data tool (get_stock_price, get_company_overview, etc.) and answer directly.
 
-**4. Never skip a tool** when that data would strengthen the analysis. If a tool fails due to missing API keys, say so explicitly and continue with available data only.
+**4. Resolve company names to tickers first.** If the user mentions company names (e.g. "Google", "Microsoft", "Apple") instead of tickers, call search_stock for each name to find the correct ticker symbol, then use those tickers in generate_stock_report or generate_comparison_report. Never guess a ticker — always confirm it with search_stock.
 
-**5. Report requests.** When a user asks for a report on one stock, call generate_stock_report. When asked to compare companies, call generate_comparison_report. Always return the saved artifact path.
+**5. Never skip a tool** when that data would strengthen the analysis. If a tool fails due to missing API keys, say so explicitly and continue with available data only.
+
+**6. Report requests.** When a user asks for a report on one stock, call generate_stock_report. When asked to compare companies, call generate_comparison_report. Always return the saved artifact path.
 
 **OUTPUT STANDARDS:**
 - Tables for all comparisons of 2+ stocks or metrics — no empty cells.
@@ -76,6 +78,7 @@ const COMPACT_SYSTEM_PROMPT = `You are a buy-side equity research analyst.
 Rules:
 - Fetch data via tools before stating facts.
 - Batch tool calls in a single round.
+- If given company names instead of tickers (e.g. "Google", "Microsoft"), call search_stock for each name first to get the correct ticker symbol, then use those tickers in report/comparison tools.
 - Use tables for comparisons and show calculations.
 - Return report paths when asked for reports.
 
@@ -335,7 +338,9 @@ async function callGitHubModelsAPI(
       err.statusCode = 429;
       throw err;
     }
-    if (response.status === 400) {
+    // GitHub Models returns 400 for most unknown model IDs, but 404 for certain
+    // variants — treat both identically so the error is surfaced cleanly.
+    if (response.status === 400 || response.status === 404) {
       let errorCode = '';
       try {
         const errorJson = JSON.parse(errorText);
@@ -579,7 +584,18 @@ export async function POST(request: NextRequest) {
           break;
         } catch (error: any) {
           const isRateLimit = error?.statusCode === 429;
+          const isUnknownModel = error?.statusCode === 400;
           const isTokensLimit = error?.statusCode === 413;
+          // Unknown model: skip to the next fallback without counting as an attempt —
+          // retrying with the same invalid model ID would always fail.
+          if (isUnknownModel) {
+            if (fallbackIndex < fallbackModels.length - 1) {
+              fallbackIndex += 1;
+              activeModel = fallbackModels[fallbackIndex];
+              continue;
+            }
+            throw error;
+          }
           if (attempt === 0 && isRateLimit) {
             if (fallbackIndex < fallbackModels.length - 1) {
               fallbackIndex += 1;

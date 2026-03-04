@@ -6,9 +6,9 @@ const GITHUB_MODELS_CATALOG_URL = 'https://models.github.ai/catalog/models';
 // Safe fallback used only when the live catalog is unreachable.
 // Contains one confirmed-working model per supported provider.
 const SAFE_DEFAULT = [
-  { value: 'openai/gpt-4.1',              label: 'OpenAI GPT-4.1',        rateLimitTier: 'high' },
-  { value: 'anthropic/claude-sonnet-4-6', label: 'Claude Sonnet 4.6',     rateLimitTier: 'low'  },
-  { value: 'google/gemini-3-flash',       label: 'Gemini 3 Flash',        rateLimitTier: 'low'  },
+  { value: 'openai/gpt-4.1',       label: 'OpenAI GPT-4.1',      rateLimitTier: 'high' },
+  { value: 'openai/gpt-4.1-mini',  label: 'OpenAI GPT-4.1 Mini', rateLimitTier: 'low'  },
+  { value: 'google/gemini-3-flash', label: 'Gemini 3 Flash',      rateLimitTier: 'low'  },
 ];
 
 export async function GET() {
