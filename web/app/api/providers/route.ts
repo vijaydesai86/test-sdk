@@ -4,25 +4,7 @@ const GITHUB_MODELS_CATALOG_URL = 'https://models.github.ai/catalog/models';
 
 const SAFE_DEFAULT = [
   { value: 'openai/gpt-4.1', label: 'OpenAI GPT-4.1', rateLimitTier: 'high' },
-  { value: 'anthropic/claude-sonnet-4-6', label: 'Claude Sonnet 4.6', rateLimitTier: 'low' },
-  { value: 'google/gemini-3-flash', label: 'Gemini 3 Flash', rateLimitTier: 'low' },
 ];
-
-const DEFAULT_PROXY_MODELS = [
-  'gpt-4.1',
-  'gpt-4.1-mini',
-  'gpt-4o-mini',
-  'gpt-5-mini',
-];
-
-const normalizeProxyModels = (raw?: string | null) => {
-  const models = (raw || '')
-    .split(',')
-    .map((item) => item.trim())
-    .filter(Boolean);
-  const list = models.length > 0 ? models : DEFAULT_PROXY_MODELS;
-  return list.map((model) => ({ value: model, label: model }));
-};
 
 const fetchGithubModels = async () => {
   const githubToken =
@@ -83,8 +65,6 @@ const fetchGithubModels = async () => {
 export async function GET() {
   try {
     const githubModels = await fetchGithubModels();
-    const proxyModels = normalizeProxyModels(process.env.OPENAI_PROXY_MODELS);
-    const hasProxyKey = Boolean(process.env.OPENAI_API_KEY || process.env.OPENAI_TOKEN);
 
     return NextResponse.json({
       providers: [
@@ -93,13 +73,6 @@ export async function GET() {
           label: 'GitHub Models',
           available: true,
           models: githubModels,
-        },
-        {
-          id: 'openai-proxy',
-          label: 'OpenAI Proxy',
-          available: hasProxyKey,
-          models: proxyModels,
-          details: hasProxyKey ? undefined : 'Set OPENAI_API_KEY in your environment.',
         },
       ],
     });

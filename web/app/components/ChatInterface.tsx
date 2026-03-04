@@ -29,7 +29,7 @@ interface ModelOption {
 }
 
 interface ProviderOption {
-  id: 'github' | 'openai-proxy';
+  id: 'github';
   label: string;
   available: boolean;
   details?: string;
