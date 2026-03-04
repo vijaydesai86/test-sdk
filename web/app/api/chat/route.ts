@@ -1173,6 +1173,8 @@ export async function POST(request: NextRequest) {
     let rounds = 0;
     let totalToolCalls = 0;
     let assistantContent: string | null = null;
+    // Capture the first report artifact produced by any generate_*_report tool call
+    let reportArtifact: { filename: string; content: string; downloadUrl: string } | null = null;
     let activeModel = requestedModel;
     let activeProvider: 'github' | 'openai-proxy' = provider === 'openai-proxy' ? 'openai-proxy' : 'github';
     if (AUTO_DOWNGRADE_GPT5 && /gpt-5/i.test(activeModel) && activeProvider === 'github') {
@@ -1262,6 +1264,20 @@ export async function POST(request: NextRequest) {
             const toolName = toolCall.function.name;
             const toolArgs = JSON.parse(toolCall.function.arguments);
             const toolResult = await executeTool(toolName, toolArgs, stockService);
+            // Capture report artifact from any generate_*_report tool call before compacting
+            if (
+              !reportArtifact &&
+              toolResult.success &&
+              toolResult.data?.filename &&
+              toolResult.data?.content &&
+              toolResult.data?.downloadUrl
+            ) {
+              reportArtifact = {
+                filename: toolResult.data.filename,
+                content: toolResult.data.content,
+                downloadUrl: toolResult.data.downloadUrl,
+              };
+            }
             return {
               role: 'tool' as const,
               tool_call_id: toolCall.id,
@@ -1300,6 +1316,7 @@ export async function POST(request: NextRequest) {
       sessionId: currentSessionId,
       model: activeModel,
       provider: activeProvider,
+      report: reportArtifact,
       stats: {
         rounds,
         toolCalls: totalToolCalls,
