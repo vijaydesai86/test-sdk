@@ -1,6 +1,23 @@
-# AGENT.md — Technical Reference for Copilot Agents & Automated Workflows
+# AGENT.md — Architecture Reference for Copilot Agents & Developers
 
-> This file is the authoritative technical reference for any AI agent (GitHub Copilot, automated PR bots, etc.) working on this repository. Read this before making any code changes.
+> **Authoritative reference for every agent or developer working in this repository.**  
+> Read this before touching any code. The architecture has specific opinions — understand them before changing anything.
+
+---
+
+## 🧠 Core Philosophy
+
+> **The LLM is the intelligence. Tools are data sources. The LLM gathers, reasons, fills gaps, and writes every report itself.**
+
+This is not a system where a backend function assembles a report from data and hands it to the LLM to narrate. Instead:
+
+- The LLM decides what data it needs.
+- It calls individual, granular data tools to fetch that data.
+- It synthesises the raw results using its own reasoning.
+- It writes the full markdown report itself.
+- It saves the artifact via `save_report(title, content)`.
+
+This design maximises report quality (the LLM can reason about gaps, spot inconsistencies, and apply judgment) while keeping the backend simple (tools are pure data fetchers with no report logic).
 
 ---
 
@@ -8,249 +25,218 @@
 
 ```
 test-sdk/
-├── src/                        # CLI application (Node.js / TypeScript)
-│   ├── index.ts                # CLI entry point (REPL loop)
-│   ├── stockTools.ts           # Tool definitions for CLI
-│   ├── stockDataService.ts     # Stock data API client (CLI version)
-│   └── reportGenerator.ts     # Report builder (CLI version)
-├── web/                        # Next.js 16 web application (primary product)
+├── src/                        # CLI application
+├── web/                        # Next.js 16 web app (primary product)
 │   ├── app/
-│   │   ├── api/
-│   │   │   ├── chat/route.ts   # POST /api/chat  — LLM orchestration + tool routing
-│   │   │   ├── reports/[filename]/route.ts  — GET/DELETE report files
-│   │   │   ├── providers/      # GET /api/providers — model catalog
-│   │   │   ├── health/         # GET /api/health
-│   │   │   └── models/         # GET /api/models
-│   │   ├── components/
-│   │   │   └── ChatInterface.tsx  # Main React UI (chat + sidebar + report modal)
-│   │   ├── lib/
-│   │   │   ├── stockDataService.ts   # Stock data provider abstraction
-│   │   │   ├── stockTools.ts         # Tool definitions + executeTool() dispatcher
-│   │   │   └── reportGenerator.ts    # Markdown + ECharts report builders
-│   │   ├── globals.css         # Tailwind base + prose/report styles
-│   │   ├── layout.tsx          # Root layout (metadata, viewport)
-│   │   └── page.tsx            # Root page (renders ChatInterface)
-│   ├── public/reports/         # Static sample reports
+│   │   ├── api/chat/route.ts   # LLM orchestration + tool routing
+│   │   ├── components/ChatInterface.tsx
+│   │   └── lib/
+│   │       ├── stockDataService.ts   # Data provider abstraction (AV / Finnhub / Hybrid)
+│   │       ├── stockTools.ts         # Tool schemas, executeTool(), caching helpers
+│   │       └── reportGenerator.ts    # Fallback/legacy report builders only
 │   └── package.json
 ├── AGENT.md                    # ← this file
 ├── README.md
-├── QUICKSTART.md
-└── vercel.json
+└── QUICKSTART.md
 ```
 
 ---
 
-## 🧠 Core Architecture
+## 🔄 Report Workflow
 
-### Request Flow
+The complete flow for a user asking for any equity report:
 
 ```
-User message (browser)
-  → POST /api/chat
-    → parseReportRequest()   — fast-path for obvious sector/all-caps-ticker reports
-    → parseComparisonCompanies()  — detect "compare X and Y" pattern
-    → [direct tool dispatch] — for clearly-typed requests (price, news, etc.)
-    → [LLM tool-calling loop] — for everything else (GitHub Models / OpenAI proxy)
-         ↓ tool calls
-       executeTool(name, args, stockService)
-         ↓ results fed back to LLM
-       repeat until no more tool calls
-  → JSON response { response, sessionId, model, report?, stats }
+User message
+  → POST /api/chat (route.ts)
+      → parseReportRequest()       fast-path: sector keywords / all-caps tickers
+      → selectToolNames(message)   picks tool set; isReport → REPORT_TOOL_NAMES
+      ┌─ LLM tool-calling loop (MAX_TOOL_ROUNDS = 30) ──────────────────────────┐
+      │  Round 1: LLM fires ALL data tools for all requested stocks IN PARALLEL  │
+      │  Round 2+: LLM makes targeted calls to fill any null / N/A fields        │
+      │  Final round: LLM calls save_report(title, markdownItWrote)              │
+      └─────────────────────────────────────────────────────────────────────────┘
+  → Artifact captured from save_report result → Artifacts panel in UI
 ```
 
-### Ticker Resolution Strategy
+### Why parallel rounds?
 
-**Critical rule**: Never pass raw user input (company names) directly to data APIs. Always resolve first.
+Firing all tools simultaneously (one round per LLM iteration) keeps latency low while respecting the LLM's ability to scan results and decide what follow-up calls are actually needed. The LLM does not guess — it fetches, inspects, then fetches again for any gaps.
 
-- **All-caps 1–5 char input** (e.g. `AAPL`): routed directly as a ticker.
-- **Company name / mixed case** (e.g. `Apple`, `Microsoft`): falls through to LLM. The LLM calls `search_stock` first, gets the ticker, then calls the report tool with the correct symbol.
-- **`resolveSymbolFromQuery(stockService, query)`** (`stockTools.ts`): used inside tool handlers to resolve names → tickers via `searchStock()` + fuzzy scoring. Called by `generate_stock_report` and `generate_comparison_report`.
-- **`scoreSearchMatch(query, item)`**: scoring function — exact symbol match = 100 pts, name prefix = 70 pts, name contains = 50 pts, US region/USD = +10 each. Score ≥ 60 needed for non-ambiguous resolution.
+---
+
+## 🛠️ Tool System (`web/app/lib/stockTools.ts`)
+
+### Key Functions
+
+| Function | Purpose |
+|---|---|
+| `buildToolDefinitions()` | Returns all tool schemas (passed to LLM on each request) |
+| `getToolDefinitionsByName(names)` | Filters to an allowed subset |
+| `executeTool(name, args, service)` | Central dispatcher; routes tool name → handler |
+| `cacheToolResult(symbol, key, data)` | Writes fetched data to per-symbol file cache |
+| `resolveSymbolFromQuery(service, query)` | Resolves company name → ticker via `search_stock` + scoring |
+| `scoreSearchMatch(query, item)` | Scoring: exact symbol = 100, name match = 90/70/50, US/USD bonus |
+
+### Individual Data Tools
+
+These are the tools the LLM calls to gather raw data. Each is a pure data fetcher.
+
+| Tool | Returns |
+|---|---|
+| `search_stock` | Resolve company name → ticker |
+| `get_stock_price` | Current price, change%, volume |
+| `get_company_overview` | PE, EPS, margins, sector, industry, description |
+| `get_basic_financials` | Detailed ratios and metric series |
+| `get_price_history` | OHLCV; range: `1w/1m/3m/6m/1y/3y/5y/max` |
+| `get_earnings_history` | Quarterly EPS actual vs estimate, beat/miss |
+| `get_income_statement` | Revenue, gross profit, operating income, net income (4-qtr) |
+| `get_balance_sheet` | Assets, liabilities, equity, cash, debt |
+| `get_cash_flow` | Operating CF, CapEx, FCF |
+| `get_analyst_ratings` | Strong Buy/Buy/Hold/Sell/Strong Sell counts |
+| `get_analyst_recommendations` | Recommendation trends over time |
+| `get_price_targets` | High/low/mean/median analyst price targets |
+| `get_peers` | Peer tickers |
+| `get_insider_trading` | Recent insider buy/sell transactions |
+| `get_news_sentiment` | Headlines + sentiment scores |
+| `get_company_news` | Recent news articles |
+
+### Saving Reports
+
+| Tool | Purpose |
+|---|---|
+| `save_report` | Accepts `{title, content}` (markdown the LLM wrote), sanitises filename, saves to `REPORTS_DIR`, returns `{filename, content, downloadUrl}` |
+
+### Legacy / Fallback Tools
+
+| Tool | Status | When used |
+|---|---|---|
+| `generate_stock_report` | ⚠️ Legacy — present in `REPORT_TOOL_NAMES` as last-resort fallback only | If ALL individual data tools return errors/nulls and no data can be gathered |
+| `generate_comparison_report` | ⚠️ Legacy — same | Same last-resort scenario for comparison requests |
+| `generate_sector_report` | Active | LLM may call this for sector/theme reports |
+| `generate_peer_report` | Active | LLM may call this for peer-group reports |
+
+> ⚠️ **Do NOT call `generate_stock_report` or `generate_comparison_report` for normal user-facing reports.** They are included in `REPORT_TOOL_NAMES` solely so the LLM has a last-resort escape hatch when all individual data tools fail. In the happy path the LLM collects data via the individual tools above, reasons over it, and writes the report itself via `save_report`. Calling a generator tool short-circuits LLM reasoning and produces template-only output with no qualitative analysis.
+
+---
+
+## 📐 Report Structure
+
+The LLM writes these sections itself from the data it collected. These are the expected structures — do not deviate when adding prompts or modifying the system prompt.
+
+### Single-Stock Report
+
+1. **Snapshot** — price, change%, market cap, sector, industry, 52-week range
+2. **Business** — description, business model, peer set
+3. **Key Metrics** — PE, EPS, gross/op margin, ROE, revenue growth, FCF yield, net debt/equity
+4. **Financials** — income statement 4-quarter table, balance sheet, FCF calculation
+5. **Earnings Trend** — EPS actual vs estimate, beat/miss, last 4 quarters
+6. **Analyst View** — buy/hold/sell counts, mean target, upside%
+7. **Risks** — macro, competitive, regulatory, company-specific
+8. **Scorecard** — Growth / Profitability / Valuation / Momentum + overall verdict
 
 ### Comparison Report
 
-- Accepts up to **10** company names or tickers.
-- Each name resolved independently via `resolveSymbolFromQuery`.
-- Ambiguous names return an error listing candidates.
+1. **Snapshot Table** — name, ticker, price, change%, market cap, sector
+2. **Key Metrics Table** — PE, EPS, gross margin, op margin, ROE, revenue growth
+3. **Balance & Cash Table** — total assets, debt, cash, FCF
+4. **Analyst View** — mean target, upside%, buy/hold/sell per company
+5. **Verdict** — winner per category + overall pick with rationale
 
 ---
 
-## 🛠️ Tool System
+## 🌐 Data Layer (`web/app/lib/stockDataService.ts`)
 
-### Tool Definitions (`web/app/lib/stockTools.ts`)
+### Three Providers
 
-All tools defined in `buildToolDefinitions()` and dispatched in `executeTool()`. Key tools:
+| Provider | Class | When used |
+|---|---|---|
+| Alpha Vantage | `AlphaVantageService` | `STOCK_DATA_PROVIDER=alphavantage` (default) |
+| Finnhub | `FinnhubService` | `STOCK_DATA_PROVIDER=finnhub` |
+| Hybrid | `HybridStockDataService` | `STOCK_DATA_PROVIDER=hybrid` **or** `FINNHUB_API_KEY` set alongside AV key (auto-upgrade) |
 
-| Tool | Description |
-|---|---|
-| `search_stock` | Search US stock by name or ticker |
-| `get_stock_price` | Current price, change, volume |
-| `get_company_overview` | Fundamentals: PE, EPS, margins, sector, description |
-| `get_basic_financials` | Detailed ratios and metric series |
-| `get_price_history` | OHLCV data; range: `1w/1m/3m/6m/1y/3y/5y/max` |
-| `get_earnings_history` | Quarterly EPS with beat/miss |
-| `get_income_statement` | Revenue, gross profit, operating income, net income |
-| `get_balance_sheet` | Assets, liabilities, equity, cash, debt |
-| `get_cash_flow` | Operating CF, CapEx, FCF |
-| `get_analyst_ratings` | Strong Buy/Buy/Hold/Sell/Strong Sell counts + target |
-| `get_price_targets` | High/low/mean/median analyst targets |
-| `get_peers` | Peer tickers for a stock |
-| `get_news_sentiment` | News headlines + sentiment scores |
-| `get_company_news` | Recent news articles |
-| `search_news` | Keyword news search |
-| `get_sector_performance` | 11 GICS sectors across 1D/5D/1M/3M/YTD/1Y |
-| `get_stocks_by_sector` | Stocks by sector name |
-| `screen_stocks` | Advanced screener (sector, industry, market cap) |
-| `get_top_gainers_losers` | Today's top movers |
-| `generate_stock_report` | Full single-stock research report (markdown artifact) |
-| `generate_comparison_report` | Multi-company comparison (2–10 companies) |
-| `generate_sector_report` | Sector/theme research report |
-| `generate_peer_report` | Peer comparison report |
+### Auto-Upgrade to Hybrid
+
+If both `ALPHA_VANTAGE_API_KEY` and `FINNHUB_API_KEY` are present, the service automatically uses `HybridStockDataService` regardless of `STOCK_DATA_PROVIDER`. This ensures the best data coverage without manual configuration.
+
+### Hybrid Merge Logic
+
+`HybridStockDataService.getCompanyOverview` and `getBasicFinancials` merge results from both providers **field-by-field**:
+
+- Primary provider (Alpha Vantage) wins on any non-null, non-`"N/A"` value.
+- Secondary provider (Finnhub) fills any field the primary returned null or `"N/A"` for.
+- This applies recursively to nested metric sub-objects.
 
 ### Caching
 
-- Per-symbol JSON cache in `CACHE_DIR` (`reports/cache/` local, `/tmp/reports/cache/` on Vercel).
-- TTL: `STOCK_CACHE_TTL_MS` env var (default 7 days).
-- Cache hit skips API call entirely (critical for rate-limit management on free Alpha Vantage tier).
+- **Location**: `/tmp/reports/cache/` (Vercel) or `reports/cache/` (local)
+- **Key**: per-symbol JSON file via `loadSymbolCache` / `saveSymbolCache`
+- **TTL**: `STOCK_CACHE_TTL_MS` (default: 7 days)
+- **Written by**: all individual tool handlers via `cacheToolResult(symbol, key, data)` — so pre-fetched data is immediately available to any subsequent call in the same request or later requests
 
 ---
 
-## 📊 Report Generation (`web/app/lib/reportGenerator.ts`)
+## 🗺️ Route Architecture (`web/app/api/chat/route.ts`)
 
-### Report Types
+### Tool Set Selection
 
-| Function | Output |
-|---|---|
-| `buildStockReport(data)` | Full equity research report with charts, KPIs, financials, scorecard |
-| `buildSectorReport(data)` | Sector/theme report with company overview, analyst view, rankings |
-| `buildPeerReport(data)` | Peer comparison with performance chart |
-| `buildComparisonReport(data)` | Side-by-side comparison table + charts for 2–10 companies |
-| `saveReport(content, title)` | Writes markdown to `REPORTS_DIR`; returns `{filePath, filename}` |
+```
+selectToolNames(message)
+  → isReport? (keywords: report/compare/comparison/analysis)
+      Yes → REPORT_TOOL_NAMES   (all individual data tools + save_report +
+                                  generate_sector_report + generate_peer_report)
+      No  → DEFAULT_TOOL_NAMES  (5 basic tools for quick queries)
+  → always includes save_report for report queries
+```
 
-### Chart Rendering
+### LLM Tool-Calling Loop
 
-Charts are embedded as fenced ` ```chart ``` ` blocks containing ECharts JSON options.  
-The `ChartBlock` React component in `ChatInterface.tsx` renders them client-side using `echarts.init()`.  
-Use `buildChartBlock(option)` to create a chart — it calls `applyChartTheme()` automatically.
-
-**Theme**: Transparent background, indigo-first color palette (`#6366f1`, `#10b981`, `#f59e0b`, …), Inter font, dashed grey gridlines.
-
-### Scorecard (`computeScorecard`)
-
-Five components (0–100 each):
-- **Growth** (25%): avg of revenue growth + EPS growth TTM
-- **Profitability** (20%): avg of gross margin + operating margin + ROE
-- **Valuation** (20%): `100 - (PE/50)*100` — lower PE = higher score
-- **Momentum** (15%): `50 + price_change_%` clamped 0–100
-- **Moat** (20%): avg of margin stability + pricing power + analyst conviction
+- `MAX_TOOL_ROUNDS = 30`
+- All tool calls returned in a single LLM round are executed **in parallel**
+- Report artifacts are captured from any tool returning `{filename, content, downloadUrl}`
+- Loop exits when the LLM returns no further tool calls
 
 ---
 
-## 🌐 Data Providers (`web/app/lib/stockDataService.ts`)
+## ⚠️ Critical Rules — What NOT To Do
 
-### Provider Selection
+These constraints exist for correctness and data integrity. Violating them produces broken or hallucinated reports.
 
-Set via `STOCK_DATA_PROVIDER` env var:
-- `alphavantage` (default): Alpha Vantage REST API
-- `finnhub`: Finnhub REST API
-- `hybrid`: Alpha Vantage primary, Finnhub fills gaps
-
-### Alpha Vantage Notes
-
-- Free tier: 5 API calls/minute, 500/day.
-- `quoteSummary`-equivalent endpoints blocked from cloud IPs (Vercel). Only use endpoints that work from cloud:
-  - `TIME_SERIES_DAILY_ADJUSTED` ✅
-  - `OVERVIEW` ✅
-  - `INCOME_STATEMENT` / `BALANCE_SHEET` / `CASH_FLOW` ✅
-  - `EARNINGS` ✅
-  - `SYMBOL_SEARCH` ✅
-- Rate limit detected by: `"Thank you for using Alpha Vantage"` in response body.
-
-### Finnhub Notes
-
-- `getPeers`, `getAnalystRecommendations`, `getBasicFinancials`, `getPriceTargets` use Finnhub when key present.
-- `chart()` endpoint does not require crumb auth — safe from cloud IPs.
-
----
-
-## 🖥️ Frontend (`web/app/components/ChatInterface.tsx`)
-
-### Responsive Layout
-
-| Breakpoint | Layout |
+| Rule | Reason |
 |---|---|
-| Mobile (`< lg`) | Single column; sidebar is a slide-in drawer triggered by hamburger icon |
-| Desktop (`≥ lg`) | Two-column: 256px sidebar + main chat area |
-| Modal (report preview) | Full-screen sheet on mobile, centred dialog on tablet/desktop |
-
-### Key State
-
-| State | Purpose |
-|---|---|
-| `messages` | Conversation history |
-| `sessionId` | Server-side session key for multi-turn context |
-| `savedReports` | Artifacts list (filename + content + downloadUrl) |
-| `reportPreview` | Content of currently-open report modal |
-| `sidebarOpen` | Mobile drawer toggle |
-
-### Auto-resize textarea
-
-The message input auto-expands up to 128px (8 lines) then scrolls. Reset on send.
+| **Never call `generate_stock_report` or `generate_comparison_report` for user-facing reports** | They bypass LLM reasoning and produce lower-quality, template-filled output |
+| **Never pass raw company names to data APIs** | APIs require exact tickers — always resolve via `search_stock` first |
+| **Never invent, estimate, or guess data** | If a field is unavailable after exhausting relevant tools, mark it genuinely unavailable — do not fabricate values |
+| **Never mark a field N/A without trying all relevant tools first** | Multiple tools may cover the same field; exhaust them before giving up |
 
 ---
 
 ## 🔑 Environment Variables
 
-| Variable | Required | Description |
-|---|---|---|
-| `GITHUB_TOKEN` | Yes (GitHub provider) | PAT with Models read permission |
-| `ALPHA_VANTAGE_API_KEY` | Yes (alphavantage/hybrid) | Free from alphavantage.co |
-| `FINNHUB_API_KEY` | Yes (finnhub/hybrid) | Free from finnhub.io |
-| `OPENAI_API_KEY` | No | For openai-proxy provider |
-| `STOCK_DATA_PROVIDER` | No | `alphavantage` (default) / `finnhub` / `hybrid` |
-| `COPILOT_MODEL` | No | Default LLM model (default: `openai/gpt-4.1`) |
-| `COPILOT_FALLBACK_MODEL` | No | Fallback if primary fails |
-| `REPORTS_DIR` | No | Report output directory (auto-set for Vercel) |
-| `STOCK_CACHE_TTL_MS` | No | Cache TTL in ms (default: 7 days) |
-| `MAX_TOOL_ROUNDS` | No | Max LLM tool-call rounds per request (default: 30) |
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `GITHUB_TOKEN` | ✅ | — | PAT with GitHub Models read permission |
+| `ALPHA_VANTAGE_API_KEY` | ✅ (AV/hybrid) | — | Free tier from alphavantage.co |
+| `FINNHUB_API_KEY` | ✅ (Finnhub/hybrid) | — | Free tier from finnhub.io; setting this alongside AV auto-enables hybrid |
+| `STOCK_DATA_PROVIDER` | No | `alphavantage` | `alphavantage` / `finnhub` / `hybrid` |
+| `COPILOT_MODEL` | No | `openai/gpt-4.1` | LLM model for report generation |
+| `REPORTS_DIR` | No | `/tmp/reports` | Output directory for saved reports |
+| `STOCK_CACHE_TTL_MS` | No | `604800000` (7 days) | Per-symbol cache TTL in milliseconds |
 
 ---
 
-## 🏗️ Build & Dev
+## 🏗️ Build Commands
 
 ```bash
-# Web app
-cd web
-npm install
-npm run dev          # http://localhost:3000
-npm run build        # production build (Next.js)
-npm run lint         # ESLint
+# Web app (primary product)
+cd web && npm install
+npm run dev        # http://localhost:3000
+npm run build      # Production build
+npm run lint       # ESLint
 
 # CLI (optional)
-cd ..
-npm install
-npm run build        # tsc
-npm run dev          # REPL
+cd src && npm install && npm run build
 ```
-
----
-
-## ⚡ Vercel Deployment
-
-- **Root directory**: `web`
-- **Framework**: Next.js (auto-detected)
-- **Function timeout**: 300s (`maxDuration = 300` in chat route)
-- **Runtime**: `nodejs`
-- Reports written to `/tmp/reports/` (ephemeral — lost on cold start; download links work within the same instance lifetime)
-
----
-
-## 🔒 Security Notes
-
-- No user input is passed directly to stock API calls — always goes through `resolveSymbolFromQuery` or LLM tool-calling.
-- Session data stored in server-side in-memory `Map` (cleared on cold start). No PII persisted.
-- GitHub token used only for GitHub Models API calls; never exposed to the client.
-- CORS: Next.js default (same-origin only for API routes).
 
 ---
 
@@ -258,18 +244,27 @@ npm run dev          # REPL
 
 ### Adding a new data tool
 
-1. Add tool definition object to `buildToolDefinitions()` in `stockTools.ts`.
-2. Add a `case 'tool_name':` handler in `executeTool()`.
-3. Add the tool name to `REPORT_TOOL_NAMES` or `DEFAULT_TOOL_NAMES` in `route.ts` as appropriate.
-4. Implement the data method in `stockDataService.ts`.
+1. Add the tool schema to `buildToolDefinitions()` in `stockTools.ts`.
+2. Add a `case 'tool_name':` handler in `executeTool()` — call `cacheToolResult()` before returning.
+3. Implement the data method in `stockDataService.ts` for all three providers (or add a sensible fallback).
+4. Add the tool name to `REPORT_TOOL_NAMES` in `route.ts`.
+5. **Do not add report-building logic to the handler** — the LLM does that.
 
-### Adding a new report type
+### Adding a new provider
 
-1. Define the data interface in `reportGenerator.ts`.
-2. Implement `buildXxxReport(data)` function.
-3. Add a tool entry (e.g. `generate_xxx_report`) that calls `buildXxxReport` and `saveReport`.
-4. Add to `REPORT_TOOL_NAMES` in `route.ts`.
+1. Create a class implementing the `StockDataService` interface in `stockDataService.ts`.
+2. Add a branch to the provider factory at the bottom of the file.
+3. Update the `STOCK_DATA_PROVIDER` env var documentation.
 
-### Changing the chart palette
+### Modifying report structure
 
-Edit `applyChartTheme()` in `reportGenerator.ts` — the `color` array is the ECharts series color list.
+Update the system prompt in `route.ts` (or the prompt injected before the LLM loop) to reflect the new expected sections. The LLM generates the content — there is no template to update in `reportGenerator.ts` for user-facing reports.
+
+---
+
+## ⚡ Deployment (Vercel)
+
+- **Root directory**: `web`
+- **Framework**: Next.js (auto-detected)
+- **Function timeout**: 300 s (`maxDuration = 300` in chat route — required for multi-round tool loops)
+- **Reports**: written to `/tmp/reports/` (ephemeral; download links valid within the same instance lifetime)
