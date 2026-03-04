@@ -86,7 +86,7 @@ const scoreSearchMatch = (query: string, item: any) => {
 
 // Well-known company names that are commonly used in prompts but whose ticker symbols
 // are not obvious from search scoring (e.g. "Google" → Alphabet/GOOGL).
-const WELL_KNOWN_TICKERS: Record<string, string> = {
+export const WELL_KNOWN_TICKERS: Record<string, string> = {
   'google': 'GOOGL',
   'alphabet': 'GOOGL',
   'microsoft': 'MSFT',

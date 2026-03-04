@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { NextRequest, NextResponse } from 'next/server';
-import { getToolDefinitionsByName, executeTool } from '@/app/lib/stockTools';
+import { getToolDefinitionsByName, executeTool, WELL_KNOWN_TICKERS } from '@/app/lib/stockTools';
 import { createStockService, StockDataService } from '@/app/lib/stockDataService';
 
 // GitHub Models API — new endpoint (azure endpoint deprecated Oct 2025)
@@ -186,6 +186,10 @@ function isToolCallLike(content: string | null | undefined): boolean {
   return /"name"\s*:\s*"functions\./.test(content) || /"arguments"\s*:\s*\{/.test(content);
 }
 
+const COMPARE_STOP_WORDS = new Set([
+  'stock', 'stocks', 'company', 'companies', 'compare', 'comparison', 'and', 'the', 'a', 'an', 'of', 'for', 'on', 'report', 'vs', 'versus',
+]);
+
 function parseCompareRequest(message: string): string[] | null {
   const text = message.trim();
   if (!/compar/i.test(text)) return null;
@@ -195,7 +199,14 @@ function parseCompareRequest(message: string): string[] | null {
     .replace(/\s+report.*$/i, '');
   const tokens = tickerPart
     .split(/\s*(?:,|vs\.?|and|\s)\s*/i)
-    .map((t) => t.trim().toUpperCase())
+    .map((t) => t.trim())
+    .filter((t) => t && !COMPARE_STOP_WORDS.has(t.toLowerCase()))
+    .map((t) => {
+      // Resolve well-known company names (e.g. "google" → "GOOGL")
+      const ticker = WELL_KNOWN_TICKERS[t.toLowerCase()];
+      if (ticker) return ticker;
+      return t.toUpperCase();
+    })
     .filter((t) => /^[A-Z]{2,6}$/.test(t));
   return tokens.length >= 2 ? tokens : null;
 }
