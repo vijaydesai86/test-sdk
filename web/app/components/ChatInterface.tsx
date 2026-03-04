@@ -102,6 +102,8 @@ const SAMPLE_REPORT_LINK = '/reports/nvda-sample.md';
 const QUICK_PROMPTS = [
   { label: '📊 NVDA stock report', prompt: 'Generate a full stock report for NVDA' },
   { label: '⚖️ Compare NVDA, AMD, INTC', prompt: 'Compare companies NVDA, AMD, INTC' },
+  { label: '🌍 Compare Google and Microsoft', prompt: 'Compare Google and Microsoft' },
+  { label: '🔍 What is Tesla\'s stock price?', prompt: 'What is Tesla\'s current stock price?' },
 ];
 
 function MarkdownContent({ content }: { content: string }) {
