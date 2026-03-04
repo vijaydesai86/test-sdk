@@ -1,6 +1,6 @@
 # AGENT.md — Architecture Reference for Copilot Agents & Developers
 
-> **Authoritative reference for every agent or developer working in this repository.**  
+> **Authoritative reference for every agent or developer working in this repository.**
 > Read this before touching any code. The architecture has specific opinions — understand them before changing anything.
 
 ---
@@ -9,15 +9,14 @@
 
 > **The LLM is the intelligence. Tools are data sources. The LLM gathers, reasons, fills gaps, and writes every report itself.**
 
-This is not a system where a backend function assembles a report from data and hands it to the LLM to narrate. Instead:
-
 - The LLM decides what data it needs.
 - It calls individual, granular data tools to fetch that data.
 - It synthesises the raw results using its own reasoning.
 - It writes the full markdown report itself.
 - It saves the artifact via `save_report(title, content)`.
+- After saving, it sends **one sentence** in chat confirming the artifact was saved — it does **not** reproduce the report in chat.
 
-This design maximises report quality (the LLM can reason about gaps, spot inconsistencies, and apply judgment) while keeping the backend simple (tools are pure data fetchers with no report logic).
+This design maximises report quality while keeping the backend simple (tools are pure data fetchers with no report logic).
 
 ---
 
@@ -25,43 +24,43 @@ This design maximises report quality (the LLM can reason about gaps, spot incons
 
 ```
 test-sdk/
-├── src/                        # CLI application
+├── src/                        # CLI application (legacy; uses its own copies of service files)
 ├── web/                        # Next.js 16 web app (primary product)
 │   ├── app/
 │   │   ├── api/chat/route.ts   # LLM orchestration + tool routing
 │   │   ├── components/ChatInterface.tsx
 │   │   └── lib/
 │   │       ├── stockDataService.ts   # Data provider abstraction (AV / Finnhub / Hybrid)
-│   │       ├── stockTools.ts         # Tool schemas, executeTool(), caching helpers
-│   │       └── reportGenerator.ts    # Fallback/legacy report builders only
+│   │       ├── stockTools.ts         # Tool schemas, executeTool(), save_report handler
+│   │       └── reportGenerator.ts    # saveReport() only — persists markdown to disk
 │   └── package.json
 ├── AGENT.md                    # ← this file
-├── README.md
-└── QUICKSTART.md
+├── CHANGELOG.md
+└── README.md
 ```
 
 ---
 
 ## 🔄 Report Workflow
 
-The complete flow for a user asking for any equity report:
-
 ```
 User message
   → POST /api/chat (route.ts)
-      → parseReportRequest()       fast-path: sector keywords / all-caps tickers
-      → selectToolNames(message)   picks tool set; isReport → REPORT_TOOL_NAMES
+      → selectToolNames(message)   isReport? → REPORT_TOOL_NAMES; else DEFAULT_TOOL_NAMES
       ┌─ LLM tool-calling loop (MAX_TOOL_ROUNDS = 30) ──────────────────────────┐
       │  Round 1: LLM fires ALL data tools for all requested stocks IN PARALLEL  │
       │  Round 2+: LLM makes targeted calls to fill any null / N/A fields        │
       │  Final round: LLM calls save_report(title, markdownItWrote)              │
       └─────────────────────────────────────────────────────────────────────────┘
-  → Artifact captured from save_report result → Artifacts panel in UI
+  → Artifact captured from save_report result
+  → Report modal auto-opens in browser
+  → Chat response = one-sentence confirmation only
 ```
 
-### Why parallel rounds?
+### isReport detection
 
-Firing all tools simultaneously (one round per LLM iteration) keeps latency low while respecting the LLM's ability to scan results and decide what follow-up calls are actually needed. The LLM does not guess — it fetches, inspects, then fetches again for any gaps.
+`selectToolNames` sets `isReport = true` when the message contains any of:
+`report` · `compare` · `comparison` · `analysis` · `analyses` · `research` · `deep-dive`
 
 ---
 
@@ -74,13 +73,8 @@ Firing all tools simultaneously (one round per LLM iteration) keeps latency low 
 | `buildToolDefinitions()` | Returns all tool schemas (passed to LLM on each request) |
 | `getToolDefinitionsByName(names)` | Filters to an allowed subset |
 | `executeTool(name, args, service)` | Central dispatcher; routes tool name → handler |
-| `cacheToolResult(symbol, key, data)` | Writes fetched data to per-symbol file cache |
-| `resolveSymbolFromQuery(service, query)` | Resolves company name → ticker via `search_stock` + scoring |
-| `scoreSearchMatch(query, item)` | Scoring: exact symbol = 100, name match = 90/70/50, US/USD bonus |
 
-### Individual Data Tools
-
-These are the tools the LLM calls to gather raw data. Each is a pure data fetcher.
+### Individual Data Tools (used in reports)
 
 | Tool | Returns |
 |---|---|
@@ -100,6 +94,8 @@ These are the tools the LLM calls to gather raw data. Each is a pure data fetche
 | `get_insider_trading` | Recent insider buy/sell transactions |
 | `get_news_sentiment` | Headlines + sentiment scores |
 | `get_company_news` | Recent news articles |
+| `search_news` | News search by keyword |
+| `search_companies` | Company search by keyword |
 
 ### Saving Reports
 
@@ -107,22 +103,24 @@ These are the tools the LLM calls to gather raw data. Each is a pure data fetche
 |---|---|
 | `save_report` | Accepts `{title, content}` (markdown the LLM wrote), sanitises filename, saves to `REPORTS_DIR`, returns `{filename, content, downloadUrl}` |
 
-### Legacy / Fallback Tools
+### Tools NOT in REPORT_TOOL_NAMES (reserved for future sector analysis)
 
-All `generate_*_report` tools (`generate_stock_report`, `generate_comparison_report`, `generate_sector_report`, `generate_peer_report`) have been **removed**. The LLM gathers data using individual tools and writes reports itself, then saves via `save_report`.
+`get_sector_performance` · `get_stocks_by_sector` · `screen_stocks` · `get_top_gainers_losers`
+
+These tools exist in `stockDataService.ts` and `stockTools.ts` but are intentionally excluded from both `REPORT_TOOL_NAMES` and `DEFAULT_TOOL_NAMES`. They will be re-enabled when sector analysis is added.
 
 ---
 
 ## 📐 Report Structure
 
-The LLM writes these sections itself from the data it collected. These are the expected structures — do not deviate when adding prompts or modifying the system prompt.
+The LLM writes these sections itself from the data it collected. Do not deviate when modifying prompts.
 
 ### Single-Stock Report
 
 1. **Snapshot** — price, change%, market cap, sector, industry, 52-week range
 2. **Business** — description, business model, peer set
 3. **Key Metrics** — PE, EPS, gross/op margin, ROE, revenue growth, FCF yield, net debt/equity
-4. **Financials** — income statement 4-quarter table, balance sheet, FCF calculation
+4. **Financials** — income statement 4-quarter table, balance sheet, FCF = OpCF − CapEx = $X
 5. **Earnings Trend** — EPS actual vs estimate, beat/miss, last 4 quarters
 6. **Analyst View** — buy/hold/sell counts, mean target, upside%
 7. **Risks** — macro, competitive, regulatory, company-specific
@@ -130,11 +128,19 @@ The LLM writes these sections itself from the data it collected. These are the e
 
 ### Comparison Report
 
-1. **Snapshot Table** — name, ticker, price, change%, market cap, sector
-2. **Key Metrics Table** — PE, EPS, gross margin, op margin, ROE, revenue growth
-3. **Balance & Cash Table** — total assets, debt, cash, FCF
-4. **Analyst View** — mean target, upside%, buy/hold/sell per company
-5. **Verdict** — winner per category + overall pick with rationale
+1. **Data Sources** — per-company table showing provider for each data type
+2. **Snapshot** — Company | Price | Day Change | Market Cap | Sector | Industry | 52W Range
+3. **Scale & Profitability** — Revenue TTM, Gross Margin, Operating Margin, ROE
+4. **Growth & Momentum** — Revenue Growth TTM, EPS Growth TTM, 1y Price Change
+5. **Valuation** — P/E, Forward P/E, PEG, Price/Sales, Price/Book
+6. **Balance Sheet & Cash** — Cash, Total Debt, Net Debt, Free Cash Flow
+7. **Analyst View** — Mean Target, Upside%, SB/B/H/S/SS ratings
+8. **Analyst Picks** — Highest upside + strongest consensus bullets
+9. **Data Coverage** — ✅/❌ table showing chart input availability
+10. **Price Performance (Indexed)** — ECharts line chart, all series start at 100
+11. **Valuation vs Growth** — ECharts scatter: x=Rev Growth%, y=P/E, size=market cap
+12. **Margin Comparison** — ECharts grouped bar: Gross Margin% and Op Margin% per company
+13. **Indicative Allocation** — Composite score + normalized weight + rationale + disclaimer
 
 ---
 
@@ -146,26 +152,16 @@ The LLM writes these sections itself from the data it collected. These are the e
 |---|---|---|
 | Alpha Vantage | `AlphaVantageService` | `STOCK_DATA_PROVIDER=alphavantage` (default) |
 | Finnhub | `FinnhubService` | `STOCK_DATA_PROVIDER=finnhub` |
-| Hybrid | `HybridStockDataService` | `STOCK_DATA_PROVIDER=hybrid` **or** `FINNHUB_API_KEY` set alongside AV key (auto-upgrade) |
-
-### Auto-Upgrade to Hybrid
-
-If both `ALPHA_VANTAGE_API_KEY` and `FINNHUB_API_KEY` are present, the service automatically uses `HybridStockDataService` regardless of `STOCK_DATA_PROVIDER`. This ensures the best data coverage without manual configuration.
+| Hybrid | `HybridStockDataService` | `STOCK_DATA_PROVIDER=hybrid` **or** both AV + Finnhub keys present (auto-upgrade) |
 
 ### Hybrid Merge Logic
 
-`HybridStockDataService.getCompanyOverview` and `getBasicFinancials` merge results from both providers **field-by-field**:
-
-- Primary provider (Alpha Vantage) wins on any non-null, non-`"N/A"` value.
-- Secondary provider (Finnhub) fills any field the primary returned null or `"N/A"` for.
-- This applies recursively to nested metric sub-objects.
+`HybridStockDataService` merges AV + Finnhub field-by-field: AV wins on any non-null, non-`"N/A"` value; Finnhub fills the rest.
 
 ### Caching
 
 - **Location**: `/tmp/reports/cache/` (Vercel) or `reports/cache/` (local)
-- **Key**: per-symbol JSON file via `loadSymbolCache` / `saveSymbolCache`
 - **TTL**: `STOCK_CACHE_TTL_MS` (default: 7 days)
-- **Written by**: all individual tool handlers via `cacheToolResult(symbol, key, data)` — so pre-fetched data is immediately available to any subsequent call in the same request or later requests
 
 ---
 
@@ -175,29 +171,28 @@ If both `ALPHA_VANTAGE_API_KEY` and `FINNHUB_API_KEY` are present, the service a
 
 ```
 selectToolNames(message)
-  → isReport? (keywords: report/compare/comparison/analysis/analyses)
+  → isReport? (keywords: report/compare/comparison/analysis/analyses/research/deep-dive)
       Yes → REPORT_TOOL_NAMES   (all individual data tools + save_report)
-      No  → DEFAULT_TOOL_NAMES  (11 tools for quick queries)
+      No  → DEFAULT_TOOL_NAMES  (quick-query subset, no save_report)
 ```
 
 ### LLM Tool-Calling Loop
 
 - `MAX_TOOL_ROUNDS = 30`
-- All tool calls returned in a single LLM round are executed **in parallel**
-- Report artifacts are captured from any tool returning `{filename, content, downloadUrl}`
+- All tool calls in a single LLM round execute **in parallel**
+- Report artifacts are captured from `save_report` result → auto-open in browser
 - Loop exits when the LLM returns no further tool calls
 
 ---
 
 ## ⚠️ Critical Rules — What NOT To Do
 
-These constraints exist for correctness and data integrity. Violating them produces broken or hallucinated reports.
-
 | Rule | Reason |
 |---|---|
 | **Never pass raw company names to data APIs** | APIs require exact tickers — always resolve via `search_stock` first |
-| **Never invent, estimate, or guess data** | If a field is unavailable after exhausting relevant tools, mark it genuinely unavailable — do not fabricate values |
-| **Never mark a field N/A without trying all relevant tools first** | Multiple tools may cover the same field; exhaust them before giving up |
+| **Never invent, estimate, or guess data** | Mark field `—` only after exhausting all relevant tools |
+| **Never reproduce the report in the chat response** | After `save_report`, one-sentence confirmation only |
+| **Never add report-building logic to tool handlers** | The LLM writes reports; tools are pure data fetchers |
 
 ---
 
@@ -207,7 +202,7 @@ These constraints exist for correctness and data integrity. Violating them produ
 |---|---|---|---|
 | `GITHUB_TOKEN` | ✅ | — | PAT with GitHub Models read permission |
 | `ALPHA_VANTAGE_API_KEY` | ✅ (AV/hybrid) | — | Free tier from alphavantage.co |
-| `FINNHUB_API_KEY` | ✅ (Finnhub/hybrid) | — | Free tier from finnhub.io; setting this alongside AV auto-enables hybrid |
+| `FINNHUB_API_KEY` | ✅ (Finnhub/hybrid) | — | Free tier from finnhub.io; setting alongside AV auto-enables hybrid |
 | `STOCK_DATA_PROVIDER` | No | `alphavantage` | `alphavantage` / `finnhub` / `hybrid` |
 | `COPILOT_MODEL` | No | `openai/gpt-4.1` | LLM model for report generation |
 | `REPORTS_DIR` | No | `/tmp/reports` | Output directory for saved reports |
@@ -223,9 +218,6 @@ cd web && npm install
 npm run dev        # http://localhost:3000
 npm run build      # Production build
 npm run lint       # ESLint
-
-# CLI (optional)
-cd src && npm install && npm run build
 ```
 
 ---
@@ -235,20 +227,19 @@ cd src && npm install && npm run build
 ### Adding a new data tool
 
 1. Add the tool schema to `buildToolDefinitions()` in `stockTools.ts`.
-2. Add a `case 'tool_name':` handler in `executeTool()` — call `cacheToolResult()` before returning.
-3. Implement the data method in `stockDataService.ts` for all three providers (or add a sensible fallback).
+2. Add a `case 'tool_name':` handler in `executeTool()`.
+3. Implement the data method in `stockDataService.ts` for all three providers.
 4. Add the tool name to `REPORT_TOOL_NAMES` in `route.ts`.
-5. **Do not add report-building logic to the handler** — the LLM does that.
+
+### Adding sector analysis (planned)
+
+Re-enable `get_sector_performance`, `get_stocks_by_sector`, `screen_stocks`, `get_top_gainers_losers` by adding them back to `REPORT_TOOL_NAMES` and `DEFAULT_TOOL_NAMES`, add Quick Research entries, and extend the system prompt with sector-report structure.
 
 ### Adding a new provider
 
-1. Create a class implementing the `StockDataService` interface in `stockDataService.ts`.
+1. Create a class implementing `StockDataService` in `stockDataService.ts`.
 2. Add a branch to the provider factory at the bottom of the file.
-3. Update the `STOCK_DATA_PROVIDER` env var documentation.
-
-### Modifying report structure
-
-Update the system prompt in `route.ts` (or the prompt injected before the LLM loop) to reflect the new expected sections. The LLM generates the content — there is no template to update in `reportGenerator.ts` for user-facing reports.
+3. Update the `STOCK_DATA_PROVIDER` env-var documentation.
 
 ---
 
@@ -256,5 +247,5 @@ Update the system prompt in `route.ts` (or the prompt injected before the LLM lo
 
 - **Root directory**: `web`
 - **Framework**: Next.js (auto-detected)
-- **Function timeout**: 300 s (`maxDuration = 300` in chat route — required for multi-round tool loops)
+- **Function timeout**: 300 s (`maxDuration = 300` in chat route)
 - **Reports**: written to `/tmp/reports/` (ephemeral; download links valid within the same instance lifetime)

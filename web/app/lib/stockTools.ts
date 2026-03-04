@@ -220,62 +220,6 @@ function buildToolDefinitions() {
     {
       type: 'function' as const,
       function: {
-        name: 'get_sector_performance',
-        description: 'Get real-time performance for all 11 GICS market sectors across multiple timeframes (1D, 5D, 1M, 3M, YTD, 1Y).',
-        parameters: {
-          type: 'object',
-          properties: {},
-          required: [],
-        },
-      },
-    },
-    {
-      type: 'function' as const,
-      function: {
-        name: 'get_stocks_by_sector',
-        description: 'Screen stocks by sector name using real-time data. For themes, use search_companies or search_news to build a list.',
-        parameters: {
-          type: 'object',
-          properties: {
-            sector: { type: 'string', description: 'Sector name (e.g. Technology, Healthcare)' },
-          },
-          required: ['sector'],
-        },
-      },
-    },
-    {
-      type: 'function' as const,
-      function: {
-        name: 'screen_stocks',
-        description: 'Screen stocks with filters like sector, industry, market cap thresholds, and limit.',
-        parameters: {
-          type: 'object',
-          properties: {
-            sector: { type: 'string', description: 'Sector name filter (optional)' },
-            industry: { type: 'string', description: 'Industry name filter (optional)' },
-            marketCapMoreThan: { type: 'number', description: 'Minimum market cap (optional)' },
-            marketCapLowerThan: { type: 'number', description: 'Maximum market cap (optional)' },
-            limit: { type: 'number', description: 'Max results (optional, default 20)' },
-          },
-          required: [],
-        },
-      },
-    },
-    {
-      type: 'function' as const,
-      function: {
-        name: 'get_top_gainers_losers',
-        description: "Get today's top 10 gaining stocks, top 10 losing stocks, and 10 most actively traded US stocks.",
-        parameters: {
-          type: 'object',
-          properties: {},
-          required: [],
-        },
-      },
-    },
-    {
-      type: 'function' as const,
-      function: {
         name: 'get_news_sentiment',
         description: 'Get the latest news headlines and AI sentiment scores (Bullish/Bearish/Neutral) for a US stock.',
         parameters: {
@@ -487,38 +431,6 @@ export async function executeTool(
           success: true,
           data: cashFlow,
           message: `Retrieved cash flow data for ${symbol}`,
-        };
-      }
-      case 'get_sector_performance': {
-        const sectorPerf = await stockService.getSectorPerformance();
-        return {
-          success: true,
-          data: sectorPerf,
-          message: 'Retrieved sector performance data',
-        };
-      }
-      case 'get_stocks_by_sector': {
-        const sectorStocks = await stockService.getStocksBySector(args.sector || '');
-        return {
-          success: true,
-          data: sectorStocks,
-          message: `Retrieved stocks for sector: ${args.sector}`,
-        };
-      }
-      case 'screen_stocks': {
-        const results = await stockService.screenStocks(args);
-        return {
-          success: true,
-          data: results,
-          message: 'Retrieved stock screener results',
-        };
-      }
-      case 'get_top_gainers_losers': {
-        const gainersLosers = await stockService.getTopGainersLosers();
-        return {
-          success: true,
-          data: gainersLosers,
-          message: 'Retrieved top gainers, losers, and most active stocks',
         };
       }
       case 'get_news_sentiment': {

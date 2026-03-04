@@ -20,6 +20,8 @@
  *   - Marketstack          free: 100 req/month                  MARKETSTACK_API_KEY
  */
 import axios from 'axios';
+import { promises as fs } from 'fs';
+import path from 'path';
 
 // ─── Shared Utilities ──────────────────────────────────────────────────────
 
@@ -48,6 +50,14 @@ interface CacheEntry {
   expiresAt: number;
 }
 
+const DISK_CACHE_DIR = process.env.REPORTS_DIR
+  ? path.join(process.env.REPORTS_DIR, 'cache')
+  : process.env.VERCEL
+  ? '/tmp/reports/cache'
+  : 'reports/cache';
+
+const DISK_CACHE_TTL_MS = Number(process.env.STOCK_CACHE_TTL_MS ?? 7 * 24 * 60 * 60 * 1000);
+
 class ResponseCache {
   private readonly store = new Map<string, CacheEntry>();
 
@@ -62,10 +72,36 @@ class ResponseCache {
   }
 
   async getOrFetch(key: string, ttlMs: number, fetcher: () => Promise<any>): Promise<any> {
-    const cached = this.get(key);
-    if (cached !== null) return cached;
+    // 1. In-memory hit (fastest path)
+    const mem = this.get(key);
+    if (mem !== null) return mem;
+
+    // 2. Disk hit (survives Vercel cold starts — prevents AV rate-limit burn)
+    const fileKey = key.replace(/[^a-zA-Z0-9]/g, '_').slice(0, 120);
+    const filePath = path.join(DISK_CACHE_DIR, `${fileKey}.json`);
+    try {
+      const raw = await fs.readFile(filePath, 'utf8');
+      const { expiresAt, data } = JSON.parse(raw) as { expiresAt: number; data: any };
+      if (expiresAt > Date.now()) {
+        this.set(key, data, ttlMs); // warm memory cache too
+        return data;
+      }
+    } catch {
+      // not cached on disk — fall through to fetch
+    }
+
+    // 3. Fetch from upstream API
     const data = await fetcher();
-    if (ttlMs > 0) this.set(key, data, ttlMs);
+    if (ttlMs > 0) {
+      this.set(key, data, ttlMs);
+      // Write to disk asynchronously — non-fatal if it fails
+      fs.mkdir(DISK_CACHE_DIR, { recursive: true })
+        .then(() => fs.writeFile(
+          filePath,
+          JSON.stringify({ expiresAt: Date.now() + DISK_CACHE_TTL_MS, data }),
+        ))
+        .catch(() => {});
+    }
     return data;
   }
 }

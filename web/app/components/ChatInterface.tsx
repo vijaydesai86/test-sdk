@@ -86,12 +86,8 @@ const isToolCallText = (content: string) =>
 const SAMPLE_REPORT_LINK = '/reports/sample-report.md';
 
 const QUICK_ACTIONS = [
-  { label: '📈 Stock Report', prompt: 'Generate a full stock report for Apple' },
-  { label: '🔍 Compare 5', prompt: 'Compare Apple, Microsoft, Google, Amazon and Meta' },
-  { label: '🌐 Sector', prompt: 'Generate a sector report for AI data center stocks' },
-  { label: '📊 Movers', prompt: "What are today's top gainers and losers?" },
-  { label: '📰 News', prompt: 'Get the latest news for Nvidia' },
-  { label: '🏦 Peers', prompt: 'Show me Tesla peer comparison report' },
+  { label: '📈 Stock Report', prompt: 'Generate a full stock report for ' },
+  { label: '⚖️ Compare Stocks', prompt: 'Compare ' },
 ];
 
 function ReportRenderer({ content }: { content: string }) {
@@ -218,6 +214,10 @@ export default function ChatInterface() {
           if (prev.find((i) => i.filename === data.report.filename)) return prev;
           return [...prev, { filename: data.report.filename, content: data.report.content, downloadUrl: data.report.downloadUrl }];
         });
+        // Auto-open the report in the preview modal
+        setReportPreview(data.report.content);
+        setReportTitle(data.report.filename);
+        setReportUrl(data.report.downloadUrl || null);
       }
     } catch (err: any) {
       setError(err.message);
@@ -293,7 +293,16 @@ export default function ChatInterface() {
           {QUICK_ACTIONS.map((a) => (
             <button
               key={a.label}
-              onClick={() => sendPrompt(a.prompt)}
+              onClick={() => {
+                setInput(a.prompt);
+                setSidebarOpen(false);
+                setTimeout(() => {
+                  if (inputRef.current) {
+                    inputRef.current.focus();
+                    inputRef.current.setSelectionRange(a.prompt.length, a.prompt.length);
+                  }
+                }, 0);
+              }}
               disabled={isLoading}
               className="w-full text-left text-xs px-3 py-2 rounded-lg text-slate-600 dark:text-slate-300 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 hover:text-indigo-700 dark:hover:text-indigo-300 transition-colors disabled:opacity-40"
             >
@@ -362,7 +371,6 @@ export default function ChatInterface() {
         <ul className="text-xs text-slate-400 dark:text-slate-500 space-y-1">
           <li>• Any US stock by name or ticker</li>
           <li>• Up to 10 companies comparison</li>
-          <li>• Sector &amp; thematic analysis</li>
           <li>• Price, earnings, financials &amp; more</li>
         </ul>
       </div>
@@ -490,13 +498,21 @@ export default function ChatInterface() {
                     Equity Research Console
                   </h2>
                   <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 max-w-sm mb-5 leading-relaxed">
-                    Ask about any stock by name or ticker. Compare up to 10 companies, or explore sector themes — company names are resolved to tickers automatically.
+                    Ask about any stock by name or ticker. Compare up to 10 companies — company names are resolved to tickers automatically.
                   </p>
-                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 w-full max-w-md">
+                  <div className="grid grid-cols-2 gap-2 w-full max-w-sm">
                     {QUICK_ACTIONS.map((a) => (
                       <button
                         key={a.label}
-                        onClick={() => sendPrompt(a.prompt)}
+                        onClick={() => {
+                          setInput(a.prompt);
+                          setTimeout(() => {
+                            if (inputRef.current) {
+                              inputRef.current.focus();
+                              inputRef.current.setSelectionRange(a.prompt.length, a.prompt.length);
+                            }
+                          }, 0);
+                        }}
                         disabled={isLoading}
                         className="text-xs px-3 py-2 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:border-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 hover:text-indigo-700 dark:hover:text-indigo-300 transition-all shadow-sm active:scale-95 touch-manipulation"
                       >
@@ -584,7 +600,7 @@ export default function ChatInterface() {
                     el.style.height = 'auto';
                     el.style.height = `${Math.min(el.scrollHeight, MAX_TEXTAREA_HEIGHT_PX)}px`;
                   }}
-                  placeholder="Ask about any stock by name or ticker, compare companies, generate sector reports…"
+                  placeholder="Ask about any stock by name or ticker, or compare companies…"
                   rows={1}
                   disabled={isLoading}
                   className="flex-1 resize-none text-sm px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent disabled:opacity-50 max-h-32 overflow-y-auto"
