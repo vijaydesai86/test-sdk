@@ -689,6 +689,13 @@ export class FinnhubService implements StockDataService {
       if (ttlMs > 0) this.cache.set(cacheKey, { expiresAt: Date.now() + ttlMs, data });
       return data;
     } catch (error: any) {
+      const statusCode = error?.response?.status;
+      // 401/403 means the API key lacks access to this endpoint (free-tier plan limitation).
+      // Use the "unavailable via Finnhub" phrasing so safeFetch silently suppresses it
+      // rather than surfacing it as a user-visible report data gap.
+      if (statusCode === 401 || statusCode === 403) {
+        throw new Error(`Unavailable via Finnhub (plan limitation: ${statusCode})`);
+      }
       throw new Error(`Finnhub request failed: ${error.message}`);
     }
   }
