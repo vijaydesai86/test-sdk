@@ -1134,11 +1134,16 @@ class HybridStockDataService implements StockDataService {
 
 export function createStockService(apiKey?: string): StockDataService {
   const provider = PROVIDER_ENV;
+  const finnhubKey = process.env.FINNHUB_API_KEY;
   if (provider === 'finnhub') {
-    return new FinnhubService();
+    return new FinnhubService(finnhubKey);
   }
   if (provider === 'hybrid') {
-    return new HybridStockDataService(new AlphaVantageService(apiKey), new FinnhubService());
+    if (finnhubKey) {
+      return new HybridStockDataService(new AlphaVantageService(apiKey), new FinnhubService(finnhubKey));
+    }
+    // No Finnhub key configured; fall back to Alpha Vantage only to avoid 403 errors
+    return new AlphaVantageService(apiKey);
   }
   return new AlphaVantageService(apiKey);
 }

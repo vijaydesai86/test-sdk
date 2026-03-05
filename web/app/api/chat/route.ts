@@ -196,7 +196,7 @@ function parseCompareRequest(message: string): string[] | null {
   const tokens = tickerPart
     .split(/\s*(?:,|vs\.?|and|\s)\s*/i)
     .map((t) => t.trim().toUpperCase())
-    .filter((t) => /^[A-Z]{2,6}$/.test(t));
+    .filter((t) => /^[A-Z]{2,30}$/.test(t));
   return tokens.length >= 2 ? tokens : null;
 }
 
