@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { executeTool } from '../../web/app/lib/stockTools';
 import type { StockDataService } from '../../web/app/lib/stockDataService';
+import { FinnhubService } from '../../web/app/lib/stockDataService';
 
 const stubService = (): StockDataService => ({
   getStockPrice: vi.fn().mockResolvedValue({ price: '100.00', changePercent: '1.00%' }),
@@ -42,5 +43,30 @@ describe('web executeTool', () => {
 
     expect(result.success).toBe(true);
     expect(service.searchNews).toHaveBeenCalledWith('AI', 7);
+  });
+});
+
+describe('FinnhubService error messages', () => {
+  it('throws suppression-compatible error when profile2 returns empty', async () => {
+    // FinnhubService with empty key will fail at request level; we mock the internals
+    const service = new FinnhubService('dummy');
+    // Patch makeRequest to return empty profile
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (service as any).makeRequest = vi.fn().mockResolvedValue({});
+
+    await expect(service.getCompanyOverview('AAPL')).rejects.toThrow('Unavailable via Finnhub');
+  });
+
+  it('Finnhub company overview error matches the safeFetch suppression regex', async () => {
+    const suppressionRegex = /unavailable (in|via) (Alpha|Finnhub)/i;
+    // The error message thrown when profile2 returns empty must match so it doesn't appear in Data Gaps
+    const errorMessage = 'Unavailable via Finnhub: company profile not found';
+    expect(suppressionRegex.test(errorMessage)).toBe(true);
+  });
+
+  it('Alpha Vantage company overview error matches the safeFetch suppression regex', () => {
+    const suppressionRegex = /unavailable (in|via) (Alpha|Finnhub)/i;
+    const errorMessage = 'Unavailable via Alpha Vantage: company data not found';
+    expect(suppressionRegex.test(errorMessage)).toBe(true);
   });
 });

@@ -188,37 +188,37 @@ export class AlphaVantageService implements StockDataService {
         return { functionName: 'TIME_SERIES_DAILY', outputsize: 'compact', days: 180 };
       }
       if (['1y', '1year', 'year'].includes(normalizedRange)) {
-        // TIME_SERIES_WEEKLY is a premium AV endpoint; use daily + date filter instead
-        return { functionName: 'TIME_SERIES_DAILY', outputsize: 'full', days: 365 };
+        // TIME_SERIES_WEEKLY returns full history on the free tier; no outputsize param needed
+        return { functionName: 'TIME_SERIES_WEEKLY', outputsize: '', days: 365 };
       }
       if (['3y', '3year'].includes(normalizedRange)) {
-        return { functionName: 'TIME_SERIES_DAILY', outputsize: 'full', days: 365 * 3 };
+        return { functionName: 'TIME_SERIES_WEEKLY', outputsize: '', days: 365 * 3 };
       }
       if (['5y', '5year'].includes(normalizedRange)) {
-        return { functionName: 'TIME_SERIES_DAILY', outputsize: 'full', days: 365 * 5 };
+        return { functionName: 'TIME_SERIES_WEEKLY', outputsize: '', days: 365 * 5 };
       }
       if (['max', 'all'].includes(normalizedRange)) {
-        return { functionName: 'TIME_SERIES_DAILY', outputsize: 'full', days: null };
+        // TIME_SERIES_MONTHLY returns entire price history on the free tier
+        return { functionName: 'TIME_SERIES_MONTHLY', outputsize: '', days: null };
       }
       if (normalizedRange === 'weekly') {
-        // TIME_SERIES_WEEKLY is premium; return all daily data as the closest free-tier equivalent
-        return { functionName: 'TIME_SERIES_DAILY', outputsize: 'full', days: null };
+        return { functionName: 'TIME_SERIES_WEEKLY', outputsize: '', days: null };
       }
       if (normalizedRange === 'monthly') {
-        // TIME_SERIES_MONTHLY is premium; return all daily data as the closest free-tier equivalent
-        return { functionName: 'TIME_SERIES_DAILY', outputsize: 'full', days: null };
+        return { functionName: 'TIME_SERIES_MONTHLY', outputsize: '', days: null };
       }
       return { functionName: 'TIME_SERIES_DAILY', outputsize: 'compact', days: null };
     })();
 
-    const data = await this.makeRequest(
-      {
-        function: rangeConfig.functionName,
-        symbol: symbol.toUpperCase(),
-        outputsize: rangeConfig.outputsize,
-      },
-      { ttlMs: 60 * 60 * 1000 }
-    );
+    const requestParams: Record<string, string> = {
+      function: rangeConfig.functionName,
+      symbol: symbol.toUpperCase(),
+    };
+    // TIME_SERIES_DAILY supports outputsize=compact|full; weekly/monthly always return full history
+    if (rangeConfig.outputsize) {
+      requestParams.outputsize = rangeConfig.outputsize;
+    }
+    const data = await this.makeRequest(requestParams, { ttlMs: 60 * 60 * 1000 });
 
     // Parse the time series data
     const timeSeriesKey = Object.keys(data).find(key => key.includes('Time Series'));
@@ -304,7 +304,7 @@ export class AlphaVantageService implements StockDataService {
         dividendDate: data.DividendDate,
       };
     }
-    throw new Error('Unable to fetch company overview');
+    throw new Error('Unavailable via Alpha Vantage: company data not found');
   }
 
   async getBasicFinancials(symbol: string): Promise<any> {
@@ -767,7 +767,7 @@ export class FinnhubService implements StockDataService {
     if (profile?.error) {
       throw new Error(`Unavailable via Finnhub: ${profile.error}`);
     }
-    if (!profile?.name) throw new Error('Unable to fetch company overview from Finnhub');
+    if (!profile?.name) throw new Error('Unavailable via Finnhub: company profile not found');
     const m = metrics?.metric || {};
     return {
       symbol: symbol.toUpperCase(),
