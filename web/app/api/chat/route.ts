@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { NextRequest, NextResponse } from 'next/server';
-import { getToolDefinitionsByName, executeTool } from '@/app/lib/stockTools';
+import { getToolDefinitionsByName, executeTool, type LLMFiller } from '@/app/lib/stockTools';
 import { createStockService, StockDataService } from '@/app/lib/stockDataService';
 
 // GitHub Models API — new endpoint (azure endpoint deprecated Oct 2025)
@@ -418,6 +418,55 @@ async function callOpenAIProxyAPI(
   return response.json();
 }
 
+/**
+ * Make a targeted LLM call to fill missing stock data fields.
+ * Returns the raw response string (expected to be valid JSON).
+ * Failures are caught and return '{}' so callers can continue without fill data.
+ */
+async function callLLMForDataFill(
+  prompt: string,
+  githubToken: string | undefined,
+  proxyKey: string | undefined,
+  model: string,
+  provider: 'github' | 'openai-proxy'
+): Promise<string> {
+  const fillMessages: ChatMessage[] = [
+    {
+      role: 'system',
+      content:
+        'You are a financial data assistant with knowledge of publicly traded companies. ' +
+        'Provide factual financial data from your training. ' +
+        'Return null for any value you are uncertain about. ' +
+        'Respond ONLY with valid JSON — no markdown, no explanation.',
+    },
+    { role: 'user', content: prompt },
+  ];
+  try {
+    let result: any;
+    if (provider === 'openai-proxy' && proxyKey) {
+      result = await callOpenAIProxyAPI(fillMessages, proxyKey, model, []);
+    } else if (githubToken) {
+      result = await callGitHubModelsAPI(fillMessages, githubToken, model, []);
+    } else {
+      return '{}';
+    }
+    return String(result.choices?.[0]?.message?.content || '{}');
+  } catch {
+    return '{}';
+  }
+}
+
+/** Creates an LLMFiller callback bound to the current model and provider. */
+function createLLMFiller(
+  githubToken: string | undefined,
+  proxyKey: string | undefined,
+  model: string,
+  provider: 'github' | 'openai-proxy'
+): LLMFiller | undefined {
+  if (!githubToken && !proxyKey) return undefined;
+  return (prompt: string) => callLLMForDataFill(prompt, githubToken, proxyKey, model, provider);
+}
+
 export async function POST(request: NextRequest) {
   let provider: string | undefined;
   try {
@@ -464,16 +513,22 @@ export async function POST(request: NextRequest) {
 
       conversationMessages.push({ role: 'user', content: message });
 
+      const directProvider: 'github' | 'openai-proxy' = provider === 'openai-proxy' ? 'openai-proxy' : 'github';
+      const directModel = model || DEFAULT_MODEL;
+      const llmFill = createLLMFiller(githubToken, proxyKey, directModel, directProvider);
+
       const toolResult = reportRequest.type === 'compare'
         ? await executeTool(
             'generate_comparison_report',
             { companies: reportRequest.companies, range: timeframe || '1y' },
-            stockService
+            stockService,
+            { llmFill }
           )
         : await executeTool(
             'generate_stock_report',
             { symbol: reportRequest.symbol, range: timeframe || '5y' },
-            stockService
+            stockService,
+            { llmFill }
           );
 
       if (!toolResult.success) {
@@ -640,11 +695,12 @@ export async function POST(request: NextRequest) {
       // If the model wants to call tools, execute all of them in parallel
       if (assistantMessage.tool_calls && assistantMessage.tool_calls.length > 0) {
         totalToolCalls += assistantMessage.tool_calls.length;
+        const loopLLMFill = createLLMFiller(githubToken, proxyKey, activeModel, activeProvider);
         const toolResults = await Promise.all(
           assistantMessage.tool_calls.map(async (toolCall: { id: string; function: { name: string; arguments: string } }) => {
             const toolName = toolCall.function.name;
             const toolArgs = JSON.parse(toolCall.function.arguments);
-            const toolResult = await executeTool(toolName, toolArgs, stockService);
+            const toolResult = await executeTool(toolName, toolArgs, stockService, { llmFill: loopLLMFill });
             // Collect report artifacts; strip full content from model response to avoid echoing
             if (
               (toolName === 'generate_stock_report' || toolName === 'generate_comparison_report') &&
