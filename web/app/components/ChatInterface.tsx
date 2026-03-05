@@ -103,6 +103,7 @@ const QUICK_PROMPTS = [
   { label: '📊 NVDA stock report', prompt: 'Generate a full stock report for NVDA' },
   { label: '⚖️ Compare NVDA, AMD, INTC', prompt: 'Compare companies NVDA, AMD, INTC' },
   { label: '🏭 AI data center top 5', prompt: 'Give me a sector report for AI data center top 5 companies' },
+  { label: '🔬 Deep semiconductor research', prompt: 'Give me a deep sector research report for semiconductors' },
 ];
 
 function MarkdownContent({ content }: { content: string }) {

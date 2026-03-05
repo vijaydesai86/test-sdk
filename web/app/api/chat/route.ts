@@ -61,6 +61,7 @@ const SYSTEM_PROMPT = `You are an elite buy-side equity research analyst. Produc
 - Individual stock report: call generate_stock_report with the ticker symbol.
 - Company comparison report: call generate_comparison_report with the list of ticker symbols.
 - Sector / thematic analysis: call generate_sector_report with the sector query (e.g. "AI data center"). It identifies the top companies and builds a full comparison report.
+- Deep sector research: call generate_deep_sector_report when the user asks for deep, thorough, or comprehensive sector analysis — it identifies a broad candidate list, maps supply-chain/customer/market/news dependencies, refines the list, and builds a full comparison report.
 - Data-only query: call the relevant data tool (get_stock_price, get_company_overview, etc.) and answer directly.
 
 **4. Resolve company names to tickers first.** If the user mentions company names (e.g. "Google", "Microsoft", "Apple") instead of tickers, call search_stock for each name to find the correct ticker symbol, then use those tickers in generate_stock_report or generate_comparison_report. Never guess a ticker — always confirm it with search_stock.
@@ -87,6 +88,7 @@ Rules:
 - Use tables for comparisons and show calculations.
 - Return report paths when asked for reports.
 - For sector/thematic queries (e.g. "top 5 AI data center companies"), call generate_sector_report with the sector query — it identifies the top companies automatically.
+- For deep/thorough/comprehensive sector research, call generate_deep_sector_report — it maps sector dependencies and refines the company list before building the comparison.
 
 Keep answers concise unless the user requests depth.`;
 
@@ -284,6 +286,7 @@ function selectToolNames() {
     'generate_stock_report',
     'generate_comparison_report',
     'generate_sector_report',
+    'generate_deep_sector_report',
   ];
   return { toolNames };
 }
