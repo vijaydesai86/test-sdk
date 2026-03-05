@@ -133,24 +133,36 @@ web/
 
 | Endpoint | Free | Notes |
 |---|---|---|
-| `/quote` | ✅ | Real-time quote |
-| `/stock/candle` | ✅ | Historical OHLCV |
+| `/quote` | ✅ | Real-time quote. Returns `{c:0,t:0}` for unknown symbols — check `t===0` |
+| `/stock/candle` | ✅ | Historical OHLCV. Returns `{s:"no_data"}` for unknown symbols |
 | `/stock/profile2` | ✅ | Company profile; may return `{}` if symbol unknown |
-| `/stock/metric` | ✅ | Key financial metrics (basic set) |
+| `/stock/metric?metric=all` | ✅ | Key metrics **AND** `series.quarterly.ic/bs/cf` financial statement data |
 | `/stock/recommendation` | ✅ | Analyst recommendations |
 | `/stock/price-target` | ✅ | Analyst price targets |
 | `/stock/earnings` | ✅ | EPS history |
 | `/stock/peers` | ✅ | Peer ticker list |
-| `/stock/insider-transactions` | ✅ | Insider trades (limited history) |
+| `/stock/insider-transactions` | ✅ | Insider trades |
 | `/company-news` | ✅ | Company news articles |
 | `/news-sentiment` | ✅ | Basic news sentiment |
 | `/search` | ✅ | Symbol/company search |
-| `/financials-reported` | ❌ **PREMIUM** | Returns 403; caught and thrown as "Unavailable via Finnhub" |
+| `/news?category=general` | ⚠️ | General news only — no keyword search; `searchNews` throws suppressed error |
+| `/financials-reported` | ❌ **PREMIUM** | Returns 403. **Never call this.** |
+| `/stock/financials` | ❌ **DEPRECATED** | Removed from API. **Never call this.** |
+
+**Finnhub financial statements (income/balance/cashflow) — IMPORTANT:**
+- Use `/stock/metric?metric=all` — the response includes `series.quarterly.ic`, `series.quarterly.bs`, `series.quarterly.cf`
+- Each is a dict of `fieldName → [{period: "YYYY-MM-DD", v: number}]` arrays
+- `FinnhubService.pivotSeries()` pivots these into per-quarter records
+- This is the **same call** already made by `getBasicFinancials`, so it's a cache hit — zero extra API requests
+- Key field names: IC: `revenue`, `grossProfit`, `operatingIncome`, `netIncome`, `ebitda`; BS: `totalAssets`, `totalLiabilities`, `totalEquity`, `cashAndCashEquivalentsAtCarryingValue`, `longTermDebt`; CF: `netCashProvidedByOperatingActivities`, `capitalExpenditures`, `freeCashFlow`, `dividendsPaid`
 
 **Error handling rules:**
 - HTTP 401/403 from Finnhub → thrown as `"Unavailable via Finnhub (plan limitation: …)"` → suppressed by `safeFetch`
 - HTTP 429 from Finnhub → thrown as `"Finnhub rate limit exceeded (429)"` → triggers `rateLimitHit = true`
 - Empty `{}` profile from `/stock/profile2` → thrown as `"Unavailable via Finnhub: company profile not found"` → suppressed
+- `/quote` all-zeros (`t===0`) → thrown as `"Unavailable via Finnhub: no stock price data"` → suppressed
+- `/stock/candle` `s!=="ok"` → thrown as `"Unavailable via Finnhub: price history not available"` → suppressed
+- Empty `series.quarterly` → thrown as `"Unavailable via Finnhub: no income/balance/cashflow data"` → suppressed
 
 ### Error suppression in `safeFetch` (stockTools.ts)
 Errors matching these patterns are silently suppressed (not shown in Data Gaps):
@@ -165,6 +177,13 @@ Rate-limit detection (`isRateLimit`):
 - `/rate limit|too many requests/i` — generic rate-limit
 
 When `isRateLimit` triggers, `rateLimitHit = true` and all remaining fetches are skipped to conserve the 25-call/day budget.
+
+### Hybrid Mode (`STOCK_DATA_PROVIDER=hybrid`)
+- `HybridStockDataService` wraps both `AlphaVantageService` (primary) and `FinnhubService` (fallback)
+- `withFallback()` catches **any exception** from AV and retries the same method on Finnhub
+- When Finnhub provides data, it tags the result with `__source: 'Finnhub'` so the Data Sources table shows "Finnhub" instead of "Alpha Vantage"
+- If **both** AV and Finnhub fail, the exception propagates to `safeFetch` which records it in Data Gaps (unless suppressed)
+- `searchNews` uses AV only — Finnhub doesn't support keyword search
 
 ---
 

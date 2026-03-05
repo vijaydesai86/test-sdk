@@ -710,7 +710,10 @@ export class FinnhubService implements StockDataService {
 
   async getStockPrice(symbol: string): Promise<any> {
     const data = await this.makeRequest('/quote', { symbol: symbol.toUpperCase() }, 30000);
-    if (!data || data.c === undefined) throw new Error('Unable to fetch stock price from Finnhub');
+    // Finnhub returns { c:0, t:0 } (all zeros) for unknown/invalid symbols — treat as no data
+    if (!data || data.c === undefined || data.c === null || data.t === 0) {
+      throw new Error('Unavailable via Finnhub: no stock price data');
+    }
     return {
       symbol: symbol.toUpperCase(),
       price: data.c?.toString(),
@@ -744,7 +747,7 @@ export class FinnhubService implements StockDataService {
       from: from.toString(),
       to: now.toString(),
     }, 60 * 60 * 1000);
-    if (data.s !== 'ok' || !Array.isArray(data.c)) throw new Error('Unable to fetch price history from Finnhub');
+    if (data.s !== 'ok' || !Array.isArray(data.c)) throw new Error('Unavailable via Finnhub: price history not available');
     const prices = (data.t as number[]).map((ts, i) => ({
       date: new Date(ts * 1000).toISOString().slice(0, 10),
       open: data.o?.[i],
@@ -813,6 +816,32 @@ export class FinnhubService implements StockDataService {
   async getBasicFinancials(symbol: string): Promise<any> {
     const data = await this.makeRequest('/stock/metric', { symbol: symbol.toUpperCase(), metric: 'all' }, 60 * 60 * 1000);
     return { symbol: symbol.toUpperCase(), metric: data.metric || {}, series: data.series || {} };
+  }
+
+  // Pivot Finnhub series.quarterly.ic/bs/cf (per-field time-series arrays) into
+  // per-period records that match the output shape expected by reportGenerator.
+  // series format: { revenue: [{period, v}, ...], grossProfit: [...], ... }
+  private pivotSeries(
+    seriesData: Record<string, Array<{ period: string; v: number }>>,
+    limit: number
+  ): Array<Record<string, unknown>> {
+    const periodSet = new Set<string>();
+    for (const entries of Object.values(seriesData)) {
+      if (Array.isArray(entries)) {
+        for (const { period } of entries) periodSet.add(period);
+      }
+    }
+    const periods = [...periodSet].sort((a, b) => b.localeCompare(a)).slice(0, limit);
+    return periods.map((period) => {
+      const rec: Record<string, unknown> = { period };
+      for (const [field, entries] of Object.entries(seriesData)) {
+        if (Array.isArray(entries)) {
+          const hit = entries.find((e) => e.period === period);
+          if (hit !== undefined) rec[field] = hit.v;
+        }
+      }
+      return rec;
+    });
   }
 
   async getInsiderTrading(symbol: string): Promise<any> {
@@ -915,55 +944,65 @@ export class FinnhubService implements StockDataService {
   }
 
   async getIncomeStatement(symbol: string): Promise<any> {
-    const data = await this.makeRequest('/financials-reported', { symbol: symbol.toUpperCase(), freq: 'quarterly' }, 6 * 60 * 60 * 1000);
-    const reports = (data.data || []).slice(0, 8).map((r: any) => {
-      const ic = r.report?.ic || [];
-      const find = (concept: string) => ic.find((i: any) => i.concept === concept)?.value;
-      return {
-        fiscalQuarter: r.endDate || r.period,
-        totalRevenue: find('us-gaap:Revenues') ?? find('us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax'),
-        grossProfit: find('us-gaap:GrossProfit'),
-        operatingIncome: find('us-gaap:OperatingIncomeLoss'),
-        netIncome: find('us-gaap:NetIncomeLoss'),
-        ebitda: null,
-      };
-    });
-    return { symbol: symbol.toUpperCase(), quarterlyReports: reports };
+    // /financials-reported is premium (403 on free tier). Use /stock/metric series instead —
+    // same request already made by getBasicFinancials so it's a cache hit after the first call.
+    const data = await this.makeRequest('/stock/metric', { symbol: symbol.toUpperCase(), metric: 'all' }, 60 * 60 * 1000);
+    const ic = (data.series?.quarterly?.ic ?? {}) as Record<string, Array<{ period: string; v: number }>>;
+    const rows = this.pivotSeries(ic, 8);
+    if (!rows.length) throw new Error('Unavailable via Finnhub: no income statement data');
+    return {
+      symbol: symbol.toUpperCase(),
+      quarterlyReports: rows.map((r) => ({
+        fiscalQuarter: r.period ?? null,
+        totalRevenue: r.revenue ?? null,
+        grossProfit: r.grossProfit ?? null,
+        operatingIncome: r.operatingIncome ?? null,
+        netIncome: r.netIncome ?? null,
+        ebitda: r.ebitda ?? null,
+      })),
+    };
   }
 
   async getBalanceSheet(symbol: string): Promise<any> {
-    const data = await this.makeRequest('/financials-reported', { symbol: symbol.toUpperCase(), freq: 'quarterly' }, 6 * 60 * 60 * 1000);
-    const reports = (data.data || []).slice(0, 4).map((r: any) => {
-      const bs = r.report?.bs || [];
-      const find = (concept: string) => bs.find((i: any) => i.concept === concept)?.value;
-      return {
-        fiscalQuarter: r.endDate || r.period,
-        totalAssets: find('us-gaap:Assets'),
-        totalLiabilities: find('us-gaap:Liabilities'),
-        totalShareholderEquity: find('us-gaap:StockholdersEquity'),
-        cashAndEquivalents: find('us-gaap:CashAndCashEquivalentsAtCarryingValue'),
-        longTermDebt: find('us-gaap:LongTermDebt'),
-      };
-    });
-    return { symbol: symbol.toUpperCase(), quarterlyReports: reports };
+    const data = await this.makeRequest('/stock/metric', { symbol: symbol.toUpperCase(), metric: 'all' }, 60 * 60 * 1000);
+    const bs = (data.series?.quarterly?.bs ?? {}) as Record<string, Array<{ period: string; v: number }>>;
+    const rows = this.pivotSeries(bs, 4);
+    if (!rows.length) throw new Error('Unavailable via Finnhub: no balance sheet data');
+    return {
+      symbol: symbol.toUpperCase(),
+      quarterlyReports: rows.map((r) => ({
+        fiscalQuarter: r.period ?? null,
+        totalAssets: r.totalAssets ?? null,
+        totalLiabilities: r.totalLiabilities ?? null,
+        totalShareholderEquity: r.totalEquity ?? r.shareholderEquity ?? null,
+        cashAndEquivalents: r.cashAndCashEquivalentsAtCarryingValue ?? r.cashAndEquivalents ?? null,
+        longTermDebt: r.longTermDebt ?? null,
+      })),
+    };
   }
 
   async getCashFlow(symbol: string): Promise<any> {
-    const data = await this.makeRequest('/financials-reported', { symbol: symbol.toUpperCase(), freq: 'quarterly' }, 6 * 60 * 60 * 1000);
-    const reports = (data.data || []).slice(0, 4).map((r: any) => {
-      const cf = r.report?.cf || [];
-      const find = (concept: string) => cf.find((i: any) => i.concept === concept)?.value;
-      const operating = find('us-gaap:NetCashProvidedByUsedInOperatingActivities');
-      const capex = find('us-gaap:PaymentsToAcquirePropertyPlantAndEquipment');
-      return {
-        fiscalQuarter: r.endDate || r.period,
-        operatingCashflow: operating,
-        capitalExpenditures: capex,
-        freeCashFlow: operating && capex ? (Number(operating) - Math.abs(Number(capex))).toString() : 'N/A',
-        dividendPayout: find('us-gaap:PaymentsOfDividends'),
-      };
-    });
-    return { symbol: symbol.toUpperCase(), quarterlyReports: reports };
+    const data = await this.makeRequest('/stock/metric', { symbol: symbol.toUpperCase(), metric: 'all' }, 60 * 60 * 1000);
+    const cf = (data.series?.quarterly?.cf ?? {}) as Record<string, Array<{ period: string; v: number }>>;
+    const rows = this.pivotSeries(cf, 4);
+    if (!rows.length) throw new Error('Unavailable via Finnhub: no cash flow data');
+    return {
+      symbol: symbol.toUpperCase(),
+      quarterlyReports: rows.map((r) => {
+        const operating = r.netCashProvidedByOperatingActivities ?? r.operatingCashFlow ?? null;
+        const capex = r.capitalExpenditures ?? null;
+        return {
+          fiscalQuarter: r.period ?? null,
+          operatingCashflow: operating,
+          capitalExpenditures: capex,
+          freeCashFlow: r.freeCashFlow ??
+            (operating != null && capex != null
+              ? (Number(operating) - Math.abs(Number(capex))).toString()
+              : null),
+          dividendPayout: r.dividendsPaid ?? null,
+        };
+      }),
+    };
   }
 
   async getSectorPerformance(): Promise<any> {
@@ -1017,17 +1056,9 @@ export class FinnhubService implements StockDataService {
   }
 
   async searchNews(_query: string, _days = 30): Promise<any> {
-    const data = await this.makeRequest('/news', { category: 'general' }, 15 * 60 * 1000);
-    const articles = Array.isArray(data) ? data.slice(0, 20) : [];
-    return {
-      articles: articles.map((a: any) => ({
-        datetime: a.datetime ? new Date(a.datetime * 1000).toISOString() : null,
-        headline: a.headline,
-        source: a.source,
-        url: a.url,
-        summary: a.summary,
-      })),
-    };
+    // Finnhub /news only supports category filtering (general/forex/crypto/merger),
+    // not keyword search. Throw a suppressed error rather than returning unrelated results.
+    throw new Error('Unavailable via Finnhub: keyword news search not supported');
   }
 }
 
@@ -1044,7 +1075,7 @@ class HybridStockDataService implements StockDataService {
     } catch {
       const result = await fallbackCall();
       // Tag with source so stockTools.ts correctly attributes Finnhub data in the sources table
-      if (result !== null && result !== undefined && typeof result === 'object' && !Array.isArray(result)) {
+      if (result != null && typeof result === 'object' && !Array.isArray(result)) {
         return { ...(result as object), __source: 'Finnhub' } as T;
       }
       return result;
