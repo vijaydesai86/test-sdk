@@ -188,22 +188,25 @@ export class AlphaVantageService implements StockDataService {
         return { functionName: 'TIME_SERIES_DAILY', outputsize: 'compact', days: 180 };
       }
       if (['1y', '1year', 'year'].includes(normalizedRange)) {
-        return { functionName: 'TIME_SERIES_WEEKLY', outputsize: 'full', days: 365 };
+        // TIME_SERIES_WEEKLY is a premium AV endpoint; use daily + date filter instead
+        return { functionName: 'TIME_SERIES_DAILY', outputsize: 'full', days: 365 };
       }
       if (['3y', '3year'].includes(normalizedRange)) {
-        return { functionName: 'TIME_SERIES_WEEKLY', outputsize: 'full', days: 365 * 3 };
+        return { functionName: 'TIME_SERIES_DAILY', outputsize: 'full', days: 365 * 3 };
       }
       if (['5y', '5year'].includes(normalizedRange)) {
-        return { functionName: 'TIME_SERIES_WEEKLY', outputsize: 'full', days: 365 * 5 };
+        return { functionName: 'TIME_SERIES_DAILY', outputsize: 'full', days: 365 * 5 };
       }
       if (['max', 'all'].includes(normalizedRange)) {
-        return { functionName: 'TIME_SERIES_MONTHLY', outputsize: 'full', days: null };
+        return { functionName: 'TIME_SERIES_DAILY', outputsize: 'full', days: null };
       }
       if (normalizedRange === 'weekly') {
-        return { functionName: 'TIME_SERIES_WEEKLY', outputsize: 'full', days: null };
+        // TIME_SERIES_WEEKLY is premium; return all daily data as the closest free-tier equivalent
+        return { functionName: 'TIME_SERIES_DAILY', outputsize: 'full', days: null };
       }
       if (normalizedRange === 'monthly') {
-        return { functionName: 'TIME_SERIES_MONTHLY', outputsize: 'full', days: null };
+        // TIME_SERIES_MONTHLY is premium; return all daily data as the closest free-tier equivalent
+        return { functionName: 'TIME_SERIES_DAILY', outputsize: 'full', days: null };
       }
       return { functionName: 'TIME_SERIES_DAILY', outputsize: 'compact', days: null };
     })();
@@ -696,6 +699,11 @@ export class FinnhubService implements StockDataService {
       if (statusCode === 401 || statusCode === 403) {
         throw new Error(`Unavailable via Finnhub (plan limitation: ${statusCode})`);
       }
+      // 429 = Finnhub rate limit hit; use a message that isRateLimit() in stockTools
+      // will recognise so rateLimitHit is set and remaining fetches are skipped.
+      if (statusCode === 429) {
+        throw new Error('Finnhub rate limit exceeded (429)');
+      }
       throw new Error(`Finnhub request failed: ${error.message}`);
     }
   }
@@ -753,6 +761,12 @@ export class FinnhubService implements StockDataService {
       this.makeRequest('/stock/profile2', { symbol: symbol.toUpperCase() }, 6 * 60 * 60 * 1000),
       this.makeRequest('/stock/metric', { symbol: symbol.toUpperCase(), metric: 'all' }, 60 * 60 * 1000).catch(() => ({ metric: {} })),
     ]);
+    // Finnhub sometimes returns a 200 OK with an `error` field instead of HTTP 4xx.
+    // Treat this as a plan/access limitation so it gets suppressed rather than shown
+    // in the report's Data Gaps section.
+    if (profile?.error) {
+      throw new Error(`Unavailable via Finnhub: ${profile.error}`);
+    }
     if (!profile?.name) throw new Error('Unable to fetch company overview from Finnhub');
     const m = metrics?.metric || {};
     return {
