@@ -1197,6 +1197,7 @@ export async function executeTool(
           message: `Saved sector report for "${sector}" to ${saved.filePath}`,
         };
       }
+      default:
         return { success: false, error: `Unknown tool: ${toolName}` };
     }
   } catch (error: any) {
