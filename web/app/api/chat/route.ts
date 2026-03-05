@@ -751,7 +751,7 @@ export async function POST(request: NextRequest) {
             const toolResult = await executeTool(toolName, toolArgs, stockService, { llmFill: loopLLMFill });
             // Collect report artifacts; strip full content from model response to avoid echoing
             if (
-              (toolName === 'generate_stock_report' || toolName === 'generate_comparison_report' || toolName === 'generate_sector_report') &&
+              (toolName === 'generate_stock_report' || toolName === 'generate_comparison_report' || toolName === 'generate_sector_report' || toolName === 'generate_deep_sector_report') &&
               toolResult.success && toolResult.data?.filename && toolResult.data?.content
             ) {
               reportArtifacts.push({
