@@ -193,6 +193,11 @@ function parseCompareRequest(message: string): string[] | null {
   const tickerPart = text
     .replace(/^.*?compar(?:e|ison\s+of|ison)?\s+(?:companies?\s+)?/i, '')
     .replace(/\s+report.*$/i, '');
+  // Tokens are already uppercased via .toUpperCase() above.
+  // Allow 2–30 uppercase letters so company names ("MICROSOFT") pass
+  // alongside short tickers ("AMD"). Multi-word names like "PALO ALTO"
+  // split into individual tokens; resolveSymbolFromQuery handles each token
+  // separately via the SYMBOL_SEARCH API.
   const tokens = tickerPart
     .split(/\s*(?:,|vs\.?|and|\s)\s*/i)
     .map((t) => t.trim().toUpperCase())

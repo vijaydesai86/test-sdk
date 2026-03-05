@@ -66,7 +66,10 @@ const setCachedValue = (cache: SymbolCache, key: string, data: any) => {
   cache[key] = { updatedAt: new Date().toISOString(), data };
 };
 
-const scoreSearchMatch = (query: string, item: any) => {
+// Score a search result against the user query.
+// `rank` is the 0-based position in Alpha Vantage's own result list — AV already
+// ranks by relevance, so earlier results get a small bonus to act as tiebreaker.
+const scoreSearchMatch = (query: string, item: any, rank = 0) => {
   const normalized = query.trim().toLowerCase();
   const symbol = String(item?.symbol || '').toLowerCase();
   const name = String(item?.name || '').toLowerCase();
@@ -83,81 +86,23 @@ const scoreSearchMatch = (query: string, item: any) => {
   if (region.includes('united states')) score += 10;
   if (currency === 'USD') score += 10;
   if (type.includes('equity')) score += 5;
+  // Trust Alpha Vantage's own ordering as a tiebreaker (first = best match per AV)
+  score += Math.max(0, 8 - rank * 2);
   return score;
 };
 
-// Well-known company names that are commonly used in prompts but whose ticker symbols
-// are not obvious from search scoring (e.g. "Google" → Alphabet/GOOGL).
-const WELL_KNOWN_TICKERS: Record<string, string> = {
-  'google': 'GOOGL',
-  'alphabet': 'GOOGL',
-  'microsoft': 'MSFT',
-  'apple': 'AAPL',
-  'amazon': 'AMZN',
-  'meta': 'META',
-  'facebook': 'META',
-  'netflix': 'NFLX',
-  'tesla': 'TSLA',
-  'nvidia': 'NVDA',
-  'amd': 'AMD',
-  'intel': 'INTC',
-  'salesforce': 'CRM',
-  'oracle': 'ORCL',
-  'ibm': 'IBM',
-  'qualcomm': 'QCOM',
-  'broadcom': 'AVGO',
-  'paypal': 'PYPL',
-  'adobe': 'ADBE',
-  'spotify': 'SPOT',
-  'uber': 'UBER',
-  'lyft': 'LYFT',
-  'airbnb': 'ABNB',
-  'coinbase': 'COIN',
-  'shopify': 'SHOP',
-  'twitter': 'X',
-  'snap': 'SNAP',
-  'pinterest': 'PINS',
-  'palantir': 'PLTR',
-  'snowflake': 'SNOW',
-  'datadog': 'DDOG',
-  'cloudflare': 'NET',
-  'crowdstrike': 'CRWD',
-  'palo alto': 'PANW',
-  'fortinet': 'FTNT',
-  'boeing': 'BA',
-  'ford': 'F',
-  'gm': 'GM',
-  'general motors': 'GM',
-  'walmart': 'WMT',
-  'target': 'TGT',
-  'costco': 'COST',
-  'home depot': 'HD',
-  'jpmorgan': 'JPM',
-  'jp morgan': 'JPM',
-  'goldman sachs': 'GS',
-  'bank of america': 'BAC',
-  'wells fargo': 'WFC',
-  'visa': 'V',
-  'mastercard': 'MA',
-  'berkshire': 'BRK.B',
-  'johnson & johnson': 'JNJ',
-  'johnson and johnson': 'JNJ',
-  'pfizer': 'PFE',
-  'moderna': 'MRNA',
-  'exxon': 'XOM',
-  'chevron': 'CVX',
-};
+// Strip share-class suffixes so "Alphabet Inc Class A" and "Alphabet Inc Class C"
+// are recognised as the same underlying company.
+const baseCompanyName = (name: string) =>
+  name
+    .replace(/\s+(class\s+[a-z0-9]+|ordinary\s+shares?|adr|preferred|warrants?|rights?|voting).*$/i, '')
+    .trim()
+    .toLowerCase();
 
 const resolveSymbolFromQuery = async (stockService: StockDataService, query: string) => {
   const trimmed = query.trim();
   if (!trimmed) {
     return { ok: false, reason: 'Empty query', candidates: [] as any[] };
-  }
-
-  // Fast path: check well-known company names before hitting the search API
-  const lowerTrimmed = trimmed.toLowerCase();
-  if (WELL_KNOWN_TICKERS[lowerTrimmed]) {
-    return { ok: true, symbol: WELL_KNOWN_TICKERS[lowerTrimmed], candidates: [] };
   }
 
   const stopwordSet = new Set(['stocks', 'stock', 'companies', 'company', 'compare', 'and']);
@@ -174,11 +119,22 @@ const resolveSymbolFromQuery = async (stockService: StockDataService, query: str
       return { ok: false, reason: 'No matches found', candidates: [] };
     }
     const scored = candidates
-      .map((item) => ({ item, score: scoreSearchMatch(trimmed, item) }))
+      .map((item, i) => ({ item, score: scoreSearchMatch(trimmed, item, i) }))
       .sort((a, b) => b.score - a.score);
     const top = scored[0];
     const second = scored[1];
-    const ambiguity = !top || top.score < 60 || (second && top.score - second.score < 10);
+    // Two results are considered share-class variants of the same company (e.g.
+    // GOOGL vs GOOG, BRK.A vs BRK.B) when their base names match.  In that case
+    // we trust Alpha Vantage's ranking and pick the top result without flagging ambiguity.
+    const sameCompany =
+      second &&
+      baseCompanyName(String(top.item.name || '')) === baseCompanyName(String(second.item.name || '')) &&
+      // require a meaningful base name length to avoid false matches on very short names
+      baseCompanyName(String(top.item.name || '')).length > 3;
+    const ambiguity =
+      !top ||
+      top.score < 25 ||
+      (!sameCompany && second && top.score - second.score < 10);
     if (ambiguity) {
       return { ok: false, reason: 'Ambiguous match', candidates: scored.slice(0, 5).map((row) => row.item) };
     }
