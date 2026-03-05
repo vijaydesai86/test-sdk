@@ -11,6 +11,10 @@ const OPENAI_PROXY_BASE_URL =
   'https://openai-api-proxy.geo.arm.com/api/providers/openai/v1';
 const DEFAULT_MODEL = process.env.COPILOT_MODEL || 'openai/gpt-4.1';
 const FALLBACK_MODEL = process.env.COPILOT_FALLBACK_MODEL || DEFAULT_MODEL;
+// Gap-fill uses a lighter model so it doesn't burn the user's main model quota.
+// gpt-4.1-mini has a separate (much higher) rate limit on GitHub Models.
+// Override with FILL_MODEL env var if needed.
+const FILL_MODEL = process.env.FILL_MODEL || 'openai/gpt-4.1-mini';
 const AUTO_DOWNGRADE_GPT5 = process.env.AUTO_DOWNGRADE_GPT5 !== 'false';
 const DEFAULT_FALLBACK_MODELS = [
   DEFAULT_MODEL,
@@ -291,6 +295,13 @@ async function callGitHubModelsAPI(
     headers: {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${githubToken}`,
+      // GitHub API recommended headers — including User-Agent is important:
+      // Node.js fetch() does NOT add a User-Agent automatically (unlike browsers),
+      // so omitting it makes requests appear as anonymous bot/scraper traffic and
+      // can trigger GitHub's anti-abuse 429 "scraping" response.
+      'User-Agent': 'stock-report-app/1.0',
+      'Accept': 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
     },
     body: JSON.stringify({
       model,
@@ -422,6 +433,11 @@ async function callOpenAIProxyAPI(
  * Make a targeted LLM call to fill missing stock data fields.
  * Returns the raw response string (expected to be valid JSON).
  * Failures are caught and return '{}' so callers can continue without fill data.
+ *
+ * For GitHub Models we always use FILL_MODEL (gpt-4.1-mini by default) so the
+ * gap-fill draws from that model's separate, higher-quota pool rather than the
+ * user's main gpt-4.1 daily quota.  On a 429 we wait 2 s and retry once before
+ * giving up gracefully.
  */
 async function callLLMForDataFill(
   prompt: string,
@@ -441,17 +457,35 @@ async function callLLMForDataFill(
     },
     { role: 'user', content: prompt },
   ];
-  try {
+
+  // For GitHub Models, use the dedicated fill model (higher-quota pool).
+  // For OpenAI proxy, respect the caller's model choice.
+  const fillModel = provider === 'github' ? FILL_MODEL : model;
+
+  const attempt = async (): Promise<string> => {
     let result: any;
     if (provider === 'openai-proxy' && proxyKey) {
-      result = await callOpenAIProxyAPI(fillMessages, proxyKey, model, []);
+      result = await callOpenAIProxyAPI(fillMessages, proxyKey, fillModel, []);
     } else if (githubToken) {
-      result = await callGitHubModelsAPI(fillMessages, githubToken, model, []);
+      result = await callGitHubModelsAPI(fillMessages, githubToken, fillModel, []);
     } else {
       return '{}';
     }
     return String(result.choices?.[0]?.message?.content || '{}');
-  } catch {
+  };
+
+  try {
+    return await attempt();
+  } catch (err: any) {
+    if (err?.statusCode === 429) {
+      // Brief pause, then one retry — handles transient per-minute bursts.
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      try {
+        return await attempt();
+      } catch {
+        return '{}';
+      }
+    }
     return '{}';
   }
 }
