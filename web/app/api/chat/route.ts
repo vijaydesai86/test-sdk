@@ -430,14 +430,15 @@ async function callOpenAIProxyAPI(
 }
 
 /**
- * Make a targeted LLM call to fill missing stock data fields.
+ * Make a targeted LLM call — used for ticker resolution (resolving informal company
+ * names or wrong tickers to official US exchange symbols before any API call).
  * Returns the raw response string (expected to be valid JSON).
- * Failures are caught and return '{}' so callers can continue without fill data.
+ * Failures are caught and return '{}' so callers can continue gracefully.
  *
  * For GitHub Models we always use FILL_MODEL (gpt-4.1-mini by default) so the
- * gap-fill draws from that model's separate, higher-quota pool rather than the
- * user's main gpt-4.1 daily quota.  On a 429 we wait 2 s and retry once before
- * giving up gracefully.
+ * ticker-resolution call draws from that model's separate, higher-quota pool rather
+ * than the user's main gpt-4.1 daily quota.  On a 429 we wait 2 s and retry once
+ * before giving up gracefully.
  */
 async function callLLMForDataFill(
   prompt: string,

@@ -37,59 +37,15 @@ const SOURCE_LEGEND = (() => {
 
 /**
  * Callback that makes a targeted LLM call and returns the raw response string.
- * Used to fill missing stock data fields that neither market data API could provide.
+ * Used to resolve ambiguous or informal company names/tickers to official US
+ * exchange symbols before making any market-data API calls.
  */
 export type LLMFiller = (prompt: string) => Promise<string>;
 
 /** Optional options passed to executeTool for report generation tools. */
 export interface ExecuteToolOptions {
-  /** When provided, called to fill fields that are null/undefined after API fetches. */
+  /** When provided, called to resolve tickers that the search API could not validate. */
   llmFill?: LLMFiller;
-}
-
-/**
- * Definitions for fields that can be requested from the LLM when unavailable via
- * market data APIs. Each entry maps a dot-path into the consolidated data object
- * to a human-readable label used in the prompt.
- */
-const STOCK_FILL_FIELD_DEFS: ReadonlyArray<{
-  path: string;
-  label: string;
-  dataType: 'string' | 'number';
-}> = [
-  { path: 'companyOverview.name', label: 'Company full legal name', dataType: 'string' },
-  { path: 'companyOverview.sector', label: 'Primary sector (e.g. Technology)', dataType: 'string' },
-  { path: 'companyOverview.industry', label: 'Industry sub-classification', dataType: 'string' },
-  { path: 'companyOverview.description', label: 'Business description (2-3 sentences, factual)', dataType: 'string' },
-  { path: 'companyOverview.marketCapitalization', label: 'Market capitalization in USD', dataType: 'number' },
-  { path: 'companyOverview.peRatio', label: 'Trailing 12-month P/E ratio', dataType: 'number' },
-  { path: 'companyOverview.forwardPE', label: 'Forward P/E ratio (next 12 months)', dataType: 'number' },
-  { path: 'companyOverview.pegRatio', label: 'PEG ratio', dataType: 'number' },
-  { path: 'companyOverview.eps', label: 'EPS trailing 12 months', dataType: 'number' },
-  { path: 'companyOverview.revenueTTM', label: 'Total revenue TTM in USD', dataType: 'number' },
-  { path: 'companyOverview.grossProfitTTM', label: 'Gross profit TTM in USD', dataType: 'number' },
-  { path: 'companyOverview.operatingMargin', label: 'Operating margin as decimal (e.g. 0.25 for 25%)', dataType: 'number' },
-  { path: 'companyOverview.profitMargin', label: 'Net profit margin as decimal', dataType: 'number' },
-  { path: 'companyOverview.returnOnEquity', label: 'Return on equity as decimal', dataType: 'number' },
-  { path: 'companyOverview.beta', label: 'Beta (market risk coefficient)', dataType: 'number' },
-  { path: 'companyOverview.dividendYield', label: 'Annual dividend yield as decimal (0 if no dividend)', dataType: 'number' },
-  { path: 'companyOverview.sharesOutstanding', label: 'Shares outstanding (count)', dataType: 'number' },
-  { path: 'companyOverview.bookValue', label: 'Book value per share', dataType: 'number' },
-  { path: 'companyOverview.revenuePerShare', label: 'Revenue per share TTM', dataType: 'number' },
-  { path: 'priceTargets.targetMean', label: 'Analyst consensus mean price target', dataType: 'number' },
-  { path: 'priceTargets.targetLow', label: 'Analyst lowest price target', dataType: 'number' },
-  { path: 'priceTargets.targetHigh', label: 'Analyst highest price target', dataType: 'number' },
-  { path: 'priceTargets.targetMedian', label: 'Analyst median price target', dataType: 'number' },
-  { path: 'analystRatings.strongBuy', label: 'Count of analysts with Strong Buy rating', dataType: 'number' },
-  { path: 'analystRatings.buy', label: 'Count of analysts with Buy rating', dataType: 'number' },
-  { path: 'analystRatings.hold', label: 'Count of analysts with Hold rating', dataType: 'number' },
-  { path: 'analystRatings.sell', label: 'Count of analysts with Sell rating', dataType: 'number' },
-  { path: 'analystRatings.strongSell', label: 'Count of analysts with Strong Sell rating', dataType: 'number' },
-  { path: 'analystRatings.analystTargetPrice', label: 'Analyst consensus target price', dataType: 'number' },
-];
-
-function getNestedValue(obj: any, dotPath: string): any {
-  return dotPath.split('.').reduce((cur: any, key: string) => cur?.[key], obj);
 }
 
 /** Parses and cleans an LLM response expected to be JSON. Returns null if unparseable. */
@@ -103,135 +59,22 @@ function parseLLMFillJSON(response: string): any | null {
 }
 
 /**
- * Builds a prompt asking the LLM to fill only the missing fields for a given ticker.
- * Returns null when there are no missing fields to fill.
+ * Builds a prompt asking the LLM to map each query to its official US stock ticker.
+ * Used when the market-data search API returns no candidates (e.g. 'GOOGLE' → 'GOOGL').
  */
-function buildStockFillPrompt(
-  symbol: string,
-  data: { companyOverview?: any; priceTargets?: any; analystRatings?: any }
-): string | null {
-  const missing = STOCK_FILL_FIELD_DEFS.filter(({ path }) => {
-    const v = getNestedValue(data, path);
-    return v === null || v === undefined;
-  });
-  if (missing.length === 0) return null;
-
-  // Build the expected JSON shape for the response
-  const shape: any = {};
-  for (const { path, dataType } of missing) {
-    const [section, key] = path.split('.');
-    if (!shape[section]) shape[section] = {};
-    shape[section][key] = `${dataType} | null`;
-  }
-
+function buildTickerResolutionPrompt(queries: string[]): string {
+  const shape = Object.fromEntries(queries.map((q) => [q, 'TICKER | null']));
   return (
-    `For US stock ticker ${symbol}, provide the following financial data based on your training knowledge.\n\n` +
-    `STRICT RULES:\n` +
-    `- Return ONLY values you are CERTAIN about from real market data in your training\n` +
-    `- Return null for ANY field you are uncertain about, that may be outdated, or that you cannot verify\n` +
-    `- Do NOT estimate, invent, or approximate — only provide known factual values\n` +
-    `- For price-sensitive fields (P/E, targets, margins) use the most recent values from your training\n\n` +
-    `Requested fields (${missing.length}):\n` +
-    missing.map(({ path: p, label: l }) => `  ${p}: ${l}`).join('\n') +
-    `\n\nRespond ONLY with valid JSON matching this structure:\n` +
+    `You are a financial data assistant. For each of the following company names or informal tickers, ` +
+    `identify the correct official US stock exchange ticker symbol.\n\n` +
+    `Inputs: ${JSON.stringify(queries)}\n\n` +
+    `RULES:\n` +
+    `- Return the primary US-listed ticker (e.g. "GOOGL" for Google/Alphabet, "MSFT" for Microsoft)\n` +
+    `- For share-class ambiguity, prefer the more liquid class (e.g. GOOGL over GOOG)\n` +
+    `- Return null for any input you cannot identify with certainty\n\n` +
+    `Respond ONLY with valid JSON:\n` +
     JSON.stringify(shape, null, 2)
   );
-}
-
-/**
- * Builds a single batch prompt covering missing fields for multiple tickers.
- * Returns null when no company has missing fields.
- */
-function buildBatchStockFillPrompt(
-  entries: Array<{ symbol: string; data: { companyOverview?: any; priceTargets?: any; analystRatings?: any } }>
-): string | null {
-  const toFill = entries
-    .map(({ symbol, data }) => {
-      const missing = STOCK_FILL_FIELD_DEFS.filter(({ path }) => {
-        const v = getNestedValue(data, path);
-        return v === null || v === undefined;
-      });
-      return { symbol, data, missing };
-    })
-    .filter((e) => e.missing.length > 0);
-
-  if (toFill.length === 0) return null;
-
-  const responseShape: Record<string, any> = {};
-  for (const { symbol, missing } of toFill) {
-    const shape: any = {};
-    for (const { path, dataType } of missing) {
-      const [section, key] = path.split('.');
-      if (!shape[section]) shape[section] = {};
-      shape[section][key] = `${dataType} | null`;
-    }
-    responseShape[symbol] = shape;
-  }
-
-  const fieldLines = toFill
-    .map(({ symbol, missing }) =>
-      `${symbol}:\n${missing.map(({ path: p, label: l }) => `  ${p}: ${l}`).join('\n')}`
-    )
-    .join('\n\n');
-
-  return (
-    `For the following US stock tickers, provide the missing financial data based on your training knowledge.\n\n` +
-    `STRICT RULES:\n` +
-    `- Return ONLY values you are CERTAIN about from real market data in your training\n` +
-    `- Return null for ANY field you are uncertain about, that may be outdated, or that you cannot verify\n` +
-    `- Do NOT estimate, invent, or approximate — only provide known factual values\n` +
-    `- For price-sensitive fields (P/E, targets, margins) use the most recent values from your training\n\n` +
-    `Requested fields by ticker:\n${fieldLines}\n\n` +
-    `Respond ONLY with valid JSON matching this structure:\n` +
-    JSON.stringify(responseShape, null, 2)
-  );
-}
-
-/** Section names in STOCK_FILL_FIELD_DEFS → report source label mapping */
-const FILL_SECTION_TO_SOURCE_LABEL: Record<string, string> = {
-  companyOverview: 'Company overview',
-  priceTargets: 'Price targets',
-  analystRatings: 'Analyst ratings',
-};
-
-/**
- * Merges LLM-provided values into existing data, filling only null/undefined fields.
- * parsedLLMData should be a pre-parsed JSON object with optional companyOverview/priceTargets/analystRatings.
- * Returns the merged data plus which sections had at least one field filled.
- */
-function applyLLMFillToStockData(
-  data: { companyOverview?: any; priceTargets?: any; analystRatings?: any },
-  parsedLLMData: any
-): { companyOverview?: any; priceTargets?: any; analystRatings?: any; hadLLMFill: boolean; filledSections: Set<string> } {
-  if (!parsedLLMData || typeof parsedLLMData !== 'object') {
-    return { ...data, hadLLMFill: false, filledSections: new Set() };
-  }
-
-  const result: { companyOverview?: any; priceTargets?: any; analystRatings?: any } = {
-    companyOverview: data.companyOverview ? { ...data.companyOverview } : undefined,
-    priceTargets: data.priceTargets ? { ...data.priceTargets } : undefined,
-    analystRatings: data.analystRatings ? { ...data.analystRatings } : undefined,
-  };
-
-  let hadLLMFill = false;
-  const filledSections = new Set<string>();
-  for (const { path } of STOCK_FILL_FIELD_DEFS) {
-    const [section, key] = path.split('.');
-    const sectionKey = section as 'companyOverview' | 'priceTargets' | 'analystRatings';
-    const existingVal = data[sectionKey]?.[key];
-    const llmVal = parsedLLMData?.[section]?.[key];
-    if (
-      (existingVal === null || existingVal === undefined) &&
-      llmVal !== null && llmVal !== undefined
-    ) {
-      if (!result[sectionKey]) result[sectionKey] = {};
-      (result[sectionKey] as any)[key] = llmVal;
-      hadLLMFill = true;
-      filledSections.add(section);
-    }
-  }
-
-  return { ...result, hadLLMFill, filledSections };
 }
 
 type CacheEntry = { updatedAt: string; data: any };
@@ -757,18 +600,41 @@ export async function executeTool(
       }
       case 'generate_stock_report': {
         const symbolQuery = args.symbol || '';
-        const resolved = await resolveSymbolFromQuery(stockService, symbolQuery);
-        if (!resolved.ok || !resolved.symbol) {
-          const candidates = (resolved.candidates || [])
-            .map((item: any) => `${item.name || item.symbol} (${item.symbol})`)
-            .join(', ');
-          return {
-            success: false,
-            error: `Ambiguous company name "${symbolQuery}". Candidates: ${candidates || 'Unavailable'}`,
-            data: { candidates: resolved.candidates || [] },
-          };
+
+        // Step 1: LLM resolves the input to the correct official ticker.
+        // LLM is the primary resolver — it knows that 'GOOGLE' → 'GOOGL',
+        // 'Microsoft' → 'MSFT', etc., without needing an API search call.
+        let symbol: string | undefined;
+        if (options?.llmFill) {
+          const prompt = buildTickerResolutionPrompt([symbolQuery]);
+          try {
+            const raw = await options.llmFill(prompt);
+            const parsed = parseLLMFillJSON(raw);
+            if (parsed?.[symbolQuery] && typeof parsed[symbolQuery] === 'string') {
+              const llmTicker = String(parsed[symbolQuery]).replace(/[^A-Z0-9.]/gi, '').toUpperCase();
+              if (llmTicker) symbol = llmTicker;
+            }
+          } catch {
+            // LLM unavailable; fall through to API search
+          }
         }
-        const symbol = resolved.symbol;
+
+        // Step 2: LLM couldn't resolve (or not available) — fall back to AV symbol search.
+        if (!symbol) {
+          const apiResolved = await resolveSymbolFromQuery(stockService, symbolQuery);
+          if (apiResolved.ok && apiResolved.symbol) {
+            symbol = apiResolved.symbol;
+          } else {
+            const candidates = (apiResolved.candidates || [])
+              .map((item: any) => `${item.name || item.symbol} (${item.symbol})`)
+              .join(', ');
+            return {
+              success: false,
+              error: `Could not resolve "${symbolQuery}". ${candidates ? `Did you mean: ${candidates}?` : 'No matches found.'}`,
+              data: { candidates: apiResolved.candidates || [] },
+            };
+          }
+        }
         const range = args.range || '5y';
         const notes: string[] = [];
         const sources = new Map<string, string>();
@@ -861,58 +727,24 @@ export async function executeTool(
         const newsSentiment = await safeFetch('News sentiment', 'newsSentiment', stockService.getNewsSentiment(symbol));
         const companyNews = await safeFetch('Company news', 'companyNews', stockService.getCompanyNews(symbol, 14));
 
-        // LLM gap-fill: use LLM to fill any fields that neither API provided
-        let finalOverview = companyOverview;
-        let finalPriceTargets = priceTargets;
-        let finalAnalystRatings = analystRatings;
-        if (options?.llmFill) {
-          const fillPrompt = buildStockFillPrompt(symbol, {
-            companyOverview,
-            priceTargets,
-            analystRatings,
-          });
-          if (fillPrompt) {
-            try {
-              const llmRaw = await options.llmFill(fillPrompt);
-              const filled = applyLLMFillToStockData(
-                { companyOverview, priceTargets, analystRatings },
-                parseLLMFillJSON(llmRaw)
-              );
-              if (filled.hadLLMFill) {
-                finalOverview = filled.companyOverview ?? finalOverview;
-                finalPriceTargets = filled.priceTargets ?? finalPriceTargets;
-                finalAnalystRatings = filled.analystRatings ?? finalAnalystRatings;
-                // Update the source label for each section that the LLM filled
-                for (const section of filled.filledSections) {
-                  const label = FILL_SECTION_TO_SOURCE_LABEL[section];
-                  if (label && !sources.has(label)) {
-                    sources.set(label, 'LLM (training data)');
-                  }
-                }
-              }
-            } catch {
-              // LLM fill failed; continue with API data only
-            }
-          }
-        }
 
-        // Build basic financials from the (potentially LLM-enriched) overview
-        const finalBasicFinancials = finalOverview ? buildBasicFinancialsFallback(finalOverview) : undefined;
+        // Build basic financials from the overview
+        const finalBasicFinancials = companyOverview ? buildBasicFinancialsFallback(companyOverview) : undefined;
 
         const reportBody = buildStockReport({
           symbol: symbol.toUpperCase(),
           generatedAt: new Date().toISOString(),
           price,
           priceHistory,
-          companyOverview: finalOverview,
+          companyOverview,
           basicFinancials: finalBasicFinancials,
           earningsHistory,
           incomeStatement,
           balanceSheet,
           cashFlow,
-          analystRatings: finalAnalystRatings,
+          analystRatings,
           analystRecommendations,
-          priceTargets: finalPriceTargets,
+          priceTargets,
           peers,
           newsSentiment,
           companyNews,
@@ -949,34 +781,48 @@ export async function executeTool(
           return { success: false, error: 'Provide between 2 and 6 company names or tickers.' };
         }
 
-        const resolved: { query: string; symbol?: string; candidates?: any[]; reason?: string }[] = [];
-        for (const query of companies) {
-          const result = await resolveSymbolFromQuery(stockService, query);
-          if (!result.ok || !result.symbol) {
-            resolved.push({ query, candidates: result.candidates, reason: result.reason });
-          } else {
-            resolved.push({ query, symbol: result.symbol, candidates: result.candidates });
+        // Step 1: LLM resolves ALL inputs to official tickers in one batch call.
+        // LLM is the primary resolver — no API search is needed for well-known names
+        // (e.g. 'GOOGLE' → 'GOOGL', 'Microsoft' → 'MSFT').
+        const resolvedMap = new Map<string, string>(); // query → official ticker
+        if (options?.llmFill) {
+          const prompt = buildTickerResolutionPrompt(companies);
+          try {
+            const raw = await options.llmFill(prompt);
+            const parsed = parseLLMFillJSON(raw);
+            if (parsed && typeof parsed === 'object') {
+              for (const query of companies) {
+                const llmTicker = parsed[query];
+                if (llmTicker && typeof llmTicker === 'string') {
+                  const clean = String(llmTicker).replace(/[^A-Z0-9.]/gi, '').toUpperCase();
+                  if (clean) resolvedMap.set(query, clean);
+                }
+              }
+            }
+          } catch {
+            // LLM unavailable; fall through to API search for all
           }
         }
 
-        const ambiguous = resolved.filter((row) => !row.symbol);
-        if (ambiguous.length) {
-          const details = ambiguous
-            .map((row) => {
-              const candidates = (row.candidates || [])
-                .map((item: any) => `${item.name || item.symbol} (${item.symbol})`)
-                .join(', ');
-              return `${row.query}: ${candidates || 'Unavailable'}`;
-            })
-            .join(' | ');
+        // Step 2: For anything LLM couldn't resolve, fall back to AV symbol search.
+        const needsApiSearch = companies.filter((q) => !resolvedMap.has(q));
+        for (const query of needsApiSearch) {
+          const result = await resolveSymbolFromQuery(stockService, query);
+          if (result.ok && result.symbol) {
+            resolvedMap.set(query, result.symbol);
+          }
+        }
+
+        // Step 3: Error if anything is still unresolved.
+        const unresolved = companies.filter((q) => !resolvedMap.has(q));
+        if (unresolved.length) {
           return {
             success: false,
-            error: `Ambiguous company name(s). Candidates: ${details}`,
-            data: { unresolved: ambiguous },
+            error: `Could not resolve to a ticker: ${unresolved.join(', ')}. Please use official ticker symbols.`,
           };
         }
 
-        const universe = resolved.map((row) => row.symbol as string);
+        const universe = companies.map((q) => resolvedMap.get(q) as string);
         const notes: string[] = [];
         const sourceMap: Record<string, Record<string, string>> = {};
         let rateLimitHit = false;
@@ -1086,72 +932,22 @@ export async function executeTool(
           rawItems.push({ symbol, cache, price, overview, priceHistory, incomeStatement, balanceSheet, cashFlow, analystRatings, priceTargets });
         }
 
-        // Phase 2: Single batch LLM gap-fill call covering all companies
-        const batchFillMap: Record<string, ReturnType<typeof applyLLMFillToStockData>> = {};
-        if (options?.llmFill) {
-          const batchPrompt = buildBatchStockFillPrompt(
-            rawItems.map((item) => ({
-              symbol: item.symbol,
-              data: { companyOverview: item.overview, priceTargets: item.priceTargets, analystRatings: item.analystRatings },
-            }))
-          );
-          if (batchPrompt) {
-            try {
-              const batchRaw = await options.llmFill(batchPrompt);
-              const batchParsed = parseLLMFillJSON(batchRaw);
-              // batchParsed is { SYMBOL: { companyOverview?, priceTargets?, analystRatings? }, ... }
-              if (batchParsed && typeof batchParsed === 'object') {
-                for (const item of rawItems) {
-                  const symbolFill = batchParsed[item.symbol];
-                  if (symbolFill && typeof symbolFill === 'object') {
-                    const filled = applyLLMFillToStockData(
-                      { companyOverview: item.overview, priceTargets: item.priceTargets, analystRatings: item.analystRatings },
-                      symbolFill
-                    );
-                    batchFillMap[item.symbol] = filled;
-                  }
-                }
-              }
-            } catch {
-              // Batch fill failed; continue with API-only data
-            }
-          }
-        }
-
-        // Phase 3: Apply fills and build items
+        // Phase 2: Build items from API data
         const items: any[] = [];
         for (const item of rawItems) {
           const { symbol } = item;
-          const filled = batchFillMap[symbol];
-          const finalOverview = filled?.hadLLMFill ? (filled.companyOverview ?? item.overview) : item.overview;
-          const finalPriceTargets = filled?.hadLLMFill ? (filled.priceTargets ?? item.priceTargets) : item.priceTargets;
-          const finalAnalystRatings = filled?.hadLLMFill ? (filled.analystRatings ?? item.analystRatings) : item.analystRatings;
-
-          if (filled?.hadLLMFill) {
-            // Update source labels for sections filled by LLM (only when API had no data)
-            for (const section of filled.filledSections) {
-              const label = FILL_SECTION_TO_SOURCE_LABEL[section];
-              if (label) {
-                sourceMap[symbol] = sourceMap[symbol] || {};
-                if (!sourceMap[symbol][label]) {
-                  sourceMap[symbol][label] = 'LLM (training data)';
-                }
-              }
-            }
-          }
-
-          const basicFinancials = finalOverview ? buildBasicFinancialsFallback(finalOverview) : undefined;
+          const basicFinancials = item.overview ? buildBasicFinancialsFallback(item.overview) : undefined;
           items.push({
             symbol,
             price: item.price,
-            overview: finalOverview,
+            overview: item.overview,
             basicFinancials,
             priceHistory: item.priceHistory,
             incomeStatement: item.incomeStatement,
             balanceSheet: item.balanceSheet,
             cashFlow: item.cashFlow,
-            analystRatings: finalAnalystRatings,
-            priceTargets: finalPriceTargets,
+            analystRatings: item.analystRatings,
+            priceTargets: item.priceTargets,
           });
           await saveSymbolCache(symbol, item.cache);
         }
