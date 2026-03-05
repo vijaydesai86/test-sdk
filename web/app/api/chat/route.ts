@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { NextRequest, NextResponse } from 'next/server';
-import { getToolDefinitionsByName, executeTool } from '@/app/lib/stockTools';
+import { getToolDefinitionsByName, executeTool, type LLMFiller } from '@/app/lib/stockTools';
 import { createStockService, StockDataService } from '@/app/lib/stockDataService';
 
 // GitHub Models API — new endpoint (azure endpoint deprecated Oct 2025)
@@ -11,6 +11,10 @@ const OPENAI_PROXY_BASE_URL =
   'https://openai-api-proxy.geo.arm.com/api/providers/openai/v1';
 const DEFAULT_MODEL = process.env.COPILOT_MODEL || 'openai/gpt-4.1';
 const FALLBACK_MODEL = process.env.COPILOT_FALLBACK_MODEL || DEFAULT_MODEL;
+// Gap-fill uses a lighter model so it doesn't burn the user's main model quota.
+// gpt-4.1-mini has a separate (much higher) rate limit on GitHub Models.
+// Override with FILL_MODEL env var if needed.
+const FILL_MODEL = process.env.FILL_MODEL || 'openai/gpt-4.1-mini';
 const AUTO_DOWNGRADE_GPT5 = process.env.AUTO_DOWNGRADE_GPT5 !== 'false';
 const DEFAULT_FALLBACK_MODELS = [
   DEFAULT_MODEL,
@@ -291,6 +295,13 @@ async function callGitHubModelsAPI(
     headers: {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${githubToken}`,
+      // GitHub API recommended headers — including User-Agent is important:
+      // Node.js fetch() does NOT add a User-Agent automatically (unlike browsers),
+      // so omitting it makes requests appear as anonymous bot/scraper traffic and
+      // can trigger GitHub's anti-abuse 429 "scraping" response.
+      'User-Agent': 'stock-report-app/1.0',
+      'Accept': 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
     },
     body: JSON.stringify({
       model,
@@ -418,6 +429,79 @@ async function callOpenAIProxyAPI(
   return response.json();
 }
 
+/**
+ * Make a targeted LLM call — used for ticker resolution (resolving informal company
+ * names or wrong tickers to official US exchange symbols before any API call).
+ * Returns the raw response string (expected to be valid JSON).
+ * Failures are caught and return '{}' so callers can continue gracefully.
+ *
+ * For GitHub Models we always use FILL_MODEL (gpt-4.1-mini by default) so the
+ * ticker-resolution call draws from that model's separate, higher-quota pool rather
+ * than the user's main gpt-4.1 daily quota.  On a 429 we wait 2 s and retry once
+ * before giving up gracefully.
+ */
+async function callLLMForDataFill(
+  prompt: string,
+  githubToken: string | undefined,
+  proxyKey: string | undefined,
+  model: string,
+  provider: 'github' | 'openai-proxy'
+): Promise<string> {
+  const fillMessages: ChatMessage[] = [
+    {
+      role: 'system',
+      content:
+        'You are a financial data assistant with knowledge of publicly traded companies. ' +
+        'Provide factual financial data from your training. ' +
+        'Return null for any value you are uncertain about. ' +
+        'Respond ONLY with valid JSON — no markdown, no explanation.',
+    },
+    { role: 'user', content: prompt },
+  ];
+
+  // For GitHub Models, use the dedicated fill model (higher-quota pool).
+  // For OpenAI proxy, respect the caller's model choice.
+  const fillModel = provider === 'github' ? FILL_MODEL : model;
+
+  const attempt = async (): Promise<string> => {
+    let result: any;
+    if (provider === 'openai-proxy' && proxyKey) {
+      result = await callOpenAIProxyAPI(fillMessages, proxyKey, fillModel, []);
+    } else if (githubToken) {
+      result = await callGitHubModelsAPI(fillMessages, githubToken, fillModel, []);
+    } else {
+      return '{}';
+    }
+    return String(result.choices?.[0]?.message?.content || '{}');
+  };
+
+  try {
+    return await attempt();
+  } catch (err: any) {
+    if (err?.statusCode === 429) {
+      // Brief pause, then one retry — handles transient per-minute bursts.
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      try {
+        return await attempt();
+      } catch {
+        return '{}';
+      }
+    }
+    return '{}';
+  }
+}
+
+/** Creates an LLMFiller callback bound to the current model and provider. */
+function createLLMFiller(
+  githubToken: string | undefined,
+  proxyKey: string | undefined,
+  model: string,
+  provider: 'github' | 'openai-proxy'
+): LLMFiller | undefined {
+  if (!githubToken && !proxyKey) return undefined;
+  return (prompt: string) => callLLMForDataFill(prompt, githubToken, proxyKey, model, provider);
+}
+
 export async function POST(request: NextRequest) {
   let provider: string | undefined;
   try {
@@ -464,16 +548,22 @@ export async function POST(request: NextRequest) {
 
       conversationMessages.push({ role: 'user', content: message });
 
+      const directProvider: 'github' | 'openai-proxy' = provider === 'openai-proxy' ? 'openai-proxy' : 'github';
+      const directModel = model || DEFAULT_MODEL;
+      const llmFill = createLLMFiller(githubToken, proxyKey, directModel, directProvider);
+
       const toolResult = reportRequest.type === 'compare'
         ? await executeTool(
             'generate_comparison_report',
             { companies: reportRequest.companies, range: timeframe || '1y' },
-            stockService
+            stockService,
+            { llmFill }
           )
         : await executeTool(
             'generate_stock_report',
             { symbol: reportRequest.symbol, range: timeframe || '5y' },
-            stockService
+            stockService,
+            { llmFill }
           );
 
       if (!toolResult.success) {
@@ -640,11 +730,12 @@ export async function POST(request: NextRequest) {
       // If the model wants to call tools, execute all of them in parallel
       if (assistantMessage.tool_calls && assistantMessage.tool_calls.length > 0) {
         totalToolCalls += assistantMessage.tool_calls.length;
+        const loopLLMFill = createLLMFiller(githubToken, proxyKey, activeModel, activeProvider);
         const toolResults = await Promise.all(
           assistantMessage.tool_calls.map(async (toolCall: { id: string; function: { name: string; arguments: string } }) => {
             const toolName = toolCall.function.name;
             const toolArgs = JSON.parse(toolCall.function.arguments);
-            const toolResult = await executeTool(toolName, toolArgs, stockService);
+            const toolResult = await executeTool(toolName, toolArgs, stockService, { llmFill: loopLLMFill });
             // Collect report artifacts; strip full content from model response to avoid echoing
             if (
               (toolName === 'generate_stock_report' || toolName === 'generate_comparison_report') &&

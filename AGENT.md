@@ -21,9 +21,29 @@ An AI-powered stock research web app with exactly **two user-facing functionalit
 |---|---|
 | Frontend | Next.js 16 (App Router), React 19, Tailwind CSS v4 |
 | AI Backend | GitHub Models API (via `GITHUB_TOKEN`) or OpenAI-compatible proxy |
-| Data | Alpha Vantage REST API (primary), Yahoo Finance fallback |
+| Data | Alpha Vantage REST API (primary), Finnhub (secondary/hybrid), LLM gap-fill (tertiary) |
 | Report generation | Custom markdown + ECharts charts (`buildStockReport`, `buildComparisonReport`) |
 | Deployment | Vercel (Node.js runtime, 5-minute max duration) |
+
+---
+
+## LLM as Central Orchestrator
+
+The LLM is the **central decision-making entity** for all report generation:
+
+1. **Market data APIs (Alpha Vantage, Finnhub) are tools** — called first to retrieve real-time/recent data.
+2. **LLM gap-fill** — after all API fetches, any fields still `null`/`undefined` are requested from the LLM using its training knowledge. The LLM returns only values it is certain about; it returns `null` for anything uncertain.
+3. **No fake or mocked data** — the LLM is explicitly instructed not to estimate, approximate, or invent values. Only factual data from training is accepted.
+4. **Report structure is invariant** — the same sections, tables, and charts are always present. LLM fill is invisible to the user; it just populates fields that would otherwise show as N/A.
+
+### LLM Gap-Fill Implementation
+
+- `buildStockFillPrompt(symbol, data)` in `stockTools.ts` — detects null fields and builds a targeted JSON prompt.
+- `applyLLMFillToStockData(data, llmResponse)` — parses the LLM JSON and merges non-null values into the existing data (only fills null fields; never overwrites valid API data).
+- `callLLMForDataFill(...)` in `route.ts` — makes the LLM call; returns `'{}'` on any error so the report continues with API-only data.
+- `createLLMFiller(...)` in `route.ts` — creates a bound `LLMFiller` callback passed to `executeTool` via `options.llmFill`.
+- The fill covers: company overview (name, sector, industry, description, key metrics), analyst price targets, and analyst ratings breakdowns.
+- Financial statement data (income, balance sheet, cash flow) is **not** LLM-filled — these are complex structured records that the LLM cannot reliably reproduce.
 
 ---
 
@@ -33,14 +53,14 @@ An AI-powered stock research web app with exactly **two user-facing functionalit
 web/
   app/
     api/
-      chat/route.ts          ← Main AI chat handler (POST). Orchestrates tool calls.
+      chat/route.ts          ← Main AI chat handler (POST). Orchestrates tool calls + LLM gap-fill.
       reports/[filename]/    ← Serve / delete saved .md reports
       providers/route.ts     ← Returns available AI providers + models
       models/route.ts        ← Live GitHub Models catalog fetch
       health/route.ts        ← Connectivity health check
     lib/
-      stockDataService.ts    ← StockDataService class; wraps Alpha Vantage + Yahoo Finance
-      stockTools.ts          ← Tool definitions exposed to LLM + executeTool() dispatcher
+      stockDataService.ts    ← StockDataService class; wraps Alpha Vantage + Finnhub
+      stockTools.ts          ← Tool definitions exposed to LLM + executeTool() dispatcher + LLM gap-fill helpers
       reportGenerator.ts     ← buildStockReport(), buildComparisonReport(), saveReport()
     components/
       ChatInterface.tsx      ← Single-page React UI (chat + report preview + sidebar)
@@ -235,6 +255,10 @@ cd .. && npm test   # runs vitest from repo root (tests in src/__tests__/)
 11. **Do NOT use `outputsize=full` with `TIME_SERIES_DAILY`** — this is a premium AV feature and will fail on free tier. Use `TIME_SERIES_WEEKLY` or `TIME_SERIES_MONTHLY` for ranges ≥ 1y.
 
 12. **Do NOT use `/financials-reported` on Finnhub free tier** — it returns 403. The error is already handled; do not try to work around it.
+
+13. **No hardcoding** — Do NOT hardcode stock tickers, company names, financial values, or any other domain-specific data anywhere in the codebase. All data must come from APIs or the LLM gap-fill mechanism. The only exception is the **Quick Start section in documentation** (e.g., `QUICKSTART.md`) where example tickers may be shown for illustration. If you find yourself writing `symbol === 'AAPL'` or similar in logic code, stop — there is always a generic way.
+
+14. **LLM gap-fill is a last resort** — LLM fill only runs when API data is null/undefined. It never overwrites valid API data. The LLM is instructed to return `null` for any field it cannot verify from training data. Never bypass this safeguard.
 
 ---
 

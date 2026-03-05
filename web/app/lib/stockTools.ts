@@ -35,6 +35,48 @@ const SOURCE_LEGEND = (() => {
   return '_Legend: Alpha Vantage provider._';
 })();
 
+/**
+ * Callback that makes a targeted LLM call and returns the raw response string.
+ * Used to resolve ambiguous or informal company names/tickers to official US
+ * exchange symbols before making any market-data API calls.
+ */
+export type LLMFiller = (prompt: string) => Promise<string>;
+
+/** Optional options passed to executeTool for report generation tools. */
+export interface ExecuteToolOptions {
+  /** When provided, called to resolve tickers that the search API could not validate. */
+  llmFill?: LLMFiller;
+}
+
+/** Parses and cleans an LLM response expected to be JSON. Returns null if unparseable. */
+function parseLLMFillJSON(response: string): any | null {
+  try {
+    const cleaned = response.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+    return JSON.parse(cleaned);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Builds a prompt asking the LLM to map each query to its official US stock ticker.
+ * Used when the market-data search API returns no candidates (e.g. 'GOOGLE' → 'GOOGL').
+ */
+function buildTickerResolutionPrompt(queries: string[]): string {
+  const shape = Object.fromEntries(queries.map((q) => [q, 'TICKER | null']));
+  return (
+    `You are a financial data assistant. For each of the following company names or informal tickers, ` +
+    `identify the correct official US stock exchange ticker symbol.\n\n` +
+    `Inputs: ${JSON.stringify(queries)}\n\n` +
+    `RULES:\n` +
+    `- Return the primary US-listed ticker (e.g. "GOOGL" for Google/Alphabet, "MSFT" for Microsoft)\n` +
+    `- For share-class ambiguity, prefer the more liquid class (e.g. GOOGL over GOOG)\n` +
+    `- Return null for any input you cannot identify with certainty\n\n` +
+    `Respond ONLY with valid JSON:\n` +
+    JSON.stringify(shape, null, 2)
+  );
+}
+
 type CacheEntry = { updatedAt: string; data: any };
 type SymbolCache = Record<string, CacheEntry>;
 
@@ -409,12 +451,14 @@ function buildToolDefinitions() {
 }
 
 /**
- * Execute a tool by name with the given arguments
+ * Execute a tool by name with the given arguments.
+ * Pass `options.llmFill` to enable LLM-based gap-filling for missing report fields.
  */
 export async function executeTool(
   toolName: string,
   args: Record<string, any>,
-  stockService: StockDataService
+  stockService: StockDataService,
+  options?: ExecuteToolOptions
 ): Promise<{ success: boolean; data?: any; message?: string; error?: string }> {
   try {
     switch (toolName) {
@@ -556,18 +600,41 @@ export async function executeTool(
       }
       case 'generate_stock_report': {
         const symbolQuery = args.symbol || '';
-        const resolved = await resolveSymbolFromQuery(stockService, symbolQuery);
-        if (!resolved.ok || !resolved.symbol) {
-          const candidates = (resolved.candidates || [])
-            .map((item: any) => `${item.name || item.symbol} (${item.symbol})`)
-            .join(', ');
-          return {
-            success: false,
-            error: `Ambiguous company name "${symbolQuery}". Candidates: ${candidates || 'Unavailable'}`,
-            data: { candidates: resolved.candidates || [] },
-          };
+
+        // Step 1: LLM resolves the input to the correct official ticker.
+        // LLM is the primary resolver — it knows that 'GOOGLE' → 'GOOGL',
+        // 'Microsoft' → 'MSFT', etc., without needing an API search call.
+        let symbol: string | undefined;
+        if (options?.llmFill) {
+          const prompt = buildTickerResolutionPrompt([symbolQuery]);
+          try {
+            const raw = await options.llmFill(prompt);
+            const parsed = parseLLMFillJSON(raw);
+            if (parsed?.[symbolQuery] && typeof parsed[symbolQuery] === 'string') {
+              const llmTicker = String(parsed[symbolQuery]).replace(/[^A-Z0-9.]/gi, '').toUpperCase();
+              if (llmTicker) symbol = llmTicker;
+            }
+          } catch {
+            // LLM unavailable; fall through to API search
+          }
         }
-        const symbol = resolved.symbol;
+
+        // Step 2: LLM couldn't resolve (or not available) — fall back to AV symbol search.
+        if (!symbol) {
+          const apiResolved = await resolveSymbolFromQuery(stockService, symbolQuery);
+          if (apiResolved.ok && apiResolved.symbol) {
+            symbol = apiResolved.symbol;
+          } else {
+            const candidates = (apiResolved.candidates || [])
+              .map((item: any) => `${item.name || item.symbol} (${item.symbol})`)
+              .join(', ');
+            return {
+              success: false,
+              error: `Could not resolve "${symbolQuery}". ${candidates ? `Did you mean: ${candidates}?` : 'No matches found.'}`,
+              data: { candidates: apiResolved.candidates || [] },
+            };
+          }
+        }
         const range = args.range || '5y';
         const notes: string[] = [];
         const sources = new Map<string, string>();
@@ -644,7 +711,6 @@ export async function executeTool(
 
         const price = await safeFetch('Price', 'price', stockService.getStockPrice(symbol));
         const companyOverview = await safeFetch('Company overview', 'overview', stockService.getCompanyOverview(symbol));
-        const basicFinancials = companyOverview ? buildBasicFinancialsFallback(companyOverview) : undefined;
         const priceHistory = await safeFetch('Price history', `priceHistory:${range}`, stockService.getPriceHistory(symbol, range));
         const earningsHistory = await safeFetch('Earnings history', 'earningsHistory', stockService.getEarningsHistory(symbol));
         const incomeStatement = await safeFetch('Income statement', 'incomeStatement', stockService.getIncomeStatement(symbol));
@@ -661,13 +727,17 @@ export async function executeTool(
         const newsSentiment = await safeFetch('News sentiment', 'newsSentiment', stockService.getNewsSentiment(symbol));
         const companyNews = await safeFetch('Company news', 'companyNews', stockService.getCompanyNews(symbol, 14));
 
+
+        // Build basic financials from the overview
+        const finalBasicFinancials = companyOverview ? buildBasicFinancialsFallback(companyOverview) : undefined;
+
         const reportBody = buildStockReport({
           symbol: symbol.toUpperCase(),
           generatedAt: new Date().toISOString(),
           price,
           priceHistory,
           companyOverview,
-          basicFinancials,
+          basicFinancials: finalBasicFinancials,
           earningsHistory,
           incomeStatement,
           balanceSheet,
@@ -711,34 +781,48 @@ export async function executeTool(
           return { success: false, error: 'Provide between 2 and 6 company names or tickers.' };
         }
 
-        const resolved: { query: string; symbol?: string; candidates?: any[]; reason?: string }[] = [];
-        for (const query of companies) {
-          const result = await resolveSymbolFromQuery(stockService, query);
-          if (!result.ok || !result.symbol) {
-            resolved.push({ query, candidates: result.candidates, reason: result.reason });
-          } else {
-            resolved.push({ query, symbol: result.symbol, candidates: result.candidates });
+        // Step 1: LLM resolves ALL inputs to official tickers in one batch call.
+        // LLM is the primary resolver — no API search is needed for well-known names
+        // (e.g. 'GOOGLE' → 'GOOGL', 'Microsoft' → 'MSFT').
+        const resolvedMap = new Map<string, string>(); // query → official ticker
+        if (options?.llmFill) {
+          const prompt = buildTickerResolutionPrompt(companies);
+          try {
+            const raw = await options.llmFill(prompt);
+            const parsed = parseLLMFillJSON(raw);
+            if (parsed && typeof parsed === 'object') {
+              for (const query of companies) {
+                const llmTicker = parsed[query];
+                if (llmTicker && typeof llmTicker === 'string') {
+                  const clean = String(llmTicker).replace(/[^A-Z0-9.]/gi, '').toUpperCase();
+                  if (clean) resolvedMap.set(query, clean);
+                }
+              }
+            }
+          } catch {
+            // LLM unavailable; fall through to API search for all
           }
         }
 
-        const ambiguous = resolved.filter((row) => !row.symbol);
-        if (ambiguous.length) {
-          const details = ambiguous
-            .map((row) => {
-              const candidates = (row.candidates || [])
-                .map((item: any) => `${item.name || item.symbol} (${item.symbol})`)
-                .join(', ');
-              return `${row.query}: ${candidates || 'Unavailable'}`;
-            })
-            .join(' | ');
+        // Step 2: For anything LLM couldn't resolve, fall back to AV symbol search.
+        const needsApiSearch = companies.filter((q) => !resolvedMap.has(q));
+        for (const query of needsApiSearch) {
+          const result = await resolveSymbolFromQuery(stockService, query);
+          if (result.ok && result.symbol) {
+            resolvedMap.set(query, result.symbol);
+          }
+        }
+
+        // Step 3: Error if anything is still unresolved.
+        const unresolved = companies.filter((q) => !resolvedMap.has(q));
+        if (unresolved.length) {
           return {
             success: false,
-            error: `Ambiguous company name(s). Candidates: ${details}`,
-            data: { unresolved: ambiguous },
+            error: `Could not resolve to a ticker: ${unresolved.join(', ')}. Please use official ticker symbols.`,
           };
         }
 
-        const universe = resolved.map((row) => row.symbol as string);
+        const universe = companies.map((q) => resolvedMap.get(q) as string);
         const notes: string[] = [];
         const sourceMap: Record<string, Record<string, string>> = {};
         let rateLimitHit = false;
@@ -821,31 +905,51 @@ export async function executeTool(
           };
         };
 
-        const items: any[] = [];
+        // Phase 1: Fetch all API data for all companies
+        type RawCompanyData = {
+          symbol: string;
+          cache: SymbolCache;
+          price: any;
+          overview: any;
+          priceHistory: any;
+          incomeStatement: any;
+          balanceSheet: any;
+          cashFlow: any;
+          analystRatings: any;
+          priceTargets: any;
+        };
+        const rawItems: RawCompanyData[] = [];
         for (const symbol of universe) {
           const cache = await loadSymbolCache(symbol);
           const price = await safeFetch(symbol, cache, 'Price', 'price', stockService.getStockPrice(symbol));
           const overview = await safeFetch(symbol, cache, 'Company overview', 'overview', stockService.getCompanyOverview(symbol));
-          const basicFinancials = overview ? buildBasicFinancialsFallback(overview) : undefined;
           const priceHistory = await safeFetch(symbol, cache, 'Price history', `priceHistory:${range}`, stockService.getPriceHistory(symbol, range));
           const incomeStatement = await safeFetch(symbol, cache, 'Income statement', 'incomeStatement', stockService.getIncomeStatement(symbol));
           const balanceSheet = await safeFetch(symbol, cache, 'Balance sheet', 'balanceSheet', stockService.getBalanceSheet(symbol));
           const cashFlow = await safeFetch(symbol, cache, 'Cash flow', 'cashFlow', stockService.getCashFlow(symbol));
           const analystRatings = await safeFetch(symbol, cache, 'Analyst ratings', 'analystRatings', stockService.getAnalystRatings(symbol));
           const priceTargets = await safeFetch(symbol, cache, 'Price targets', 'priceTargets', stockService.getPriceTargets(symbol));
+          rawItems.push({ symbol, cache, price, overview, priceHistory, incomeStatement, balanceSheet, cashFlow, analystRatings, priceTargets });
+        }
+
+        // Phase 2: Build items from API data
+        const items: any[] = [];
+        for (const item of rawItems) {
+          const { symbol } = item;
+          const basicFinancials = item.overview ? buildBasicFinancialsFallback(item.overview) : undefined;
           items.push({
             symbol,
-            price,
-            overview,
+            price: item.price,
+            overview: item.overview,
             basicFinancials,
-            priceHistory,
-            incomeStatement,
-            balanceSheet,
-            cashFlow,
-            analystRatings,
-            priceTargets,
+            priceHistory: item.priceHistory,
+            incomeStatement: item.incomeStatement,
+            balanceSheet: item.balanceSheet,
+            cashFlow: item.cashFlow,
+            analystRatings: item.analystRatings,
+            priceTargets: item.priceTargets,
           });
-          await saveSymbolCache(symbol, cache);
+          await saveSymbolCache(symbol, item.cache);
         }
 
         const content = buildComparisonReport({
