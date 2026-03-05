@@ -53,6 +53,17 @@ export interface SectorReportData extends ComparisonReportData {
   selectedBy?: 'llm' | 'manual';
 }
 
+export interface DeepSectorReportData extends SectorReportData {
+  /** The broad initial candidate list before refinement */
+  initialCandidates?: string[];
+  /** LLM-generated narrative covering supply chain, customer, market and news dependencies */
+  dependencyAnalysis?: string;
+  /** Mermaid diagram source for the sector ecosystem map */
+  ecosystemDiagram?: string;
+  /** LLM rationale for which companies were kept / excluded in the refinement step */
+  refinementNotes?: string;
+}
+
 const DEFAULT_REPORTS_DIR =
   process.env.REPORTS_DIR || (process.env.VERCEL ? '/tmp/reports' : 'reports');
 
@@ -1587,4 +1598,68 @@ export function buildSectorReport(data: SectorReportData): string {
     .trimStart();
 
   return `${sectorHeader}\n\n${comparisonBody}`;
+}
+
+/**
+ * Builds a deep sector research report.
+ *
+ * Extends the sector report with three additional sections produced during the
+ * AI-driven ecosystem analysis phase:
+ *   1. Research methodology overview (initial candidates → refinement → comparison)
+ *   2. Sector ecosystem & dependency analysis (supply chain, customers, macro factors)
+ *   3. Company selection rationale (why specific companies were kept or excluded)
+ *   4. Mermaid dependency map diagram
+ *
+ * The financial comparison tables and charts are identical to the regular sector
+ * report — the extra depth comes from the pre-report analysis phase.
+ */
+export function buildDeepSectorReport(data: DeepSectorReportData): string {
+  const initialCount = data.initialCandidates?.length ?? 0;
+  const refinedCount = data.universe.length;
+
+  const candidateLine = initialCount > 0
+    ? `**Initial candidates screened:** ${data.initialCandidates!.join(', ')}`
+    : '';
+  const refinedLine = initialCount > refinedCount
+    ? `**Refined to ${refinedCount} companies:** ${data.universe.join(', ')}`
+    : `**Final universe (${refinedCount} companies):** ${data.universe.join(', ')}`;
+
+  const methodologySteps = [
+    `1. **Candidate Identification** — AI identified ${initialCount > 0 ? `${initialCount} initial` : 'a set of'} companies in the **"${data.sectorQuery}"** space`,
+    `2. **Ecosystem Analysis** — Supply chain, customer, market, and news dependencies were mapped across all candidates`,
+    `3. **Refinement** — The list was refined to ${refinedCount} companies best suited for deep financial comparison`,
+    `4. **Comparison** — Full financial comparison built for the refined universe`,
+  ].join('\n');
+
+  const header = [
+    `# Deep Sector Research: ${data.sectorQuery}`,
+    `Generated: ${data.generatedAt}`,
+    `## 🔬 Research Methodology`,
+    methodologySteps,
+    candidateLine,
+    refinedLine,
+  ].filter(Boolean).join('\n\n');
+
+  const dependencySection = data.dependencyAnalysis
+    ? `## 🕸️ Sector Ecosystem & Dependencies\n\n${data.dependencyAnalysis}`
+    : '';
+
+  const diagramSection = data.ecosystemDiagram
+    ? `## 🗺️ Sector Dependency Map\n\n\`\`\`mermaid\n${data.ecosystemDiagram}\n\`\`\``
+    : '';
+
+  const refinementSection = data.refinementNotes
+    ? `## 🎯 Company Selection Rationale\n\n${data.refinementNotes}`
+    : '';
+
+  // Re-use comparison report body — strip the comparison header so it is not duplicated.
+  const comparisonBody = buildComparisonReport(data)
+    .replace(/^# Company Comparison Report\n\nGenerated:[^\n]*\n\nUniverse:[^\n]*\n\n/, '')
+    .replace(/^# Company Comparison Report\n\nGenerated:[^\n]*\n\n/, '')
+    .replace(/^# Company Comparison Report\n\n/, '')
+    .trimStart();
+
+  return [header, dependencySection, diagramSection, refinementSection, comparisonBody]
+    .filter(Boolean)
+    .join('\n\n');
 }

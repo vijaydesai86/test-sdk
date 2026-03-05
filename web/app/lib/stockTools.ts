@@ -2,7 +2,7 @@
 import { promises as fs } from 'fs';
 import path from 'path';
 import { StockDataService } from './stockDataService';
-import { buildStockReport, buildComparisonReport, buildSectorReport, saveReport } from './reportGenerator';
+import { buildStockReport, buildComparisonReport, buildSectorReport, buildDeepSectorReport, saveReport } from './reportGenerator';
 
 /**
  * OpenAI-compatible tool definitions for stock information
@@ -91,6 +91,69 @@ function buildSectorCompaniesPrompt(sector: string, count: number): string {
     `- For broad themes, include the most representative market leaders\n\n` +
     `Respond ONLY with a valid JSON array of exactly ${count} ticker symbols (no markdown, no explanation):\n` +
     `["TICK1", "TICK2", "TICK3"]`
+  );
+}
+
+/**
+ * Builds a prompt that asks the LLM to:
+ *   1. Analyse sector ecosystem dependencies (supply chain, customers, market, news)
+ *   2. Produce a Mermaid diagram of the sector ecosystem
+ *   3. Refine the candidate list to the best `finalCount` companies
+ *   4. Explain the selection rationale
+ *
+ * The prompt feeds real company overview and news-sentiment data gathered in Phase 2
+ * so that the LLM can ground its analysis in actual data rather than training memory.
+ */
+function buildDeepSectorDependencyPrompt(
+  sector: string,
+  finalCount: number,
+  candidates: Array<{ symbol: string; overview: any; news: any; peers: any }>
+): string {
+  const summaries = candidates
+    .map(({ symbol, overview, news, peers }) => {
+      const name = overview?.name || symbol;
+      const desc = overview?.description
+        ? String(overview.description).slice(0, 250)
+        : 'No description available';
+      const sectorInfo =
+        overview?.sector
+          ? `Sector: ${overview.sector} | Industry: ${overview.industry || 'N/A'}`
+          : 'Sector: N/A';
+      const sentiment =
+        news?.overallSentimentLabel || news?.sentiment || 'Unknown';
+      const peerList = Array.isArray(peers?.peers)
+        ? peers.peers.slice(0, 5).join(', ')
+        : 'N/A';
+      return (
+        `Ticker: ${symbol} | ${name}\n` +
+        `  ${sectorInfo}\n` +
+        `  Description: ${desc}\n` +
+        `  News sentiment: ${sentiment}\n` +
+        `  Peers: ${peerList}`
+      );
+    })
+    .join('\n\n');
+
+  const symbolList = candidates.map((c) => c.symbol).join(', ');
+
+  return (
+    `You are a senior equity research analyst. Your task is to perform a deep sector ecosystem analysis for the "${sector}" sector.\n\n` +
+    `CANDIDATE COMPANIES: ${symbolList}\n\n` +
+    `COMPANY DATA:\n${summaries}\n\n` +
+    `TASKS:\n` +
+    `1. ECOSYSTEM ANALYSIS: Write a 2-3 paragraph narrative covering:\n` +
+    `   - Supply chain relationships (who supplies inputs to whom, key upstream/downstream dependencies)\n` +
+    `   - Customer / revenue dependencies (major end-markets, B2B vs consumer exposure)\n` +
+    `   - Key market / macro factors affecting the whole sector (regulation, commodities, rates, geopolitics)\n` +
+    `   - Competitive dynamics and news sentiment themes across the candidates\n\n` +
+    `2. ECOSYSTEM DIAGRAM: Create a concise Mermaid diagram (graph LR direction) showing the most important\n` +
+    `   supplier-company-customer relationships or competitive positioning. Keep it to at most 15 nodes.\n` +
+    `   Use plain node names without special characters.\n\n` +
+    `3. REFINEMENT: Select the best ${finalCount} companies from the candidates for deep financial analysis.\n` +
+    `   Criteria: sector relevance, financial strength, market leadership, and portfolio diversification.\n\n` +
+    `4. RATIONALE: Briefly explain why each company was kept or excluded.\n\n` +
+    `Respond ONLY with valid JSON (no markdown fences, no explanation outside the JSON):\n` +
+    `{"refinedList":["TICK1","TICK2"],"dependencyAnalysis":"narrative...","ecosystemDiagram":"graph LR\\n  NodeA-->NodeB","refinementNotes":"rationale..."}`
   );
 }
 
@@ -483,6 +546,38 @@ function buildToolDefinitions() {
             count: {
               type: 'number',
               description: 'Number of top companies to include (default: 5, min: 2, max: 6)',
+            },
+            range: {
+              type: 'string',
+              description: 'Price history range for comparison charts (e.g. "1y", "3y"). Default: "1y"',
+            },
+          },
+          required: ['sector'],
+        },
+      },
+    },
+    {
+      type: 'function' as const,
+      function: {
+        name: 'generate_deep_sector_report',
+        description:
+          'Generate a deep sector research report with full ecosystem analysis. ' +
+          'Phase 1: AI identifies a broad candidate list of top companies in the sector. ' +
+          'Phase 2: Real data (company overviews, news sentiment, peers) is fetched for all candidates. ' +
+          'Phase 3: AI maps supply-chain, customer, market and news dependencies, draws a sector dependency diagram, and refines the company list. ' +
+          'Phase 4: Full financial comparison report is built for the refined universe. ' +
+          'Use this when the user asks for DEEP, THOROUGH or COMPREHENSIVE sector research. ' +
+          'Prefer generate_sector_report for quick sector overviews.',
+        parameters: {
+          type: 'object',
+          properties: {
+            sector: {
+              type: 'string',
+              description: 'Sector or thematic query, e.g. "semiconductors", "AI infrastructure", "renewable energy"',
+            },
+            count: {
+              type: 'number',
+              description: 'Number of companies in the refined final list (default: 5, min: 3, max: 8)',
             },
             range: {
               type: 'string',
@@ -1195,6 +1290,273 @@ export async function executeTool(
           success: true,
           data: { content, ...saved, downloadUrl: `/api/reports/${saved.filename}` },
           message: `Saved sector report for "${sector}" to ${saved.filePath}`,
+        };
+      }
+      case 'generate_deep_sector_report': {
+        const sector = String(args.sector || '').trim();
+        if (!sector) {
+          return { success: false, error: 'A sector or theme query is required.' };
+        }
+        const finalCount = Math.min(8, Math.max(3, Number(args.count) || 5));
+        // Fetch roughly 2x candidates for screening; cap at 12 to avoid rate limits.
+        const initialCount = Math.min(12, finalCount * 2);
+        const range = args.range || '1y';
+
+        if (!options?.llmFill) {
+          return {
+            success: false,
+            error: 'Deep sector research requires an LLM connection. Please ensure a valid API token is configured.',
+          };
+        }
+
+        // ── Phase 1: LLM identifies initial broad candidate list ────────────────
+        let initialCandidates: string[] = [];
+        {
+          const prompt = buildSectorCompaniesPrompt(sector, initialCount);
+          try {
+            const raw = await options.llmFill(prompt);
+            const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+            const parsed = JSON.parse(cleaned);
+            if (Array.isArray(parsed)) {
+              initialCandidates = parsed
+                .map((item: any) => String(item || '').replace(/[^A-Z0-9.]/gi, '').toUpperCase())
+                .filter((t) => t.length > 0)
+                .slice(0, initialCount);
+            }
+          } catch {
+            // LLM unavailable or returned invalid JSON
+          }
+        }
+
+        if (initialCandidates.length < 2) {
+          return {
+            success: false,
+            error:
+              `Could not identify companies for sector "${sector}". ` +
+              'Please provide specific tickers using generate_comparison_report instead.',
+          };
+        }
+
+        // ── Phase 2: Fetch lightweight ecosystem data for each candidate ─────────
+        // overview + news sentiment + peers — used by the LLM for dependency analysis.
+        // Uses cache where available; silently skips on error (rate limits, unknown tickers).
+        const ecosystemData: Array<{ symbol: string; overview: any; news: any; peers: any }> = [];
+        for (const sym of initialCandidates) {
+          try {
+            const cache = await loadSymbolCache(sym);
+            const overview =
+              getCachedValue(cache, 'overview') ??
+              await stockService.getCompanyOverview(sym).catch(() => null);
+            const news =
+              getCachedValue(cache, 'newsSentiment') ??
+              await stockService.getNewsSentiment(sym).catch(() => null);
+            const peers =
+              getCachedValue(cache, 'peers') ??
+              await stockService.getPeers(sym).catch(() => null);
+            // Persist anything freshly fetched back to cache (best-effort).
+            const updated = await loadSymbolCache(sym);
+            if (overview && !getCachedValue(updated, 'overview')) {
+              setCachedValue(updated, 'overview', overview);
+              await saveSymbolCache(sym, updated).catch(() => {});
+            }
+            ecosystemData.push({ symbol: sym, overview, news, peers });
+          } catch {
+            ecosystemData.push({ symbol: sym, overview: null, news: null, peers: null });
+          }
+        }
+
+        // ── Phase 3: LLM builds dependency analysis and refines the list ─────────
+        let universe: string[] = [];
+        let dependencyAnalysis: string | undefined;
+        let ecosystemDiagram: string | undefined;
+        let refinementNotes: string | undefined;
+
+        {
+          const depPrompt = buildDeepSectorDependencyPrompt(sector, finalCount, ecosystemData);
+          try {
+            const raw = await options.llmFill(depPrompt);
+            const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+            const parsed = JSON.parse(cleaned);
+            if (parsed && typeof parsed === 'object') {
+              if (Array.isArray(parsed.refinedList)) {
+                universe = parsed.refinedList
+                  .map((t: any) => String(t || '').replace(/[^A-Z0-9.]/gi, '').toUpperCase())
+                  .filter((t: string) => t.length > 0)
+                  .slice(0, finalCount);
+              }
+              if (typeof parsed.dependencyAnalysis === 'string') {
+                dependencyAnalysis = parsed.dependencyAnalysis;
+              }
+              if (typeof parsed.ecosystemDiagram === 'string') {
+                ecosystemDiagram = parsed.ecosystemDiagram;
+              }
+              if (typeof parsed.refinementNotes === 'string') {
+                refinementNotes = parsed.refinementNotes;
+              }
+            }
+          } catch {
+            // Fall through — will use initial candidates below
+          }
+        }
+
+        // Fall back to the initial list if refinement failed
+        if (universe.length < 2) {
+          universe = initialCandidates.slice(0, finalCount);
+        }
+
+        // ── Phase 4: Fetch full comparison data for the refined universe ──────────
+        const notes: string[] = [
+          `Universe refined through deep sector analysis for: "${sector}"`,
+          `Initial candidates: ${initialCandidates.join(', ')}`,
+          `Refined universe: ${universe.join(', ')}`,
+        ];
+        const sourceMap: Record<string, Record<string, string>> = {};
+        let rateLimitHit = false;
+        const isRateLimit = (message: string) =>
+          message.includes('frequency') ||
+          message.includes('Thank you for using Alpha Vantage') ||
+          /rate limit|too many requests/i.test(message);
+        const safeFetch = async <T>(
+          symbol: string,
+          cache: SymbolCache,
+          label: string,
+          key: string,
+          request: Promise<T>
+        ) => {
+          const cachedValue = getCachedValue(cache, key);
+          if (cachedValue !== null) {
+            if (cachedValue && typeof cachedValue === 'object') {
+              const sourceValue = '__source' in cachedValue
+                ? String((cachedValue as any).__source)
+                : DEFAULT_SOURCE;
+              sourceMap[symbol] = sourceMap[symbol] || {};
+              sourceMap[symbol][label] = sourceValue;
+            }
+            return cachedValue as T;
+          }
+          if (rateLimitHit) return undefined as T;
+          try {
+            const result = await request;
+            if (result && typeof result === 'object') {
+              const sourceValue = '__source' in result ? String((result as any).__source) : DEFAULT_SOURCE;
+              sourceMap[symbol] = sourceMap[symbol] || {};
+              sourceMap[symbol][label] = sourceValue;
+            }
+            setCachedValue(cache, key, result);
+            return result;
+          } catch (error: any) {
+            const message = error?.message || 'Unavailable';
+            if (isRateLimit(message)) {
+              rateLimitHit = true;
+              notes.push(
+                /finnhub|rate limit reached/i.test(message)
+                  ? 'Finnhub rate limit reached; remaining sections skipped.'
+                  : 'Alpha Vantage rate limit reached; remaining sections skipped.'
+              );
+              return cachedValue !== null ? (cachedValue as T) : (undefined as T);
+            }
+            if (!/unavailable (in|via) (Alpha|Finnhub)/i.test(message) && !message.includes('Alpha-only mode')) {
+              notes.push(`${label}: ${message}`);
+            }
+            if (cachedValue && typeof cachedValue === 'object') {
+              const sourceValue = '__source' in cachedValue
+                ? String((cachedValue as any).__source)
+                : DEFAULT_SOURCE;
+              sourceMap[symbol] = sourceMap[symbol] || {};
+              sourceMap[symbol][label] = sourceValue;
+            }
+            return cachedValue !== null ? (cachedValue as T) : (undefined as T);
+          }
+        };
+        const buildBasicFinancialsFallbackDeep = (overview: any) => {
+          if (!overview) return undefined;
+          const revenue = Number(overview.revenueTTM);
+          const grossProfit = Number(overview.grossProfitTTM);
+          const grossMarginTTM =
+            Number.isFinite(revenue) && revenue !== 0 && Number.isFinite(grossProfit)
+              ? grossProfit / revenue
+              : Number(overview.profitMargin) || null;
+          return {
+            symbol: overview.symbol,
+            metric: {
+              peBasicExclExtraTTM: overview.peRatio,
+              epsTTM: overview.eps,
+              revenueGrowthTTM: overview.quarterlyRevenueGrowth,
+              epsGrowthTTM: overview.quarterlyEarningsGrowth,
+              grossMarginTTM,
+              operatingMarginTTM: overview.operatingMargin,
+              roeTTM: overview.returnOnEquity,
+              revenuePerShareTTM: overview.revenuePerShare,
+            },
+            series: {},
+          };
+        };
+
+        type RawDeepSectorItem = {
+          symbol: string;
+          cache: SymbolCache;
+          price: any;
+          overview: any;
+          priceHistory: any;
+          incomeStatement: any;
+          balanceSheet: any;
+          cashFlow: any;
+          analystRatings: any;
+          priceTargets: any;
+        };
+        const rawItems: RawDeepSectorItem[] = [];
+        for (const symbol of universe) {
+          const cache = await loadSymbolCache(symbol);
+          const price = await safeFetch(symbol, cache, 'Price', 'price', stockService.getStockPrice(symbol));
+          const overview = await safeFetch(symbol, cache, 'Company overview', 'overview', stockService.getCompanyOverview(symbol));
+          const priceHistory = await safeFetch(symbol, cache, 'Price history', `priceHistory:${range}`, stockService.getPriceHistory(symbol, range));
+          const incomeStatement = await safeFetch(symbol, cache, 'Income statement', 'incomeStatement', stockService.getIncomeStatement(symbol));
+          const balanceSheet = await safeFetch(symbol, cache, 'Balance sheet', 'balanceSheet', stockService.getBalanceSheet(symbol));
+          const cashFlow = await safeFetch(symbol, cache, 'Cash flow', 'cashFlow', stockService.getCashFlow(symbol));
+          const analystRatings = await safeFetch(symbol, cache, 'Analyst ratings', 'analystRatings', stockService.getAnalystRatings(symbol));
+          const priceTargets = await safeFetch(symbol, cache, 'Price targets', 'priceTargets', stockService.getPriceTargets(symbol));
+          rawItems.push({ symbol, cache, price, overview, priceHistory, incomeStatement, balanceSheet, cashFlow, analystRatings, priceTargets });
+        }
+
+        const items: any[] = [];
+        for (const item of rawItems) {
+          const { symbol } = item;
+          const basicFinancials = item.overview ? buildBasicFinancialsFallbackDeep(item.overview) : undefined;
+          items.push({
+            symbol,
+            price: item.price,
+            overview: item.overview,
+            basicFinancials,
+            priceHistory: item.priceHistory,
+            incomeStatement: item.incomeStatement,
+            balanceSheet: item.balanceSheet,
+            cashFlow: item.cashFlow,
+            analystRatings: item.analystRatings,
+            priceTargets: item.priceTargets,
+          });
+          await saveSymbolCache(symbol, item.cache);
+        }
+
+        const content = buildDeepSectorReport({
+          sectorQuery: sector,
+          selectedBy: 'llm',
+          generatedAt: new Date().toISOString(),
+          range,
+          universe,
+          items,
+          notes,
+          sources: sourceMap,
+          initialCandidates,
+          dependencyAnalysis,
+          ecosystemDiagram,
+          refinementNotes,
+        });
+        const safeTitle = sector.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+        const saved = await saveReport(content, `${safeTitle}-deep-sector-report`);
+        return {
+          success: true,
+          data: { content, ...saved, downloadUrl: `/api/reports/${saved.filename}` },
+          message: `Saved deep sector report for "${sector}" to ${saved.filePath}`,
         };
       }
       default:
