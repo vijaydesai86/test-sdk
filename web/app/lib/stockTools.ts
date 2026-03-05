@@ -2,7 +2,7 @@
 import { promises as fs } from 'fs';
 import path from 'path';
 import { StockDataService } from './stockDataService';
-import { buildStockReport, buildComparisonReport, saveReport } from './reportGenerator';
+import { buildStockReport, buildComparisonReport, buildSectorReport, saveReport } from './reportGenerator';
 
 /**
  * OpenAI-compatible tool definitions for stock information
@@ -76,6 +76,24 @@ function buildTickerResolutionPrompt(queries: string[]): string {
     JSON.stringify(shape, null, 2)
   );
 }
+
+/**
+ * Builds a prompt asking the LLM to identify the top N publicly-traded US companies
+ * for a given sector or investment theme.
+ */
+function buildSectorCompaniesPrompt(sector: string, count: number): string {
+  return (
+    `You are a financial analyst. Identify the top ${count} publicly-traded US companies that are leading players in the "${sector}" sector or investment theme.\n\n` +
+    `RULES:\n` +
+    `- Return ONLY official US stock exchange ticker symbols (NYSE/NASDAQ)\n` +
+    `- Select companies that are pure-play or significantly exposed to "${sector}"\n` +
+    `- Prefer large-cap, highly liquid stocks — avoid micro-caps and OTC stocks\n` +
+    `- For broad themes, include the most representative market leaders\n\n` +
+    `Respond ONLY with a valid JSON array of exactly ${count} ticker symbols (no markdown, no explanation):\n` +
+    `["TICK1", "TICK2", "TICK3"]`
+  );
+}
+
 
 type CacheEntry = { updatedAt: string; data: any };
 type SymbolCache = Record<string, CacheEntry>;
@@ -444,6 +462,34 @@ function buildToolDefinitions() {
             range: { type: 'string', description: 'Price history range for charts (e.g., "1y", "3y", "5y", "max"). Default is "1y"' },
           },
           required: ['companies'],
+        },
+      },
+    },
+    {
+      type: 'function' as const,
+      function: {
+        name: 'generate_sector_report',
+        description:
+          'Research a sector or thematic investment theme. Uses AI to identify the top companies in the sector, then generates a full comparison-style report. ' +
+          'Use this when the user asks about a sector, industry, or theme (e.g. "AI data center", "electric vehicles", "cloud computing", "semiconductor"). ' +
+          'Do NOT use this for a single stock report or when the user explicitly lists specific tickers.',
+        parameters: {
+          type: 'object',
+          properties: {
+            sector: {
+              type: 'string',
+              description: 'Sector or thematic query, e.g. "AI data center", "electric vehicles", "cloud computing"',
+            },
+            count: {
+              type: 'number',
+              description: 'Number of top companies to include (default: 5, min: 2, max: 6)',
+            },
+            range: {
+              type: 'string',
+              description: 'Price history range for comparison charts (e.g. "1y", "3y"). Default: "1y"',
+            },
+          },
+          required: ['sector'],
         },
       },
     },
@@ -965,6 +1011,190 @@ export async function executeTool(
           success: true,
           data: { content, ...saved, downloadUrl: `/api/reports/${saved.filename}` },
           message: `Saved comparison report to ${saved.filePath}`,
+        };
+      }
+      case 'generate_sector_report': {
+        const sector = String(args.sector || '').trim();
+        if (!sector) {
+          return { success: false, error: 'A sector or theme query is required.' };
+        }
+        const count = Math.min(6, Math.max(2, Number(args.count) || 5));
+        const range = args.range || '1y';
+
+        // Step 1: Use LLM to identify the top companies in this sector.
+        let universe: string[] = [];
+        if (options?.llmFill) {
+          const prompt = buildSectorCompaniesPrompt(sector, count);
+          try {
+            const raw = await options.llmFill(prompt);
+            const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+            const parsed = JSON.parse(cleaned);
+            if (Array.isArray(parsed)) {
+              universe = parsed
+                .map((item: any) => String(item || '').replace(/[^A-Z0-9.]/gi, '').toUpperCase())
+                .filter((t) => t.length > 0)
+                .slice(0, count);
+            }
+          } catch {
+            // LLM unavailable or returned invalid JSON; fall through
+          }
+        }
+
+        if (universe.length < 2) {
+          return {
+            success: false,
+            error:
+              `Could not identify companies for sector "${sector}". ` +
+              'Please provide the specific company tickers using generate_comparison_report instead.',
+          };
+        }
+
+        // Step 2: Fetch comparison data for the identified companies
+        // (same logic as generate_comparison_report).
+        const notes: string[] = [`Universe identified by AI for sector: "${sector}"`];
+        const sourceMap: Record<string, Record<string, string>> = {};
+        let rateLimitHit = false;
+        const isRateLimit = (message: string) =>
+          message.includes('frequency') ||
+          message.includes('Thank you for using Alpha Vantage') ||
+          /rate limit|too many requests/i.test(message);
+        const safeFetch = async <T>(
+          symbol: string,
+          cache: SymbolCache,
+          label: string,
+          key: string,
+          request: Promise<T>
+        ) => {
+          const cachedValue = getCachedValue(cache, key);
+          if (cachedValue !== null) {
+            if (cachedValue && typeof cachedValue === 'object') {
+              const sourceValue = '__source' in cachedValue
+                ? String((cachedValue as any).__source)
+                : DEFAULT_SOURCE;
+              sourceMap[symbol] = sourceMap[symbol] || {};
+              sourceMap[symbol][label] = sourceValue;
+            }
+            return cachedValue as T;
+          }
+          if (rateLimitHit) return undefined as T;
+          try {
+            const result = await request;
+            if (result && typeof result === 'object') {
+              const sourceValue = '__source' in result ? String((result as any).__source) : DEFAULT_SOURCE;
+              sourceMap[symbol] = sourceMap[symbol] || {};
+              sourceMap[symbol][label] = sourceValue;
+            }
+            setCachedValue(cache, key, result);
+            return result;
+          } catch (error: any) {
+            const message = error?.message || 'Unavailable';
+            if (isRateLimit(message)) {
+              rateLimitHit = true;
+              notes.push(
+                /finnhub|rate limit reached/i.test(message)
+                  ? 'Finnhub rate limit reached; remaining sections skipped.'
+                  : 'Alpha Vantage rate limit reached; remaining sections skipped.'
+              );
+              return cachedValue !== null ? (cachedValue as T) : (undefined as T);
+            }
+            if (!/unavailable (in|via) (Alpha|Finnhub)/i.test(message) && !message.includes('Alpha-only mode')) {
+              notes.push(`${label}: ${message}`);
+            }
+            if (cachedValue && typeof cachedValue === 'object') {
+              const sourceValue = '__source' in cachedValue
+                ? String((cachedValue as any).__source)
+                : DEFAULT_SOURCE;
+              sourceMap[symbol] = sourceMap[symbol] || {};
+              sourceMap[symbol][label] = sourceValue;
+            }
+            return cachedValue !== null ? (cachedValue as T) : (undefined as T);
+          }
+        };
+        const buildBasicFinancialsFallbackSector = (overview: any) => {
+          if (!overview) return undefined;
+          const revenue = Number(overview.revenueTTM);
+          const grossProfit = Number(overview.grossProfitTTM);
+          const grossMarginTTM =
+            Number.isFinite(revenue) && revenue !== 0 && Number.isFinite(grossProfit)
+              ? grossProfit / revenue
+              : Number(overview.profitMargin) || null;
+          return {
+            symbol: overview.symbol,
+            metric: {
+              peBasicExclExtraTTM: overview.peRatio,
+              epsTTM: overview.eps,
+              revenueGrowthTTM: overview.quarterlyRevenueGrowth,
+              epsGrowthTTM: overview.quarterlyEarningsGrowth,
+              grossMarginTTM,
+              operatingMarginTTM: overview.operatingMargin,
+              roeTTM: overview.returnOnEquity,
+              revenuePerShareTTM: overview.revenuePerShare,
+            },
+            series: {},
+          };
+        };
+
+        type RawSectorItem = {
+          symbol: string;
+          cache: SymbolCache;
+          price: any;
+          overview: any;
+          priceHistory: any;
+          incomeStatement: any;
+          balanceSheet: any;
+          cashFlow: any;
+          analystRatings: any;
+          priceTargets: any;
+        };
+        const rawItems: RawSectorItem[] = [];
+        for (const symbol of universe) {
+          const cache = await loadSymbolCache(symbol);
+          const price = await safeFetch(symbol, cache, 'Price', 'price', stockService.getStockPrice(symbol));
+          const overview = await safeFetch(symbol, cache, 'Company overview', 'overview', stockService.getCompanyOverview(symbol));
+          const priceHistory = await safeFetch(symbol, cache, 'Price history', `priceHistory:${range}`, stockService.getPriceHistory(symbol, range));
+          const incomeStatement = await safeFetch(symbol, cache, 'Income statement', 'incomeStatement', stockService.getIncomeStatement(symbol));
+          const balanceSheet = await safeFetch(symbol, cache, 'Balance sheet', 'balanceSheet', stockService.getBalanceSheet(symbol));
+          const cashFlow = await safeFetch(symbol, cache, 'Cash flow', 'cashFlow', stockService.getCashFlow(symbol));
+          const analystRatings = await safeFetch(symbol, cache, 'Analyst ratings', 'analystRatings', stockService.getAnalystRatings(symbol));
+          const priceTargets = await safeFetch(symbol, cache, 'Price targets', 'priceTargets', stockService.getPriceTargets(symbol));
+          rawItems.push({ symbol, cache, price, overview, priceHistory, incomeStatement, balanceSheet, cashFlow, analystRatings, priceTargets });
+        }
+
+        const items: any[] = [];
+        for (const item of rawItems) {
+          const { symbol } = item;
+          const basicFinancials = item.overview ? buildBasicFinancialsFallbackSector(item.overview) : undefined;
+          items.push({
+            symbol,
+            price: item.price,
+            overview: item.overview,
+            basicFinancials,
+            priceHistory: item.priceHistory,
+            incomeStatement: item.incomeStatement,
+            balanceSheet: item.balanceSheet,
+            cashFlow: item.cashFlow,
+            analystRatings: item.analystRatings,
+            priceTargets: item.priceTargets,
+          });
+          await saveSymbolCache(symbol, item.cache);
+        }
+
+        const content = buildSectorReport({
+          sectorQuery: sector,
+          selectedBy: 'llm',
+          generatedAt: new Date().toISOString(),
+          range,
+          universe,
+          items,
+          notes,
+          sources: sourceMap,
+        });
+        const safeTitle = sector.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+        const saved = await saveReport(content, `${safeTitle}-sector-report`);
+        return {
+          success: true,
+          data: { content, ...saved, downloadUrl: `/api/reports/${saved.filename}` },
+          message: `Saved sector report for "${sector}" to ${saved.filePath}`,
         };
       }
       default:

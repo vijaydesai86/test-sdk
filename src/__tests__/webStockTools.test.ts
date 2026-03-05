@@ -44,6 +44,42 @@ describe('web executeTool', () => {
     expect(result.success).toBe(true);
     expect(service.searchNews).toHaveBeenCalledWith('AI', 7);
   });
+
+  it('generate_sector_report returns error when sector is empty', async () => {
+    const service = stubService();
+    const result = await executeTool('generate_sector_report', { sector: '' }, service);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/sector or theme query is required/i);
+  });
+
+  it('generate_sector_report returns error when LLM is unavailable and cannot identify companies', async () => {
+    const service = stubService();
+    // No llmFill provided → universe stays empty
+    const result = await executeTool('generate_sector_report', { sector: 'AI data center' }, service);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/Could not identify companies/i);
+  });
+
+  it('generate_sector_report uses llmFill to identify companies and fetches data', async () => {
+    const service = stubService();
+    // LLM returns two tickers
+    const llmFill = vi.fn().mockResolvedValue('["NVDA","AMD"]');
+    const result = await executeTool(
+      'generate_sector_report',
+      { sector: 'AI chips', count: 2 },
+      service,
+      { llmFill }
+    );
+
+    expect(result.success).toBe(true);
+    expect(llmFill).toHaveBeenCalledOnce();
+    // Should have fetched data for both tickers
+    expect(service.getStockPrice).toHaveBeenCalledWith('NVDA');
+    expect(service.getStockPrice).toHaveBeenCalledWith('AMD');
+    expect(result.data?.content).toContain('AI chips');
+  });
 });
 
 describe('FinnhubService error messages', () => {

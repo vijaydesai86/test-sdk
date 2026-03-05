@@ -46,6 +46,13 @@ export interface ComparisonReportData {
   sources?: Record<string, Record<string, string>>;
 }
 
+export interface SectorReportData extends ComparisonReportData {
+  /** The original sector/theme query, e.g. "AI data center" */
+  sectorQuery: string;
+  /** How the universe was selected */
+  selectedBy?: 'llm' | 'manual';
+}
+
 const DEFAULT_REPORTS_DIR =
   process.env.REPORTS_DIR || (process.env.VERCEL ? '/tmp/reports' : 'reports');
 
@@ -1546,4 +1553,38 @@ export function buildComparisonReport(data: ComparisonReportData): string {
   ].filter(Boolean) as string[];
 
   return sections.join('\n\n');
+}
+
+/**
+ * Builds a sector / thematic analysis report.
+ *
+ * The universe of companies was identified by the LLM based on the sector query.
+ * All comparison data (financials, price history, analyst ratings, etc.) is pulled
+ * from market-data APIs exactly as in `buildComparisonReport` — the only
+ * difference is the sector-specific header that explains how the universe was
+ * chosen.
+ */
+export function buildSectorReport(data: SectorReportData): string {
+  const selectionNote =
+    data.selectedBy === 'llm'
+      ? `The following ${data.universe.length} companies were identified by AI as top players in the **"${data.sectorQuery}"** space.`
+      : `The following ${data.universe.length} companies were selected for the **"${data.sectorQuery}"** sector analysis.`;
+
+  const sectorHeader = [
+    `# Sector / Thematic Analysis: ${data.sectorQuery}`,
+    `Generated: ${data.generatedAt}`,
+    '## 🔍 Universe Selection',
+    selectionNote,
+    `**Companies:** ${data.universe.join(', ')}`,
+  ].join('\n\n');
+
+  // Re-use the full comparison report body (strip its own header/generated line
+  // so they are not duplicated).
+  const comparisonBody = buildComparisonReport(data)
+    .replace(/^# Company Comparison Report\n\nGenerated:[^\n]*\n\nUniverse:[^\n]*\n\n/, '')
+    .replace(/^# Company Comparison Report\n\nGenerated:[^\n]*\n\n/, '')
+    .replace(/^# Company Comparison Report\n\n/, '')
+    .trimStart();
+
+  return `${sectorHeader}\n\n${comparisonBody}`;
 }
