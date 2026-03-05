@@ -102,6 +102,7 @@ const SAMPLE_REPORT_LINK = '/reports/nvda-sample.md';
 const QUICK_PROMPTS = [
   { label: '📊 NVDA stock report', prompt: 'Generate a full stock report for NVDA' },
   { label: '⚖️ Compare NVDA, AMD, INTC', prompt: 'Compare companies NVDA, AMD, INTC' },
+  { label: '🏭 AI data center top 5', prompt: 'Give me a sector report for AI data center top 5 companies' },
 ];
 
 function MarkdownContent({ content }: { content: string }) {
@@ -509,6 +510,7 @@ export default function ChatInterface() {
               <ul className="text-xs text-slate-500 dark:text-gray-400 space-y-1">
                 <li>&#x2022; Individual stock deep-dive reports</li>
                 <li>&#x2022; Side-by-side comparison reports</li>
+                <li>&#x2022; Sector / thematic analysis (top N companies)</li>
                 <li>&#x2022; Price, EPS, revenue &amp; margin charts</li>
                 <li>&#x2022; Analyst targets &amp; scorecard</li>
               </ul>
@@ -525,7 +527,7 @@ export default function ChatInterface() {
                       Start a research session
                     </h2>
                     <p className="text-sm text-slate-500 dark:text-gray-400 max-w-xs mx-auto">
-                      Ask for a stock report (e.g. <em>NVDA report</em>) or compare companies (e.g. <em>compare NVDA AMD INTC</em>).
+                      Ask for a stock report (e.g. <em>NVDA report</em>), compare companies (e.g. <em>compare NVDA AMD INTC</em>), or get a sector analysis (e.g. <em>top 5 AI data center companies</em>).
                     </p>
                   </div>
                   <div className="flex flex-wrap justify-center gap-2">

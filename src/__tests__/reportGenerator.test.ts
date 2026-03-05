@@ -80,3 +80,27 @@ describe('reportGenerator', () => {
     expect(report).toContain('Analyst View');
   });
 });
+
+describe('web reportGenerator', () => {
+  it('buildSectorReport wraps comparison report with sector header', async () => {
+    const { buildSectorReport: buildSectorReportWeb } = await import('../../web/app/lib/reportGenerator');
+    const report = buildSectorReportWeb({
+      sectorQuery: 'AI data center',
+      selectedBy: 'llm',
+      generatedAt: '2025-01-01T00:00:00Z',
+      range: '1y',
+      universe: ['NVDA', 'MSFT'],
+      items: [
+        { symbol: 'NVDA', price: { price: '500' }, overview: { marketCapitalization: '1000', peRatio: '40' } },
+        { symbol: 'MSFT', price: { price: '300' }, overview: { marketCapitalization: '2000', peRatio: '30' } },
+      ],
+      notes: [],
+    });
+
+    expect(report).toContain('# Sector / Thematic Analysis: AI data center');
+    expect(report).toContain('## 🔍 Universe Selection');
+    expect(report).toContain('NVDA, MSFT');
+    // Comparison body sections should be present
+    expect(report).toContain('## 📊 Snapshot');
+  });
+});

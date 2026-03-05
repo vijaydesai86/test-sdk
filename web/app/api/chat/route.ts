@@ -60,6 +60,7 @@ const SYSTEM_PROMPT = `You are an elite buy-side equity research analyst. Produc
 **3. Match depth to the question.**
 - Individual stock report: call generate_stock_report with the ticker symbol.
 - Company comparison report: call generate_comparison_report with the list of ticker symbols.
+- Sector / thematic analysis: call generate_sector_report with the sector query (e.g. "AI data center"). It identifies the top companies and builds a full comparison report.
 - Data-only query: call the relevant data tool (get_stock_price, get_company_overview, etc.) and answer directly.
 
 **4. Resolve company names to tickers first.** If the user mentions company names (e.g. "Google", "Microsoft", "Apple") instead of tickers, call search_stock for each name to find the correct ticker symbol, then use those tickers in generate_stock_report or generate_comparison_report. Never guess a ticker — always confirm it with search_stock.
@@ -85,6 +86,7 @@ Rules:
 - If given company names instead of tickers (e.g. "Google", "Microsoft"), call search_stock for each name first to get the correct ticker symbol, then use those tickers in report/comparison tools.
 - Use tables for comparisons and show calculations.
 - Return report paths when asked for reports.
+- For sector/thematic queries (e.g. "top 5 AI data center companies"), call generate_sector_report with the sector query — it identifies the top companies automatically.
 
 Keep answers concise unless the user requests depth.`;
 
@@ -281,6 +283,7 @@ function selectToolNames() {
     'get_insider_trading',
     'generate_stock_report',
     'generate_comparison_report',
+    'generate_sector_report',
   ];
   return { toolNames };
 }
@@ -559,12 +562,19 @@ export async function POST(request: NextRequest) {
             stockService,
             { llmFill }
           )
-        : await executeTool(
-            'generate_stock_report',
-            { symbol: reportRequest.symbol, range: timeframe || '5y' },
-            stockService,
-            { llmFill }
-          );
+        : reportRequest.type === 'sector'
+          ? await executeTool(
+              'generate_sector_report',
+              { sector: reportRequest.query, range: timeframe || '1y' },
+              stockService,
+              { llmFill }
+            )
+          : await executeTool(
+              'generate_stock_report',
+              { symbol: (reportRequest as any).symbol, range: timeframe || '5y' },
+              stockService,
+              { llmFill }
+            );
 
       if (!toolResult.success) {
         return NextResponse.json(
@@ -738,7 +748,7 @@ export async function POST(request: NextRequest) {
             const toolResult = await executeTool(toolName, toolArgs, stockService, { llmFill: loopLLMFill });
             // Collect report artifacts; strip full content from model response to avoid echoing
             if (
-              (toolName === 'generate_stock_report' || toolName === 'generate_comparison_report') &&
+              (toolName === 'generate_stock_report' || toolName === 'generate_comparison_report' || toolName === 'generate_sector_report') &&
               toolResult.success && toolResult.data?.filename && toolResult.data?.content
             ) {
               reportArtifacts.push({
