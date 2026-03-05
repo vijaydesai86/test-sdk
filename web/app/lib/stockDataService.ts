@@ -1042,7 +1042,12 @@ class HybridStockDataService implements StockDataService {
     try {
       return await primaryCall();
     } catch {
-      return fallbackCall();
+      const result = await fallbackCall();
+      // Tag with source so stockTools.ts correctly attributes Finnhub data in the sources table
+      if (result !== null && result !== undefined && typeof result === 'object' && !Array.isArray(result)) {
+        return { ...(result as object), __source: 'Finnhub' } as T;
+      }
+      return result;
     }
   }
 

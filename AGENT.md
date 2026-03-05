@@ -96,6 +96,7 @@ web/
 | `STOCK_CACHE_TTL_MS` | No | Cache TTL in ms (default: 7 days) |
 | `ALPHA_VANTAGE_MIN_INTERVAL_MS` | No | Min ms between AV requests (default: 1200) |
 | `FINNHUB_MIN_INTERVAL_MS` | No | Min ms between Finnhub requests (default: 500) |
+| `HEALTH_CHECK_SYMBOL` | No | If set, `/api/health` makes a live API call with this ticker to verify connectivity. If unset, health check only verifies the key is configured. |
 
 ---
 

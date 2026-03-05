@@ -4,23 +4,36 @@ import { NextResponse } from 'next/server';
 export const runtime = 'nodejs';
 import { createStockService } from '@/app/lib/stockDataService';
 
-const TEST_SYMBOL = 'NVDA';
-
 export async function GET() {
-  const results: Record<string, any> = {};
-
   const provider = (process.env.STOCK_DATA_PROVIDER || 'alphavantage').toLowerCase();
   const alphaVantageKey = process.env.ALPHA_VANTAGE_API_KEY;
-  if (provider !== 'finnhub' && !alphaVantageKey) {
-    results.alphaVantage = { ok: false, error: 'ALPHA_VANTAGE_API_KEY not set' };
-  } else {
-    const service = createStockService(alphaVantageKey);
-    try {
-      const price = await service.getStockPrice(TEST_SYMBOL);
-      results.alphaVantage = { ok: true, price: price?.price || null };
-    } catch (error: any) {
-      results.alphaVantage = { ok: false, error: error?.message || 'Failed' };
+  const finnhubKey = process.env.FINNHUB_API_KEY;
+
+  const results: Record<string, any> = { provider };
+
+  if (provider !== 'finnhub') {
+    if (!alphaVantageKey) {
+      results.alphaVantage = { ok: false, error: 'ALPHA_VANTAGE_API_KEY not set' };
+    } else {
+      // Only perform a live connectivity check when an explicit test symbol is configured.
+      // Using process.env.HEALTH_CHECK_SYMBOL avoids hardcoding any ticker in the source.
+      const testSymbol = process.env.HEALTH_CHECK_SYMBOL;
+      if (testSymbol) {
+        const service = createStockService(alphaVantageKey);
+        try {
+          const price = await service.getStockPrice(testSymbol);
+          results.alphaVantage = { ok: true, price: price?.price ?? null };
+        } catch (error: any) {
+          results.alphaVantage = { ok: false, error: error?.message || 'Failed' };
+        }
+      } else {
+        results.alphaVantage = { ok: true, configured: true };
+      }
     }
+  }
+
+  if (provider === 'finnhub' || provider === 'hybrid') {
+    results.finnhub = finnhubKey ? { ok: true, configured: true } : { ok: false, error: 'FINNHUB_API_KEY not set' };
   }
 
   return NextResponse.json({ ok: true, results });
