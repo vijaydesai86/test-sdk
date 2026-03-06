@@ -22,6 +22,11 @@ export interface StockReportData {
   peers?: any;
   newsSentiment?: any;
   companyNews?: { articles?: any[] };
+  insiderTransactions?: any;
+  esgScore?: any;
+  managementTeam?: any;
+  legalEvents?: any;
+  supplierCustomers?: any;
 }
 
 export interface ComparisonReportItem {
@@ -35,6 +40,10 @@ export interface ComparisonReportItem {
   balanceSheet?: any;
   cashFlow?: any;
   analystRatings?: any;
+  insiderTransactions?: any;
+  newsSentiment?: any;
+  companyNews?: { articles?: any[] };
+  esgScore?: any;
 }
 
 export interface ComparisonReportData {
@@ -62,6 +71,9 @@ export interface DeepSectorReportData extends SectorReportData {
   ecosystemDiagram?: string;
   /** LLM rationale for which companies were kept / excluded in the refinement step */
   refinementNotes?: string;
+  scenarioSimulations?: string;
+  supplierCustomerMap?: string;
+  innovationHighlights?: string;
 }
 
 const DEFAULT_REPORTS_DIR =
@@ -880,6 +892,157 @@ function computeScorecard(data: StockReportData) {
   };
 }
 
+function buildInsiderTable(insiderTransactions: any): string {
+  const txns = insiderTransactions?.data || insiderTransactions?.transactions || [];
+  if (!Array.isArray(txns) || txns.length === 0) return '';
+  const rows = txns
+    .slice(0, 10)
+    .map((tx: any) => {
+      const name = tx.name || tx.executive || 'Unknown';
+      const type = tx.transactionCode === 'P' ? 'Buy' : tx.transactionCode === 'S' ? 'Sell' : (tx.transaction || tx.transactionCode || 'N/A');
+      const shares = toNumber(tx.share || tx.shares);
+      const value = toNumber(tx.value);
+      const date = (tx.transactionDate || tx.filingDate || tx.filing_date || 'N/A').toString().slice(0, 10);
+      return [
+        name,
+        type,
+        shares === null ? 'N/A' : shares.toLocaleString(),
+        value === null ? 'N/A' : formatCurrency(value),
+        date,
+      ];
+    });
+  if (rows.length === 0) return '';
+  return buildTable(
+    ['Insider', 'Transaction', 'Shares', 'Value', 'Date'],
+    rows,
+    ['left', 'center', 'right', 'right', 'left']
+  );
+}
+
+function buildMoatNarrative(scorecard: ReturnType<typeof computeScorecard>): string {
+  const moat = scorecard.components.moat;
+  const { moatDetails } = scorecard;
+  if (moat === null) return '_Moat analysis requires margin, pricing power, and analyst data._';
+  const moatLevel = moat >= 70 ? 'Strong' : moat >= 45 ? 'Moderate' : 'Narrow/Weak';
+  const marginStr = moatDetails.marginStability !== null ? `Margin stability score: ${moatDetails.marginStability.toFixed(1)}/100` : null;
+  const pricingStr = moatDetails.pricingPower !== null ? `Pricing power score: ${moatDetails.pricingPower.toFixed(1)}/100` : null;
+  const convictionStr = moatDetails.analystConviction !== null ? `Analyst conviction score: ${moatDetails.analystConviction.toFixed(1)}/100` : null;
+  const components = [marginStr, pricingStr, convictionStr].filter(Boolean) as string[];
+  return [
+    `**Moat Level: ${moatLevel}** (composite moat score: ${moat.toFixed(1)}/100)`,
+    ...components.map((c) => `- ${c}`),
+  ].join('\n');
+}
+
+function buildEsgSection(esgScore: any): string {
+  if (!esgScore) return '';
+  const env = toNumber(esgScore.environmental ?? esgScore.environmentScore ?? esgScore.e);
+  const social = toNumber(esgScore.social ?? esgScore.socialScore ?? esgScore.s);
+  const gov = toNumber(esgScore.governance ?? esgScore.governanceScore ?? esgScore.g);
+  const total = toNumber(esgScore.total ?? esgScore.esgScore ?? esgScore.score);
+  const rating = esgScore.rating || esgScore.esgRating || null;
+  const rows = [
+    total !== null ? ['ESG Total', total.toFixed(1)] : null,
+    env !== null ? ['Environmental (E)', env.toFixed(1)] : null,
+    social !== null ? ['Social (S)', social.toFixed(1)] : null,
+    gov !== null ? ['Governance (G)', gov.toFixed(1)] : null,
+    rating ? ['ESG Rating', String(rating)] : null,
+  ].filter(Boolean) as string[][];
+  if (rows.length === 0) return '_ESG data format unrecognised._';
+  return buildTable(['Metric', 'Score'], rows, ['left', 'right']);
+}
+
+function buildLegalSection(legalEvents: any): string {
+  const events = Array.isArray(legalEvents) ? legalEvents : legalEvents?.events || [];
+  if (!Array.isArray(events) || events.length === 0) return '';
+  return events
+    .slice(0, 8)
+    .map((ev: any) => {
+      const date = (ev.date || ev.filingDate || ev.eventDate || '').toString().slice(0, 10);
+      const type = ev.type || ev.eventType || 'Regulatory Event';
+      const desc = ev.description || ev.summary || ev.headline || 'No description available';
+      return `- **${type}** (${date || 'N/A'}): ${desc}`;
+    })
+    .join('\n');
+}
+
+function buildPeerTableSection(peers: any, symbol: string): string {
+  const peerList = (peers?.peers || [])
+    .filter((peer: string) => peer && peer.toUpperCase() !== symbol.toUpperCase())
+    .slice(0, 15);
+  if (peerList.length === 0) return '';
+  return buildTable(
+    ['#', 'Ticker', 'Note'],
+    peerList.map((peer: string, index: number) => [
+      String(index + 1),
+      peer,
+      'Peer (data available via Compare tool)',
+    ]),
+    ['center', 'left', 'left']
+  );
+}
+
+function buildComparisonMoatTable(
+  items: ComparisonReportItem[],
+  scored: Array<{ item: ComparisonReportItem; score: number | null }>
+): string {
+  const rows = items.map((item) => {
+    const row = scored.find((r) => r.item.symbol === item.symbol);
+    const score = row?.score ?? null;
+    const level = score === null ? 'N/A' : score >= 70 ? 'Strong' : score >= 45 ? 'Moderate' : 'Narrow';
+    return [
+      `${item.overview?.name || item.symbol} (${item.symbol})`,
+      score === null ? 'N/A' : score.toFixed(1),
+      level,
+    ];
+  });
+  return buildTable(
+    ['Company', 'Composite Score', 'Moat Level'],
+    rows,
+    ['left', 'right', 'center']
+  );
+}
+
+function buildComparisonSentimentTable(items: ComparisonReportItem[]): string {
+  const rows = items
+    .map((item) => {
+      const ns = item.newsSentiment;
+      if (!ns) return null;
+      const sentiment = ns.sentiment?.sentiment || ns.sentiment?.buzz || ns.overallSentimentLabel || null;
+      const score = toNumber(ns.sentiment?.sentimentScore || ns.overallSentimentScore || ns.score);
+      if (!sentiment && score === null) return null;
+      return [
+        `${item.overview?.name || item.symbol} (${item.symbol})`,
+        sentiment || 'N/A',
+        score === null ? 'N/A' : score.toFixed(2),
+      ];
+    })
+    .filter((row): row is string[] => row !== null);
+  if (rows.length === 0) return '';
+  return buildTable(
+    ['Company', 'Sentiment Label', 'Sentiment Score'],
+    rows,
+    ['left', 'center', 'right']
+  );
+}
+
+function buildComparisonNewsHighlights(items: ComparisonReportItem[], limit = 2): string {
+  const sections = items
+    .map((item) => {
+      const articles = item.companyNews?.articles || [];
+      const headlines = articles
+        .map((a: any) => a.headline || a.title)
+        .filter(Boolean)
+        .slice(0, limit) as string[];
+      if (headlines.length === 0) return null;
+      const name = item.overview?.name || item.symbol;
+      return `**${name} (${item.symbol}):** ${headlines.join(' | ')}`;
+    })
+    .filter((s): s is string => s !== null);
+  if (sections.length === 0) return '';
+  return sections.map((s) => `- ${s}`).join('\n');
+}
+
 export function buildStockReport(data: StockReportData): string {
   const priceChart = buildPriceChart(data.priceHistory?.prices || []);
   const epsChart = buildEpsChart(data.earningsHistory?.quarterlyEarnings || []);
@@ -1194,6 +1357,79 @@ export function buildStockReport(data: StockReportData): string {
   sections.push('## 🧑‍💼 Ownership & Sentiment', ...(ownershipLines.length ? ownershipLines : ['- Ownership data unavailable']));
   sections.push('## 🗓️ Guidance & Catalysts', ...(catalystLines.length ? catalystLines : ['- Guidance data unavailable']));
 
+  // Peer Comparison table
+  const peerTableSection = buildPeerTableSection(data.peers, data.symbol);
+  if (peerTableSection) {
+    sections.push('## 👥 Peer Comparison', peerTableSection);
+  }
+
+  // Insider Trading Activity
+  const insiderTable = buildInsiderTable(data.insiderTransactions);
+  if (insiderTable) {
+    sections.push('## 🏠 Insider Trading Activity', insiderTable);
+  } else if (data.insiderTransactions !== undefined) {
+    sections.push('## 🏠 Insider Trading Activity', '_No recent insider transactions recorded._');
+  }
+
+  // News Highlights
+  const newsArticles = data.companyNews?.articles || [];
+  if (newsArticles.length > 0) {
+    const newsLines = newsArticles
+      .slice(0, 8)
+      .map((a: any) => {
+        const headline = a.headline || a.title;
+        const source = a.source || '';
+        const date = (a.datetime || a.publishedAt || a.date || '').toString().slice(0, 10);
+        return headline ? `- ${headline}${source ? ` *(${source})* ` : ''}${date ? ` — ${date}` : ''}` : null;
+      })
+      .filter(Boolean) as string[];
+    if (newsLines.length) {
+      sections.push('## 📰 News Highlights', ...newsLines);
+    }
+  }
+
+  // ESG & Sustainability
+  const esgTable = buildEsgSection(data.esgScore);
+  if (esgTable) {
+    sections.push('## 🌱 ESG & Sustainability', esgTable);
+  }
+
+  // Legal & Regulatory Events
+  const legalContent = buildLegalSection(data.legalEvents);
+  if (legalContent) {
+    sections.push('## ⚖️ Legal & Regulatory', legalContent);
+  }
+
+  // Management Quality
+  if (data.managementTeam) {
+    const mgmtLines: string[] = [];
+    if (data.managementTeam.ceo || data.managementTeam.CEO) {
+      mgmtLines.push(`- CEO: ${data.managementTeam.ceo || data.managementTeam.CEO}`);
+    }
+    if (data.managementTeam.cfoName || data.managementTeam.cfo) {
+      mgmtLines.push(`- CFO: ${data.managementTeam.cfoName || data.managementTeam.cfo}`);
+    }
+    const insiderPct = toNumber(overview.percentInsiders);
+    if (insiderPct !== null) {
+      mgmtLines.push(`- Insider Ownership: ${formatPercent(insiderPct)}`);
+    }
+    if (mgmtLines.length) {
+      sections.push('## 👔 Management Quality', ...mgmtLines);
+    }
+  }
+
+  // Supplier / Customer context
+  if (data.supplierCustomers) {
+    const scLines: string[] = [];
+    const suppliers = Array.isArray(data.supplierCustomers.suppliers) ? data.supplierCustomers.suppliers : [];
+    const customers = Array.isArray(data.supplierCustomers.customers) ? data.supplierCustomers.customers : [];
+    if (suppliers.length) scLines.push(`- **Key Suppliers:** ${suppliers.slice(0, 5).join(', ')}`);
+    if (customers.length) scLines.push(`- **Key Customers:** ${customers.slice(0, 5).join(', ')}`);
+    if (scLines.length) {
+      sections.push('## 🔗 Suppliers & Customers', ...scLines);
+    }
+  }
+
   if (scorecard.composite !== null) {
     const scorecardRadar = buildScorecardRadar(scorecard);
     sections.push(
@@ -1206,6 +1442,23 @@ export function buildStockReport(data: StockReportData): string {
       `- Momentum: ${scorecard.components.momentum?.toFixed(1) ?? 'Unavailable'}`,
       `- Moat: ${scorecard.components.moat?.toFixed(1) ?? 'Unavailable'} (avg of margin stability, pricing power, analyst conviction)`,
       `- Composite Score: ${scorecard.composite?.toFixed(1) ?? 'Unavailable'}`,
+    );
+  }
+
+  // Visual Appendix — document all charts included in this report
+  const chartInventory: string[] = [];
+  if (priceChart) chartInventory.push('Price History (line chart)');
+  if (epsChart) chartInventory.push('Quarterly EPS Trend (line chart)');
+  if (peChart) chartInventory.push('P/E Ratio Trend — TTM (line chart)');
+  if (revenueChart) chartInventory.push('Revenue Trend (bar chart)');
+  if (marginChart) chartInventory.push('Gross & Operating Margin Trends (line chart)');
+  if (targetChart) chartInventory.push('Analyst Price Target Distribution (bar chart)');
+  if (scorecard.composite !== null) chartInventory.push('Scorecard Radar (radar chart)');
+  if (chartInventory.length) {
+    sections.push(
+      '## 📎 Visual Appendix',
+      '_Charts included in this report:_',
+      chartInventory.map((c, i) => `${i + 1}. ${c}`).join('\n')
     );
   }
 
@@ -1561,6 +1814,36 @@ export function buildComparisonReport(data: ComparisonReportData): string {
     validScores.length < scored.length
       ? '_Some companies lack composite scores; weights are normalized across available scores._'
       : '_Indicative allocation is derived from normalized composite scores. It is not investment advice._',
+    '## 🏰 Moat Scores',
+    buildComparisonMoatTable(items, scored),
+    ...(() => {
+      const newsContent = buildComparisonNewsHighlights(items);
+      return newsContent ? ['## 📰 News Highlights', newsContent] : [];
+    })(),
+    ...(() => {
+      const sentimentContent = buildComparisonSentimentTable(items);
+      return sentimentContent ? ['## 📡 Market Sentiment', sentimentContent] : [];
+    })(),
+    ...(() => {
+      const insiderRows = items
+        .map((item) => {
+          const tbl = buildInsiderTable(item.insiderTransactions);
+          if (!tbl) return null;
+          return `**${item.overview?.name || item.symbol} (${item.symbol})**\n\n${tbl}`;
+        })
+        .filter(Boolean) as string[];
+      return insiderRows.length ? ['## 🏠 Insider Activity', ...insiderRows] : [];
+    })(),
+    ...(() => {
+      const esgRows = items
+        .map((item) => {
+          const tbl = buildEsgSection(item.esgScore);
+          if (!tbl) return null;
+          return `**${item.overview?.name || item.symbol} (${item.symbol})**\n\n${tbl}`;
+        })
+        .filter(Boolean) as string[];
+      return esgRows.length ? ['## 🌱 ESG Scores', ...esgRows] : [];
+    })(),
   ].filter(Boolean) as string[];
 
   return sections.join('\n\n');
@@ -1659,7 +1942,20 @@ export function buildDeepSectorReport(data: DeepSectorReportData): string {
     .replace(/^# Company Comparison Report\n\n/, '')
     .trimStart();
 
-  return [header, dependencySection, diagramSection, refinementSection, comparisonBody]
+  // Optional deep-sector additions: scenario simulations, supplier/customer mapping, innovation highlights
+  const scenarioSection = data.scenarioSimulations
+    ? `## 🔭 Scenario Simulations\n\n${data.scenarioSimulations}`
+    : '';
+
+  const supplierCustomerSection = data.supplierCustomerMap
+    ? `## 🔗 Critical Supplier/Customer Mapping\n\n${data.supplierCustomerMap}`
+    : '';
+
+  const innovationSection = data.innovationHighlights
+    ? `## 💡 Innovation Highlights\n\n${data.innovationHighlights}`
+    : '';
+
+  return [header, dependencySection, diagramSection, refinementSection, scenarioSection, supplierCustomerSection, innovationSection, comparisonBody]
     .filter(Boolean)
     .join('\n\n');
 }
