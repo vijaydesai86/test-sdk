@@ -22,21 +22,19 @@ Any feature request outside these five (screeners, portfolio tracking, alerts, e
 
 ## LLM is the Final Boss
 
-The LLM is the **central decision-maker** for all operations. This is not negotiable.
+The LLM is the **brain and central decision-maker** for all operations. Tools are its hands — they fetch real data. The LLM provides intelligence, orchestration, and analysis. This is not negotiable.
 
 ### Rules
 
-1. **LLM resolves all company names to tickers.** It runs `buildTickerResolutionPrompt` first (before any API call). The search API (`search_stock`) is a fallback, not the primary resolver.
+1. **LLM resolves all company names to tickers.** Call `search_stock` for any name that isn't a clear ticker. Never guess a ticker.
 
-2. **When the LLM cannot resolve a ticker, it surfaces candidates and the conversation pauses.** If `executeTool` cannot resolve a symbol, it returns an error with candidate matches (e.g. `"Did you mean: GOOGL (Alphabet Class A), GOOG (Alphabet Class C)?"`). The LLM receives this error and naturally asks the user for clarification. This is LLM-emergent behaviour — not an explicit code branch that waits for user input. The LLM decides to re-prompt the user; the task restarts on the next message.
+2. **LLM calls all data tools BEFORE calling report tools.** Report tools (`generate_stock_report`, `generate_comparison_report`, `generate_sector_report`, `generate_deep_sector_report`) accept pre-fetched data — they do NOT call any APIs internally. The LLM must batch all data tool calls first, then pass results to the report tool.
 
-3. **LLM stitches data from multiple sources.** It never surfaces raw API errors to the user. If Alpha Vantage fails, it tries Finnhub. If both fail for a field, it uses its own verified training knowledge to fill the gap.
+3. **LLM orchestrates tools — tools provide 100% real data.** The LLM calls tools to fetch every data point. If a tool fails for a field, that field is absent from the report. The LLM **never** substitutes any financial value (price, ratio, margin, EPS, revenue, etc.) from its own training knowledge — doing so is a critical violation.
 
-4. **LLM fills gaps — but never fabricates.** `FILL_MODEL` (`openai/gpt-4.1-mini`) is called after all API fetches. It returns only values it can verify from training data. It returns `null` for anything uncertain. It never overwrites valid API data.
+4. **All financial data must come from real API tool calls.** No prices, ratios, margins, EPS, revenue, or any other financial figures may originate from LLM training knowledge. It must never be used for financial values.
 
-5. **LLM handles rate limits silently.** When a rate limit is hit, it skips remaining API calls for that session (to protect the daily budget), uses cached data where available, and fills remaining gaps from its own knowledge. The user sees a complete report, not an error.
-
-6. **LLM manages token budgets.** Conversation history is trimmed to the last 2 exchanges (`trimHistory()`). Tool call results are summarised before being added to history. The 5-minute Vercel timeout and 30-round tool-call limit are hard caps.
+5. **LLM manages token budgets.** Conversation history is trimmed to the last 2 exchanges (`trimHistory()`). Tool call results are summarised before being added to history. The 5-minute Vercel timeout and 30-round tool-call limit are hard caps.
 
 ---
 
@@ -46,7 +44,7 @@ The LLM is the **central decision-maker** for all operations. This is not negoti
 web/
   app/
     api/
-      chat/route.ts           ← LLM orchestrator: POST handler, tool loop, gap-fill, session history
+      chat/route.ts           ← LLM orchestrator: POST handler, tool-calling loop, session history
       reports/[filename]/     ← Serve (GET) and delete (DELETE) saved .md report files
       providers/route.ts      ← List available AI providers and models
       models/route.ts         ← Fetch live GitHub Models catalogue
@@ -81,13 +79,12 @@ src/
 
 **What it does:**
 - `POST /api/chat` — main entry point for all user messages
-- Detects intent: `parseReportRequest()` identifies stock/comparison/sector/deep-sector requests
-- For report requests: calls `executeTool()` directly (bypasses LLM round-trip for speed)
+- All report requests go through the LLM tool-calling loop (no shortcut path)
+- LLM calls all data tools first, then calls the report tool with pre-fetched data
 - For general queries: runs LLM tool-calling loop (max `MAX_TOOL_ROUNDS = 30`)
 - Manages per-session conversation history in `sessions` Map (in-memory, resets on cold start)
 - `trimHistory()` — keeps last 2 exchanges; drops intermediate tool messages to stay within token limit
-- `callLLMForDataFill()` — uses `FILL_MODEL` for gap-fill/ticker-resolution (preserves main model quota)
-- `createLLMFiller()` — creates a bound `LLMFiller` callback passed to `executeTool` via `options.llmFill`
+- `createLLMFiller()` — creates a bound `LLMFiller` callback passed to `executeTool` via `options.llmFill` (used for ticker resolution only)
 - Rate-limit fallback: GitHub Models → `COPILOT_FALLBACK_MODEL` → proxy
 
 **Constants:**
@@ -116,14 +113,8 @@ FILL_MODEL = process.env.FILL_MODEL || 'openai/gpt-4.1-mini'
 **What it does:**
 - `buildToolDefinitions()` — returns all OpenAI-compatible tool definitions for the LLM
 - `executeTool(name, args, options)` — dispatches to `StockDataService` or `reportGenerator`
-- `resolveSymbolFromQuery()` — scores `searchStock` results; detects share-class variants
+- `buildBasicFinancialsFallback(overview)` — derives financial metrics from company overview when dedicated financials endpoint is unavailable
 - `buildTickerResolutionPrompt(queries[])` — maps informal names/tickers → official US symbols
-- `buildSectorCompaniesPrompt(sector, count)` — LLM selects top N tickers for a sector/theme
-- `buildDeepSectorDependencyPrompt(sector, finalCount, ecosystemData[], previousPass?)` — dependency analysis + list refinement + Mermaid diagram; optional `previousPass` context enables recursive deepening
-- `buildStockFillPrompt(symbol, data)` — detects null fields; builds targeted JSON fill prompt
-- `applyLLMFillToStockData(data, llmResponse)` — merges non-null LLM values; never overwrites API data
-- `buildBatchStockFillPrompt(companies[])` — batch fill for comparison reports (one LLM call)
-- Per-ticker JSON cache: `loadSymbolCache()`, `saveSymbolCache()` — stored in `{REPORTS_DIR}/cache/{SYMBOL}.json`, TTL 7 days
 
 **Tool list:**
 
@@ -147,24 +138,13 @@ FILL_MODEL = process.env.FILL_MODEL || 'openai/gpt-4.1-mini'
 | `get_company_news` | Finnhub | Recent company news articles |
 | `get_sector_performance` | AV | Real-time sector returns across 1d/5d/1m/3m/YTD/1y timeframes |
 | `get_top_gainers_losers` | AV | Today's top gaining, top losing, and most actively traded US stocks |
-| `generate_stock_report` | All above | Full stock research report + save |
-| `generate_comparison_report` | All above | Multi-company comparison + save |
-| `generate_sector_report` | All above | LLM-selected sector report + save |
-| `generate_deep_sector_report` | All above + LLM | 4-phase deep sector research with recursive dependency analysis (DEEP_RESEARCH_DEPTH passes) + save |
+| `generate_stock_report` | Pre-fetched data | Renders pre-fetched data into a full stock report + save. No API calls. |
+| `generate_comparison_report` | Pre-fetched data | Renders pre-fetched data into a multi-company comparison + save. No API calls. |
+| `generate_sector_report` | Pre-fetched data | Renders pre-fetched data into a sector report + save. No API calls. |
+| `generate_deep_sector_report` | Pre-fetched data | Renders pre-fetched data + ecosystem analysis into a deep sector report + save. No API calls. |
 
-**Error suppression in `safeFetch`:**
-Errors matching these patterns are silently swallowed (not shown in report Data Gaps):
-- `/unavailable (in|via) (Alpha|Finnhub)/i`
-- `message.includes('Alpha-only mode')`
-
-All other errors appear in the report's `## ⚠️ Data Gaps` section.
-
-**Rate-limit detection (`isRateLimit`):**
-- `message.includes('frequency')` — AV per-minute limit
-- `message.includes('Thank you for using Alpha Vantage')` — AV daily limit or premium feature
-- `/rate limit|too many requests/i` — generic rate-limit
-
-When `isRateLimit` triggers: `rateLimitHit = true` → all remaining fetches skipped.
+**Report tool contract:**
+Report tools (`generate_*`) accept pre-fetched data as arguments — they do **not** call any data APIs internally. The LLM must call all data tools first, then pass results to the report tool in a single call.
 
 ---
 
@@ -301,34 +281,27 @@ When `isRateLimit` triggers: `rateLimitHit = true` → all remaining fetches ski
 
 ---
 
-## Deep Sector Research — 4-Phase Protocol (with Recursive Refinement)
+## Deep Sector Research — 4-Phase Protocol (LLM-orchestrated)
 
-```typescript
-// Phase 1: LLM identifies initial broad candidate list (~2× final count, max NUM_COMPANIES * 2)
-const prompt = buildSectorCompaniesPrompt(sector, initialCount);
-initialCandidates = await llmFill(prompt); // → string[] of tickers
+The LLM orchestrates all 4 phases itself before calling `generate_deep_sector_report`:
 
-// Phase 2: Fetch lightweight ecosystem data for all candidates
-// overview + news sentiment + peers — uses cache where available
-for (const sym of initialCandidates) {
-  ecosystemData.push({ symbol, overview, news, peers });
-}
+```
+Phase 1: LLM identifies ~2x candidate tickers for the sector.
 
-// Phase 3: LLM dependency analysis + list refinement — runs DEEP_RESEARCH_DEPTH times.
-// Each pass feeds the prior analysis as context so the LLM progressively deepens insights.
-let previousPass: DeepSectorPassContext | undefined;
-for (let passIndex = 0; passIndex < DEEP_RESEARCH_DEPTH; passIndex++) {
-  const depPrompt = buildDeepSectorDependencyPrompt(sector, finalCount, ecosystemData, previousPass);
-  // LLM returns JSON: { refinedList, dependencyAnalysis, ecosystemDiagram, refinementNotes }
-  // Falls back to initialCandidates if ALL passes fail; if a mid-loop pass fails, stops recursion.
-  previousPass = { dependencyAnalysis, ecosystemDiagram, refinementNotes, universe, passIndex };
-}
+Phase 2: LLM batches get_company_overview, get_news_sentiment, get_peers
+         for ALL candidates in ONE round.
 
-// Phase 4: Full comparison data fetch for refined universe
-// Same as generate_comparison_report for the final company list
+Phase 3: LLM analyses the fetched data to map supply-chain/customer/market
+         dependencies, selects the best final companies, writes ecosystem
+         analysis and Mermaid diagram.
+
+Phase 4: LLM batches ALL data tools (same as generate_comparison_report)
+         for the final companies in ONE round.
+
+Then: LLM calls generate_deep_sector_report with all assembled data.
 ```
 
-**Important:** Phase 3 runs `DEEP_RESEARCH_DEPTH` times (default 2). The first pass produces the initial refined list; subsequent passes use the prior analysis as context to deepen the ecosystem narrative and further refine the company selection. If a pass fails, recursion stops and the last successful universe is used. Phase 4 always runs exactly once.
+**Important:** All orchestration logic lives in the LLM's reasoning — not in `executeTool`. `generate_deep_sector_report` only renders the pre-fetched data passed to it.
 
 ---
 
@@ -341,15 +314,12 @@ for (let passIndex = 0; passIndex < DEEP_RESEARCH_DEPTH; passIndex++) {
 | `FINNHUB_API_KEY` | No | — | Enables Finnhub provider or hybrid fallback. If `STOCK_DATA_PROVIDER=hybrid` but this is not set, silently falls back to AV-only |
 | `STOCK_DATA_PROVIDER` | No | `alphavantage` | `alphavantage`, `finnhub`, or `hybrid` |
 | `COPILOT_MODEL` | No | `openai/gpt-4.1` | Main reasoning model |
-| `FILL_MODEL` | No | `openai/gpt-4.1-mini` | Gap-fill and ticker-resolution model (separate quota from main model) |
+| `FILL_MODEL` | No | `openai/gpt-4.1-mini` | Ticker-resolution model (separate quota from main model; never used for financial data) |
 | `COPILOT_FALLBACK_MODEL` | No | same as `COPILOT_MODEL` | Single fallback model if main model hits rate limit |
 | `COPILOT_FALLBACK_MODELS` | No | built-in list | Comma-separated ordered fallback model list; overrides `DEFAULT_FALLBACK_MODELS` constant |
 | `AUTO_DOWNGRADE_GPT5` | No | `true` | When `true`, `gpt-5` requests on GitHub provider are downgraded to `gpt-4.1` (GPT-5 not available on GitHub Models) |
 | `USE_FULL_SYSTEM_PROMPT` | No | `false` | When `true`, sends full verbose `SYSTEM_PROMPT`; default uses shorter `COMPACT_SYSTEM_PROMPT` to conserve tokens |
 | `REPORTS_DIR` | No | `/tmp/reports` (Vercel) or `reports/` | Report output directory |
-| `STOCK_CACHE_TTL_MS` | No | `604800000` | Cache TTL ms (7 days) |
-| `NUM_COMPANIES` | No | `10` | Number of companies in comparison, sector, and deep-sector reports. Optimal: 10; raise to 15 for broader research, lower to 5 for faster/demo runs |
-| `DEEP_RESEARCH_DEPTH` | No | `2` | Recursive refinement passes in deep sector Phase 3. Each pass deepens analysis using prior results. Optimal: 2; set to 1 to disable recursion, 3 for most thorough analysis |
 | `ALPHA_VANTAGE_MIN_INTERVAL_MS` | No | `1200` | Min ms between AV requests |
 | `FINNHUB_MIN_INTERVAL_MS` | No | `500` | Min ms between Finnhub requests |
 | `HEALTH_CHECK_SYMBOL` | No | — | If set, health endpoint makes a live API call with this ticker |
@@ -419,7 +389,7 @@ npm test   # runs vitest — all tests in src/__tests__/
 
 7. **Test every change.** Run `npm test` after every change. If a test fails, fix the code or the test (but never delete tests to make CI green).
 
-8. **LLM gap-fill is last resort.** `applyLLMFillToStockData()` only fills `null`/`undefined` fields. It never overwrites valid API data. Financial statement data (income, balance sheet, cash flow) is NOT LLM-filled — too complex for reliable reproduction.
+8. **No training-data substitution.** All financial data (prices, ratios, margins, EPS, revenue, etc.) must come from real API calls. If a value cannot be fetched via a tool, the field is absent from the report. The LLM MUST NOT substitute financial values from its training knowledge — ever. `callLLMForDataFill` is permitted only for ticker resolution, sector company selection, and ecosystem analysis narrative.
 
 9. **Ticker resolution: ask before assuming.** If the LLM cannot confidently resolve a company name to a ticker, it must ask the user. Never proceed with a guessed ticker.
 

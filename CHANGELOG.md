@@ -11,18 +11,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-### Added
-- `NUM_COMPANIES` env var (default: `10`) — controls the number of companies in comparison, sector, and deep-sector reports. Replaces previously hardcoded limits (6 for comparison/sector, 8 for deep sector). Optimal value is 10; controllable via Vercel environment variables.
-- `DEEP_RESEARCH_DEPTH` env var (default: `2`) — controls how many recursive refinement passes Phase 3 of `generate_deep_sector_report` runs. Each pass feeds the prior dependency analysis as context so the LLM progressively deepens its ecosystem insights and company selection. Optimal value is 2; set to 1 to disable recursion, 3 for maximum depth.
-- `DeepSectorPassContext` exported interface in `stockTools.ts` — carries prior-pass analysis (universe, dependencyAnalysis, ecosystemDiagram, refinementNotes) between recursive Phase 3 iterations.
-- `buildDeepSectorDependencyPrompt` now accepts an optional `previousPass: DeepSectorPassContext` argument; when present the prior analysis is injected into the prompt so the LLM can deepen and correct its previous output.
-- `get_sector_performance` tool — exposes `AlphaVantageService.getSectorPerformance()` (AV `SECTOR` endpoint) to the LLM; returns real-time and historical sector returns across 1d/5d/1m/3m/YTD/1y timeframes
-- `get_top_gainers_losers` tool — exposes `AlphaVantageService.getTopGainersLosers()` (AV `TOP_GAINERS_LOSERS` endpoint) to the LLM; returns today's top gaining, top losing, and most actively traded US stocks
-- Tests: `routes get_sector_performance to getSectorPerformance` and `routes get_top_gainers_losers to getTopGainersLosers` in `webStockTools.test.ts`
-- Test: `search_news has no tool definition and returns unknown tool error` confirms correct rejection
+### Changed — LLM-first report architecture (breaking change)
+- **Report tools no longer call data APIs internally.** `generate_stock_report`, `generate_comparison_report`, `generate_sector_report`, and `generate_deep_sector_report` now accept pre-fetched data as arguments and only render it — zero API calls inside the tool handler.
+- **LLM is now fully responsible for data orchestration.** Before calling a report tool, the LLM must batch all required data tool calls (`get_stock_price`, `get_company_overview`, etc.) in one round and pass results directly.
+- **`generate_stock_report` parameters changed**: now accepts `symbol` + all 14 data fields (`price`, `companyOverview`, `priceHistory`, `earningsHistory`, `incomeStatement`, `balanceSheet`, `cashFlow`, `analystRatings`, `analystRecommendations`, `priceTargets`, `peers`, `newsSentiment`, `companyNews`, `insiderTransactions`) instead of `{symbol, range}`.
+- **`generate_comparison_report` parameters changed**: now accepts `{range, universe, items[], notes?}` where `items` is an array of pre-fetched company data objects, instead of `{companies[], range}`.
+- **`generate_sector_report` parameters changed**: now accepts `{sectorQuery, range, universe, items[], notes?}` with pre-fetched data, instead of `{sector, count, range}`.
+- **`generate_deep_sector_report` parameters changed**: now accepts `{sectorQuery, range, universe, items[], dependencyAnalysis, ecosystemDiagram, refinementNotes, scenarioSimulations, supplierCustomerMap, innovationHighlights, notes?}` with all phases pre-completed by the LLM, instead of `{sector, count, range}`.
+- **Removed `parseReportRequest` shortcut path** in `route.ts`: all requests now go through the LLM tool-calling loop — no more direct `executeTool` bypass for detected report patterns.
+- **SYSTEM_PROMPT and COMPACT_SYSTEM_PROMPT** updated with explicit report workflow instructions for each of the 4 report types.
 
 ### Removed
-- **Dead code: `search_news` case in `executeTool`** — `search_news` had an `executeTool` handler but no entry in `buildToolDefinitions()` or `selectToolNames()`, making it LLM-unreachable. The dead `case` was removed. The `searchNews` service method is retained (used internally by report tools).
+- `buildSectorCompaniesPrompt` function — sector company selection is now done by the LLM natively.
+- `buildDeepSectorDependencyPrompt` function — deep sector dependency analysis is now done by the LLM natively.
+- `DeepSectorPassContext` interface — no longer needed; LLM manages recursive analysis in its own context.
+- `NUM_COMPANIES` and `DEEP_RESEARCH_DEPTH` constants — report tool orchestration is now fully LLM-driven.
+- `parseReportRequest`, `parseCompareRequest`, `parseTimeframe` functions from `route.ts`.
+- Per-ticker JSON cache (`loadSymbolCache`, `saveSymbolCache`, `getCachedValue`, `setCachedValue`) and supporting utilities (`scoreSearchMatch`, `baseCompanyName`, `resolveSymbolFromQuery`, `DEFAULT_SOURCE`, `SOURCE_LEGEND`) from `web/app/lib/stockTools.ts` — these were only used by the old report case implementations.
+
+### Added
+- `buildBasicFinancialsFallback(overview)` — module-level helper in `web/app/lib/stockTools.ts` that derives key financial metrics from a company overview object; used by all 4 report cases.
+- New tests in `webStockTools.test.ts` verifying that all 4 report tools accept pre-fetched data and make **zero** service API calls.
+
+
 - **Dead interface surface: `getStocksBySector` and `screenStocks`** — both methods threw `'unavailable'` errors in all implementations and were never called by any tool or report path. Removed from `StockDataService` interface, `AlphaVantageService`, `FinnhubService`, and `HybridStockDataService` in both `web/app/lib/stockDataService.ts` and `src/stockDataService.ts`.
 - **Duplicate method: `searchCompanies`** — was a pass-through to `searchStock()` in all implementations. Removed from `StockDataService` interface and all implementations in both `web/` and `src/`. The `search_companies` CLI tool definition also removed from `src/stockTools.ts`.
 - **Stale config: `yahoo-finance2` in `next.config.js`** — `serverExternalPackages` and `outputFileTracingIncludes` entries for `yahoo-finance2` were referencing a library no longer used in the codebase. Removed entirely; `next.config.js` now exports an empty config object.
@@ -80,12 +91,7 @@ Exact dates are unknown; features are listed in approximate development order.
 - `buildTickerResolutionPrompt()` — LLM resolves informal names/tickers to official US symbols before any API call
 - `search_stock` (AV `SYMBOL_SEARCH`) as fallback; `resolveSymbolFromQuery()` scores results and detects share-class variants
 - When resolution fails, `executeTool` returns error with candidate list; LLM surfaces to user naturally
-
-### LLM Gap-Fill for Data Completeness
-- `buildStockFillPrompt()` / `applyLLMFillToStockData()` — detects null fields; LLM fills only verifiable values; never overwrites API data
-- `buildBatchStockFillPrompt()` — single LLM call fills all companies in a comparison report
-- `FILL_MODEL` (default `openai/gpt-4.1-mini`) — lighter model for gap-fill; preserves main model's rate-limit quota
-- Single retry with 2-second delay on 429 in `callLLMForDataFill`
+- `FILL_MODEL` (default `openai/gpt-4.1-mini`) — lighter model for ticker resolution and sector selection; draws from a separate, higher quota pool; **never used to fill financial data values**
 
 ### Hybrid Data Service
 - `AlphaVantageService` — primary; full free-tier implementation; 25 req/day, 5/min; 7-day per-ticker JSON cache

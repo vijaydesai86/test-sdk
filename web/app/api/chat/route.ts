@@ -46,19 +46,19 @@ interface ChatMessage {
 // Store conversation history per session
 const sessions = new Map<string, ChatMessage[]>();
 
-const SYSTEM_PROMPT = `You are an elite buy-side equity research analyst. Produce institutional-quality, data-driven financial research — thorough, precise, and immediately actionable.
+const SYSTEM_PROMPT = `You are an elite buy-side equity research analyst. You are the brain. You use tools to get real data and produce institutional-quality research — thorough, precise, and immediately actionable.
 
 **NON-NEGOTIABLE RULES:**
 
-**1. Fetch before you write.** Never state a fact about a stock without first calling the relevant tool. No estimates, no speculation, no filler.
+**1. Tools provide data — you provide intelligence.** You orchestrate tool calls to gather 100% real, live market data. You NEVER state a financial fact (price, ratio, margin, EPS, revenue, etc.) from your own training knowledge. If a tool does not return a value, that value is absent from the report — no estimates, no guesses, no filler.
 
 **2. Batch all parallel calls in ONE round.** Researching N stocks? Issue ALL tool calls simultaneously in a single response — never one at a time. This is critical for multi-stock reports.
 
 **3. Match depth to the question.**
-- Individual stock report: call generate_stock_report with the ticker symbol.
-- Company comparison report: call generate_comparison_report with the list of ticker symbols.
-- Sector / thematic analysis: call generate_sector_report with the sector query (e.g. "AI data center"). It identifies the top companies and builds a full comparison report.
-- Deep sector research: call generate_deep_sector_report when the user asks for deep, thorough, or comprehensive sector analysis — it identifies a broad candidate list, maps supply-chain/customer/market/news dependencies, refines the list, and builds a full comparison report.
+- Individual stock report: follow the SINGLE STOCK REPORT WORKFLOW below.
+- Company comparison report: follow the COMPARISON REPORT WORKFLOW below.
+- Sector / thematic analysis: follow the SECTOR REPORT WORKFLOW below.
+- Deep sector research: follow the DEEP SECTOR WORKFLOW below.
 - Data-only query: call the relevant data tool (get_stock_price, get_company_overview, etc.) and answer directly.
 
 **4. Resolve company names to tickers first.** If the user mentions company names (e.g. "Google", "Microsoft", "Apple") instead of tickers, call search_stock for each name to find the correct ticker symbol, then use those tickers in generate_stock_report or generate_comparison_report. Never guess a ticker — always confirm it with search_stock.
@@ -74,18 +74,46 @@ const SYSTEM_PROMPT = `You are an elite buy-side equity research analyst. Produc
 - Show all calculations explicitly: FCF = Op.CF − CapEx = $X − $Y = $Z.
 - Numbers: prices 2 decimals, % 1 decimal, large numbers 2 sig figs ($2.3B).
 - Cite "Source: Alpha Vantage" after data-heavy sections.
+
+**REPORT WORKFLOWS — follow these exactly:**
+
+**SINGLE STOCK REPORT WORKFLOW:**
+1. Call search_stock if ticker is unclear.
+2. Batch ALL of these in ONE round: get_stock_price, get_company_overview, get_price_history("5y"), get_earnings_history, get_income_statement, get_balance_sheet, get_cash_flow, get_analyst_ratings, get_analyst_recommendations, get_price_targets, get_peers, get_news_sentiment, get_company_news, get_insider_trading.
+3. Call generate_stock_report with ALL results from step 2.
+
+**COMPARISON REPORT WORKFLOW:**
+1. Resolve all tickers (call search_stock for any unclear names).
+2. Batch ALL data tool calls for ALL companies in ONE round.
+3. Call generate_comparison_report with all results.
+
+**SECTOR REPORT WORKFLOW:**
+1. Identify the top N companies for the sector.
+2. Batch all data tool calls for ALL companies in ONE round.
+3. Call generate_sector_report with all results.
+
+**DEEP SECTOR WORKFLOW:**
+1. Phase 1: Identify ~2x candidates.
+2. Phase 2: Batch get_company_overview + get_news_sentiment + get_peers for ALL candidates in ONE round.
+3. Phase 3: Analyse dependencies, write ecosystem analysis + Mermaid diagram, select final companies.
+4. Phase 4: Batch ALL data tools for final companies in ONE round.
+5. Call generate_deep_sector_report with everything.
 `;
 
-const COMPACT_SYSTEM_PROMPT = `You are a buy-side equity research analyst.
+const COMPACT_SYSTEM_PROMPT = `You are a buy-side equity research analyst. You are the brain — tools give you real data, you provide intelligence.
 
 Rules:
-- Fetch data via tools before stating facts.
-- Batch tool calls in a single round.
+- ONLY use tool results for financial facts. NEVER use your training knowledge for prices, ratios, margins, EPS, or any financial value. If a tool returns nothing, that value is absent — no guessing.
+- Fetch data via tools before stating facts. Batch all tool calls in a single round.
 - If given company names instead of tickers (e.g. "Google", "Microsoft"), call search_stock for each name first to get the correct ticker symbol, then use those tickers in report/comparison tools.
 - Use tables for comparisons and show calculations.
 - Return report paths when asked for reports.
-- For sector/thematic queries (e.g. "top 5 AI data center companies"), call generate_sector_report with the sector query — it identifies the top companies automatically.
-- For deep/thorough/comprehensive sector research, call generate_deep_sector_report — it maps sector dependencies and refines the company list before building the comparison.
+
+Report workflows:
+- Single stock report: (1) batch get_stock_price, get_company_overview, get_price_history("5y"), get_earnings_history, get_income_statement, get_balance_sheet, get_cash_flow, get_analyst_ratings, get_analyst_recommendations, get_price_targets, get_peers, get_news_sentiment, get_company_news, get_insider_trading in ONE round; (2) call generate_stock_report with all results.
+- Comparison report: batch all data tools for ALL companies in ONE round, then call generate_comparison_report with all results.
+- Sector report: identify top companies, batch all data tools in ONE round, call generate_sector_report.
+- Deep sector: Phase 1 identify ~2x candidates; Phase 2 batch overview+sentiment+peers; Phase 3 analyse + write ecosystem analysis + Mermaid + select finals; Phase 4 batch all data tools; call generate_deep_sector_report.
 
 Keep answers concise unless the user requests depth.`;
 
@@ -189,67 +217,6 @@ function isSmallContextModel(model?: string | null): boolean {
 function isToolCallLike(content: string | null | undefined): boolean {
   if (!content) return false;
   return /"name"\s*:\s*"functions\./.test(content) || /"arguments"\s*:\s*\{/.test(content);
-}
-
-function parseCompareRequest(message: string): string[] | null {
-  const text = message.trim();
-  if (!/compar/i.test(text)) return null;
-  // Extract comma- or "vs"-separated ticker/company tokens
-  const tickerPart = text
-    .replace(/^.*?compar(?:e|ison\s+of|ison)?\s+(?:companies?\s+)?/i, '')
-    .replace(/\s+report.*$/i, '');
-  // Tokens are already uppercased via .toUpperCase() above.
-  // Allow 2–30 uppercase letters so company names ("MICROSOFT") pass
-  // alongside short tickers ("AMD"). Multi-word names like "PALO ALTO"
-  // split into individual tokens; resolveSymbolFromQuery handles each token
-  // separately via the SYMBOL_SEARCH API.
-  const tokens = tickerPart
-    .split(/\s*(?:,|vs\.?|and|\s)\s*/i)
-    .map((t) => t.trim().toUpperCase())
-    .filter((t) => /^[A-Z]{2,30}$/.test(t));
-  return tokens.length >= 2 ? tokens : null;
-}
-
-function parseReportRequest(message: string) {
-  const text = message.trim();
-  const lower = text.toLowerCase();
-
-  const compareCompanies = parseCompareRequest(text);
-  if (compareCompanies) {
-    return { type: 'compare' as const, companies: compareCompanies };
-  }
-
-  const sectorMatch = text.match(/(sector|theme)\s+report\s+for\s+(.+)$/i);
-  if (sectorMatch) {
-    return { type: 'sector' as const, query: sectorMatch[2].trim() };
-  }
-
-  if (lower.includes('sector report') || lower.includes('theme report')) {
-    const queryMatch = text.match(/report\s+for\s+(.+)$/i);
-    if (queryMatch) {
-      return { type: 'sector' as const, query: queryMatch[1].trim() };
-    }
-  }
-
-  const genericMatch = text.match(/report\s+for\s+(.+)$/i);
-  if (genericMatch) {
-    const query = genericMatch[1].trim();
-    if (query.includes(' ') || /sector|theme|stocks?/i.test(query)) {
-      return { type: 'sector' as const, query };
-    }
-  }
-
-  const stockMatch = text.match(/report\s+(?:for|on)\s+([a-zA-Z]{1,6})\s*$/i);
-  if (stockMatch) {
-    return { type: 'stock' as const, symbol: stockMatch[1].toUpperCase() };
-  }
-
-  return null;
-}
-
-function parseTimeframe(message: string) {
-  const match = message.match(/\b(1w|1m|3m|6m|1y|3y|5y|max)\b/i);
-  return match ? match[1].toLowerCase() : null;
 }
 
 function buildFallbackModels(requestedModel: string): string[] {
@@ -391,8 +358,14 @@ async function callGitHubModelsAPI(
 }
 
 /**
- * Make a targeted LLM call — used for ticker resolution (resolving informal company
- * names or wrong tickers to official US exchange symbols before any API call).
+ * Make a targeted LLM call — used exclusively for:
+ *   1. Ticker resolution: mapping informal company names to official US exchange symbols
+ *   2. Sector universe selection: identifying the top N tickers for a sector/theme
+ *   3. Deep-sector ecosystem analysis: dependency narratives + Mermaid diagrams
+ *
+ * This function MUST NOT be used to fill in financial data (prices, ratios, margins,
+ * EPS, etc.) from LLM training knowledge. All financial data must come from real APIs.
+ *
  * Returns the raw response string (expected to be valid JSON).
  * Failures are caught and return '{}' so callers can continue gracefully.
  *
@@ -410,9 +383,11 @@ async function callLLMForDataFill(
     {
       role: 'system',
       content:
-        'You are a financial data assistant with knowledge of publicly traded companies. ' +
-        'Provide factual financial data from your training. ' +
-        'Return null for any value you are uncertain about. ' +
+        'You are a financial research assistant. ' +
+        'Your role is to resolve company names to official US stock tickers, ' +
+        'identify companies in a sector, and perform ecosystem analysis. ' +
+        'NEVER provide financial data values (prices, ratios, margins, EPS, etc.) — ' +
+        'those must come from real-time APIs only. ' +
         'Respond ONLY with valid JSON — no markdown, no explanation.',
     },
     { role: 'user', content: prompt },
@@ -485,82 +460,6 @@ export async function POST(request: NextRequest) {
       );
     }
     const stockService: StockDataService = createStockService(alphaVantageKey);
-
-    const reportRequest = parseReportRequest(message);
-    const timeframe = parseTimeframe(message);
-    if (reportRequest) {
-      const currentSessionId = sessionId || Math.random().toString(36).substring(7);
-      const conversationMessages: ChatMessage[] = sessionId ? sessions.get(sessionId) || [] : [];
-      const systemPrompt = process.env.USE_FULL_SYSTEM_PROMPT === 'true'
-        ? SYSTEM_PROMPT
-        : COMPACT_SYSTEM_PROMPT;
-      if (conversationMessages.length === 0) {
-        conversationMessages.push({ role: 'system', content: systemPrompt });
-      }
-
-      conversationMessages.push({ role: 'user', content: message });
-
-      const directModel = model || DEFAULT_MODEL;
-      const llmFill = createLLMFiller(githubToken, directModel);
-
-      const toolResult = reportRequest.type === 'compare'
-        ? await executeTool(
-            'generate_comparison_report',
-            { companies: reportRequest.companies, range: timeframe || '1y' },
-            stockService,
-            { llmFill }
-          )
-        : reportRequest.type === 'sector'
-          ? await executeTool(
-              'generate_sector_report',
-              { sector: reportRequest.query, range: timeframe || '1y' },
-              stockService,
-              { llmFill }
-            )
-          : await executeTool(
-              'generate_stock_report',
-              { symbol: (reportRequest as any).symbol, range: timeframe || '5y' },
-              stockService,
-              { llmFill }
-            );
-
-      if (!toolResult.success) {
-        return NextResponse.json(
-          { error: toolResult.error || toolResult.message || 'Report generation failed' },
-          { status: 500 }
-        );
-      }
-
-      const downloadUrl = toolResult.data?.downloadUrl;
-      const filename = toolResult.data?.filename as string | undefined;
-      const content = toolResult.data?.content as string | undefined;
-      const responseText = 'Report ready — open the **Artifacts** panel to view it.';
-
-      conversationMessages.push({ role: 'assistant', content: responseText });
-      sessions.set(currentSessionId, conversationMessages);
-
-      console.info('Chat request stats', {
-        provider: provider || 'github',
-        model: model || DEFAULT_MODEL,
-        rounds: 0,
-        toolCalls: 1,
-        toolsProvided: 0,
-        directReport: reportRequest.type,
-      });
-
-      return NextResponse.json({
-        response: responseText,
-        sessionId: currentSessionId,
-        model: model || DEFAULT_MODEL,
-        provider: provider || 'github',
-        report: filename && content ? { filename, content, downloadUrl } : null,
-        stats: {
-          rounds: 0,
-          toolCalls: 1,
-          toolsProvided: 0,
-        },
-      });
-    }
 
     // Get or create conversation history
     let conversationMessages: ChatMessage[] = sessionId ? sessions.get(sessionId) || [] : [];

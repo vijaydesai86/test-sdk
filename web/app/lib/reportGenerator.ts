@@ -987,21 +987,44 @@ function buildComparisonMoatTable(
   items: ComparisonReportItem[],
   scored: Array<{ item: ComparisonReportItem; score: number | null }>
 ): string {
+  // Preamble: explain what economic moat means in context
+  const preamble = [
+    '> **Economic Moat** is a measure of a company\'s sustainable competitive advantage — how well it can defend margins, pricing power, and analyst conviction over time.',
+    '> **Score components:** _Margin Stability_ (consistency of gross/operating margins across quarters) · _Pricing Power_ (gross margin + ROE) · _Analyst Conviction_ (buy-side consensus + price target upside)',
+    '> Scores are 0–100; **Strong ≥ 70**, **Moderate 45–69**, **Narrow < 45**.',
+  ].join('\n');
+
   const rows = items.map((item) => {
     const row = scored.find((r) => r.item.symbol === item.symbol);
     const score = row?.score ?? null;
-    const level = score === null ? 'N/A' : score >= 70 ? 'Strong' : score >= 45 ? 'Moderate' : 'Narrow';
+    const level = score === null ? 'N/A' : score >= 70 ? '🏰 Strong' : score >= 45 ? '🟡 Moderate' : '⚠️ Narrow';
+
+    // Derive the primary moat driver from available data
+    const grossMargin = normalizePercent(item.basicFinancials?.metric?.grossMarginTTM ?? item.overview?.profitMargin);
+    const operatingMargin = normalizePercent(item.basicFinancials?.metric?.operatingMarginTTM ?? item.overview?.operatingMargin);
+    const roe = normalizePercent(item.basicFinancials?.metric?.roeTTM ?? item.overview?.returnOnEquity);
+    const drivers: string[] = [];
+    if (grossMargin !== null && grossMargin > 40) drivers.push(`high gross margin (${grossMargin.toFixed(0)}%)`);
+    else if (grossMargin !== null && grossMargin > 20) drivers.push(`moderate gross margin (${grossMargin.toFixed(0)}%)`);
+    if (operatingMargin !== null && operatingMargin > 20) drivers.push(`strong operating leverage (${operatingMargin.toFixed(0)}%)`);
+    if (roe !== null && roe > 15) drivers.push(`above-avg ROE (${roe.toFixed(0)}%)`);
+    const keyDriver = drivers.length > 0 ? drivers.slice(0, 2).join('; ') : 'Insufficient margin data';
+
     return [
       `${item.overview?.name || item.symbol} (${item.symbol})`,
       score === null ? 'N/A' : score.toFixed(1),
       level,
+      keyDriver,
     ];
   });
-  return buildTable(
-    ['Company', 'Composite Score', 'Moat Level'],
+
+  const table = buildTable(
+    ['Company', 'Moat Score', 'Moat Level', 'Key Moat Driver(s)'],
     rows,
-    ['left', 'right', 'center']
+    ['left', 'right', 'center', 'left']
   );
+
+  return `${preamble}\n\n${table}`;
 }
 
 function buildComparisonSentimentTable(items: ComparisonReportItem[]): string {
@@ -1090,7 +1113,7 @@ export function buildStockReport(data: StockReportData): string {
   const competitiveLines = [
     overview.industry ? `- Industry Focus: ${overview.industry}` : null,
     overview.sector ? `- Sector: ${overview.sector}` : null,
-    peers.length ? `- Peer Set: ${peers.join(', ')}` : '- Peer Set: Unavailable (data gap or rate limit)',
+    peers.length ? `- Peer Set: ${peers.join(', ')}` : null,
   ].filter(Boolean) as string[];
 
   const revenueGrowth = getStockRevenueGrowth(data);
@@ -1368,8 +1391,6 @@ export function buildStockReport(data: StockReportData): string {
   const insiderTable = buildInsiderTable(data.insiderTransactions);
   if (insiderTable) {
     sections.push('## 🏠 Insider Trading Activity', insiderTable);
-  } else if (data.insiderTransactions !== undefined) {
-    sections.push('## 🏠 Insider Trading Activity', '_No recent insider transactions recorded._');
   }
 
   // News Highlights

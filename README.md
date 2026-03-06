@@ -82,26 +82,27 @@ Any question that doesn't fit the above — macro trends, industry news, "explai
                    POST /api/chat
                            │
 ┌──────────────────────────▼──────────────────────────────────────────────┐
-│                     LLM — Final Boss                                    │
+│                     LLM — The Brain                                     │
 │                  web/app/api/chat/route.ts                              │
 │                                                                         │
-│  • Parses intent: stock / compare / sector / deep sector / chat         │
-│  • Resolves company names → official tickers (asks user if unsure)      │
-│  • Decides which tools to call and in what order                        │
-│  • Handles rate limits, retries, and model fallback transparently       │
-│  • Stitches data from multiple sources into a coherent report           │
-│  • Fills any remaining gaps using its own verified knowledge            │
-└──────┬───────────────────────────────────────────────┬──────────────────┘
-       │ Tool calls                                    │ Gap-fill prompts
-       │                                               │
-┌──────▼───────────────────┐             ┌─────────────▼──────────────────┐
-│   Tool Dispatcher        │             │   LLM Gap-Fill (FILL_MODEL)    │
-│   stockTools.ts          │             │                                │
-│   20+ data & report      │             │   • Ticker resolution          │
-│   tools exposed to LLM   │             │   • Sector company selection   │
-└──────┬───────────────────┘             │   • Dependency mapping         │
-       │                                 │   • Null-field recovery        │
-┌──────▼────────────────────────────┐    └────────────────────────────────┘
+│  • Orchestrates all tool calls — data tools first, report tools last    │
+│  • Resolves company names → official tickers (search_stock)             │
+│  • Batches ALL data tool calls in ONE round before calling report tool  │
+│  • Handles model fallback transparently                                 │
+│  • Never substitutes API data with training knowledge                   │
+└──────┬──────────────────────────────────────────────────────────────────┘
+       │ Tool calls (data first, then report)
+       │
+┌──────▼───────────────────┐
+│   Tool Dispatcher        │
+│   stockTools.ts          │
+│   20+ tools exposed:     │
+│   • Data tools (get_*)   │  ←── LLM calls these FIRST, in ONE batch
+│   • Report tools         │  ←── LLM passes pre-fetched data HERE
+│     (generate_*)         │       No API calls inside report tools
+└──────┬───────────────────┘
+       │ data tools only
+┌──────▼────────────────────────────┐
 │         Hybrid Data Layer         │
 │         stockDataService.ts       │
 │                                   │
@@ -116,8 +117,6 @@ Any question that doesn't fit the above — macro trends, industry news, "explai
 │    analyst data, insider trades,  │
 │    news, peers, candles           │
 │  • Free: 60 req/min               │
-│                    ↓ cache        │
-│  7-day JSON cache per ticker      │
 └──────┬────────────────────────────┘
        │
 ┌──────▼────────────────────────────┐
@@ -135,25 +134,17 @@ Any question that doesn't fit the above — macro trends, industry news, "explai
 └───────────────────────────────────┘
 ```
 
-### Ticker Resolution Flow
+### Report Workflow (for all report types)
 ```
-User: "research on google"
-       │
-       ▼
-Code calls LLM first (buildTickerResolutionPrompt): "google" → GOOGL
-(LLM prefers higher-liquidity share class: GOOGL over GOOG)
-       │
-       ├─ LLM resolved? ──► Use GOOGL directly
-       │
-       └─ LLM unavailable / no result ──► Fallback: call search_stock API
-                                           │
-                                           ├─ Clear winner? ──► Use it
-                                           │
-                                           └─ Ambiguous / no match?
-                                               └─ Return error with candidates
-                                                  LLM surfaces to user:
-                                                  "Did you mean GOOGL or GOOG?"
-                                                  User replies → task continues
+1. LLM calls all required data tools in ONE batch round
+   (get_stock_price, get_company_overview, get_price_history, ...)
+        │
+        ▼
+2. LLM calls the report tool with ALL pre-fetched data as arguments
+   (generate_stock_report, generate_comparison_report, ...)
+        │
+        ▼
+3. Report tool renders data → saves .md artifact → returns download URL
 ```
 
 ### Data Completeness Flow
@@ -161,17 +152,15 @@ Code calls LLM first (buildTickerResolutionPrompt): "google" → GOOGL
 API fetch for all fields
        │
        ▼
-Fields still null/undefined?
+Fields returned from API?
        │
-       ├─ No ──► Build report
+       ├─ Yes ──► Used as-is in the report
        │
-       └─ Yes ──► LLM gap-fill (FILL_MODEL)
-                  • Returns only values LLM can verify from training
-                  • Returns null for anything uncertain — never fabricates
-                  • Merged into data (never overwrites real API values)
+       └─ No  ──► Section is omitted or shown as unavailable
+                  (No training-knowledge substitution — ever)
                   │
                   ▼
-                Build report (N/A only for truly unresolvable fields)
+                Build report with whatever real data is available
 ```
 
 ---
@@ -217,7 +206,7 @@ npm run dev
 | `FINNHUB_API_KEY` | Recommended | — | Free key from [finnhub.io](https://finnhub.io) — enables hybrid fallback for higher data completeness |
 | `STOCK_DATA_PROVIDER` | No | `alphavantage` | `alphavantage`, `finnhub`, or `hybrid` (use `hybrid` for best data coverage) |
 | `COPILOT_MODEL` | No | `openai/gpt-4.1` | Main reasoning model |
-| `FILL_MODEL` | No | `openai/gpt-4.1-mini` | Lighter model for ticker resolution and gap-fill (preserves main model quota) |
+| `FILL_MODEL` | No | `openai/gpt-4.1-mini` | Lighter model for ticker resolution and sector selection (separate quota from main model; never used for financial data values) |
 | `COPILOT_FALLBACK_MODEL` | No | same as main | Fallback model if main hits rate limit |
 | `REPORTS_DIR` | No | `/tmp/reports` | Report save directory (Vercel: ephemeral `/tmp`) |
 | `STOCK_CACHE_TTL_MS` | No | `604800000` | Cache TTL in milliseconds (default: 7 days) |

@@ -1295,7 +1295,7 @@ export function buildStockReport(data: StockReportData): string {
   const competitiveLines = [
     overview.industry ? `- Industry Focus: ${overview.industry}` : null,
     overview.sector ? `- Sector: ${overview.sector}` : null,
-    peers.length ? `- Peer Set: ${peers.join(', ')}` : '- Peer Set: Unavailable (data gap or rate limit)',
+    peers.length ? `- Peer Set: ${peers.join(', ')}` : null,
   ].filter(Boolean) as string[];
 
   const revenueGrowth = getStockRevenueGrowth(data);
@@ -1572,8 +1572,6 @@ export function buildStockReport(data: StockReportData): string {
   const insiderTable = buildInsiderTable(data.insiderTransactions);
   if (insiderTable) {
     sections.push('## 🏠 Insider Trading Activity', insiderTable);
-  } else if (data.insiderTransactions !== undefined) {
-    sections.push('## 🏠 Insider Trading Activity', '_No recent insider transactions recorded._');
   }
 
   // News Highlights — dedicated section (more prominent than the catalyst line)

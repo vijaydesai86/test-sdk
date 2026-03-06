@@ -55,48 +55,134 @@ describe('web executeTool', () => {
     expect(service.getTopGainersLosers).toHaveBeenCalled();
   });
 
-  it('generate_sector_report returns error when sector is empty', async () => {
+  it('generate_stock_report without symbol returns error', async () => {
     const service = stubService();
-    const result = await executeTool('generate_sector_report', { sector: '' }, service);
-
+    const result = await executeTool('generate_stock_report', { symbol: '' }, service);
     expect(result.success).toBe(false);
-    expect(result.error).toMatch(/sector or theme query is required/i);
+    expect(result.error).toMatch(/symbol is required/i);
   });
 
-  it('generate_sector_report returns error when LLM is unavailable and cannot identify companies', async () => {
+  it('generate_stock_report with pre-fetched data succeeds without calling any service API', async () => {
     const service = stubService();
-    // No llmFill provided → universe stays empty
-    const result = await executeTool('generate_sector_report', { sector: 'AI data center' }, service);
-
-    expect(result.success).toBe(false);
-    expect(result.error).toMatch(/Could not identify companies/i);
-  });
-
-  it('generate_sector_report uses llmFill to identify companies and fetches data', async () => {
-    const service = stubService();
-    // LLM returns two tickers
-    const llmFill = vi.fn().mockResolvedValue('["NVDA","AMD"]');
-    const result = await executeTool(
-      'generate_sector_report',
-      { sector: 'AI chips', count: 2 },
-      service,
-      { llmFill }
-    );
+    const result = await executeTool('generate_stock_report', {
+      symbol: 'AAPL',
+      price: { price: '150.00', changePercent: '1.00%' },
+      companyOverview: { name: 'Apple Inc', symbol: 'AAPL' },
+    }, service);
 
     expect(result.success).toBe(true);
-    expect(llmFill).toHaveBeenCalledOnce();
-    // Should have fetched data for both tickers
-    expect(service.getStockPrice).toHaveBeenCalledWith('NVDA');
-    expect(service.getStockPrice).toHaveBeenCalledWith('AMD');
+    expect(result.data?.content).toBeDefined();
+    // Report tools must NOT call any service APIs
+    expect(service.getStockPrice).not.toHaveBeenCalled();
+    expect(service.getCompanyOverview).not.toHaveBeenCalled();
+  });
+
+  it('generate_comparison_report with fewer than 2 items returns error', async () => {
+    const service = stubService();
+    const result = await executeTool('generate_comparison_report', {
+      range: '1y',
+      universe: ['AAPL'],
+      items: [{ symbol: 'AAPL', price: { price: '150.00' } }],
+    }, service);
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/at least 2/i);
+  });
+
+  it('generate_comparison_report with items array succeeds without calling any service API', async () => {
+    const service = stubService();
+    const result = await executeTool('generate_comparison_report', {
+      range: '1y',
+      universe: ['AAPL', 'MSFT'],
+      items: [
+        { symbol: 'AAPL', price: { price: '150.00' }, overview: { name: 'Apple', symbol: 'AAPL' } },
+        { symbol: 'MSFT', price: { price: '300.00' }, overview: { name: 'Microsoft', symbol: 'MSFT' } },
+      ],
+    }, service);
+
+    expect(result.success).toBe(true);
+    expect(result.data?.content).toBeDefined();
+    // Report tools must NOT call any service APIs
+    expect(service.getStockPrice).not.toHaveBeenCalled();
+    expect(service.getCompanyOverview).not.toHaveBeenCalled();
+  });
+
+  it('generate_sector_report without sectorQuery returns error', async () => {
+    const service = stubService();
+    const result = await executeTool('generate_sector_report', {
+      sectorQuery: '',
+      universe: ['NVDA'],
+      items: [{ symbol: 'NVDA' }],
+    }, service);
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/sectorQuery is required/i);
+  });
+
+  it('generate_sector_report without items returns error', async () => {
+    const service = stubService();
+    const result = await executeTool('generate_sector_report', {
+      sectorQuery: 'AI chips',
+      universe: ['NVDA'],
+      items: [],
+    }, service);
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/items array is required/i);
+  });
+
+  it('generate_sector_report with items and sectorQuery succeeds without calling any service API', async () => {
+    const service = stubService();
+    const result = await executeTool('generate_sector_report', {
+      sectorQuery: 'AI chips',
+      range: '1y',
+      universe: ['NVDA', 'AMD'],
+      items: [
+        { symbol: 'NVDA', price: { price: '500.00' }, overview: { name: 'NVIDIA', symbol: 'NVDA' } },
+        { symbol: 'AMD', price: { price: '150.00' }, overview: { name: 'AMD', symbol: 'AMD' } },
+      ],
+    }, service);
+
+    expect(result.success).toBe(true);
     expect(result.data?.content).toContain('AI chips');
+    // Report tools must NOT call any service APIs
+    expect(service.getStockPrice).not.toHaveBeenCalled();
+    expect(service.getCompanyOverview).not.toHaveBeenCalled();
+  });
+
+  it('generate_deep_sector_report without items returns error', async () => {
+    const service = stubService();
+    const result = await executeTool('generate_deep_sector_report', {
+      sectorQuery: 'semiconductors',
+      universe: ['NVDA'],
+      items: [],
+    }, service);
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/items array is required/i);
+  });
+
+  it('generate_deep_sector_report with items succeeds without calling any service API', async () => {
+    const service = stubService();
+    const result = await executeTool('generate_deep_sector_report', {
+      sectorQuery: 'semiconductors',
+      range: '1y',
+      universe: ['NVDA', 'AMD'],
+      items: [
+        { symbol: 'NVDA', price: { price: '500.00' }, overview: { name: 'NVIDIA', symbol: 'NVDA' } },
+        { symbol: 'AMD', price: { price: '150.00' }, overview: { name: 'AMD', symbol: 'AMD' } },
+      ],
+      dependencyAnalysis: 'NVIDIA and AMD compete in AI chips.',
+      ecosystemDiagram: 'graph LR\n  NVDA-->Cloud',
+    }, service);
+
+    expect(result.success).toBe(true);
+    expect(result.data?.content).toBeDefined();
+    // Report tools must NOT call any service APIs
+    expect(service.getStockPrice).not.toHaveBeenCalled();
+    expect(service.getCompanyOverview).not.toHaveBeenCalled();
   });
 });
 
 describe('FinnhubService error messages', () => {
   it('throws suppression-compatible error when profile2 returns empty', async () => {
-    // FinnhubService with empty key will fail at request level; we mock the internals
     const service = new FinnhubService('dummy');
-    // Patch makeRequest to return empty profile
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (service as any).makeRequest = vi.fn().mockResolvedValue({});
 
@@ -105,7 +191,6 @@ describe('FinnhubService error messages', () => {
 
   it('Finnhub company overview error matches the safeFetch suppression regex', async () => {
     const suppressionRegex = /unavailable (in|via) (Alpha|Finnhub)/i;
-    // The error message thrown when profile2 returns empty must match so it doesn't appear in Data Gaps
     const errorMessage = 'Unavailable via Finnhub: company profile not found';
     expect(suppressionRegex.test(errorMessage)).toBe(true);
   });

@@ -1,6 +1,4 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { promises as fs } from 'fs';
-import path from 'path';
 import { StockDataService } from './stockDataService';
 import { buildStockReport, buildComparisonReport, buildSectorReport, buildDeepSectorReport, saveReport } from './reportGenerator';
 
@@ -20,29 +18,6 @@ export function getToolDefinitionsByName(toolNames?: string[]) {
   return definitions.filter((tool) => allowList.has(tool.function.name));
 }
 
-const REPORTS_DIR = process.env.REPORTS_DIR || (process.env.VERCEL ? '/tmp/reports' : 'reports');
-const CACHE_DIR = path.join(REPORTS_DIR, 'cache');
-const CACHE_TTL_MS = Number(process.env.STOCK_CACHE_TTL_MS || 1000 * 60 * 60 * 24 * 7);
-// Number of companies to include in comparison/sector/deep-sector reports.
-// Override via NUM_COMPANIES env var (e.g. set to 5 for faster reports, 15 for broader coverage).
-// Optimal value: 10 gives a good balance between breadth and API rate limits.
-const NUM_COMPANIES = Math.max(2, Number(process.env.NUM_COMPANIES || 10));
-// Number of recursive refinement passes in deep sector research.
-// Each pass feeds the previous analysis as context, progressively deepening insights.
-// Override via DEEP_RESEARCH_DEPTH env var (1 = single pass, 3 = very thorough but slower).
-// Optimal value: 2 gives meaningfully richer analysis with only one extra LLM call.
-const DEEP_RESEARCH_DEPTH = Math.max(1, Number(process.env.DEEP_RESEARCH_DEPTH || 2));
-const DEFAULT_SOURCE = (() => {
-  const provider = (process.env.STOCK_DATA_PROVIDER || 'alphavantage').toLowerCase();
-  if (provider === 'finnhub') return 'Finnhub';
-  return 'Alpha Vantage';
-})();
-const SOURCE_LEGEND = (() => {
-  const provider = (process.env.STOCK_DATA_PROVIDER || 'alphavantage').toLowerCase();
-  if (provider === 'hybrid') return '_Legend: Alpha Vantage is primary; Finnhub fills gaps._';
-  if (provider === 'finnhub') return '_Legend: Finnhub provider._';
-  return '_Legend: Alpha Vantage provider._';
-})();
 
 /**
  * Callback that makes a targeted LLM call and returns the raw response string.
@@ -86,229 +61,29 @@ function buildTickerResolutionPrompt(queries: string[]): string {
   );
 }
 
-/**
- * Builds a prompt asking the LLM to identify the top N publicly-traded US companies
- * for a given sector or investment theme.
- */
-function buildSectorCompaniesPrompt(sector: string, count: number): string {
-  return (
-    `You are a financial analyst. Identify the top ${count} publicly-traded US companies that are leading players in the "${sector}" sector or investment theme.\n\n` +
-    `RULES:\n` +
-    `- Return ONLY official US stock exchange ticker symbols (NYSE/NASDAQ)\n` +
-    `- Select companies that are pure-play or significantly exposed to "${sector}"\n` +
-    `- Prefer large-cap, highly liquid stocks — avoid micro-caps and OTC stocks\n` +
-    `- For broad themes, include the most representative market leaders\n\n` +
-    `Respond ONLY with a valid JSON array of exactly ${count} ticker symbols (no markdown, no explanation):\n` +
-    `["TICK1", "TICK2", "TICK3"]`
-  );
+
+function buildBasicFinancialsFallback(overview: any): any {
+  if (!overview) return undefined;
+  const revenue = Number(overview.revenueTTM);
+  const grossProfit = Number(overview.grossProfitTTM);
+  const grossMarginTTM = Number.isFinite(revenue) && revenue !== 0 && Number.isFinite(grossProfit)
+    ? grossProfit / revenue
+    : Number(overview.profitMargin) || null;
+  return {
+    symbol: overview.symbol,
+    metric: {
+      peBasicExclExtraTTM: overview.peRatio,
+      epsTTM: overview.eps,
+      revenueGrowthTTM: overview.quarterlyRevenueGrowth,
+      epsGrowthTTM: overview.quarterlyEarningsGrowth,
+      grossMarginTTM,
+      operatingMarginTTM: overview.operatingMargin,
+      roeTTM: overview.returnOnEquity,
+      revenuePerShareTTM: overview.revenuePerShare,
+    },
+    series: {},
+  };
 }
-
-/** Prior-pass context fed into subsequent refinement passes for recursive deep research. */
-export interface DeepSectorPassContext {
-  dependencyAnalysis?: string;
-  ecosystemDiagram?: string;
-  refinementNotes?: string;
-  universe?: string[];
-  passIndex?: number;
-}
-
-/**
- * Builds a prompt that asks the LLM to:
- *   1. Analyse sector ecosystem dependencies (supply chain, customers, market, news)
- *   2. Produce a Mermaid diagram of the sector ecosystem
- *   3. Refine the candidate list to the best `finalCount` companies
- *   4. Explain the selection rationale
- *
- * The prompt feeds real company overview and news-sentiment data gathered in Phase 2
- * so that the LLM can ground its analysis in actual data rather than training memory.
- *
- * When `previousPass` is supplied (recursive depth > 1), the prior analysis is included
- * so the LLM can deepen and further refine the results from the previous pass.
- */
-function buildDeepSectorDependencyPrompt(
-  sector: string,
-  finalCount: number,
-  candidates: Array<{ symbol: string; overview: any; news: any; peers: any }>,
-  previousPass?: DeepSectorPassContext
-): string {
-  const summaries = candidates
-    .map(({ symbol, overview, news, peers }) => {
-      const name = overview?.name || symbol;
-      const desc = overview?.description
-        ? String(overview.description).slice(0, 250)
-        : 'No description available';
-      const sectorInfo =
-        overview?.sector
-          ? `Sector: ${overview.sector} | Industry: ${overview.industry || 'N/A'}`
-          : 'Sector: N/A';
-      const sentiment =
-        news?.overallSentimentLabel || news?.sentiment || 'Unknown';
-      const peerList = Array.isArray(peers?.peers)
-        ? peers.peers.slice(0, 5).join(', ')
-        : 'N/A';
-      return (
-        `Ticker: ${symbol} | ${name}\n` +
-        `  ${sectorInfo}\n` +
-        `  Description: ${desc}\n` +
-        `  News sentiment: ${sentiment}\n` +
-        `  Peers: ${peerList}`
-      );
-    })
-    .join('\n\n');
-
-  const symbolList = candidates.map((c) => c.symbol).join(', ');
-
-  const previousPassSection = previousPass
-    ? (
-        `\nPREVIOUS PASS ANALYSIS (pass ${(previousPass.passIndex ?? 0) + 1} — deepen and further refine this):\n` +
-        (previousPass.universe?.length
-          ? `  Previously refined universe: ${previousPass.universe.join(', ')}\n`
-          : '') +
-        (previousPass.dependencyAnalysis
-          ? `  Prior dependency analysis: ${previousPass.dependencyAnalysis.slice(0, 600)}\n`
-          : '') +
-        (previousPass.refinementNotes
-          ? `  Prior rationale: ${previousPass.refinementNotes.slice(0, 400)}\n`
-          : '') +
-        `\nUsing the prior analysis above, produce a DEEPER and MORE PRECISE analysis. ` +
-        `Correct any gaps, refine the company selection, and expand the ecosystem diagram.\n`
-      )
-    : '';
-
-  return (
-    `You are a senior equity research analyst. Your task is to perform a deep sector ecosystem analysis for the "${sector}" sector.\n\n` +
-    `CANDIDATE COMPANIES: ${symbolList}\n\n` +
-    `COMPANY DATA:\n${summaries}\n` +
-    previousPassSection +
-    `\nTASKS:\n` +
-    `1. ECOSYSTEM ANALYSIS: Write a 2-3 paragraph narrative covering:\n` +
-    `   - Supply chain relationships (who supplies inputs to whom, key upstream/downstream dependencies)\n` +
-    `   - Customer / revenue dependencies (major end-markets, B2B vs consumer exposure)\n` +
-    `   - Key market / macro factors affecting the whole sector (regulation, commodities, rates, geopolitics)\n` +
-    `   - Competitive dynamics and news sentiment themes across the candidates\n\n` +
-    `2. ECOSYSTEM DIAGRAM: Create a concise Mermaid diagram (graph LR direction) showing the most important\n` +
-    `   supplier-company-customer relationships or competitive positioning. Keep it to at most 15 nodes.\n` +
-    `   Use plain node names without special characters.\n\n` +
-    `3. REFINEMENT: Select the best ${finalCount} companies from the candidates for deep financial analysis.\n` +
-    `   Criteria: sector relevance, financial strength, market leadership, and portfolio diversification.\n\n` +
-    `4. RATIONALE: Briefly explain why each company was kept or excluded.\n\n` +
-    `Respond ONLY with valid JSON (no markdown fences, no explanation outside the JSON):\n` +
-    `{"refinedList":["TICK1","TICK2"],"dependencyAnalysis":"narrative...","ecosystemDiagram":"graph LR\\n  NodeA-->NodeB","refinementNotes":"rationale..."}`
-  );
-}
-
-
-type CacheEntry = { updatedAt: string; data: any };
-type SymbolCache = Record<string, CacheEntry>;
-
-const loadSymbolCache = async (symbol: string): Promise<SymbolCache> => {
-  try {
-    const filePath = path.join(CACHE_DIR, `${symbol.toUpperCase()}.json`);
-    const raw = await fs.readFile(filePath, 'utf8');
-    return JSON.parse(raw) as SymbolCache;
-  } catch {
-    return {};
-  }
-};
-
-const saveSymbolCache = async (symbol: string, cache: SymbolCache) => {
-  await fs.mkdir(CACHE_DIR, { recursive: true });
-  const filePath = path.join(CACHE_DIR, `${symbol.toUpperCase()}.json`);
-  await fs.writeFile(filePath, JSON.stringify(cache, null, 2), 'utf8');
-};
-
-const getCachedValue = (cache: SymbolCache, key: string) => {
-  const entry = cache[key];
-  if (!entry) return null;
-  const ageMs = Date.now() - new Date(entry.updatedAt).getTime();
-  if (Number.isNaN(ageMs) || ageMs > CACHE_TTL_MS) return null;
-  return entry.data;
-};
-
-const setCachedValue = (cache: SymbolCache, key: string, data: any) => {
-  cache[key] = { updatedAt: new Date().toISOString(), data };
-};
-
-// Score a search result against the user query.
-// `rank` is the 0-based position in Alpha Vantage's own result list — AV already
-// ranks by relevance, so earlier results get a small bonus to act as tiebreaker.
-const scoreSearchMatch = (query: string, item: any, rank = 0) => {
-  const normalized = query.trim().toLowerCase();
-  const symbol = String(item?.symbol || '').toLowerCase();
-  const name = String(item?.name || '').toLowerCase();
-  const region = String(item?.region || '').toLowerCase();
-  const currency = String(item?.currency || '').toUpperCase();
-  const type = String(item?.type || '').toLowerCase();
-
-  let score = 0;
-  if (symbol === normalized) score += 100;
-  if (name === normalized) score += 90;
-  if (name.startsWith(normalized)) score += 70;
-  if (name.includes(normalized)) score += 50;
-  if (symbol.startsWith(normalized)) score += 40;
-  if (region.includes('united states')) score += 10;
-  if (currency === 'USD') score += 10;
-  if (type.includes('equity')) score += 5;
-  // Trust Alpha Vantage's own ordering as a tiebreaker (first = best match per AV)
-  score += Math.max(0, 8 - rank * 2);
-  return score;
-};
-
-// Strip share-class suffixes so "Alphabet Inc Class A" and "Alphabet Inc Class C"
-// are recognised as the same underlying company.
-const baseCompanyName = (name: string) =>
-  name
-    .replace(/\s+(class\s+[a-z0-9]+|ordinary\s+shares?|adr|preferred|warrants?|rights?|voting).*$/i, '')
-    .trim()
-    .toLowerCase();
-
-const resolveSymbolFromQuery = async (stockService: StockDataService, query: string) => {
-  const trimmed = query.trim();
-  if (!trimmed) {
-    return { ok: false, reason: 'Empty query', candidates: [] as any[] };
-  }
-
-  const stopwordSet = new Set(['stocks', 'stock', 'companies', 'company', 'compare', 'and']);
-  const cleanedTokens = trimmed
-    .split(/\s+/)
-    .filter((token) => token && !stopwordSet.has(token.toLowerCase()));
-  const cleanedQuery = cleanedTokens.length ? cleanedTokens.join(' ') : trimmed;
-  const isLikelyTicker = /^[a-zA-Z]{1,6}$/.test(cleanedQuery);
-  try {
-    const results = await stockService.searchStock(cleanedQuery);
-    const candidates = (results.results || []) as any[];
-    if (!candidates.length) {
-      if (isLikelyTicker) return { ok: true, symbol: cleanedQuery.toUpperCase(), candidates: [] };
-      return { ok: false, reason: 'No matches found', candidates: [] };
-    }
-    const scored = candidates
-      .map((item, i) => ({ item, score: scoreSearchMatch(trimmed, item, i) }))
-      .sort((a, b) => b.score - a.score);
-    const top = scored[0];
-    const second = scored[1];
-    // Two results are considered share-class variants of the same company (e.g.
-    // GOOGL vs GOOG, BRK.A vs BRK.B) when their base names match.  In that case
-    // we trust Alpha Vantage's ranking and pick the top result without flagging ambiguity.
-    const sameCompany =
-      second &&
-      baseCompanyName(String(top.item.name || '')) === baseCompanyName(String(second.item.name || '')) &&
-      // require a meaningful base name length to avoid false matches on very short names
-      baseCompanyName(String(top.item.name || '')).length > 3;
-    const ambiguity =
-      !top ||
-      top.score < 25 ||
-      (!sameCompany && second && top.score - second.score < 10);
-    if (ambiguity) {
-      return { ok: false, reason: 'Ambiguous match', candidates: scored.slice(0, 5).map((row) => row.item) };
-    }
-    return { ok: true, symbol: String(top.item.symbol).toUpperCase(), candidates: scored.slice(0, 5).map((row) => row.item) };
-  } catch (error: any) {
-    if (isLikelyTicker) {
-      return { ok: true, symbol: cleanedQuery.toUpperCase(), candidates: [] };
-    }
-    return { ok: false, reason: error.message || 'Search failed', candidates: [] };
-  }
-};
 
 function buildToolDefinitions() {
   return [
@@ -542,14 +317,33 @@ function buildToolDefinitions() {
       type: 'function' as const,
       function: {
         name: 'generate_stock_report',
-        description: 'Generate a comprehensive stock research report and save it as a markdown artifact.',
+        description:
+          'Generate and save a comprehensive stock report from pre-fetched data. ' +
+          'BEFORE calling this, you MUST batch all of these data tool calls in ONE round: ' +
+          'get_stock_price, get_company_overview, get_price_history (range "5y"), get_earnings_history, ' +
+          'get_income_statement, get_balance_sheet, get_cash_flow, get_analyst_ratings, ' +
+          'get_analyst_recommendations, get_price_targets, get_peers, get_news_sentiment, ' +
+          'get_company_news, get_insider_trading. Then call this tool with all results.',
         parameters: {
           type: 'object',
           properties: {
-            symbol: { type: 'string', description: 'Ticker or company name (e.g. AAPL, Apple)' },
-            range: { type: 'string', description: 'Price history range for charts (e.g., "1y", "3y", "5y", "max"). Default is "5y"' },
+            symbol: { type: 'string', description: 'Official ticker symbol (e.g. AAPL)' },
+            price: { type: 'object', description: 'Result from get_stock_price' },
+            companyOverview: { type: 'object', description: 'Result from get_company_overview' },
+            priceHistory: { type: 'object', description: 'Result from get_price_history' },
+            earningsHistory: { type: 'object', description: 'Result from get_earnings_history' },
+            incomeStatement: { type: 'object', description: 'Result from get_income_statement' },
+            balanceSheet: { type: 'object', description: 'Result from get_balance_sheet' },
+            cashFlow: { type: 'object', description: 'Result from get_cash_flow' },
+            analystRatings: { type: 'object', description: 'Result from get_analyst_ratings' },
+            analystRecommendations: { type: 'object', description: 'Result from get_analyst_recommendations' },
+            priceTargets: { type: 'object', description: 'Result from get_price_targets' },
+            peers: { type: 'object', description: 'Result from get_peers' },
+            newsSentiment: { type: 'object', description: 'Result from get_news_sentiment' },
+            companyNews: { type: 'object', description: 'Result from get_company_news' },
+            insiderTransactions: { type: 'object', description: 'Result from get_insider_trading' },
           },
-          required: ['symbol'],
+          required: ['symbol', 'price'],
         },
       },
     },
@@ -557,14 +351,42 @@ function buildToolDefinitions() {
       type: 'function' as const,
       function: {
         name: 'generate_comparison_report',
-        description: 'Generate a comprehensive comparison report for multiple companies and save it as a markdown artifact.',
+        description:
+          'Generate a multi-company comparison report from pre-fetched data. ' +
+          'BEFORE calling this, for EACH company batch: get_stock_price, get_company_overview, ' +
+          'get_price_history, get_income_statement, get_balance_sheet, get_cash_flow, ' +
+          'get_analyst_ratings, get_price_targets, get_news_sentiment, get_company_news, get_insider_trading. ' +
+          'Issue ALL tool calls for ALL companies in ONE round. Then call this tool.',
         parameters: {
           type: 'object',
           properties: {
-            companies: { type: 'array', items: { type: 'string' }, description: `Company names or tickers (2–${NUM_COMPANIES} items)` },
-            range: { type: 'string', description: 'Price history range for charts (e.g., "1y", "3y", "5y", "max"). Default is "1y"' },
+            range: { type: 'string', description: 'Price history range (e.g. "1y"). Default: "1y"' },
+            universe: { type: 'array', items: { type: 'string' }, description: 'Ordered list of ticker symbols' },
+            items: {
+              type: 'array',
+              description: 'Pre-fetched data for each company, in the same order as universe',
+              items: {
+                type: 'object',
+                properties: {
+                  symbol: { type: 'string' },
+                  price: { type: 'object' },
+                  overview: { type: 'object' },
+                  priceHistory: { type: 'object' },
+                  incomeStatement: { type: 'object' },
+                  balanceSheet: { type: 'object' },
+                  cashFlow: { type: 'object' },
+                  analystRatings: { type: 'object' },
+                  priceTargets: { type: 'object' },
+                  newsSentiment: { type: 'object' },
+                  companyNews: { type: 'object' },
+                  insiderTransactions: { type: 'object' },
+                },
+                required: ['symbol'],
+              },
+            },
+            notes: { type: 'array', items: { type: 'string' }, description: 'Optional notes about data gaps' },
           },
-          required: ['companies'],
+          required: ['range', 'universe', 'items'],
         },
       },
     },
@@ -573,26 +395,25 @@ function buildToolDefinitions() {
       function: {
         name: 'generate_sector_report',
         description:
-          'Research a sector or thematic investment theme. Uses AI to identify the top companies in the sector, then generates a full comparison-style report. ' +
-          'Use this when the user asks about a sector, industry, or theme (e.g. "AI data center", "electric vehicles", "cloud computing", "semiconductor"). ' +
-          'Do NOT use this for a single stock report or when the user explicitly lists specific tickers.',
+          'Generate a sector/thematic analysis report. ' +
+          'Steps you MUST follow: ' +
+          '1) Identify the top companies in the sector. ' +
+          '2) Batch all data tool calls for ALL companies in ONE round (same tools as generate_comparison_report). ' +
+          '3) Call this tool with the assembled data.',
         parameters: {
           type: 'object',
           properties: {
-            sector: {
-              type: 'string',
-              description: 'Sector or thematic query, e.g. "AI data center", "electric vehicles", "cloud computing"',
+            sectorQuery: { type: 'string', description: 'Sector or theme name (e.g. "AI semiconductors")' },
+            range: { type: 'string', description: 'Price history range. Default: "1y"' },
+            universe: { type: 'array', items: { type: 'string' }, description: 'List of ticker symbols in this sector' },
+            items: {
+              type: 'array',
+              description: 'Pre-fetched data for each company (same format as generate_comparison_report items)',
+              items: { type: 'object', properties: { symbol: { type: 'string' } }, required: ['symbol'] },
             },
-            count: {
-              type: 'number',
-              description: `Number of top companies to include (default: ${NUM_COMPANIES}, min: 2, max: ${NUM_COMPANIES})`,
-            },
-            range: {
-              type: 'string',
-              description: 'Price history range for comparison charts (e.g. "1y", "3y"). Default: "1y"',
-            },
+            notes: { type: 'array', items: { type: 'string' } },
           },
-          required: ['sector'],
+          required: ['sectorQuery', 'universe', 'items'],
         },
       },
     },
@@ -601,30 +422,33 @@ function buildToolDefinitions() {
       function: {
         name: 'generate_deep_sector_report',
         description:
-          'Generate a deep sector research report with full ecosystem analysis. ' +
-          'Phase 1: AI identifies a broad candidate list of top companies in the sector. ' +
-          'Phase 2: Real data (company overviews, news sentiment, peers) is fetched for all candidates. ' +
-          `Phase 3: AI maps supply-chain, customer, market and news dependencies, draws a sector dependency diagram, and refines the company list — repeated ${DEEP_RESEARCH_DEPTH} time(s) for progressively deeper analysis. ` +
-          'Phase 4: Full financial comparison report is built for the refined universe. ' +
-          'Use this when the user asks for DEEP, THOROUGH or COMPREHENSIVE sector research. ' +
-          'Prefer generate_sector_report for quick sector overviews.',
+          'Generate a deep sector ecosystem research report. ' +
+          'You MUST orchestrate all 4 phases yourself: ' +
+          'Phase 1 — identify ~2x candidate tickers for the sector. ' +
+          'Phase 2 — batch fetch get_company_overview, get_news_sentiment, get_peers for ALL candidates in ONE round. ' +
+          'Phase 3 — analyse supply-chain/customer/market dependencies from the fetched data; select the best final companies; write your ecosystem analysis and Mermaid diagram. ' +
+          'Phase 4 — batch ALL data tool calls (same as generate_comparison_report) for the final companies in ONE round. ' +
+          'Then call this tool with everything assembled.',
         parameters: {
           type: 'object',
           properties: {
-            sector: {
-              type: 'string',
-              description: 'Sector or thematic query, e.g. "semiconductors", "AI infrastructure", "renewable energy"',
+            sectorQuery: { type: 'string', description: 'Sector or theme name' },
+            range: { type: 'string', description: 'Price history range. Default: "1y"' },
+            universe: { type: 'array', items: { type: 'string' }, description: 'Final refined ticker list' },
+            items: {
+              type: 'array',
+              description: 'Full pre-fetched data for each final company (same format as generate_comparison_report)',
+              items: { type: 'object', properties: { symbol: { type: 'string' } }, required: ['symbol'] },
             },
-            count: {
-              type: 'number',
-              description: `Number of companies in the refined final list (default: ${NUM_COMPANIES}, min: 3, max: ${NUM_COMPANIES})`,
-            },
-            range: {
-              type: 'string',
-              description: 'Price history range for comparison charts (e.g. "1y", "3y"). Default: "1y"',
-            },
+            dependencyAnalysis: { type: 'string', description: 'Your 2–3 paragraph ecosystem dependency analysis' },
+            ecosystemDiagram: { type: 'string', description: 'Mermaid diagram (graph LR) of ecosystem relationships' },
+            refinementNotes: { type: 'string', description: 'Rationale for company selection/exclusion' },
+            scenarioSimulations: { type: 'string', description: 'Bull/bear/base scenario analysis (optional)' },
+            supplierCustomerMap: { type: 'string', description: 'Critical supplier/customer mapping narrative (optional)' },
+            innovationHighlights: { type: 'string', description: 'Innovation highlights table in markdown (optional)' },
+            notes: { type: 'array', items: { type: 'string' } },
           },
-          required: ['sector'],
+          required: ['sectorQuery', 'universe', 'items'],
         },
       },
     },
@@ -803,370 +627,63 @@ export async function executeTool(
         return { success: true, data, message: 'Retrieved top gainers, losers, and most active stocks' };
       }
       case 'generate_stock_report': {
-        const symbolQuery = args.symbol || '';
+        const symbol = String(args.symbol || '').replace(/[^A-Z0-9.]/gi, '').toUpperCase();
+        if (!symbol) return { success: false, error: 'symbol is required.' };
 
-        // Step 1: LLM resolves the input to the correct official ticker.
-        // LLM is the primary resolver — it knows that 'GOOGLE' → 'GOOGL',
-        // 'Microsoft' → 'MSFT', etc., without needing an API search call.
-        let symbol: string | undefined;
-        if (options?.llmFill) {
-          const prompt = buildTickerResolutionPrompt([symbolQuery]);
-          try {
-            const raw = await options.llmFill(prompt);
-            const parsed = parseLLMFillJSON(raw);
-            if (parsed?.[symbolQuery] && typeof parsed[symbolQuery] === 'string') {
-              const llmTicker = String(parsed[symbolQuery]).replace(/[^A-Z0-9.]/gi, '').toUpperCase();
-              if (llmTicker) symbol = llmTicker;
-            }
-          } catch {
-            // LLM unavailable; fall through to API search
-          }
-        }
-
-        // Step 2: LLM couldn't resolve (or not available) — fall back to AV symbol search.
-        if (!symbol) {
-          const apiResolved = await resolveSymbolFromQuery(stockService, symbolQuery);
-          if (apiResolved.ok && apiResolved.symbol) {
-            symbol = apiResolved.symbol;
-          } else {
-            const candidates = (apiResolved.candidates || [])
-              .map((item: any) => `${item.name || item.symbol} (${item.symbol})`)
-              .join(', ');
-            return {
-              success: false,
-              error: `Could not resolve "${symbolQuery}". ${candidates ? `Did you mean: ${candidates}?` : 'No matches found.'}`,
-              data: { candidates: apiResolved.candidates || [] },
-            };
-          }
-        }
-        const range = args.range || '5y';
-        const notes: string[] = [];
-        const sources = new Map<string, string>();
-        const cache = await loadSymbolCache(symbol);
-        let rateLimitHit = false;
-        const isRateLimit = (message: string) =>
-          message.includes('frequency') ||
-          message.includes('Thank you for using Alpha Vantage') ||
-          /rate limit|too many requests/i.test(message);
-        const safeFetch = async <T>(label: string, key: string, request: Promise<T>) => {
-          const cachedValue = getCachedValue(cache, key);
-          if (cachedValue !== null) {
-            if (cachedValue && typeof cachedValue === 'object' && '__source' in cachedValue) {
-              sources.set(label, String((cachedValue as any).__source));
-            } else if (cachedValue && typeof cachedValue === 'object') {
-              sources.set(label, DEFAULT_SOURCE);
-            }
-            return cachedValue as T;
-          }
-          if (rateLimitHit) return undefined as T;
-          try {
-            const result = await request;
-            if (result && typeof result === 'object' && '__source' in result) {
-              sources.set(label, String((result as any).__source));
-            } else if (result && typeof result === 'object') {
-              sources.set(label, DEFAULT_SOURCE);
-            }
-            setCachedValue(cache, key, result);
-            return result;
-          } catch (error: any) {
-            const message = error?.message || 'Unavailable';
-            if (isRateLimit(message)) {
-              rateLimitHit = true;
-              notes.push(
-                /finnhub|rate limit reached/i.test(message)
-                  ? 'Finnhub rate limit reached; remaining sections skipped.'
-                  : 'Alpha Vantage rate limit reached; remaining sections skipped.'
-              );
-              return cachedValue !== null ? (cachedValue as T) : (undefined as T);
-            }
-            if (!/unavailable (in|via) (Alpha|Finnhub)/i.test(message) && !message.includes('Alpha-only mode')) {
-              notes.push(`${label}: ${message}`);
-            }
-            if (cachedValue && typeof cachedValue === 'object' && '__source' in cachedValue) {
-              sources.set(label, String((cachedValue as any).__source));
-            } else if (cachedValue && typeof cachedValue === 'object') {
-              sources.set(label, DEFAULT_SOURCE);
-            }
-            return cachedValue !== null ? (cachedValue as T) : (undefined as T);
-          }
-        };
-        const buildBasicFinancialsFallback = (overview: any) => {
-          if (!overview) return undefined;
-          const revenue = Number(overview.revenueTTM);
-          const grossProfit = Number(overview.grossProfitTTM);
-          const grossMarginTTM = Number.isFinite(revenue) && revenue !== 0 && Number.isFinite(grossProfit)
-            ? grossProfit / revenue
-            : Number(overview.profitMargin) || null;
-          return {
-            symbol: overview.symbol,
-            metric: {
-              peBasicExclExtraTTM: overview.peRatio,
-              epsTTM: overview.eps,
-              revenueGrowthTTM: overview.quarterlyRevenueGrowth,
-              epsGrowthTTM: overview.quarterlyEarningsGrowth,
-              grossMarginTTM,
-              operatingMarginTTM: overview.operatingMargin,
-              roeTTM: overview.returnOnEquity,
-              revenuePerShareTTM: overview.revenuePerShare,
-            },
-            series: {},
-          };
-        };
-
-        const price = await safeFetch('Price', 'price', stockService.getStockPrice(symbol));
-        const companyOverview = await safeFetch('Company overview', 'overview', stockService.getCompanyOverview(symbol));
-        const priceHistory = await safeFetch('Price history', `priceHistory:${range}`, stockService.getPriceHistory(symbol, range));
-        const earningsHistory = await safeFetch('Earnings history', 'earningsHistory', stockService.getEarningsHistory(symbol));
-        const incomeStatement = await safeFetch('Income statement', 'incomeStatement', stockService.getIncomeStatement(symbol));
-        const balanceSheet = await safeFetch('Balance sheet', 'balanceSheet', stockService.getBalanceSheet(symbol));
-        const cashFlow = await safeFetch('Cash flow', 'cashFlow', stockService.getCashFlow(symbol));
-        const analystRatings = await safeFetch('Analyst ratings', 'analystRatings', stockService.getAnalystRatings(symbol));
-        const analystRecommendations = await safeFetch(
-          'Analyst recommendations',
-          'analystRecommendations',
-          stockService.getAnalystRecommendations(symbol)
-        );
-        const priceTargets = await safeFetch('Price targets', 'priceTargets', stockService.getPriceTargets(symbol));
-        const peers = await safeFetch('Peers', 'peers', stockService.getPeers(symbol));
-        const newsSentiment = await safeFetch('News sentiment', 'newsSentiment', stockService.getNewsSentiment(symbol));
-        const companyNews = await safeFetch('Company news', 'companyNews', stockService.getCompanyNews(symbol, 14));
-        // Insider transactions — available on Finnhub free tier; silently skipped if unavailable
-        const insiderTransactions = await safeFetch('Insider transactions', 'insiderTransactions', stockService.getInsiderTrading(symbol));
-
-        // Build basic financials from the overview
-        const finalBasicFinancials = companyOverview ? buildBasicFinancialsFallback(companyOverview) : undefined;
+        const companyOverview = args.companyOverview || null;
+        const basicFinancials = companyOverview ? buildBasicFinancialsFallback(companyOverview) : undefined;
 
         const reportBody = buildStockReport({
-          symbol: symbol.toUpperCase(),
+          symbol,
           generatedAt: new Date().toISOString(),
-          price,
-          priceHistory,
+          price: args.price,
+          priceHistory: args.priceHistory,
           companyOverview,
-          basicFinancials: finalBasicFinancials,
-          earningsHistory,
-          incomeStatement,
-          balanceSheet,
-          cashFlow,
-          analystRatings,
-          analystRecommendations,
-          priceTargets,
-          peers,
-          newsSentiment,
-          companyNews,
-          insiderTransactions,
+          basicFinancials,
+          earningsHistory: args.earningsHistory,
+          incomeStatement: args.incomeStatement,
+          balanceSheet: args.balanceSheet,
+          cashFlow: args.cashFlow,
+          analystRatings: args.analystRatings,
+          analystRecommendations: args.analystRecommendations,
+          priceTargets: args.priceTargets,
+          peers: args.peers,
+          newsSentiment: args.newsSentiment,
+          companyNews: args.companyNews,
+          insiderTransactions: args.insiderTransactions,
         });
 
-        const content = notes.length
-          ? reportBody.replace(
-              '## 📊 Snapshot',
-              `## ⚠️ Data Gaps\n${notes.map((item) => `- ${item}`).join('\n')}\n\n## 📊 Snapshot`
-            )
-          : reportBody;
-
-        const sourceSection = sources.size
-          ? `## 🧾 Data Sources\n${SOURCE_LEGEND}\n${Array.from(sources.entries()).map(([key, value]) => `- ${key}: ${value}`).join('\n')}`
-          : '';
-        const finalContent = sourceSection
-          ? content.replace('## 📊 Snapshot', `${sourceSection}\n\n## 📊 Snapshot`)
-          : content;
-        const saved = await saveReport(finalContent, `${symbol}-stock-report`);
-        await saveSymbolCache(symbol, cache);
+        const saved = await saveReport(reportBody, `${symbol}-stock-report`);
         return {
           success: true,
-          data: { content: finalContent, ...saved, downloadUrl: `/api/reports/${saved.filename}` },
+          data: { content: reportBody, ...saved, downloadUrl: `/api/reports/${saved.filename}` },
           message: `Saved stock report to ${saved.filePath}`,
         };
       }
       case 'generate_comparison_report': {
-        const range = args.range || '1y';
-        const companiesInput = Array.isArray(args.companies)
-          ? args.companies
-          : String(args.companies || '').split(',');
-        const companies = companiesInput.map((item: string) => item.trim()).filter(Boolean);
-        if (companies.length < 2 || companies.length > NUM_COMPANIES) {
-          return { success: false, error: `Provide between 2 and ${NUM_COMPANIES} company names or tickers.` };
+        const range = String(args.range || '1y');
+        const universe: string[] = Array.isArray(args.universe) ? args.universe.map(String) : [];
+        const rawItems: any[] = Array.isArray(args.items) ? args.items : [];
+
+        if (rawItems.length < 2) {
+          return { success: false, error: 'Provide at least 2 companies in the items array.' };
         }
 
-        // Step 1: LLM resolves ALL inputs to official tickers in one batch call.
-        // LLM is the primary resolver — no API search is needed for well-known names
-        // (e.g. 'GOOGLE' → 'GOOGL', 'Microsoft' → 'MSFT').
-        const resolvedMap = new Map<string, string>(); // query → official ticker
-        if (options?.llmFill) {
-          const prompt = buildTickerResolutionPrompt(companies);
-          try {
-            const raw = await options.llmFill(prompt);
-            const parsed = parseLLMFillJSON(raw);
-            if (parsed && typeof parsed === 'object') {
-              for (const query of companies) {
-                const llmTicker = parsed[query];
-                if (llmTicker && typeof llmTicker === 'string') {
-                  const clean = String(llmTicker).replace(/[^A-Z0-9.]/gi, '').toUpperCase();
-                  if (clean) resolvedMap.set(query, clean);
-                }
-              }
-            }
-          } catch {
-            // LLM unavailable; fall through to API search for all
-          }
-        }
-
-        // Step 2: For anything LLM couldn't resolve, fall back to AV symbol search.
-        const needsApiSearch = companies.filter((q) => !resolvedMap.has(q));
-        for (const query of needsApiSearch) {
-          const result = await resolveSymbolFromQuery(stockService, query);
-          if (result.ok && result.symbol) {
-            resolvedMap.set(query, result.symbol);
-          }
-        }
-
-        // Step 3: Error if anything is still unresolved.
-        const unresolved = companies.filter((q) => !resolvedMap.has(q));
-        if (unresolved.length) {
-          return {
-            success: false,
-            error: `Could not resolve to a ticker: ${unresolved.join(', ')}. Please use official ticker symbols.`,
-          };
-        }
-
-        const universe = companies.map((q) => resolvedMap.get(q) as string);
-        const notes: string[] = [];
-        const sourceMap: Record<string, Record<string, string>> = {};
-        let rateLimitHit = false;
-        const isRateLimit = (message: string) =>
-          message.includes('frequency') ||
-          message.includes('Thank you for using Alpha Vantage') ||
-          /rate limit|too many requests/i.test(message);
-        const safeFetch = async <T>(
-          symbol: string,
-          cache: SymbolCache,
-          label: string,
-          key: string,
-          request: Promise<T>
-        ) => {
-        const cachedValue = getCachedValue(cache, key);
-        if (cachedValue !== null) {
-          if (cachedValue && typeof cachedValue === 'object') {
-            const sourceValue = '__source' in cachedValue
-              ? String((cachedValue as any).__source)
-              : DEFAULT_SOURCE;
-            sourceMap[symbol] = sourceMap[symbol] || {};
-            sourceMap[symbol][label] = sourceValue;
-          }
-          return cachedValue as T;
-        }
-          if (rateLimitHit) return undefined as T;
-        try {
-          const result = await request;
-          if (result && typeof result === 'object') {
-            const sourceValue = '__source' in result ? String((result as any).__source) : DEFAULT_SOURCE;
-            sourceMap[symbol] = sourceMap[symbol] || {};
-            sourceMap[symbol][label] = sourceValue;
-          }
-          setCachedValue(cache, key, result);
-          return result;
-        } catch (error: any) {
-            const message = error?.message || 'Unavailable';
-            if (isRateLimit(message)) {
-              rateLimitHit = true;
-              notes.push(
-                /finnhub|rate limit reached/i.test(message)
-                  ? 'Finnhub rate limit reached; remaining sections skipped.'
-                  : 'Alpha Vantage rate limit reached; remaining sections skipped.'
-              );
-              return cachedValue !== null ? (cachedValue as T) : (undefined as T);
-            }
-            if (!/unavailable (in|via) (Alpha|Finnhub)/i.test(message) && !message.includes('Alpha-only mode')) {
-              notes.push(`${label}: ${message}`);
-            }
-          if (cachedValue && typeof cachedValue === 'object') {
-            const sourceValue = '__source' in cachedValue
-              ? String((cachedValue as any).__source)
-              : DEFAULT_SOURCE;
-            sourceMap[symbol] = sourceMap[symbol] || {};
-            sourceMap[symbol][label] = sourceValue;
-          }
-          return cachedValue !== null ? (cachedValue as T) : (undefined as T);
-        }
-      };
-        const buildBasicFinancialsFallback = (overview: any) => {
-          if (!overview) return undefined;
-          const revenue = Number(overview.revenueTTM);
-          const grossProfit = Number(overview.grossProfitTTM);
-          const grossMarginTTM = Number.isFinite(revenue) && revenue !== 0 && Number.isFinite(grossProfit)
-            ? grossProfit / revenue
-            : Number(overview.profitMargin) || null;
-          return {
-            symbol: overview.symbol,
-            metric: {
-              peBasicExclExtraTTM: overview.peRatio,
-              epsTTM: overview.eps,
-              revenueGrowthTTM: overview.quarterlyRevenueGrowth,
-              epsGrowthTTM: overview.quarterlyEarningsGrowth,
-              grossMarginTTM,
-              operatingMarginTTM: overview.operatingMargin,
-              roeTTM: overview.returnOnEquity,
-              revenuePerShareTTM: overview.revenuePerShare,
-            },
-            series: {},
-          };
-        };
-
-        // Phase 1: Fetch all API data for all companies
-        type RawCompanyData = {
-          symbol: string;
-          cache: SymbolCache;
-          price: any;
-          overview: any;
-          priceHistory: any;
-          incomeStatement: any;
-          balanceSheet: any;
-          cashFlow: any;
-          analystRatings: any;
-          priceTargets: any;
-        };
-        const rawItems: RawCompanyData[] = [];
-        for (const symbol of universe) {
-          const cache = await loadSymbolCache(symbol);
-          const price = await safeFetch(symbol, cache, 'Price', 'price', stockService.getStockPrice(symbol));
-          const overview = await safeFetch(symbol, cache, 'Company overview', 'overview', stockService.getCompanyOverview(symbol));
-          const priceHistory = await safeFetch(symbol, cache, 'Price history', `priceHistory:${range}`, stockService.getPriceHistory(symbol, range));
-          const incomeStatement = await safeFetch(symbol, cache, 'Income statement', 'incomeStatement', stockService.getIncomeStatement(symbol));
-          const balanceSheet = await safeFetch(symbol, cache, 'Balance sheet', 'balanceSheet', stockService.getBalanceSheet(symbol));
-          const cashFlow = await safeFetch(symbol, cache, 'Cash flow', 'cashFlow', stockService.getCashFlow(symbol));
-          const analystRatings = await safeFetch(symbol, cache, 'Analyst ratings', 'analystRatings', stockService.getAnalystRatings(symbol));
-          const priceTargets = await safeFetch(symbol, cache, 'Price targets', 'priceTargets', stockService.getPriceTargets(symbol));
-          rawItems.push({ symbol, cache, price, overview, priceHistory, incomeStatement, balanceSheet, cashFlow, analystRatings, priceTargets });
-        }
-
-        // Phase 2: Build items from API data
-        const items: any[] = [];
-        for (const item of rawItems) {
-          const { symbol } = item;
-          const basicFinancials = item.overview ? buildBasicFinancialsFallback(item.overview) : undefined;
-          items.push({
-            symbol,
-            price: item.price,
-            overview: item.overview,
-            basicFinancials,
-            priceHistory: item.priceHistory,
-            incomeStatement: item.incomeStatement,
-            balanceSheet: item.balanceSheet,
-            cashFlow: item.cashFlow,
-            analystRatings: item.analystRatings,
-            priceTargets: item.priceTargets,
-          });
-          await saveSymbolCache(symbol, item.cache);
-        }
+        const items = rawItems.map((item: any) => ({
+          ...item,
+          basicFinancials: item.overview ? buildBasicFinancialsFallback(item.overview) : undefined,
+        }));
 
         const content = buildComparisonReport({
           generatedAt: new Date().toISOString(),
           range,
-          universe,
+          universe: universe.length ? universe : items.map((i: any) => i.symbol),
           items,
-          notes,
-          sources: sourceMap,
+          notes: Array.isArray(args.notes) ? args.notes : [],
         });
-        const saved = await saveReport(content, `${universe.join('-')}-comparison-report`);
+
+        const title = (universe.length ? universe : items.map((i: any) => i.symbol)).join('-');
+        const saved = await saveReport(content, `${title}-comparison-report`);
         return {
           success: true,
           data: { content, ...saved, downloadUrl: `/api/reports/${saved.filename}` },
@@ -1174,462 +691,78 @@ export async function executeTool(
         };
       }
       case 'generate_sector_report': {
-        const sector = String(args.sector || '').trim();
-        if (!sector) {
-          return { success: false, error: 'A sector or theme query is required.' };
-        }
-        const count = Math.min(NUM_COMPANIES, Math.max(2, Number(args.count) || NUM_COMPANIES));
-        const range = args.range || '1y';
+        const sectorQuery = String(args.sectorQuery || args.sector || '').trim();
+        if (!sectorQuery) return { success: false, error: 'sectorQuery is required.' };
 
-        // Step 1: Use LLM to identify the top companies in this sector.
-        let universe: string[] = [];
-        if (options?.llmFill) {
-          const prompt = buildSectorCompaniesPrompt(sector, count);
-          try {
-            const raw = await options.llmFill(prompt);
-            const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
-            const parsed = JSON.parse(cleaned);
-            if (Array.isArray(parsed)) {
-              universe = parsed
-                .map((item: any) => String(item || '').replace(/[^A-Z0-9.]/gi, '').toUpperCase())
-                .filter((t) => t.length > 0)
-                .slice(0, count);
-            }
-          } catch {
-            // LLM unavailable or returned invalid JSON; fall through
-          }
+        const range = String(args.range || '1y');
+        const universe: string[] = Array.isArray(args.universe) ? args.universe.map(String) : [];
+        const rawItems: any[] = Array.isArray(args.items) ? args.items : [];
+
+        if (rawItems.length < 1) {
+          return { success: false, error: 'items array is required. Fetch data for each company first, then call this tool.' };
         }
 
-        if (universe.length < 2) {
-          return {
-            success: false,
-            error:
-              `Could not identify companies for sector "${sector}". ` +
-              'Please provide the specific company tickers using generate_comparison_report instead.',
-          };
-        }
-
-        // Step 2: Fetch comparison data for the identified companies
-        // (same logic as generate_comparison_report).
-        const notes: string[] = [`Universe identified by AI for sector: "${sector}"`];
-        const sourceMap: Record<string, Record<string, string>> = {};
-        let rateLimitHit = false;
-        const isRateLimit = (message: string) =>
-          message.includes('frequency') ||
-          message.includes('Thank you for using Alpha Vantage') ||
-          /rate limit|too many requests/i.test(message);
-        const safeFetch = async <T>(
-          symbol: string,
-          cache: SymbolCache,
-          label: string,
-          key: string,
-          request: Promise<T>
-        ) => {
-          const cachedValue = getCachedValue(cache, key);
-          if (cachedValue !== null) {
-            if (cachedValue && typeof cachedValue === 'object') {
-              const sourceValue = '__source' in cachedValue
-                ? String((cachedValue as any).__source)
-                : DEFAULT_SOURCE;
-              sourceMap[symbol] = sourceMap[symbol] || {};
-              sourceMap[symbol][label] = sourceValue;
-            }
-            return cachedValue as T;
-          }
-          if (rateLimitHit) return undefined as T;
-          try {
-            const result = await request;
-            if (result && typeof result === 'object') {
-              const sourceValue = '__source' in result ? String((result as any).__source) : DEFAULT_SOURCE;
-              sourceMap[symbol] = sourceMap[symbol] || {};
-              sourceMap[symbol][label] = sourceValue;
-            }
-            setCachedValue(cache, key, result);
-            return result;
-          } catch (error: any) {
-            const message = error?.message || 'Unavailable';
-            if (isRateLimit(message)) {
-              rateLimitHit = true;
-              notes.push(
-                /finnhub|rate limit reached/i.test(message)
-                  ? 'Finnhub rate limit reached; remaining sections skipped.'
-                  : 'Alpha Vantage rate limit reached; remaining sections skipped.'
-              );
-              return cachedValue !== null ? (cachedValue as T) : (undefined as T);
-            }
-            if (!/unavailable (in|via) (Alpha|Finnhub)/i.test(message) && !message.includes('Alpha-only mode')) {
-              notes.push(`${label}: ${message}`);
-            }
-            if (cachedValue && typeof cachedValue === 'object') {
-              const sourceValue = '__source' in cachedValue
-                ? String((cachedValue as any).__source)
-                : DEFAULT_SOURCE;
-              sourceMap[symbol] = sourceMap[symbol] || {};
-              sourceMap[symbol][label] = sourceValue;
-            }
-            return cachedValue !== null ? (cachedValue as T) : (undefined as T);
-          }
-        };
-        const buildBasicFinancialsFallbackSector = (overview: any) => {
-          if (!overview) return undefined;
-          const revenue = Number(overview.revenueTTM);
-          const grossProfit = Number(overview.grossProfitTTM);
-          const grossMarginTTM =
-            Number.isFinite(revenue) && revenue !== 0 && Number.isFinite(grossProfit)
-              ? grossProfit / revenue
-              : Number(overview.profitMargin) || null;
-          return {
-            symbol: overview.symbol,
-            metric: {
-              peBasicExclExtraTTM: overview.peRatio,
-              epsTTM: overview.eps,
-              revenueGrowthTTM: overview.quarterlyRevenueGrowth,
-              epsGrowthTTM: overview.quarterlyEarningsGrowth,
-              grossMarginTTM,
-              operatingMarginTTM: overview.operatingMargin,
-              roeTTM: overview.returnOnEquity,
-              revenuePerShareTTM: overview.revenuePerShare,
-            },
-            series: {},
-          };
-        };
-
-        type RawSectorItem = {
-          symbol: string;
-          cache: SymbolCache;
-          price: any;
-          overview: any;
-          priceHistory: any;
-          incomeStatement: any;
-          balanceSheet: any;
-          cashFlow: any;
-          analystRatings: any;
-          priceTargets: any;
-        };
-        const rawItems: RawSectorItem[] = [];
-        for (const symbol of universe) {
-          const cache = await loadSymbolCache(symbol);
-          const price = await safeFetch(symbol, cache, 'Price', 'price', stockService.getStockPrice(symbol));
-          const overview = await safeFetch(symbol, cache, 'Company overview', 'overview', stockService.getCompanyOverview(symbol));
-          const priceHistory = await safeFetch(symbol, cache, 'Price history', `priceHistory:${range}`, stockService.getPriceHistory(symbol, range));
-          const incomeStatement = await safeFetch(symbol, cache, 'Income statement', 'incomeStatement', stockService.getIncomeStatement(symbol));
-          const balanceSheet = await safeFetch(symbol, cache, 'Balance sheet', 'balanceSheet', stockService.getBalanceSheet(symbol));
-          const cashFlow = await safeFetch(symbol, cache, 'Cash flow', 'cashFlow', stockService.getCashFlow(symbol));
-          const analystRatings = await safeFetch(symbol, cache, 'Analyst ratings', 'analystRatings', stockService.getAnalystRatings(symbol));
-          const priceTargets = await safeFetch(symbol, cache, 'Price targets', 'priceTargets', stockService.getPriceTargets(symbol));
-          rawItems.push({ symbol, cache, price, overview, priceHistory, incomeStatement, balanceSheet, cashFlow, analystRatings, priceTargets });
-        }
-
-        const items: any[] = [];
-        for (const item of rawItems) {
-          const { symbol } = item;
-          const basicFinancials = item.overview ? buildBasicFinancialsFallbackSector(item.overview) : undefined;
-          items.push({
-            symbol,
-            price: item.price,
-            overview: item.overview,
-            basicFinancials,
-            priceHistory: item.priceHistory,
-            incomeStatement: item.incomeStatement,
-            balanceSheet: item.balanceSheet,
-            cashFlow: item.cashFlow,
-            analystRatings: item.analystRatings,
-            priceTargets: item.priceTargets,
-          });
-          await saveSymbolCache(symbol, item.cache);
-        }
+        const items = rawItems.map((item: any) => ({
+          ...item,
+          basicFinancials: item.overview ? buildBasicFinancialsFallback(item.overview) : undefined,
+        }));
 
         const content = buildSectorReport({
-          sectorQuery: sector,
+          sectorQuery,
           selectedBy: 'llm',
           generatedAt: new Date().toISOString(),
           range,
-          universe,
+          universe: universe.length ? universe : items.map((i: any) => i.symbol),
           items,
-          notes,
-          sources: sourceMap,
+          notes: Array.isArray(args.notes) ? args.notes : [],
         });
-        const safeTitle = sector.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
-        const saved = await saveReport(content, `${safeTitle}-sector-report`);
+
+        const saved = await saveReport(content, `${sectorQuery.replace(/\s+/g, '-')}-sector-report`);
         return {
           success: true,
           data: { content, ...saved, downloadUrl: `/api/reports/${saved.filename}` },
-          message: `Saved sector report for "${sector}" to ${saved.filePath}`,
+          message: `Saved sector report to ${saved.filePath}`,
         };
       }
       case 'generate_deep_sector_report': {
-        const sector = String(args.sector || '').trim();
-        if (!sector) {
-          return { success: false, error: 'A sector or theme query is required.' };
-        }
-        const finalCount = Math.min(NUM_COMPANIES, Math.max(3, Number(args.count) || NUM_COMPANIES));
-        // Fetch roughly 2x candidates for screening; cap at NUM_COMPANIES * 2 to avoid rate limits.
-        const initialCount = Math.min(NUM_COMPANIES * 2, finalCount * 2);
-        const range = args.range || '1y';
+        const sectorQuery = String(args.sectorQuery || args.sector || '').trim();
+        if (!sectorQuery) return { success: false, error: 'sectorQuery is required.' };
 
-        if (!options?.llmFill) {
-          return {
-            success: false,
-            error: 'Deep sector research requires an LLM connection. Please ensure a valid API token is configured.',
-          };
+        const range = String(args.range || '1y');
+        const universe: string[] = Array.isArray(args.universe) ? args.universe.map(String) : [];
+        const rawItems: any[] = Array.isArray(args.items) ? args.items : [];
+
+        if (rawItems.length < 1) {
+          return { success: false, error: 'items array is required. Complete all 4 phases first, then call this tool.' };
         }
 
-        // ── Phase 1: LLM identifies initial broad candidate list ────────────────
-        let initialCandidates: string[] = [];
-        {
-          const prompt = buildSectorCompaniesPrompt(sector, initialCount);
-          try {
-            const raw = await options.llmFill(prompt);
-            const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
-            const parsed = JSON.parse(cleaned);
-            if (Array.isArray(parsed)) {
-              initialCandidates = parsed
-                .map((item: any) => String(item || '').replace(/[^A-Z0-9.]/gi, '').toUpperCase())
-                .filter((t) => t.length > 0)
-                .slice(0, initialCount);
-            }
-          } catch {
-            // LLM unavailable or returned invalid JSON
-          }
-        }
-
-        if (initialCandidates.length < 2) {
-          return {
-            success: false,
-            error:
-              `Could not identify companies for sector "${sector}". ` +
-              'Please provide specific tickers using generate_comparison_report instead.',
-          };
-        }
-
-        // ── Phase 2: Fetch lightweight ecosystem data for each candidate ─────────
-        // overview + news sentiment + peers — used by the LLM for dependency analysis.
-        // Uses cache where available; silently skips on error (rate limits, unknown tickers).
-        const ecosystemData: Array<{ symbol: string; overview: any; news: any; peers: any }> = [];
-        for (const sym of initialCandidates) {
-          try {
-            const cache = await loadSymbolCache(sym);
-            const overview =
-              getCachedValue(cache, 'overview') ??
-              await stockService.getCompanyOverview(sym).catch(() => null);
-            const news =
-              getCachedValue(cache, 'newsSentiment') ??
-              await stockService.getNewsSentiment(sym).catch(() => null);
-            const peers =
-              getCachedValue(cache, 'peers') ??
-              await stockService.getPeers(sym).catch(() => null);
-            // Persist anything freshly fetched back to cache (best-effort).
-            const updated = await loadSymbolCache(sym);
-            if (overview && !getCachedValue(updated, 'overview')) {
-              setCachedValue(updated, 'overview', overview);
-              await saveSymbolCache(sym, updated).catch(() => {});
-            }
-            ecosystemData.push({ symbol: sym, overview, news, peers });
-          } catch {
-            ecosystemData.push({ symbol: sym, overview: null, news: null, peers: null });
-          }
-        }
-
-        // ── Phase 3: LLM builds dependency analysis and refines the list ─────────
-        // Runs DEEP_RESEARCH_DEPTH times. Each pass feeds the prior analysis as context
-        // so the LLM progressively deepens its insights and further refines the universe.
-        let universe: string[] = [];
-        let dependencyAnalysis: string | undefined;
-        let ecosystemDiagram: string | undefined;
-        let refinementNotes: string | undefined;
-        let previousPass: DeepSectorPassContext | undefined;
-
-        for (let passIndex = 0; passIndex < DEEP_RESEARCH_DEPTH; passIndex++) {
-          const depPrompt = buildDeepSectorDependencyPrompt(sector, finalCount, ecosystemData, previousPass);
-          try {
-            const raw = await options.llmFill(depPrompt);
-            const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
-            const parsed = JSON.parse(cleaned);
-            if (parsed && typeof parsed === 'object') {
-              let passUniverse: string[] = universe;
-              if (Array.isArray(parsed.refinedList)) {
-                passUniverse = parsed.refinedList
-                  .map((t: any) => String(t || '').replace(/[^A-Z0-9.]/gi, '').toUpperCase())
-                  .filter((t: string) => t.length > 0)
-                  .slice(0, finalCount);
-                if (passUniverse.length >= 2) universe = passUniverse;
-              }
-              if (typeof parsed.dependencyAnalysis === 'string') {
-                dependencyAnalysis = parsed.dependencyAnalysis;
-              }
-              if (typeof parsed.ecosystemDiagram === 'string') {
-                ecosystemDiagram = parsed.ecosystemDiagram;
-              }
-              if (typeof parsed.refinementNotes === 'string') {
-                refinementNotes = parsed.refinementNotes;
-              }
-              // Carry this pass's output forward as context for the next pass
-              previousPass = { dependencyAnalysis, ecosystemDiagram, refinementNotes, universe, passIndex };
-            }
-          } catch {
-            // Pass failed — stop recursion and use what we have so far
-            break;
-          }
-        }
-
-        // Fall back to the initial list if refinement failed
-        if (universe.length < 2) {
-          universe = initialCandidates.slice(0, finalCount);
-        }
-
-        // ── Phase 4: Fetch full comparison data for the refined universe ──────────
-        const notes: string[] = [
-          `Universe refined through deep sector analysis (${DEEP_RESEARCH_DEPTH} pass${DEEP_RESEARCH_DEPTH > 1 ? 'es' : ''}) for: "${sector}"`,
-          `Initial candidates: ${initialCandidates.join(', ')}`,
-          `Refined universe: ${universe.join(', ')}`,
-        ];
-        const sourceMap: Record<string, Record<string, string>> = {};
-        let rateLimitHit = false;
-        const isRateLimit = (message: string) =>
-          message.includes('frequency') ||
-          message.includes('Thank you for using Alpha Vantage') ||
-          /rate limit|too many requests/i.test(message);
-        const safeFetch = async <T>(
-          symbol: string,
-          cache: SymbolCache,
-          label: string,
-          key: string,
-          request: Promise<T>
-        ) => {
-          const cachedValue = getCachedValue(cache, key);
-          if (cachedValue !== null) {
-            if (cachedValue && typeof cachedValue === 'object') {
-              const sourceValue = '__source' in cachedValue
-                ? String((cachedValue as any).__source)
-                : DEFAULT_SOURCE;
-              sourceMap[symbol] = sourceMap[symbol] || {};
-              sourceMap[symbol][label] = sourceValue;
-            }
-            return cachedValue as T;
-          }
-          if (rateLimitHit) return undefined as T;
-          try {
-            const result = await request;
-            if (result && typeof result === 'object') {
-              const sourceValue = '__source' in result ? String((result as any).__source) : DEFAULT_SOURCE;
-              sourceMap[symbol] = sourceMap[symbol] || {};
-              sourceMap[symbol][label] = sourceValue;
-            }
-            setCachedValue(cache, key, result);
-            return result;
-          } catch (error: any) {
-            const message = error?.message || 'Unavailable';
-            if (isRateLimit(message)) {
-              rateLimitHit = true;
-              notes.push(
-                /finnhub|rate limit reached/i.test(message)
-                  ? 'Finnhub rate limit reached; remaining sections skipped.'
-                  : 'Alpha Vantage rate limit reached; remaining sections skipped.'
-              );
-              return cachedValue !== null ? (cachedValue as T) : (undefined as T);
-            }
-            if (!/unavailable (in|via) (Alpha|Finnhub)/i.test(message) && !message.includes('Alpha-only mode')) {
-              notes.push(`${label}: ${message}`);
-            }
-            if (cachedValue && typeof cachedValue === 'object') {
-              const sourceValue = '__source' in cachedValue
-                ? String((cachedValue as any).__source)
-                : DEFAULT_SOURCE;
-              sourceMap[symbol] = sourceMap[symbol] || {};
-              sourceMap[symbol][label] = sourceValue;
-            }
-            return cachedValue !== null ? (cachedValue as T) : (undefined as T);
-          }
-        };
-        const buildBasicFinancialsFallbackDeep = (overview: any) => {
-          if (!overview) return undefined;
-          const revenue = Number(overview.revenueTTM);
-          const grossProfit = Number(overview.grossProfitTTM);
-          const grossMarginTTM =
-            Number.isFinite(revenue) && revenue !== 0 && Number.isFinite(grossProfit)
-              ? grossProfit / revenue
-              : Number(overview.profitMargin) || null;
-          return {
-            symbol: overview.symbol,
-            metric: {
-              peBasicExclExtraTTM: overview.peRatio,
-              epsTTM: overview.eps,
-              revenueGrowthTTM: overview.quarterlyRevenueGrowth,
-              epsGrowthTTM: overview.quarterlyEarningsGrowth,
-              grossMarginTTM,
-              operatingMarginTTM: overview.operatingMargin,
-              roeTTM: overview.returnOnEquity,
-              revenuePerShareTTM: overview.revenuePerShare,
-            },
-            series: {},
-          };
-        };
-
-        type RawDeepSectorItem = {
-          symbol: string;
-          cache: SymbolCache;
-          price: any;
-          overview: any;
-          priceHistory: any;
-          incomeStatement: any;
-          balanceSheet: any;
-          cashFlow: any;
-          analystRatings: any;
-          priceTargets: any;
-        };
-        const rawItems: RawDeepSectorItem[] = [];
-        for (const symbol of universe) {
-          const cache = await loadSymbolCache(symbol);
-          const price = await safeFetch(symbol, cache, 'Price', 'price', stockService.getStockPrice(symbol));
-          const overview = await safeFetch(symbol, cache, 'Company overview', 'overview', stockService.getCompanyOverview(symbol));
-          const priceHistory = await safeFetch(symbol, cache, 'Price history', `priceHistory:${range}`, stockService.getPriceHistory(symbol, range));
-          const incomeStatement = await safeFetch(symbol, cache, 'Income statement', 'incomeStatement', stockService.getIncomeStatement(symbol));
-          const balanceSheet = await safeFetch(symbol, cache, 'Balance sheet', 'balanceSheet', stockService.getBalanceSheet(symbol));
-          const cashFlow = await safeFetch(symbol, cache, 'Cash flow', 'cashFlow', stockService.getCashFlow(symbol));
-          const analystRatings = await safeFetch(symbol, cache, 'Analyst ratings', 'analystRatings', stockService.getAnalystRatings(symbol));
-          const priceTargets = await safeFetch(symbol, cache, 'Price targets', 'priceTargets', stockService.getPriceTargets(symbol));
-          rawItems.push({ symbol, cache, price, overview, priceHistory, incomeStatement, balanceSheet, cashFlow, analystRatings, priceTargets });
-        }
-
-        const items: any[] = [];
-        for (const item of rawItems) {
-          const { symbol } = item;
-          const basicFinancials = item.overview ? buildBasicFinancialsFallbackDeep(item.overview) : undefined;
-          items.push({
-            symbol,
-            price: item.price,
-            overview: item.overview,
-            basicFinancials,
-            priceHistory: item.priceHistory,
-            incomeStatement: item.incomeStatement,
-            balanceSheet: item.balanceSheet,
-            cashFlow: item.cashFlow,
-            analystRatings: item.analystRatings,
-            priceTargets: item.priceTargets,
-          });
-          await saveSymbolCache(symbol, item.cache);
-        }
+        const items = rawItems.map((item: any) => ({
+          ...item,
+          basicFinancials: item.overview ? buildBasicFinancialsFallback(item.overview) : undefined,
+        }));
 
         const content = buildDeepSectorReport({
-          sectorQuery: sector,
+          sectorQuery,
           selectedBy: 'llm',
           generatedAt: new Date().toISOString(),
           range,
-          universe,
+          universe: universe.length ? universe : items.map((i: any) => i.symbol),
           items,
-          notes,
-          sources: sourceMap,
-          initialCandidates,
-          dependencyAnalysis,
-          ecosystemDiagram,
-          refinementNotes,
+          notes: Array.isArray(args.notes) ? args.notes : [],
+          dependencyAnalysis: args.dependencyAnalysis,
+          ecosystemDiagram: args.ecosystemDiagram,
+          refinementNotes: args.refinementNotes,
+          scenarioSimulations: args.scenarioSimulations,
+          supplierCustomerMap: args.supplierCustomerMap,
+          innovationHighlights: args.innovationHighlights,
         });
-        const safeTitle = sector.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
-        const saved = await saveReport(content, `${safeTitle}-deep-sector-report`);
+
+        const safe = sectorQuery.replace(/[^a-z0-9]/gi, '-').toLowerCase();
+        const saved = await saveReport(content, `${safe}-deep-sector-report`);
         return {
           success: true,
           data: { content, ...saved, downloadUrl: `/api/reports/${saved.filename}` },
-          message: `Saved deep sector report for "${sector}" to ${saved.filePath}`,
+          message: `Saved deep sector report to ${saved.filePath}`,
         };
       }
       default:
