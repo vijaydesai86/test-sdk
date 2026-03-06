@@ -62,6 +62,11 @@ function buildTickerResolutionPrompt(queries: string[]): string {
 }
 
 
+/** Returns `universe` if non-empty, otherwise derives it from `items[].symbol`. */
+function deriveUniverse(universe: string[], items: any[]): string[] {
+  return universe.length ? universe : items.map((i: any) => String(i.symbol || ''));
+}
+
 function buildBasicFinancialsFallback(overview: any): any {
   if (!overview) return undefined;
   const revenue = Number(overview.revenueTTM);
@@ -674,15 +679,16 @@ export async function executeTool(
           basicFinancials: item.overview ? buildBasicFinancialsFallback(item.overview) : undefined,
         }));
 
+        const resolvedUniverse = deriveUniverse(universe, items);
         const content = buildComparisonReport({
           generatedAt: new Date().toISOString(),
           range,
-          universe: universe.length ? universe : items.map((i: any) => i.symbol),
+          universe: resolvedUniverse,
           items,
           notes: Array.isArray(args.notes) ? args.notes : [],
         });
 
-        const title = (universe.length ? universe : items.map((i: any) => i.symbol)).join('-');
+        const title = resolvedUniverse.join('-');
         const saved = await saveReport(content, `${title}-comparison-report`);
         return {
           success: true,
@@ -712,7 +718,7 @@ export async function executeTool(
           selectedBy: 'llm',
           generatedAt: new Date().toISOString(),
           range,
-          universe: universe.length ? universe : items.map((i: any) => i.symbol),
+          universe: deriveUniverse(universe, items),
           items,
           notes: Array.isArray(args.notes) ? args.notes : [],
         });
@@ -746,7 +752,7 @@ export async function executeTool(
           selectedBy: 'llm',
           generatedAt: new Date().toISOString(),
           range,
-          universe: universe.length ? universe : items.map((i: any) => i.symbol),
+          universe: deriveUniverse(universe, items),
           items,
           notes: Array.isArray(args.notes) ? args.notes : [],
           dependencyAnalysis: args.dependencyAnalysis,
