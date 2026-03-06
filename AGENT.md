@@ -358,7 +358,7 @@ npm test   # runs vitest — all tests in src/__tests__/
 **Tests are mandatory.** Every functional change must be accompanied by test updates. Every new feature must have exhaustive tests before the feature is considered done.
 
 **Test files:**
-- `src/__tests__/webStockTools.test.ts` — tool dispatch, symbol resolution, gap-fill, error handling, rate-limit behavior
+- `src/__tests__/webStockTools.test.ts` — tool dispatch, symbol resolution, error handling, rate-limit behavior
 - `src/__tests__/reportGenerator.test.ts` — report building, chart generation, save/load
 - `src/__tests__/stockDataService.test.ts` — AV and Finnhub service methods, hybrid fallback, cache
 

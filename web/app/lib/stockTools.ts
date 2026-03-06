@@ -485,7 +485,10 @@ function buildToolDefinitions() {
 
 /**
  * Execute a tool by name with the given arguments.
- * Pass `options.llmFill` to enable LLM-based gap-filling for missing report fields.
+ *
+ * Data tools (get_stock_price, get_company_overview, etc.) call real APIs.
+ * Report tools (generate_stock_report, etc.) accept pre-fetched data from the LLM
+ * and render it — they make zero internal API calls.
  */
 export async function executeTool(
   toolName: string,

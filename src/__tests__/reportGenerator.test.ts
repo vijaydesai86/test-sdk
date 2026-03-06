@@ -42,7 +42,7 @@ describe('reportGenerator', () => {
     expect(report).toContain('Buy');
   });
 
-  it('shows no-data placeholder for insider section when empty transactions provided', () => {
+  it('omits insider section when insiderTransactions has no records', () => {
     const report = buildStockReport({
       symbol: 'MSFT',
       generatedAt: '2025-01-01T00:00:00Z',
@@ -50,8 +50,8 @@ describe('reportGenerator', () => {
       insiderTransactions: { data: [] },
     });
 
-    expect(report).toContain('## 🏠 Insider Trading Activity');
-    expect(report).toContain('No recent insider transactions');
+    // Empty transactions → section silently omitted (no placeholder shown)
+    expect(report).not.toContain('## 🏠 Insider Trading Activity');
   });
 
   it('omits insider section when insiderTransactions is undefined', () => {
