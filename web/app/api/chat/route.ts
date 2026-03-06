@@ -287,6 +287,8 @@ function selectToolNames() {
     'generate_comparison_report',
     'generate_sector_report',
     'generate_deep_sector_report',
+    'get_sector_performance',
+    'get_top_gainers_losers',
   ];
   return { toolNames };
 }

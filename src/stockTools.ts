@@ -492,41 +492,6 @@ const resolveSymbolFromQuery = async (query: string) => {
     },
   });
 
-  const getStocksBySectorTool = defineTool('get_stocks_by_sector', {
-    description: 'Screen stocks by sector name using real-time data. For themes, use `search_companies` or `search_news` to build a list.',
-    parameters: {
-      sector: { type: 'string', description: 'Sector name (e.g., "Technology", "Healthcare", "Financial Services")' },
-    },
-    handler: async (args: any) => {
-      const { sector } = args;
-      try {
-        const sectorStocks = await stockService.getStocksBySector(sector);
-        return { success: true, data: sectorStocks, message: `Retrieved stocks for sector: ${sector}` };
-      } catch (error: any) {
-        return { success: false, error: error.message };
-      }
-    },
-  });
-
-  const screenStocksTool = defineTool('screen_stocks', {
-    description: 'Screen stocks with filters like sector, industry, market cap thresholds, and limit.',
-    parameters: {
-      sector: { type: 'string', description: 'Sector name filter (optional)' },
-      industry: { type: 'string', description: 'Industry name filter (optional)' },
-      marketCapMoreThan: { type: 'number', description: 'Minimum market cap (optional)' },
-      marketCapLowerThan: { type: 'number', description: 'Maximum market cap (optional)' },
-      limit: { type: 'number', description: 'Max results (optional, default 20)' },
-    },
-    handler: async (args: any) => {
-      try {
-        const results = await stockService.screenStocks(args);
-        return { success: true, data: results, message: 'Retrieved stock screener results' };
-      } catch (error: any) {
-        return { success: false, error: error.message };
-      }
-    },
-  });
-
   const getTopGainersLosersTool = defineTool('get_top_gainers_losers', {
     description: 'Get today\'s top gaining stocks, top losing stocks, and most actively traded stocks in the US market.',
     parameters: {},
@@ -584,22 +549,6 @@ const resolveSymbolFromQuery = async (query: string) => {
       try {
         const news = await stockService.searchNews(query, days);
         return { success: true, data: news, message: `Retrieved news for query: ${query}` };
-      } catch (error: any) {
-        return { success: false, error: error.message };
-      }
-    },
-  });
-
-  const searchCompaniesTool = defineTool('search_companies', {
-    description: 'Search US-listed companies by keyword across multiple data sources.',
-    parameters: {
-      query: { type: 'string', description: 'Company name or keyword to search for' },
-    },
-    handler: async (args: any) => {
-      const { query } = args;
-      try {
-        const results = await stockService.searchCompanies(query);
-        return { success: true, data: results, message: `Found companies for "${query}"` };
       } catch (error: any) {
         return { success: false, error: error.message };
       }
@@ -1078,13 +1027,10 @@ const resolveSymbolFromQuery = async (query: string) => {
     getBalanceSheetTool,
     getCashFlowTool,
     getSectorPerformanceTool,
-    getStocksBySectorTool,
-    screenStocksTool,
     getTopGainersLosersTool,
     getNewsSentimentTool,
     getCompanyNewsTool,
     searchNewsTool,
-    searchCompaniesTool,
     generateStockReportTool,
     generateComparisonReportTool,
     generatePeerReportTool,

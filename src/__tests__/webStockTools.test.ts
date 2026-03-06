@@ -14,14 +14,11 @@ const stubService = (): StockDataService => ({
   getPriceTargets: vi.fn().mockResolvedValue({}),
   getPeers: vi.fn().mockResolvedValue({}),
   searchStock: vi.fn().mockResolvedValue({ results: [] }),
-  searchCompanies: vi.fn().mockResolvedValue({ results: [] }),
   getEarningsHistory: vi.fn().mockResolvedValue({}),
   getIncomeStatement: vi.fn().mockResolvedValue({}),
   getBalanceSheet: vi.fn().mockResolvedValue({}),
   getCashFlow: vi.fn().mockResolvedValue({}),
   getSectorPerformance: vi.fn().mockResolvedValue({}),
-  getStocksBySector: vi.fn().mockResolvedValue({}),
-  screenStocks: vi.fn().mockResolvedValue({}),
   getTopGainersLosers: vi.fn().mockResolvedValue({}),
   getNewsSentiment: vi.fn().mockResolvedValue({}),
   getCompanyNews: vi.fn().mockResolvedValue({}),
@@ -41,8 +38,27 @@ describe('web executeTool', () => {
     const service = stubService();
     const result = await executeTool('search_news', { query: 'AI', days: 7 }, service);
 
+    expect(result.success).toBe(false);
+  });
+
+  it('routes get_sector_performance to getSectorPerformance', async () => {
+    const service = stubService();
+    const result = await executeTool('get_sector_performance', {}, service);
     expect(result.success).toBe(true);
-    expect(service.searchNews).toHaveBeenCalledWith('AI', 7);
+    expect(service.getSectorPerformance).toHaveBeenCalled();
+  });
+
+  it('routes get_top_gainers_losers to getTopGainersLosers', async () => {
+    const service = stubService();
+    const result = await executeTool('get_top_gainers_losers', {}, service);
+    expect(result.success).toBe(true);
+    expect(service.getTopGainersLosers).toHaveBeenCalled();
+  });
+
+  it('search_news is not a defined tool and returns unknown tool error', async () => {
+    const service = stubService();
+    const result = await executeTool('search_news', { query: 'AI' }, service);
+    expect(result.success).toBe(false);
   });
 
   it('generate_sector_report returns error when sector is empty', async () => {

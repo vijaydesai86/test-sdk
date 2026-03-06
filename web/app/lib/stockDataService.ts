@@ -12,14 +12,11 @@ export interface StockDataService {
   getPriceTargets(symbol: string): Promise<any>;
   getPeers(symbol: string): Promise<any>;
   searchStock(query: string): Promise<any>;
-  searchCompanies(query: string): Promise<any>;
   getEarningsHistory(symbol: string): Promise<any>;
   getIncomeStatement(symbol: string): Promise<any>;
   getBalanceSheet(symbol: string): Promise<any>;
   getCashFlow(symbol: string): Promise<any>;
   getSectorPerformance(): Promise<any>;
-  getStocksBySector(sector: string): Promise<any>;
-  screenStocks(filters: Record<string, string | number | undefined>): Promise<any>;
   getTopGainersLosers(): Promise<any>;
   getNewsSentiment(symbol: string): Promise<any>;
   getCompanyNews(symbol: string, days?: number): Promise<any>;
@@ -468,10 +465,6 @@ export class AlphaVantageService implements StockDataService {
     return { results: filtered };
   }
 
-  async searchCompanies(query: string): Promise<any> {
-    return this.searchStock(query);
-  }
-
   async getEarningsHistory(symbol: string): Promise<any> {
     const data = await this.makeRequest(
       {
@@ -601,14 +594,6 @@ export class AlphaVantageService implements StockDataService {
       yearToDatePerformance: data['Rank F: Year-to-Date (YTD) Performance'] || {},
       oneYearPerformance: data['Rank G: 1 Year Performance'] || {},
     };
-  }
-
-  async getStocksBySector(_sector: string): Promise<any> {
-    throw new Error('Sector screening unavailable in Alpha-only mode');
-  }
-
-  async screenStocks(_filters: Record<string, string | number | undefined>): Promise<any> {
-    throw new Error('Stock screening unavailable in Alpha-only mode');
   }
 
   async getTopGainersLosers(): Promise<any> {
@@ -924,10 +909,6 @@ export class FinnhubService implements StockDataService {
     return { results };
   }
 
-  async searchCompanies(query: string): Promise<any> {
-    return this.searchStock(query);
-  }
-
   async getEarningsHistory(symbol: string): Promise<any> {
     const data = await this.makeRequest('/stock/earnings', { symbol: symbol.toUpperCase() }, 6 * 60 * 60 * 1000);
     const earnings = Array.isArray(data) ? data : [];
@@ -1007,14 +988,6 @@ export class FinnhubService implements StockDataService {
 
   async getSectorPerformance(): Promise<any> {
     throw new Error('Sector performance unavailable via Finnhub');
-  }
-
-  async getStocksBySector(_sector: string): Promise<any> {
-    throw new Error('Sector screening unavailable via Finnhub');
-  }
-
-  async screenStocks(_filters: Record<string, string | number | undefined>): Promise<any> {
-    throw new Error('Stock screening unavailable via Finnhub');
   }
 
   async getTopGainersLosers(): Promise<any> {
@@ -1139,9 +1112,6 @@ class HybridStockDataService implements StockDataService {
   searchStock(query: string) {
     return this.primary.searchStock(query);
   }
-  searchCompanies(query: string) {
-    return this.primary.searchCompanies(query);
-  }
   getEarningsHistory(symbol: string) {
     return this.withFallback(
       () => this.primary.getEarningsHistory(symbol),
@@ -1168,12 +1138,6 @@ class HybridStockDataService implements StockDataService {
   }
   getSectorPerformance() {
     return this.primary.getSectorPerformance();
-  }
-  getStocksBySector(sector: string) {
-    return this.primary.getStocksBySector(sector);
-  }
-  screenStocks(filters: Record<string, string | number | undefined>) {
-    return this.primary.screenStocks(filters);
   }
   getTopGainersLosers() {
     return this.primary.getTopGainersLosers();
