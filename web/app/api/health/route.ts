@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 import { NextResponse } from 'next/server';
 
 export const runtime = 'nodejs';
@@ -9,7 +8,7 @@ export async function GET() {
   const alphaVantageKey = process.env.ALPHA_VANTAGE_API_KEY;
   const finnhubKey = process.env.FINNHUB_API_KEY;
 
-  const results: Record<string, any> = { provider };
+  const results: Record<string, { ok: boolean; price?: string | null; error?: string; configured?: boolean }> = {};
 
   if (provider !== 'finnhub') {
     if (!alphaVantageKey) {
@@ -23,8 +22,9 @@ export async function GET() {
         try {
           const price = await service.getStockPrice(testSymbol);
           results.alphaVantage = { ok: true, price: price?.price ?? null };
-        } catch (error: any) {
-          results.alphaVantage = { ok: false, error: error?.message || 'Failed' };
+        } catch (error: unknown) {
+          const msg = error instanceof Error ? error.message : 'Failed';
+          results.alphaVantage = { ok: false, error: msg };
         }
       } else {
         results.alphaVantage = { ok: true, configured: true };
@@ -36,5 +36,5 @@ export async function GET() {
     results.finnhub = finnhubKey ? { ok: true, configured: true } : { ok: false, error: 'FINNHUB_API_KEY not set' };
   }
 
-  return NextResponse.json({ ok: true, results });
+  return NextResponse.json({ ok: true, provider, results });
 }

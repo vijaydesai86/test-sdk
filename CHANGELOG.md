@@ -11,6 +11,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Removed
+- **`search_news` tool (`src/stockTools.ts`)** — dead code; had no entry in `buildToolDefinitions()` or `selectToolNames()` in the CLI, making it LLM-unreachable. The `searchNews` service method is retained (used internally by report tools).
+- **`generate_peer_report` tool (`src/stockTools.ts`)** — violates AGENT.md "Five capabilities only" rule; the report type it generated (`buildPeerReport`) is not one of the five supported report types. Removed from tool list and handler.
+- **`buildPeerReport` export (`src/reportGenerator.ts`)** — no longer called by any tool; removes ~200 lines of dead report-builder code.
+- **`PeerReportItem` and `PeerReportData` interfaces (`src/reportGenerator.ts`)** — only referenced by the removed `buildPeerReport` function.
+- **`buildPeerReport` import in `src/stockTools.ts`** — no longer needed after tool removal.
+- **`builds a peer report` test (`src/__tests__/reportGenerator.test.ts`)** — tested `buildPeerReport` which no longer exists.
+- **ESLint blanket disable in `web/app/api/health/route.ts`** — replaced with precise types.
+
+### Changed
+- **`src/stockTools.ts`** — added `NUM_COMPANIES` constant (`Math.max(2, Number(process.env.NUM_COMPANIES || 10))`); `generate_comparison_report` now uses `NUM_COMPANIES` instead of hardcoded `6`; `generate_sector_report` now uses `NUM_COMPANIES` instead of hardcoded `4`.
+- **`src/reportGenerator.ts`** — `DEFAULT_REPORTS_DIR` now includes Vercel check (`process.env.VERCEL ? '/tmp/reports' : 'reports'`), matching the web version; `buildPerformanceChart` parameter type changed from `PeerReportItem[]` to a local minimal inline type; all helper function signatures simplified from `SectorReportItem | PeerReportItem` union to `SectorReportItem` only.
+- **`web/app/api/health/route.ts`** — `results` typed as `Record<string, { ok: boolean; price?: string | null; error?: string; configured?: boolean }>` instead of `Record<string, any>`; catch block uses `error: unknown` with `instanceof Error` narrowing; `provider` moved to top-level response field.
+
 ### Added
 - `web/app/lib/config.ts` — new shared module exporting `REPORTS_DIR` constant. Eliminates the triple-duplication of `process.env.REPORTS_DIR || (process.env.VERCEL ? '/tmp/reports' : 'reports')` that existed in `stockTools.ts`, `reportGenerator.ts`, and `reports/[filename]/route.ts`.
 - `web/app/lib/githubModels.ts` — new shared module exporting `fetchGitHubModelsCatalog()`, `resolveGitHubToken()`, and `SAFE_DEFAULT_MODELS`. Eliminates the duplicated GitHub Models catalogue fetch/filter/sort/map pipeline that existed in both `models/route.ts` and `providers/route.ts`.

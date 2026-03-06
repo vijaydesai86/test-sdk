@@ -42,25 +42,6 @@ export interface SectorReportData {
   notes?: string[];
 }
 
-export interface PeerReportItem {
-  symbol: string;
-  price?: any;
-  overview?: any;
-  basicFinancials?: any;
-  priceTargets?: any;
-  priceHistory?: { prices?: PricePoint[] };
-  companyNews?: { articles?: any[] };
-}
-
-export interface PeerReportData {
-  symbol: string;
-  generatedAt: string;
-  range: string;
-  universe: string[];
-  items: PeerReportItem[];
-  notes?: string[];
-}
-
 export interface ComparisonReportItem {
   symbol: string;
   price?: any;
@@ -83,7 +64,7 @@ export interface ComparisonReportData {
   sources?: Record<string, Record<string, string>>;
 }
 
-const DEFAULT_REPORTS_DIR = process.env.REPORTS_DIR || 'reports';
+const DEFAULT_REPORTS_DIR = process.env.REPORTS_DIR || (process.env.VERCEL ? '/tmp/reports' : 'reports');
 
 function formatDateLabel(date: string): string {
   const parsed = new Date(date);
@@ -436,7 +417,7 @@ function getMetricValue(metrics: any, keys: string[]): number | null {
   return null;
 }
 
-function formatRatingSummary(item: SectorReportItem | PeerReportItem | StockReportData): string {
+function formatRatingSummary(item: SectorReportItem | StockReportData): string {
   const ratings = (item as any).analystRatings || (item as any).companyOverview || (item as any).overview;
   const strongBuy = toNumber(ratings?.strongBuy ?? ratings?.analystRatingStrongBuy);
   const buy = toNumber(ratings?.buy ?? ratings?.analystRatingBuy);
@@ -480,12 +461,12 @@ function deriveLayer(item: SectorReportItem): string {
   return 'Other / Diversified';
 }
 
-function getEpsValue(item: SectorReportItem | PeerReportItem): number | null {
+function getEpsValue(item: SectorReportItem): number | null {
   return getMetricValue(item.basicFinancials?.metric, ['epsTTM', 'epsNormalizedAnnual'])
     ?? toNumber(item.overview?.eps);
 }
 
-function getRevenueGrowth(item: SectorReportItem | PeerReportItem): number | null {
+function getRevenueGrowth(item: SectorReportItem): number | null {
   const metric = getMetricValue(item.basicFinancials?.metric, [
     'revenueGrowthTTM',
     'revenueGrowthAnnual',
@@ -494,33 +475,33 @@ function getRevenueGrowth(item: SectorReportItem | PeerReportItem): number | nul
   return normalizePercent(metric ?? item.overview?.quarterlyRevenueGrowth);
 }
 
-function getEpsGrowth(item: SectorReportItem | PeerReportItem): number | null {
+function getEpsGrowth(item: SectorReportItem): number | null {
   const metric = getMetricValue(item.basicFinancials?.metric, ['epsGrowthTTM', 'epsGrowthAnnual']);
   return normalizePercent(metric ?? item.overview?.quarterlyEarningsGrowth);
 }
 
-function getGrossMargin(item: SectorReportItem | PeerReportItem): number | null {
+function getGrossMargin(item: SectorReportItem): number | null {
   const metric = getMetricValue(item.basicFinancials?.metric, ['grossMarginTTM', 'grossMarginAnnual']);
   return normalizePercent(metric ?? item.overview?.profitMargin);
 }
 
-function getOperatingMargin(item: SectorReportItem | PeerReportItem): number | null {
+function getOperatingMargin(item: SectorReportItem): number | null {
   const metric = getMetricValue(item.basicFinancials?.metric, ['operatingMarginTTM', 'operatingMarginAnnual']);
   return normalizePercent(metric ?? item.overview?.operatingMargin);
 }
 
-function getTargetUpside(item: SectorReportItem | PeerReportItem): number | null {
+function getTargetUpside(item: SectorReportItem): number | null {
   const price = toNumber(item.price?.price);
   const target = toNumber(item.priceTargets?.targetMean || (item as any).analystRatings?.analystTargetPrice);
   if (!price || !target) return null;
   return ((target - price) / price) * 100;
 }
 
-function getMovingAverage(item: SectorReportItem | PeerReportItem): number | null {
+function getMovingAverage(item: SectorReportItem): number | null {
   return toNumber(item.overview?.['50DayMovingAverage'] ?? (item as any).analystRatings?.movingAverage50Day);
 }
 
-function formatPriceTrend(item: SectorReportItem | PeerReportItem): string {
+function formatPriceTrend(item: SectorReportItem): string {
   const price = toNumber(item.price?.price);
   const average = getMovingAverage(item);
   if (!price || !average) return 'N/A';
@@ -534,7 +515,7 @@ function getHeadline(article: any): string | null {
   return article.headline || article.title || null;
 }
 
-function buildNewsHighlights(items: Array<SectorReportItem | PeerReportItem>, limit = 2): string {
+function buildNewsHighlights(items: SectorReportItem[], limit = 2): string {
   const rows = items
     .map((item) => {
       const headlines = (item.companyNews?.articles || [])
@@ -873,7 +854,7 @@ function buildBarChart(title: string, label: string, items: { symbol: string; va
   });
 }
 
-function buildPerformanceChart(items: PeerReportItem[], title: string): string {
+function buildPerformanceChart(items: Array<{ symbol: string; priceHistory?: { prices?: Array<{ date: string; close: string | number }> } }>, title: string): string {
   const series = items
     .map((item) => {
       const prices = item.priceHistory?.prices || [];
@@ -1927,7 +1908,7 @@ export function buildComparisonReport(data: ComparisonReportData): string {
     : '';
 
   const performanceChart = buildPerformanceChart(
-    items.map((item) => ({ symbol: item.symbol, priceHistory: item.priceHistory } as PeerReportItem)),
+    items.map((item) => ({ symbol: item.symbol, priceHistory: item.priceHistory })),
     `Price Performance (${data.range}, Indexed)`
   );
   const scatterChart = buildValuationGrowthScatter(items);
@@ -1968,201 +1949,6 @@ export function buildComparisonReport(data: ComparisonReportData): string {
     validScores.length < scored.length
       ? '_Some companies lack composite scores; weights are normalized across available scores._'
       : '_Indicative allocation is derived from normalized composite scores. It is not investment advice._',
-  ].filter(Boolean) as string[];
-
-  return sections.join('\n\n');
-}
-
-export function buildPeerReport(data: PeerReportData): string {
-  const header = `# Peer Comparison Report: ${data.symbol}`;
-  const notes = data.notes?.length ? data.notes.map((note) => `- ${note}`).join('\n') : '';
-
-  const scored = data.items.map((item) => {
-    const scoreData: StockReportData = {
-      symbol: item.symbol,
-      generatedAt: data.generatedAt,
-      price: item.price || {},
-      priceHistory: item.priceHistory,
-      companyOverview: item.overview,
-      basicFinancials: item.basicFinancials,
-      earningsHistory: undefined,
-      incomeStatement: undefined,
-      balanceSheet: undefined,
-      cashFlow: undefined,
-      analystRatings: undefined,
-      analystRecommendations: undefined,
-      priceTargets: item.priceTargets,
-      peers: undefined,
-      newsSentiment: undefined,
-      companyNews: undefined,
-    };
-    const scorecard = computeScorecard(scoreData);
-    return { item, score: scorecard.composite };
-  });
-
-  const inclusionRows = data.items.map((item) => {
-    const name = item.overview?.name || item.symbol;
-    const reason = item.symbol.toUpperCase() === data.symbol.toUpperCase()
-      ? 'Base company'
-      : 'Peer comparison set';
-    return `| ${name} (${item.symbol}) | ${reason} |`;
-  });
-  const inclusionSection = inclusionRows.length
-    ? ['| Company (Ticker) | Why Included |', '|---|---|', ...inclusionRows].join('\n')
-    : '_Peer universe unavailable._';
-
-  const snapshotRows = data.items.map((item) => {
-    const name = item.overview?.name || item.symbol;
-    return {
-      name: `${name} (${item.symbol})`,
-      price: toNumber(item.price?.price),
-      marketCap: item.overview?.marketCapitalization ?? null,
-      eps: getEpsValue(item),
-      pe: toNumber(item.overview?.peRatio ?? item.basicFinancials?.metric?.peBasicExclExtraTTM),
-      target: toNumber(item.priceTargets?.targetMean ?? item.overview?.analystTargetPrice),
-      upside: getTargetUpside(item),
-    };
-  });
-  const snapshotColumns = [
-    {
-      key: 'price',
-      label: 'Price',
-      format: (row: any) => (row.price === null ? null : row.price.toFixed(2)),
-      optional: true,
-    },
-    {
-      key: 'marketCap',
-      label: 'Market Cap',
-      format: (row: any) => (row.marketCap === null ? null : formatMarketCap(row.marketCap)),
-      optional: true,
-    },
-    {
-      key: 'eps',
-      label: 'EPS',
-      format: (row: any) => (row.eps === null ? null : row.eps.toFixed(2)),
-      optional: true,
-    },
-    {
-      key: 'pe',
-      label: 'P/E',
-      format: (row: any) => (row.pe === null ? null : row.pe.toFixed(1)),
-      optional: true,
-    },
-    {
-      key: 'target',
-      label: 'Target Mean',
-      format: (row: any) => (row.target === null ? null : row.target.toFixed(2)),
-      optional: true,
-    },
-    {
-      key: 'upside',
-      label: 'Upside',
-      format: (row: any) => (row.upside === null ? null : `${row.upside.toFixed(1)}%`),
-      optional: true,
-    },
-  ];
-  const activeSnapshotColumns = snapshotColumns.filter((column: any) => {
-    if (!column.optional) return true;
-    return snapshotRows.some((row: any) => column.format(row) !== null);
-  });
-  const snapshotHeader = ['Company (Ticker)', ...activeSnapshotColumns.map((column: any) => column.label)];
-  const snapshotSection = snapshotRows.length
-    ? [
-        `| ${snapshotHeader.join(' | ')} |`,
-        `| ${snapshotHeader.map(() => '---').join(' | ')} |`,
-        ...snapshotRows.map((row) => {
-          const values = activeSnapshotColumns.map((column: any) => column.format(row) ?? 'Unavailable');
-          return `| ${[row.name, ...values].join(' | ')} |`;
-        }),
-      ].join('\n')
-    : '_Peer snapshot unavailable._';
-
-  const roleRows = data.items.map((item) => {
-    const name = item.overview?.name || item.symbol;
-    const description = item.overview?.description || '';
-    const firstSentence = description.split('. ').shift();
-    const role = firstSentence ? `${firstSentence}.` : (item.overview?.industry || item.overview?.sector || 'Role unavailable');
-    return `| ${name} (${item.symbol}) | ${role} |`;
-  });
-  const roleSection = roleRows.length
-    ? ['| Company (Ticker) | Role in Peer Set |', '|---|---|', ...roleRows].join('\n')
-    : '_Role data unavailable._';
-
-  const analystRows = data.items.map((item) => {
-    const name = item.overview?.name || item.symbol;
-    const ratings = item.overview || {};
-    const counts = [
-      toNumber(ratings.analystRatingStrongBuy),
-      toNumber(ratings.analystRatingBuy),
-      toNumber(ratings.analystRatingHold),
-      toNumber(ratings.analystRatingSell),
-      toNumber(ratings.analystRatingStrongSell),
-    ];
-    const hasRatings = counts.some((value) => value !== null);
-    const rating = hasRatings
-      ? `SB ${counts[0] ?? 0} / B ${counts[1] ?? 0} / H ${counts[2] ?? 0} / S ${counts[3] ?? 0} / SS ${counts[4] ?? 0}`
-      : null;
-    const target = toNumber(item.priceTargets?.targetMean ?? item.overview?.analystTargetPrice);
-    const price = toNumber(item.price?.price);
-    const upside = price && target ? ((target - price) / price) * 100 : null;
-    return {
-      name: `${name} (${item.symbol})`,
-      rating,
-      target,
-      upside,
-    };
-  });
-  const hasAnalystData = analystRows.some((row) => row.rating || row.target !== null);
-  const analystSection = hasAnalystData
-    ? [
-        '| Company (Ticker) | Analyst Ratings | Target Mean | Upside |',
-        '|---|---|---:|---:|',
-        ...analystRows.map((row) => {
-          const rating = row.rating ?? 'Unavailable';
-          const target = row.target === null ? 'Unavailable' : row.target.toFixed(2);
-          const upside = row.upside === null ? 'Unavailable' : `${row.upside.toFixed(1)}%`;
-          return `| ${row.name} | ${rating} | ${target} | ${upside} |`;
-        }),
-      ].join('\n')
-    : '_Analyst ratings are not provided by Alpha Vantage for this peer set._';
-
-  const scoredSorted = scored.filter((row) => row.score !== null).sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
-  const scoreCount = scoredSorted.length;
-  const recommendationRows = scored.map((row) => {
-    const name = row.item.overview?.name || row.item.symbol;
-    if (row.score === null || scoreCount === 0) {
-      return `| ${name} (${row.item.symbol}) | Unavailable | Unavailable | Insufficient data |`;
-    }
-    const rank = scoredSorted.findIndex((sorted) => sorted.item.symbol === row.item.symbol) + 1;
-    const percentile = scoreCount > 1 ? 1 - (rank - 1) / (scoreCount - 1) : 1;
-    const recommendation = percentile >= 0.67
-      ? 'Overweight'
-      : percentile >= 0.34
-        ? 'Neutral'
-        : 'Underweight';
-    return `| ${name} (${row.item.symbol}) | ${row.score.toFixed(1)} | ${rank} | ${recommendation} |`;
-  });
-  const recommendationSection = recommendationRows.length
-    ? ['| Company (Ticker) | Score | Rank | Recommendation |', '|---|---:|---:|---|', ...recommendationRows].join('\n')
-    : '_Recommendations unavailable._';
-
-  const universeList = data.items.map((item) => `${item.overview?.name || item.symbol} (${item.symbol})`).join(', ');
-  const sections = [
-    header,
-    `Generated: ${data.generatedAt}`,
-    `Universe: ${universeList || 'Unavailable'}`,
-    '## ✅ Companies Included',
-    inclusionSection,
-    '## 🧾 Company Snapshot',
-    snapshotSection,
-    '## 🧭 Role in Peer Set',
-    roleSection,
-    '## 🧠 Analyst View',
-    analystSection,
-    '## ✅ Recommendations',
-    recommendationSection,
-    notes ? `## 🔍 Notes\n${notes}` : null,
-    '_Not financial advice. Use this as a starting point for diligence._',
   ].filter(Boolean) as string[];
 
   return sections.join('\n\n');

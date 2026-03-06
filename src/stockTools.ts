@@ -2,7 +2,7 @@ import { defineTool } from '@github/copilot-sdk';
 import { promises as fs } from 'fs';
 import path from 'path';
 import { StockDataService } from './stockDataService';
-import { buildSectorReport, buildStockReport, buildPeerReport, buildComparisonReport, saveReport } from './reportGenerator';
+import { buildSectorReport, buildStockReport, buildComparisonReport, saveReport } from './reportGenerator';
 
 /**
  * Create stock information tools for GitHub Copilot SDK
@@ -22,6 +22,7 @@ const stopwords = new Set([
 ]);
 
 const REPORTS_DIR = process.env.REPORTS_DIR || (process.env.VERCEL ? '/tmp/reports' : 'reports');
+const NUM_COMPANIES = Math.max(2, Number(process.env.NUM_COMPANIES || 10));
 const CACHE_DIR = path.join(REPORTS_DIR, 'cache');
 const CACHE_TTL_MS = Number(process.env.STOCK_CACHE_TTL_MS || 1000 * 60 * 60 * 24 * 7);
 const DEFAULT_SOURCE = (() => {
@@ -538,23 +539,6 @@ const resolveSymbolFromQuery = async (query: string) => {
     },
   });
 
-  const searchNewsTool = defineTool('search_news', {
-    description: 'Search recent market news by keyword or company name.',
-    parameters: {
-      query: { type: 'string', description: 'Keyword or company name to search' },
-      days: { type: 'number', description: 'Lookback window in days (optional)' },
-    },
-    handler: async (args: any) => {
-      const { query, days } = args;
-      try {
-        const news = await stockService.searchNews(query, days);
-        return { success: true, data: news, message: `Retrieved news for query: ${query}` };
-      } catch (error: any) {
-        return { success: false, error: error.message };
-      }
-    },
-  });
-
   const generateStockReportTool = defineTool('generate_stock_report', {
     description: 'Generate a comprehensive stock research report and save it as a markdown artifact.',
     parameters: {
@@ -699,64 +683,6 @@ const resolveSymbolFromQuery = async (query: string) => {
     },
   });
 
-  const generatePeerReportTool = defineTool('generate_peer_report', {
-    description: 'Generate a comprehensive peer comparison report and save it as a markdown artifact.',
-    parameters: {
-      symbol: { type: 'string', description: 'Stock ticker symbol (e.g., "AMD")' },
-      limit: { type: 'number', description: 'Max peers to include (optional, default 8)' },
-      range: { type: 'string', description: 'Price history range for charts (e.g., "1y", "3y", "5y", "max"). Default is "5y"' },
-    },
-    handler: async (args: any) => {
-      const symbol = args.symbol as string;
-      const range = args.range || '5y';
-      const limit = Math.min(Number(args.limit || 6), 6);
-      const notes: string[] = [];
-
-      let peerSymbols: string[] = [];
-      try {
-        const peers = await stockService.getPeers(symbol);
-        peerSymbols = (peers.peers || []).filter((peer: string) => peer && peer !== symbol).slice(0, limit);
-      } catch (error: any) {
-        notes.push(`Peers unavailable: ${error.message}`);
-        try {
-          const search = await stockService.searchStock(symbol);
-          peerSymbols = (search.results || []).map((item: any) => item.symbol).filter(Boolean).slice(0, limit);
-        } catch (searchError: any) {
-          notes.push(`Peer fallback unavailable: ${searchError.message}`);
-        }
-      }
-
-      const universe = [symbol.toUpperCase(), ...peerSymbols].slice(0, limit + 1);
-      const items = await Promise.all(
-        universe.map(async (ticker) => {
-          const [price, overview, basicFinancials, priceTargets, companyNews] = await Promise.all([
-            stockService.getStockPrice(ticker).catch(() => null),
-            stockService.getCompanyOverview(ticker).catch(() => null),
-            stockService.getBasicFinancials(ticker).catch(() => null),
-            stockService.getPriceTargets(ticker).catch(() => null),
-            stockService.getCompanyNews(ticker, 14).catch(() => null),
-          ]);
-          return { symbol: ticker, price, overview, basicFinancials, priceTargets, companyNews };
-        })
-      );
-
-      const content = buildPeerReport({
-        symbol: symbol.toUpperCase(),
-        generatedAt: new Date().toISOString(),
-        range,
-        universe,
-        items,
-        notes,
-      });
-
-      const saved = await saveReport(content, `${symbol}-peer-report`);
-      return {
-        success: true,
-        data: { content, ...saved },
-        message: `Saved peer report to ${saved.filePath}`,
-      };
-    },
-  });
 
   const generateComparisonReportTool = defineTool('generate_comparison_report', {
     description: 'Generate a comprehensive comparison report for multiple companies and save it as a markdown artifact.',
@@ -770,8 +696,8 @@ const resolveSymbolFromQuery = async (query: string) => {
         ? args.companies
         : String(args.companies || '').split(',');
       const companies = companiesInput.map((item: string) => item.trim()).filter(Boolean);
-      if (companies.length < 2 || companies.length > 6) {
-        return { success: false, error: 'Provide between 2 and 6 company names or tickers.' };
+      if (companies.length < 2 || companies.length > NUM_COMPANIES) {
+        return { success: false, error: `Provide between 2 and ${NUM_COMPANIES} company names or tickers.` };
       }
 
       const resolved: { query: string; symbol?: string; candidates?: any[]; reason?: string }[] = [];
@@ -929,7 +855,7 @@ const resolveSymbolFromQuery = async (query: string) => {
     },
     handler: async (args: any) => {
       const query = args.query as string;
-      const limit = Math.min(Number(args.limit || 4), 4);
+      const limit = Math.min(Number(args.limit || NUM_COMPANIES), NUM_COMPANIES);
 
       try {
         const notes: string[] = [];
@@ -1030,10 +956,8 @@ const resolveSymbolFromQuery = async (query: string) => {
     getTopGainersLosersTool,
     getNewsSentimentTool,
     getCompanyNewsTool,
-    searchNewsTool,
     generateStockReportTool,
     generateComparisonReportTool,
-    generatePeerReportTool,
     generateSectorReportTool,
   ];
 }
