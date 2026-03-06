@@ -930,7 +930,8 @@ export async function executeTool(
         const peers = await safeFetch('Peers', 'peers', stockService.getPeers(symbol));
         const newsSentiment = await safeFetch('News sentiment', 'newsSentiment', stockService.getNewsSentiment(symbol));
         const companyNews = await safeFetch('Company news', 'companyNews', stockService.getCompanyNews(symbol, 14));
-
+        // Insider transactions — available on Finnhub free tier; silently skipped if unavailable
+        const insiderTransactions = await safeFetch('Insider transactions', 'insiderTransactions', stockService.getInsiderTrading(symbol));
 
         // Build basic financials from the overview
         const finalBasicFinancials = companyOverview ? buildBasicFinancialsFallback(companyOverview) : undefined;
@@ -952,6 +953,7 @@ export async function executeTool(
           peers,
           newsSentiment,
           companyNews,
+          insiderTransactions,
         });
 
         const content = notes.length

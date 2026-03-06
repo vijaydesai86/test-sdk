@@ -902,7 +902,8 @@ function buildInsiderTable(insiderTransactions: any): string {
       const type = tx.transactionCode === 'P' ? 'Buy' : tx.transactionCode === 'S' ? 'Sell' : (tx.transaction || tx.transactionCode || 'N/A');
       const shares = toNumber(tx.share || tx.shares);
       const value = toNumber(tx.value);
-      const date = (tx.transactionDate || tx.filingDate || tx.filing_date || 'N/A').toString().slice(0, 10);
+      const rawDate = tx.transactionDate || tx.filingDate || tx.filing_date;
+      const date = rawDate ? rawDate.toString().slice(0, 10) : 'N/A';
       return [
         name,
         type,
@@ -1816,35 +1817,32 @@ export function buildComparisonReport(data: ComparisonReportData): string {
       : '_Indicative allocation is derived from normalized composite scores. It is not investment advice._',
     '## 🏰 Moat Scores',
     buildComparisonMoatTable(items, scored),
-    ...(() => {
-      const newsContent = buildComparisonNewsHighlights(items);
-      return newsContent ? ['## 📰 News Highlights', newsContent] : [];
-    })(),
-    ...(() => {
-      const sentimentContent = buildComparisonSentimentTable(items);
-      return sentimentContent ? ['## 📡 Market Sentiment', sentimentContent] : [];
-    })(),
-    ...(() => {
-      const insiderRows = items
-        .map((item) => {
-          const tbl = buildInsiderTable(item.insiderTransactions);
-          if (!tbl) return null;
-          return `**${item.overview?.name || item.symbol} (${item.symbol})**\n\n${tbl}`;
-        })
-        .filter(Boolean) as string[];
-      return insiderRows.length ? ['## 🏠 Insider Activity', ...insiderRows] : [];
-    })(),
-    ...(() => {
-      const esgRows = items
-        .map((item) => {
-          const tbl = buildEsgSection(item.esgScore);
-          if (!tbl) return null;
-          return `**${item.overview?.name || item.symbol} (${item.symbol})**\n\n${tbl}`;
-        })
-        .filter(Boolean) as string[];
-      return esgRows.length ? ['## 🌱 ESG Scores', ...esgRows] : [];
-    })(),
   ].filter(Boolean) as string[];
+
+  // Append optional sections (omitted entirely when no data is available)
+  const comparisonNewsContent = buildComparisonNewsHighlights(items);
+  if (comparisonNewsContent) sections.push('## 📰 News Highlights', comparisonNewsContent);
+
+  const comparisonSentimentContent = buildComparisonSentimentTable(items);
+  if (comparisonSentimentContent) sections.push('## 📡 Market Sentiment', comparisonSentimentContent);
+
+  const insiderRows = items
+    .map((item) => {
+      const tbl = buildInsiderTable(item.insiderTransactions);
+      if (!tbl) return null;
+      return `**${item.overview?.name || item.symbol} (${item.symbol})**\n\n${tbl}`;
+    })
+    .filter(Boolean) as string[];
+  if (insiderRows.length) sections.push('## 🏠 Insider Activity', ...insiderRows);
+
+  const esgRows = items
+    .map((item) => {
+      const tbl = buildEsgSection(item.esgScore);
+      if (!tbl) return null;
+      return `**${item.overview?.name || item.symbol} (${item.symbol})**\n\n${tbl}`;
+    })
+    .filter(Boolean) as string[];
+  if (esgRows.length) sections.push('## 🌱 ESG Scores', ...esgRows);
 
   return sections.join('\n\n');
 }

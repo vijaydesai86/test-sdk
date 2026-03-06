@@ -13,11 +13,33 @@ An AI-powered equity research platform. Ask questions in plain English — the L
 ### 1 · Stock Details
 Ask about any stock. Get a complete research report: current price, price history chart, company overview, valuation ratios, financial statements (income, balance sheet, cash flow), EPS trend, analyst ratings, price targets, insider activity, news sentiment, and a composite scorecard.
 
+**New sections added to stock reports:**
+- 👥 **Peer Comparison** — tabulated peer set with quick-link to Compare tool
+- 🏠 **Insider Trading Activity** — recent insider buy/sell transactions (Finnhub free tier)
+- 📰 **News Highlights** — up to 8 recent news headlines with source and date
+- 🌱 **ESG & Sustainability** — ESG component scores when data is available
+- ⚖️ **Legal & Regulatory** — recent legal/regulatory events when data is available
+- 👔 **Management Quality** — CEO/CFO names and insider ownership when data is available
+- 🔗 **Suppliers & Customers** — key supply chain and customer relationships when available
+- 📎 **Visual Appendix** — inventory of all charts included in the report
+
 ### 2 · Stock Comparison
 Give 2–6 companies. Get a side-by-side comparison across price, valuation, profitability, growth, and quality — with charts and a ranked scorecard.
 
+**New sections added to comparison reports:**
+- 🏰 **Moat Scores** — composite moat score and quality level for each company
+- 📰 **News Highlights** — recent headlines per company when news data is available
+- 📡 **Market Sentiment** — news sentiment label and score per company when available
+- 🏠 **Insider Activity** — insider transaction tables per company when available
+- 🌱 **ESG Scores** — ESG component breakdown per company when available
+
 ### 3 · Top Stocks in a Sector
 Name any sector or investment theme. The LLM selects the leading publicly-traded companies, fetches data for each, and delivers a ranked sector report.
+
+**New sections inherited from comparison report plus:**
+- 🏰 **Composite Moat Scores** — always rendered for the sector universe
+- 📰 **News Highlights** — cross-company news summary when article data is available
+- 📡 **Market Sentiment** — sentiment scores per company when available
 
 ### 4 · Deep Sector Research
 The most powerful mode. Runs in four sequential phases:
@@ -38,6 +60,11 @@ Phase 4 ── Full financial comparison data fetched for refined list
 ```
 
 The output includes the dependency analysis text, Mermaid ecosystem diagram, refinement rationale, and a full comparison report for the final company set.
+
+**New optional deep-sector sections** (rendered when LLM provides the data):
+- 🔭 **Scenario Simulations** — bull/bear/base-case scenario narratives
+- 🔗 **Critical Supplier/Customer Mapping** — cross-company supply chain and customer analysis
+- 💡 **Innovation Highlights** — innovation and R&D highlights table per company
 
 ### 5 · General Chat
 Any question that doesn't fit the above — macro trends, industry news, "explain P/E ratio", "what is EBITDA" — is answered directly by the LLM using its knowledge.

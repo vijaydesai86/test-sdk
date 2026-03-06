@@ -1098,13 +1098,14 @@ function buildInsiderTable(insiderTransactions: any): string {
       const type = tx.transactionCode === 'P' ? 'Buy' : tx.transactionCode === 'S' ? 'Sell' : (tx.transaction || tx.transactionCode || 'N/A');
       const shares = toNumber(tx.share || tx.shares);
       const value = toNumber(tx.value);
-      const date = tx.transactionDate || tx.filingDate || tx.filing_date || 'N/A';
+      const rawDate = tx.transactionDate || tx.filingDate || tx.filing_date;
+      const date = rawDate ? rawDate.toString().slice(0, 10) : 'N/A';
       return [
         name,
         type,
         shares === null ? 'N/A' : shares.toLocaleString(),
         value === null ? 'N/A' : formatCurrency(value),
-        date.toString().slice(0, 10),
+        date,
       ];
     });
   if (rows.length === 0) return '';

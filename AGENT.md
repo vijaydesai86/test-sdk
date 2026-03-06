@@ -237,7 +237,7 @@ When `isRateLimit` triggers: `rateLimitHit = true` → all remaining fetches ski
 - `buildStockReport(data: StockReportData): string` — full markdown report with ECharts chart blocks
 - `buildComparisonReport(data: ComparisonReportData): string` — comparison tables + charts
 - `buildSectorReport(data: SectorReportData): string` — wraps comparison with sector context
-- `buildDeepSectorReport(data: DeepSectorReportData): string` — adds dependency analysis, Mermaid diagram, refinement notes
+- `buildDeepSectorReport(data: DeepSectorReportData): string` — adds dependency analysis, Mermaid diagram, refinement notes, and optional deep-sector sections
 - `saveReport(content, title, dir?): Promise<{filePath, filename}>` — saves `.md` to `{REPORTS_DIR}/{safe-title}-{ISO-timestamp}.md`
 
 **Chart format:** All charts MUST use ` ```chart ``` ` fences with valid ECharts JSON. `applyChartTheme()` normalises theming. Mermaid diagrams use standard ` ```mermaid ``` ` fences.
@@ -245,6 +245,46 @@ When `isRateLimit` triggers: `rateLimitHit = true` → all remaining fetches ski
 **Report saved as:** `{safe-title}-{ISO-timestamp}.md`  
 **Served via:** `GET /api/reports/{filename}`  
 **Deleted via:** `DELETE /api/reports/{filename}`
+
+**New optional fields on `StockReportData`:**
+- `insiderTransactions` — insider buy/sell transactions (Finnhub `/stock/insider-transactions`); now fetched automatically in `generate_stock_report`
+- `esgScore` — ESG/sustainability scores; any of `{total, environmental, social, governance, rating}`
+- `managementTeam` — management quality data; `{ceo, cfo, ...}`
+- `legalEvents` — legal/regulatory events array; each `{type, date, description}`
+- `supplierCustomers` — supply chain context; `{suppliers: string[], customers: string[]}`
+
+**New optional fields on `ComparisonReportItem`:**
+- `insiderTransactions` — same format as StockReportData.insiderTransactions
+- `newsSentiment` — same format as StockReportData.newsSentiment
+- `companyNews` — `{ articles?: any[] }` — same format as StockReportData.companyNews
+- `esgScore` — same format as StockReportData.esgScore
+
+**New optional fields on `DeepSectorReportData`:**
+- `scenarioSimulations` — markdown string of bull/bear/base scenario narratives
+- `supplierCustomerMap` — markdown string of cross-company supply chain analysis
+- `innovationHighlights` — markdown string (table) of R&D/innovation highlights
+
+**New sections in `buildStockReport`** (all additive, omitted gracefully when data absent):
+- `## 👥 Peer Comparison` — peer ticker table (from existing `peers` data)
+- `## 🏠 Insider Trading Activity` — insider buy/sell table from `insiderTransactions`
+- `## 📰 News Highlights` — news article headlines from `companyNews.articles`
+- `## 🌱 ESG & Sustainability` — ESG score breakdown from `esgScore`
+- `## ⚖️ Legal & Regulatory` — legal/regulatory events from `legalEvents`
+- `## 👔 Management Quality` — CEO/CFO and insider ownership from `managementTeam`
+- `## 🔗 Suppliers & Customers` — supply chain context from `supplierCustomers`
+- `## 📎 Visual Appendix` — inventory of all ECharts/Mermaid charts in the report
+
+**New sections in `buildComparisonReport`** (additive):
+- `## 🏰 Moat Scores` — always rendered; composite score + moat level per company
+- `## 📰 News Highlights` — rendered when any item has `companyNews.articles`
+- `## 📡 Market Sentiment` — rendered when any item has `newsSentiment`
+- `## 🏠 Insider Activity` — rendered when any item has `insiderTransactions`
+- `## 🌱 ESG Scores` — rendered when any item has `esgScore`
+
+**New sections in `buildDeepSectorReport`** (additive):
+- `## 🔭 Scenario Simulations` — rendered when `DeepSectorReportData.scenarioSimulations` is set
+- `## 🔗 Critical Supplier/Customer Mapping` — rendered when `supplierCustomerMap` is set
+- `## 💡 Innovation Highlights` — rendered when `innovationHighlights` is set
 
 ---
 
