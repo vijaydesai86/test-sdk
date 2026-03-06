@@ -358,10 +358,8 @@ async function callGitHubModelsAPI(
 }
 
 /**
- * Make a targeted LLM call — used exclusively for:
- *   1. Ticker resolution: mapping informal company names to official US exchange symbols
- *   2. Sector universe selection: identifying the top N tickers for a sector/theme
- *   3. Deep-sector ecosystem analysis: dependency narratives + Mermaid diagrams
+ * Make a targeted LLM call — used exclusively for ticker resolution:
+ * mapping informal company names to official US exchange symbols.
  *
  * This function MUST NOT be used to fill in financial data (prices, ratios, margins,
  * EPS, etc.) from LLM training knowledge. All financial data must come from real APIs.
