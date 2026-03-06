@@ -11,9 +11,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- `get_sector_performance` tool — exposes `AlphaVantageService.getSectorPerformance()` (AV `SECTOR` endpoint) to the LLM; returns real-time and historical sector returns across 1d/5d/1m/3m/YTD/1y timeframes
+- `get_top_gainers_losers` tool — exposes `AlphaVantageService.getTopGainersLosers()` (AV `TOP_GAINERS_LOSERS` endpoint) to the LLM; returns today's top gaining, top losing, and most actively traded US stocks
+- Tests: `routes get_sector_performance to getSectorPerformance` and `routes get_top_gainers_losers to getTopGainersLosers` in `webStockTools.test.ts`
+- Test: `search_news has no tool definition and returns unknown tool error` confirms correct rejection
+
+### Removed
+- **Dead code: `search_news` case in `executeTool`** — `search_news` had an `executeTool` handler but no entry in `buildToolDefinitions()` or `selectToolNames()`, making it LLM-unreachable. The dead `case` was removed. The `searchNews` service method is retained (used internally by report tools).
+- **Dead interface surface: `getStocksBySector` and `screenStocks`** — both methods threw `'unavailable'` errors in all implementations and were never called by any tool or report path. Removed from `StockDataService` interface, `AlphaVantageService`, `FinnhubService`, and `HybridStockDataService` in both `web/app/lib/stockDataService.ts` and `src/stockDataService.ts`.
+- **Duplicate method: `searchCompanies`** — was a pass-through to `searchStock()` in all implementations. Removed from `StockDataService` interface and all implementations in both `web/` and `src/`. The `search_companies` CLI tool definition also removed from `src/stockTools.ts`.
+- **Stale config: `yahoo-finance2` in `next.config.js`** — `serverExternalPackages` and `outputFileTracingIncludes` entries for `yahoo-finance2` were referencing a library no longer used in the codebase. Removed entirely; `next.config.js` now exports an empty config object.
+- **Stale CLI tools: `get_stocks_by_sector` and `screen_stocks`** in `src/stockTools.ts` — their underlying service methods were removed (see above).
+
 ### Changed
 - Rewrote README.md, AGENT.md, and CHANGELOG.md to reflect full project requirements and architecture
 - Removed DEPLOYMENT.md and QUICKSTART.md (documentation consolidated to three files only per project rule)
+- AGENT.md tool table updated: added `get_sector_performance` and `get_top_gainers_losers`; removed stale Common Pitfalls entries that are now resolved (`search_news` dead code, `next.config.js` yahoo-finance2, `quoteSummary()` warning)
 
 ---
 

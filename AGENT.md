@@ -145,6 +145,8 @@ FILL_MODEL = process.env.FILL_MODEL || 'openai/gpt-4.1-mini'
 | `get_insider_trading` | AV / Finnhub | Insider buy/sell transactions |
 | `get_news_sentiment` | AV / Finnhub | News volume + sentiment score |
 | `get_company_news` | Finnhub | Recent company news articles |
+| `get_sector_performance` | AV | Real-time sector returns across 1d/5d/1m/3m/YTD/1y timeframes |
+| `get_top_gainers_losers` | AV | Today's top gaining, top losing, and most actively traded US stocks |
 | `generate_stock_report` | All above | Full stock research report + save |
 | `generate_comparison_report` | All above | Multi-company comparison + save |
 | `generate_sector_report` | All above | LLM-selected sector report + save |
@@ -175,7 +177,6 @@ When `isRateLimit` triggers: `rateLimitHit = true` → all remaining fetches ski
 - `HybridStockDataService` — wraps both; `withFallback()` retries AV failures on Finnhub; tags results with `__source: 'Finnhub'`
 
 **IMPORTANT implementation rules:**
-- **Never call `quoteSummary()` from yahoo-finance2 in Vercel/cloud.** It requires crumb auth blocked by Yahoo on cloud IPs. Only `chart()` is safe if yfinance mode is ever used.
 - **Never use `TIME_SERIES_DAILY outputsize=full`** — this is a premium Alpha Vantage feature and fails on free tier.
 - **Never call Finnhub `/financials-reported`** — returns 403 on free tier.
 - **Never call Finnhub `/stock/financials`** — deprecated, removed from API.
@@ -397,7 +398,6 @@ npm test   # runs vitest — all tests in src/__tests__/
 |---|---|
 | Using `TIME_SERIES_DAILY outputsize=full` | Use `TIME_SERIES_WEEKLY` (≥1y) or `TIME_SERIES_MONTHLY` (max) |
 | Calling Finnhub `/financials-reported` | Already handled; throws suppressed plan-limitation error |
-| Calling `quoteSummary()` in cloud deployment | Use `chart()` only from cloud/Vercel IPs |
 | "Company overview: Unable to fetch…" showing in Data Gaps | Error message must match suppression pattern: `/unavailable (in\|via) (Alpha\|Finnhub)/i` |
 | AV rate limit hitting mid-report | `safeFetch` detects it and sets `rateLimitHit=true`; remaining fetches skipped |
 | LLM returning tool calls as plain text | User must switch to a tool-calling capable model |
@@ -406,9 +406,7 @@ npm test   # runs vitest — all tests in src/__tests__/
 | Comparison report with company names, not tickers | `resolveSymbolFromQuery()` handles this; returns error with candidates if ambiguous |
 | Finnhub `/quote` returning `{c:0,t:0}` for unknown symbol | Check `data.t === 0` explicitly — it's not an error response |
 | Finnhub `/stock/candle` returning `{s:"no_data"}` | Check `data.s !== 'ok'` before reading candle arrays |
-| Adding `search_news` as an LLM-callable tool | `search_news` has an `executeTool` case but is NOT in `buildToolDefinitions()` — the LLM cannot call it. Either add a tool definition or treat it as an internal-only method. |
 | Setting `STOCK_DATA_PROVIDER=hybrid` without `FINNHUB_API_KEY` | `createStockService()` silently falls back to AV-only. Set `FINNHUB_API_KEY` to actually get hybrid coverage. |
-| `next.config.js` referencing `yahoo-finance2` | The `serverExternalPackages` and `outputFileTracingIncludes` entries for `yahoo-finance2` in `next.config.js` are stale — `YahooFinanceService` was removed from `stockDataService.ts`. These entries are harmless but should be cleaned up. |
 
 ---
 

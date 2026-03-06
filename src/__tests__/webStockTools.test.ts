@@ -34,7 +34,7 @@ describe('web executeTool', () => {
     expect(service.getBasicFinancials).toHaveBeenCalledWith('AAPL');
   });
 
-  it('routes to news search', async () => {
+  it('search_news has no tool definition and returns unknown tool error', async () => {
     const service = stubService();
     const result = await executeTool('search_news', { query: 'AI', days: 7 }, service);
 
@@ -53,12 +53,6 @@ describe('web executeTool', () => {
     const result = await executeTool('get_top_gainers_losers', {}, service);
     expect(result.success).toBe(true);
     expect(service.getTopGainersLosers).toHaveBeenCalled();
-  });
-
-  it('search_news is not a defined tool and returns unknown tool error', async () => {
-    const service = stubService();
-    const result = await executeTool('search_news', { query: 'AI' }, service);
-    expect(result.success).toBe(false);
   });
 
   it('generate_sector_report returns error when sector is empty', async () => {
