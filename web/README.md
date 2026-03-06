@@ -74,6 +74,8 @@ web/
 |----------|-------------|---------|
 | `GITHUB_TOKEN` | GitHub Personal Access Token (required) | — |
 | `ALPHA_VANTAGE_API_KEY` | Alpha Vantage API key (required for stock data) | — |
+| `NUM_COMPANIES` | Companies per comparison/sector/deep-sector report | `10` |
+| `DEEP_RESEARCH_DEPTH` | Recursive refinement passes in deep sector research | `2` |
 
 ## Usage Examples
 

@@ -194,6 +194,8 @@ npm run dev
 | `COPILOT_FALLBACK_MODEL` | No | same as main | Fallback model if main hits rate limit |
 | `REPORTS_DIR` | No | `/tmp/reports` | Report save directory (Vercel: ephemeral `/tmp`) |
 | `STOCK_CACHE_TTL_MS` | No | `604800000` | Cache TTL in milliseconds (default: 7 days) |
+| `NUM_COMPANIES` | No | `10` | Companies per comparison/sector/deep-sector report. Optimal: 10; raise to 15 for broader research, lower to 5 for faster runs |
+| `DEEP_RESEARCH_DEPTH` | No | `2` | Recursive refinement passes in deep sector research. Each pass deepens analysis using prior results. Optimal: 2; set 1 to disable recursion |
 | `ALPHA_VANTAGE_MIN_INTERVAL_MS` | No | `1200` | Minimum ms between Alpha Vantage requests |
 | `FINNHUB_MIN_INTERVAL_MS` | No | `500` | Minimum ms between Finnhub requests |
 | `HEALTH_CHECK_SYMBOL` | No | — | If set, `/api/health` makes a live API call with this ticker |
