@@ -588,6 +588,29 @@ function buildToolDefinitions() {
         },
       },
     },
+    {
+      type: 'function',
+      function: {
+        name: 'get_sector_performance',
+        description:
+          'Get real-time sector performance across multiple timeframes (1 day, 5 day, 1 month, 3 month, YTD, 1 year). Use this to understand broad market trends by sector.',
+        parameters: {
+          type: 'object',
+          properties: {},
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'get_top_gainers_losers',
+        description: "Get today's top gaining, top losing, and most actively traded US stocks.",
+        parameters: {
+          type: 'object',
+          properties: {},
+        },
+      },
+    },
   ];
 }
 
@@ -731,13 +754,13 @@ export async function executeTool(
           message: `Retrieved company news for ${args.symbol}`,
         };
       }
-      case 'search_news': {
-        const news = await stockService.searchNews(args.query || '', args.days ? Number(args.days) : undefined);
-        return {
-          success: true,
-          data: news,
-          message: `Retrieved news for query: ${args.query || ''}`,
-        };
+      case 'get_sector_performance': {
+        const data = await stockService.getSectorPerformance();
+        return { success: true, data, message: 'Retrieved sector performance data' };
+      }
+      case 'get_top_gainers_losers': {
+        const data = await stockService.getTopGainersLosers();
+        return { success: true, data, message: 'Retrieved top gainers, losers, and most active stocks' };
       }
       case 'generate_stock_report': {
         const symbolQuery = args.symbol || '';

@@ -1,267 +1,278 @@
-# 📊 Stock Information Assistant
+# 📊 Stock Research Assistant
 
-An AI-powered stock information tool that provides comprehensive US stock market data through both a CLI and web interface.
+An AI-powered equity research platform. Ask questions in plain English — the LLM acts as the **final decision-maker**, orchestrating real-time data from multiple APIs, filling any gaps with verified knowledge, and delivering polished research reports.
 
-## ⚡ Deploy to Vercel Using Your GitHub Copilot Subscription
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/vijaydesai86/test-sdk&root-directory=web&env=GITHUB_TOKEN&envDescription=GitHub%20token%20for%20Copilot&envLink=https://github.com/settings/tokens)
 
-**No additional subscription needed!** Use your existing GitHub Copilot subscription on Vercel.
+> **Zero extra cost.** Uses your existing GitHub Copilot subscription + free API tiers.
 
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/vijaydesai86/test-sdk&root-directory=web&env=GITHUB_TOKEN&envDescription=GitHub%20token%20to%20use%20your%20Copilot%20subscription&envLink=https://github.com/settings/tokens)
+---
 
-**📖 [Complete Deployment Guide](DEPLOYMENT.md)** - Deploy to Vercel in 5 minutes!
+## What It Does
 
-**What You Need for Vercel:**
-- ✅ GitHub Copilot subscription (you already have this!)
-- ✅ GitHub Personal Access Token ([Create here](https://github.com/settings/tokens)) - FREE
-- ✅ Alpha Vantage key ([Get free key](https://www.alphavantage.co/support/#api-key)) - REQUIRED for real-time stock data
+### 1 · Stock Details
+Ask about any stock. Get a complete research report: current price, price history chart, company overview, valuation ratios, financial statements (income, balance sheet, cash flow), EPS trend, analyst ratings, price targets, insider activity, news sentiment, and a composite scorecard.
 
-**Total Additional Cost: $0/month** 🎉
+### 2 · Stock Comparison
+Give 2–6 companies. Get a side-by-side comparison across price, valuation, profitability, growth, and quality — with charts and a ranked scorecard.
 
-## Features
+### 3 · Top Stocks in a Sector
+Name any sector or investment theme. The LLM selects the leading publicly-traded companies, fetches data for each, and delivers a ranked sector report.
 
-- **Real-time Stock Prices**: Get current prices, changes, and volume
-- **Price History**: View daily, weekly, or monthly historical data
-- **Company Fundamentals**: EPS, PE ratio, PEG ratio, market cap, profit margins
-- **EPS History**: Quarterly and annual earnings with beat/miss analysis
-- **Financial Statements**: Income statement, balance sheet, cash flow data
-- **Insider Trading**: Track insider transactions
-- **Analyst Ratings**: View consensus ratings and target prices
-- **Sector Performance**: Real-time sector performance across timeframes
-- **Sector Stock Lists**: Curated lists for AI, semiconductors, data centers, pharma, cybersecurity, cloud, EV, fintech, renewable energy
-- **Top Movers**: Today's top gainers, losers, and most active stocks
-- **Stock Search**: Find stocks by company name or ticker symbol
-- **AI-Powered Chat**: Natural language interface with model selection
+### 4 · Deep Sector Research
+The most powerful mode. Runs in four sequential phases:
 
-## 🚀 Quick Start Options
+```
+You: "deep research on AI semiconductors"
 
-### Option 1: Deploy to Vercel (Recommended)
+Phase 1 ── LLM selects ~2× candidate tickers for the sector
+            (e.g. 10 initial candidates for a 5-company final report)
+Phase 2 ── Fetch real ecosystem data for every candidate:
+            company overview · news sentiment · peer companies
+Phase 3 ── LLM analyses supply-chain, customer, and competitive
+            relationships from the fetched data; produces a Mermaid
+            dependency diagram; refines the list down to the most
+            strategically significant companies
+Phase 4 ── Full financial comparison data fetched for refined list
+         → buildDeepSectorReport() → saveReport()
+```
 
-See [DEPLOYMENT.md](DEPLOYMENT.md) for detailed instructions.
+The output includes the dependency analysis text, Mermaid ecosystem diagram, refinement rationale, and a full comparison report for the final company set.
 
-**Quick Steps:**
-1. Create GitHub token at [github.com/settings/tokens](https://github.com/settings/tokens)
-2. Import project to Vercel, set root directory to `web`
-3. Add `GITHUB_TOKEN` environment variable
-4. Deploy! (Uses your existing Copilot subscription)
+### 5 · General Chat
+Any question that doesn't fit the above — macro trends, industry news, "explain P/E ratio", "what is EBITDA" — is answered directly by the LLM using its knowledge.
 
-### Option 2: Run Locally (CLI Version)
+---
 
-#### Prerequisites
+## How It Works
 
-1. **Node.js** 18+ installed
-2. **GitHub Copilot CLI** installed and authenticated
-   ```bash
-   # Install Copilot CLI
-   npm install -g @github/copilot-cli
-   
-   # Authenticate
-   copilot auth login
-   ```
-3. **GitHub Copilot subscription**
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                           User Interface                                │
+│         Web Chat (Next.js + React)          CLI (Node.js)               │
+└──────────────────────────┬──────────────────────────────────────────────┘
+                           │
+                   POST /api/chat
+                           │
+┌──────────────────────────▼──────────────────────────────────────────────┐
+│                     LLM — Final Boss                                    │
+│                  web/app/api/chat/route.ts                              │
+│                                                                         │
+│  • Parses intent: stock / compare / sector / deep sector / chat         │
+│  • Resolves company names → official tickers (asks user if unsure)      │
+│  • Decides which tools to call and in what order                        │
+│  • Handles rate limits, retries, and model fallback transparently       │
+│  • Stitches data from multiple sources into a coherent report           │
+│  • Fills any remaining gaps using its own verified knowledge            │
+└──────┬───────────────────────────────────────────────┬──────────────────┘
+       │ Tool calls                                    │ Gap-fill prompts
+       │                                               │
+┌──────▼───────────────────┐             ┌─────────────▼──────────────────┐
+│   Tool Dispatcher        │             │   LLM Gap-Fill (FILL_MODEL)    │
+│   stockTools.ts          │             │                                │
+│   20+ data & report      │             │   • Ticker resolution          │
+│   tools exposed to LLM   │             │   • Sector company selection   │
+└──────┬───────────────────┘             │   • Dependency mapping         │
+       │                                 │   • Null-field recovery        │
+┌──────▼────────────────────────────┐    └────────────────────────────────┘
+│         Hybrid Data Layer         │
+│         stockDataService.ts       │
+│                                   │
+│  Alpha Vantage (primary)          │
+│  • Fundamentals, financials,      │
+│    earnings, price history,       │
+│    sector data, movers            │
+│  • Free: 25 req/day, 5/min        │
+│                    ↓ fallback     │
+│  Finnhub (secondary)              │
+│  • Real-time quotes, profiles,    │
+│    analyst data, insider trades,  │
+│    news, peers, candles           │
+│  • Free: 60 req/min               │
+│                    ↓ cache        │
+│  7-day JSON cache per ticker      │
+└──────┬────────────────────────────┘
+       │
+┌──────▼────────────────────────────┐
+│        Report Generator           │
+│        reportGenerator.ts         │
+│                                   │
+│  buildStockReport()               │
+│  buildComparisonReport()          │
+│  buildSectorReport()              │
+│  buildDeepSectorReport()          │
+│                                   │
+│  ECharts interactive charts       │
+│  Mermaid ecosystem diagrams       │
+│  saveReport() → .md artifact      │
+└───────────────────────────────────┘
+```
 
-#### Installation
+### Ticker Resolution Flow
+```
+User: "research on google"
+       │
+       ▼
+Code calls LLM first (buildTickerResolutionPrompt): "google" → GOOGL
+(LLM prefers higher-liquidity share class: GOOGL over GOOG)
+       │
+       ├─ LLM resolved? ──► Use GOOGL directly
+       │
+       └─ LLM unavailable / no result ──► Fallback: call search_stock API
+                                           │
+                                           ├─ Clear winner? ──► Use it
+                                           │
+                                           └─ Ambiguous / no match?
+                                               └─ Return error with candidates
+                                                  LLM surfaces to user:
+                                                  "Did you mean GOOGL or GOOG?"
+                                                  User replies → task continues
+```
+
+### Data Completeness Flow
+```
+API fetch for all fields
+       │
+       ▼
+Fields still null/undefined?
+       │
+       ├─ No ──► Build report
+       │
+       └─ Yes ──► LLM gap-fill (FILL_MODEL)
+                  • Returns only values LLM can verify from training
+                  • Returns null for anything uncertain — never fabricates
+                  • Merged into data (never overwrites real API values)
+                  │
+                  ▼
+                Build report (N/A only for truly unresolvable fields)
+```
+
+---
+
+## Quick Start
+
+### Deploy to Vercel (Recommended)
+
+1. Click the **Deploy** button at the top of this page
+2. Set **Root Directory** to `web`
+3. Add required environment variables (see table below)
+4. Deploy — your app is live at `https://your-app.vercel.app`
+
+### Run Locally — Web
 
 ```bash
-# Clone the repository
+git clone https://github.com/vijaydesai86/test-sdk.git
+cd test-sdk/web
+npm install
+cp .env.example .env.local   # then fill in the variables below
+npm run dev
+# Open http://localhost:3000
+```
+
+### Run Locally — CLI
+
+```bash
 git clone https://github.com/vijaydesai86/test-sdk.git
 cd test-sdk
-```
-
-## 💻 CLI Usage
-
-### Setup
-
-```bash
-# Install dependencies
 npm install
-
-# Build the TypeScript code
-npm run build
-
-# Run the CLI
-npm start
-```
-
-### CLI Example
-
-```bash
+cp .env.example .env         # then fill in ALPHA_VANTAGE_API_KEY
 npm run dev
 ```
 
-Then interact with the assistant:
+---
+
+## Environment Variables
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `GITHUB_TOKEN` | **Yes** | — | GitHub Personal Access Token — authenticates GitHub Models API (your Copilot subscription). Get at [github.com/settings/tokens](https://github.com/settings/tokens) |
+| `ALPHA_VANTAGE_API_KEY` | **Yes** | — | Free API key from [alphavantage.co](https://www.alphavantage.co/support/#api-key) — real-time market data |
+| `FINNHUB_API_KEY` | Recommended | — | Free key from [finnhub.io](https://finnhub.io) — enables hybrid fallback for higher data completeness |
+| `STOCK_DATA_PROVIDER` | No | `alphavantage` | `alphavantage`, `finnhub`, or `hybrid` (use `hybrid` for best data coverage) |
+| `COPILOT_MODEL` | No | `openai/gpt-4.1` | Main reasoning model |
+| `FILL_MODEL` | No | `openai/gpt-4.1-mini` | Lighter model for ticker resolution and gap-fill (preserves main model quota) |
+| `COPILOT_FALLBACK_MODEL` | No | same as main | Fallback model if main hits rate limit |
+| `REPORTS_DIR` | No | `/tmp/reports` | Report save directory (Vercel: ephemeral `/tmp`) |
+| `STOCK_CACHE_TTL_MS` | No | `604800000` | Cache TTL in milliseconds (default: 7 days) |
+| `ALPHA_VANTAGE_MIN_INTERVAL_MS` | No | `1200` | Minimum ms between Alpha Vantage requests |
+| `FINNHUB_MIN_INTERVAL_MS` | No | `500` | Minimum ms between Finnhub requests |
+| `HEALTH_CHECK_SYMBOL` | No | — | If set, `/api/health` makes a live API call with this ticker |
+
+---
+
+## Example Queries
+
 ```
-You: What is the current price of Apple stock?
-Assistant: [AI response with stock data]
+# Stock details
+"Research NVDA"
+"Full report on Apple"
+"What's Tesla's current PE ratio and analyst consensus?"
+"Show me Amazon's last 8 quarters of earnings"
 
-You: Show me the EPS and PE ratio for Microsoft
-Assistant: [AI response with fundamental data]
+# Comparison
+"Compare Microsoft, Google, and Meta"
+"AAPL vs MSFT vs AMZN — which has the best margins?"
+
+# Sector top stocks
+"Top stocks in cloud computing"
+"Best AI software companies to invest in"
+"Who are the leaders in renewable energy?"
+
+# Deep sector research
+"Deep research on AI semiconductors — top 5"
+"Full deep dive on cybersecurity sector"
+
+# General chat
+"Explain what free cash flow yield means"
+"What's the difference between GAAP and non-GAAP earnings?"
+"What macro factors are affecting the semiconductor sector?"
 ```
 
-## 🌐 Web Interface
+---
 
-### Setup Web App
+## Tests
 
 ```bash
-cd web
-
-# Install dependencies
-npm install
-
-# Run development server
-npm run dev
+# From repo root
+npm test      # runs full vitest suite (src/__tests__/)
 ```
 
-Open [http://localhost:3000](http://localhost:3000) in your browser.
+CI runs the full test suite on every pull request. All tests must pass before merging.
 
-### Deploy to Vercel
+---
 
-The web interface works on Vercel using your existing GitHub Copilot subscription - no additional costs!
+## Tech Stack
 
-See [DEPLOYMENT.md](DEPLOYMENT.md) for complete deployment instructions.
+| Layer | Technology |
+|---|---|
+| Frontend | Next.js 16 (App Router), React 19, TypeScript, Tailwind CSS v4 |
+| Charts | ECharts 5 (interactive), Mermaid (ecosystem diagrams) |
+| AI Orchestrator | GitHub Models API via `GITHUB_TOKEN` — or OpenAI-compatible proxy |
+| Data — Primary | Alpha Vantage REST API (free tier) |
+| Data — Fallback | Finnhub REST API (free tier, hybrid mode) |
+| Data — Gap-fill | LLM knowledge (null fields only, never overwrites API data) |
+| Report rendering | `react-markdown` + `remark-gfm` in chat UI |
+| Deployment | Vercel (Node.js runtime, 5-minute max function duration) |
+| CLI | Node.js + `@github/copilot-sdk` |
+| Tests | Vitest (`src/__tests__/`) |
 
-**Key Points:**
-- Set the **Root Directory** to `web`
-- Add `GITHUB_TOKEN` environment variable (uses your Copilot subscription!)
-- Set `ALPHA_VANTAGE_API_KEY` for real-time market data (Alpha Vantage free tier)
+---
 
-**Note**: The web deployment uses GitHub Copilot SDK with token authentication.
+## Troubleshooting
 
-## 🔑 API Configuration
+| Problem | Solution |
+|---|---|
+| Many N/A fields in report | Add `FINNHUB_API_KEY` and set `STOCK_DATA_PROVIDER=hybrid` for wider data coverage |
+| "API rate limit" error | Alpha Vantage free tier: 25 req/day. Use hybrid mode or wait until next day; cache prevents re-fetching |
+| Vercel deploy fails | Set **Root Directory** to `web` in Vercel project settings |
+| Reports missing after reload | Vercel `/tmp` is ephemeral. Download reports immediately after generation |
+| "401 Unauthorized" | `GITHUB_TOKEN` expired — regenerate at github.com/settings/tokens |
+| "429 Too Many Requests" | App auto-retries with fallback models. If persistent, switch model in UI |
+| Model returns text instead of tool calls | Select a tool-calling capable model in the model selector dropdown |
+| DEP0169 warning in logs | Emitted by a Node.js dependency — informational only, no user impact |
 
-### For Vercel Deployment:
-1. **GitHub Token** (REQUIRED - FREE!): Create at [github.com/settings/tokens](https://github.com/settings/tokens)
-   - Uses your existing GitHub Copilot subscription
-   - No additional cost!
-2. **Alpha Vantage Key** (Required for market data): Get from [Alpha Vantage](https://www.alphavantage.co/support/#api-key)
-3. **OpenAI API Key** (Optional): Set `OPENAI_API_KEY` if you want to route via an OpenAI-compatible proxy instead of GitHub Models
+---
 
-### For Local Development:
-
-1. Get a free API key from [Alpha Vantage](https://www.alphavantage.co/support/#api-key)
-
-2. Create `.env.local` in the `web` directory:
-   ```env
-   ALPHA_VANTAGE_API_KEY=your_api_key_here
-   ```
-
-3. For CLI, create `.env` in the root directory:
-   ```env
-   ALPHA_VANTAGE_API_KEY=your_api_key_here
-   ```
-
-**Note**: Alpha Vantage free tier has a limit of 5 API calls per minute.
-
-## 🛠️ Architecture
-
-```
-User Interface (CLI or Web)
-        ↓
-GitHub Copilot SDK
-        ↓
-Custom Stock Tools
-        ↓
-Stock Data APIs (Alpha Vantage)
-```
-
-### Components
-
-- **Stock Data Service** (`src/stockDataService.ts`): Handles API calls to stock data providers
-- **Stock Tools** (`src/stockTools.ts`): Defines custom tools for Copilot SDK
-- **CLI Interface** (`src/index.ts`): Terminal-based chat interface
-- **Web API** (`web/app/api/chat/route.ts`): REST API endpoint for web interface
-- **Web UI** (`web/app/components/ChatInterface.tsx`): React-based chat interface
-
-## 📚 Available Tools
-
-The AI assistant has access to these tools:
-
-1. **search_stock**: Find stock symbols by company name
-2. **get_stock_price**: Get current price and quote data
-3. **get_price_history**: Retrieve historical prices (daily, weekly, monthly)
-4. **get_company_overview**: Get fundamentals (EPS, PE, margins, sector, description)
-5. **get_basic_financials**: Ratios and metric history (including PE history)
-6. **get_insider_trading**: View insider transactions
-7. **get_earnings_history**: Quarterly/annual EPS history with beat/miss data
-8. **get_income_statement**: Revenue, profit, EBITDA (quarterly and annual)
-9. **get_balance_sheet**: Assets, liabilities, equity, cash, debt
-10. **get_cash_flow**: Operating cash flow, free cash flow, capex
-
-_Note: Analyst ratings, price targets, peers, and news tools require premium data sources and return “Unavailable” in Alpha-only mode._
-15. **get_sector_performance**: Real-time sector performance across timeframes
-16. **get_stocks_by_sector**: Sector screening by name
-17. **screen_stocks**: Advanced stock screener filters
-18. **get_top_gainers_losers**: Today's top gainers, losers, and most active
-19. **get_news_sentiment**: News + sentiment scores
-20. **get_company_news**: Recent company news
-21. **search_news**: Keyword news search
-22. **search_companies**: Multi-source company search
-23. **generate_stock_report**: Build + save a comprehensive stock report
-24. **generate_sector_report**: Build + save a sector/theme report
-
-### Report Artifacts
-
-Generated reports are saved as markdown files and can be downloaded via `GET /api/reports/{filename}` (web). The tool response includes `filename`, `filePath`, and `downloadUrl`.
-
-Charts are emitted as Mermaid diagrams and render in the web UI.
-Stock reports include revenue/margin trends, analyst target distributions, and a composite scorecard (growth, profitability, valuation, momentum, moat proxy). Sector reports include market cap, P/E, price, target mean charts, and score rankings.
-
-## 🔒 Authentication
-
-The SDK supports multiple authentication methods:
-
-1. **GitHub OAuth** (default): Uses `copilot auth login`
-2. **Environment variables**: `COPILOT_GITHUB_TOKEN`
-3. **BYOK**: Use your own LLM API keys
-
-See [GitHub Copilot SDK Authentication](https://github.com/github/copilot-sdk/blob/main/docs/auth/index.md) for details.
-
-## 🎯 Example Queries
-
-- "What is Apple's current stock price?"
-- "Show me Microsoft's EPS and PE ratio"
-- "What's the price history for Tesla over the last month?"
-- "Show me the earnings history for NVDA"
-- "What are the quarterly results for Amazon?"
-- "Show me all AI stocks"
-- "What semiconductor stocks should I look at?"
-- "How is the tech sector performing?"
-- "What are today's top gainers?"
-- "What are analysts saying about Google?"
-- "Show me insider trading for NVDA"
-- "What is Apple's competitive moat?"
-
-## 📦 Tech Stack
-
-- **Frontend**: Next.js 15, React, TypeScript, Tailwind CSS
-- **Backend**: Next.js API Routes
-- **AI Engine**: GitHub Copilot SDK
-- **Stock Data**: Alpha Vantage API
-- **Deployment**: Vercel
-
-## 🐛 Troubleshooting
-
-### "Failed to start Copilot client"
-- Ensure GitHub Copilot CLI is installed: `npm install -g @github/copilot-cli`
-- Check authentication: `copilot auth login`
-- Verify Copilot subscription is active
-
-### "API rate limit exceeded"
-- Alpha Vantage free tier: 5 calls/minute
-- Wait a minute or upgrade to premium
-
-### Vercel Deployment Issues
-- Ensure Root Directory is set to `web`
-- Check environment variables are set correctly
-- Verify Node.js version is 18.x or higher
-
-## 📄 License
+## License
 
 ISC
-
-## 🤝 Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-## 📧 Support
-
-For issues and questions, please open an issue on GitHub.

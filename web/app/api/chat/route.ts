@@ -6,9 +6,6 @@ import { createStockService, StockDataService } from '@/app/lib/stockDataService
 // GitHub Models API — new endpoint (azure endpoint deprecated Oct 2025)
 // Works with PATs from github.com/settings/personal-access-tokens (models:read scope)
 const GITHUB_MODELS_URL = 'https://models.github.ai/inference/chat/completions';
-const OPENAI_PROXY_BASE_URL =
-  process.env.OPENAI_PROXY_BASE_URL ||
-  'https://openai-api-proxy.geo.arm.com/api/providers/openai/v1';
 const DEFAULT_MODEL = process.env.COPILOT_MODEL || 'openai/gpt-4.1';
 const FALLBACK_MODEL = process.env.COPILOT_FALLBACK_MODEL || DEFAULT_MODEL;
 // Gap-fill uses a lighter model so it doesn't burn the user's main model quota.
@@ -287,6 +284,8 @@ function selectToolNames() {
     'generate_comparison_report',
     'generate_sector_report',
     'generate_deep_sector_report',
+    'get_sector_performance',
+    'get_top_gainers_losers',
   ];
   return { toolNames };
 }
@@ -391,50 +390,6 @@ async function callGitHubModelsAPI(
   return response.json();
 }
 
-async function callOpenAIProxyAPI(
-  messages: ChatMessage[],
-  proxyKey: string,
-  model: string,
-  tools: ReturnType<typeof getToolDefinitionsByName>
-): Promise<any> {
-  const response = await fetch(`${OPENAI_PROXY_BASE_URL}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${proxyKey}`,
-    },
-    body: JSON.stringify({
-      model,
-      messages,
-      tools,
-    }),
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    console.error(`OpenAI Proxy API ${response.status}: ${errorText}`);
-    if (response.status === 401 || response.status === 403) {
-      throw new Error(
-        'OpenAI Proxy authentication failed. ' +
-        'Make sure OPENAI_API_KEY is set and valid for your network zone.'
-      );
-    }
-    if (response.status === 429) {
-      const err = new Error('Rate limit reached for this model.') as Error & { statusCode: number };
-      err.statusCode = 429;
-      throw err;
-    }
-    if (response.status === 413) {
-      const err = new Error('Request too large for this model.') as Error & { statusCode: number };
-      err.statusCode = 413;
-      throw err;
-    }
-    throw new Error(`OpenAI Proxy API error (${response.status}): ${errorText}`);
-  }
-
-  return response.json();
-}
-
 /**
  * Make a targeted LLM call — used for ticker resolution (resolving informal company
  * names or wrong tickers to official US exchange symbols before any API call).
@@ -449,9 +404,7 @@ async function callOpenAIProxyAPI(
 async function callLLMForDataFill(
   prompt: string,
   githubToken: string | undefined,
-  proxyKey: string | undefined,
   model: string,
-  provider: 'github' | 'openai-proxy'
 ): Promise<string> {
   const fillMessages: ChatMessage[] = [
     {
@@ -465,15 +418,11 @@ async function callLLMForDataFill(
     { role: 'user', content: prompt },
   ];
 
-  // For GitHub Models, use the dedicated fill model (higher-quota pool).
-  // For OpenAI proxy, respect the caller's model choice.
-  const fillModel = provider === 'github' ? FILL_MODEL : model;
+  const fillModel = FILL_MODEL;
 
   const attempt = async (): Promise<string> => {
     let result: any;
-    if (provider === 'openai-proxy' && proxyKey) {
-      result = await callOpenAIProxyAPI(fillMessages, proxyKey, fillModel, []);
-    } else if (githubToken) {
+    if (githubToken) {
       result = await callGitHubModelsAPI(fillMessages, githubToken, fillModel, []);
     } else {
       return '{}';
@@ -497,15 +446,13 @@ async function callLLMForDataFill(
   }
 }
 
-/** Creates an LLMFiller callback bound to the current model and provider. */
+/** Creates an LLMFiller callback bound to the current model. */
 function createLLMFiller(
   githubToken: string | undefined,
-  proxyKey: string | undefined,
   model: string,
-  provider: 'github' | 'openai-proxy'
 ): LLMFiller | undefined {
-  if (!githubToken && !proxyKey) return undefined;
-  return (prompt: string) => callLLMForDataFill(prompt, githubToken, proxyKey, model, provider);
+  if (!githubToken) return undefined;
+  return (prompt: string) => callLLMForDataFill(prompt, githubToken, model);
 }
 
 export async function POST(request: NextRequest) {
@@ -524,7 +471,6 @@ export async function POST(request: NextRequest) {
 
     // Check if GitHub token is available
     const githubToken = process.env.GITHUB_TOKEN || process.env.GH_TOKEN || process.env.COPILOT_GITHUB_TOKEN;
-    const proxyKey = process.env.OPENAI_API_KEY || process.env.OPENAI_TOKEN;
 
     // Initialize stock service (always uses real Alpha Vantage API)
     const dataProvider = (process.env.STOCK_DATA_PROVIDER || 'alphavantage').toLowerCase();
@@ -554,9 +500,8 @@ export async function POST(request: NextRequest) {
 
       conversationMessages.push({ role: 'user', content: message });
 
-      const directProvider: 'github' | 'openai-proxy' = provider === 'openai-proxy' ? 'openai-proxy' : 'github';
       const directModel = model || DEFAULT_MODEL;
-      const llmFill = createLLMFiller(githubToken, proxyKey, directModel, directProvider);
+      const llmFill = createLLMFiller(githubToken, directModel);
 
       const toolResult = reportRequest.type === 'compare'
         ? await executeTool(
@@ -647,8 +592,7 @@ export async function POST(request: NextRequest) {
     let totalToolCalls = 0;
     let assistantContent: string | null = null;
     let activeModel = requestedModel;
-    let activeProvider: 'github' | 'openai-proxy' = provider === 'openai-proxy' ? 'openai-proxy' : 'github';
-    if (AUTO_DOWNGRADE_GPT5 && /gpt-5/i.test(activeModel) && activeProvider === 'github') {
+    if (AUTO_DOWNGRADE_GPT5 && /gpt-5/i.test(activeModel)) {
       activeModel = DEFAULT_MODEL;
     }
     let toolDefinitionsUsed = toolDefinitions;
@@ -659,18 +603,9 @@ export async function POST(request: NextRequest) {
 
     const callProvider = async (
       messages: ChatMessage[],
-      providerId: 'github' | 'openai-proxy',
       modelId: string,
       tools: ReturnType<typeof getToolDefinitionsByName>
     ) => {
-      if (providerId === 'openai-proxy') {
-        if (!proxyKey) {
-          const err = new Error('OpenAI proxy key not configured') as Error & { statusCode: number };
-          err.statusCode = 503;
-          throw err;
-        }
-        return callOpenAIProxyAPI(messages, proxyKey, modelId, tools);
-      }
       if (!githubToken) {
         const err = new Error('GitHub token not configured') as Error & { statusCode: number };
         err.statusCode = 503;
@@ -687,7 +622,7 @@ export async function POST(request: NextRequest) {
       let retryTools = toolDefinitions;
       while (attempt < 2) {
         try {
-          result = await callProvider(retryMessages, activeProvider, activeModel, retryTools);
+          result = await callProvider(retryMessages, activeModel, retryTools);
           toolDefinitionsUsed = retryTools;
           break;
         } catch (error: any) {
@@ -708,11 +643,6 @@ export async function POST(request: NextRequest) {
             if (fallbackIndex < fallbackModels.length - 1) {
               fallbackIndex += 1;
               activeModel = fallbackModels[fallbackIndex];
-              attempt++;
-              continue;
-            }
-            if (activeProvider !== 'openai-proxy' && proxyKey) {
-              activeProvider = 'openai-proxy';
               attempt++;
               continue;
             }
@@ -743,7 +673,7 @@ export async function POST(request: NextRequest) {
       // If the model wants to call tools, execute all of them in parallel
       if (assistantMessage.tool_calls && assistantMessage.tool_calls.length > 0) {
         totalToolCalls += assistantMessage.tool_calls.length;
-        const loopLLMFill = createLLMFiller(githubToken, proxyKey, activeModel, activeProvider);
+        const loopLLMFill = createLLMFiller(githubToken, activeModel);
         const toolResults = await Promise.all(
           assistantMessage.tool_calls.map(async (toolCall: { id: string; function: { name: string; arguments: string } }) => {
             const toolName = toolCall.function.name;
@@ -796,7 +726,7 @@ export async function POST(request: NextRequest) {
     sessions.set(currentSessionId, conversationMessages);
 
     console.info('Chat request stats', {
-      provider: activeProvider,
+      provider: 'github',
       model: activeModel,
       rounds,
       toolCalls: totalToolCalls,
@@ -807,7 +737,7 @@ export async function POST(request: NextRequest) {
       response: assistantContent || "I apologize, but I couldn't generate a response. Please try again.",
       sessionId: currentSessionId,
       model: activeModel,
-      provider: activeProvider,
+      provider: 'github',
       reports: reportArtifacts.length > 0 ? reportArtifacts : undefined,
       stats: {
         rounds,
@@ -842,13 +772,7 @@ export async function POST(request: NextRequest) {
       details = 'This model returned tool calls as plain text. Switch to a tool-calling model from the dropdown (for example, GPT-4.1 or Claude Sonnet).';
     } else if (isMissingKey) {
       details =
-        error.message === 'OpenAI proxy key not configured'
-          ? 'Please set OPENAI_API_KEY in your Vercel environment variables.'
-          : 'Please set GITHUB_TOKEN in your Vercel environment variables. Get a personal access token at: https://github.com/settings/personal-access-tokens — this uses your existing GitHub Copilot subscription.';
-    } else if (provider === 'openai-proxy') {
-      details =
-        'Make sure OPENAI_API_KEY is set in your Vercel environment variables, and that the proxy URL is reachable from this deployment. ' +
-        'If you see TLS errors, install Arm root certificates for the runtime environment.';
+        'Please set GITHUB_TOKEN in your Vercel environment variables. Get a personal access token at: https://github.com/settings/personal-access-tokens — this uses your existing GitHub Copilot subscription.';
     } else {
       details = 'Make sure GITHUB_TOKEN and ALPHA_VANTAGE_API_KEY are set in your Vercel environment variables.';
     }
