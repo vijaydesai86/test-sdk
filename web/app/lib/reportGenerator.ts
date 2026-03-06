@@ -22,6 +22,8 @@ export interface StockReportData {
   peers?: any;
   newsSentiment?: any;
   companyNews?: { articles?: any[] };
+  /** LLM-generated competitive moat assessment */
+  moatAnalysis?: MoatAnalysis;
 }
 
 export interface ComparisonReportItem {
@@ -35,6 +37,8 @@ export interface ComparisonReportItem {
   balanceSheet?: any;
   cashFlow?: any;
   analystRatings?: any;
+  /** LLM-generated competitive moat assessment */
+  moatAnalysis?: MoatAnalysis;
 }
 
 export interface ComparisonReportData {
@@ -64,6 +68,26 @@ export interface DeepSectorReportData extends SectorReportData {
   refinementNotes?: string;
   /** Per-company 1-2 sentence investment thesis for each company in the final refined list */
   companySnapshots?: Record<string, string>;
+}
+
+/**
+ * LLM-generated competitive moat assessment for a single company.
+ * The moat framework follows Warren Buffett's five economic-moat sources.
+ */
+export interface MoatAnalysis {
+  /** Primary moat category, e.g. "Network Effects", "Cost Advantage", "Switching Costs",
+   *  "Intangible Assets", "Efficient Scale", "Mixed", or "None" */
+  moatType: string;
+  /** Overall moat width: "Wide" (durable 10+ yr advantage), "Narrow" (3-10 yr), or "None" */
+  moatStrength: string;
+  /** Composite moat score 0-100. 0-30 = none, 31-60 = narrow, 61-100 = wide */
+  moatScore: number;
+  /** Specific, concrete barriers, e.g. "Apple ecosystem lock-in", "AWS scale economics" */
+  barriers: string[];
+  /** 2-4 sentence descriptive narrative explaining moat sources and their sustainability */
+  narrative: string;
+  /** 1-2 sentences: what this company excels at and who/what it is best for */
+  bestFor: string;
 }
 
 const DEFAULT_REPORTS_DIR =
@@ -882,6 +906,197 @@ function computeScorecard(data: StockReportData) {
   };
 }
 
+/**
+ * Maps moat strength to a traffic-light emoji for visual reports.
+ * "Wide" → 🟢  "Narrow" → 🟡  anything else → 🔴
+ */
+function moatStrengthEmoji(strength: string): string {
+  if (strength === 'Wide') return '🟢';
+  if (strength === 'Narrow') return '🟡';
+  return '🔴';
+}
+
+/**
+ * Renders an ECharts horizontal bar chart showing the three moat sub-component
+ * scores alongside the overall LLM moat score.
+ */
+function buildMoatScoreChart(moatAnalysis: MoatAnalysis, scorecardMoatDetails: ReturnType<typeof computeScorecard>['moatDetails']): string {
+  const score = Math.min(100, Math.max(0, Math.round(moatAnalysis.moatScore)));
+  const { marginStability, pricingPower, analystConviction } = scorecardMoatDetails;
+
+  const rows: Array<{ name: string; value: number }> = [
+    { name: 'Overall Moat Score (LLM)', value: score },
+  ];
+  if (marginStability !== null) rows.push({ name: 'Margin Stability', value: Math.round(marginStability) });
+  if (pricingPower !== null) rows.push({ name: 'Pricing Power', value: Math.round(pricingPower) });
+  if (analystConviction !== null) rows.push({ name: 'Analyst Conviction', value: Math.round(analystConviction) });
+
+  const colors: Record<string, string> = {
+    'Overall Moat Score (LLM)': score >= 61 ? '#22c55e' : score >= 31 ? '#f59e0b' : '#ef4444',
+    'Margin Stability': '#6366f1',
+    'Pricing Power': '#14b8a6',
+    'Analyst Conviction': '#0ea5e9',
+  };
+
+  return buildChartBlock({
+    title: { text: 'Competitive Moat Score', left: 'center' },
+    tooltip: {
+      trigger: 'axis',
+      axisPointer: { type: 'shadow' },
+      formatter: '{b}: {c}/100',
+    },
+    grid: { left: 160, right: 60, top: 40, bottom: 20 },
+    xAxis: { type: 'value', min: 0, max: 100, axisLabel: { formatter: '{value}' } },
+    yAxis: {
+      type: 'category',
+      data: rows.map((r) => r.name),
+      inverse: true,
+    },
+    series: [{
+      name: 'Score',
+      type: 'bar',
+      data: rows.map((r) => ({
+        value: r.value,
+        itemStyle: { color: colors[r.name] || '#6366f1' },
+      })),
+      barMaxWidth: 28,
+      label: { show: true, position: 'right', formatter: '{c}/100' },
+    }],
+  });
+}
+
+/**
+ * Renders a grouped bar chart comparing moat scores across companies in a
+ * comparison/sector/deep-sector report.
+ */
+function buildMoatComparisonChart(items: ComparisonReportItem[]): string {
+  const validItems = items.filter((item) => item.moatAnalysis);
+  if (validItems.length === 0) return '';
+
+  const symbols = validItems.map((item) => `${item.symbol} ${moatStrengthEmoji(item.moatAnalysis!.moatStrength)}`);
+  const scores = validItems.map((item) => Math.round(item.moatAnalysis!.moatScore));
+
+  return buildChartBlock({
+    title: { text: 'Moat Score Comparison', left: 'center' },
+    tooltip: { trigger: 'axis', formatter: '{b}: {c}/100' },
+    grid: { left: 40, right: 20, top: 50, bottom: 60 },
+    xAxis: {
+      type: 'category',
+      data: symbols,
+      axisLabel: { rotate: symbols.length > 5 ? 30 : 0 },
+    },
+    yAxis: { type: 'value', min: 0, max: 100, name: 'Moat Score' },
+    series: [{
+      name: 'Moat Score',
+      type: 'bar',
+      data: scores.map((s) => ({
+        value: s,
+        itemStyle: { color: s >= 61 ? '#22c55e' : s >= 31 ? '#f59e0b' : '#ef4444' },
+      })),
+      barMaxWidth: 40,
+      label: { show: true, position: 'top', formatter: '{c}' },
+    }],
+  });
+}
+
+/**
+ * Renders the dedicated "🏰 Competitive Moat" section for a single-stock report.
+ */
+function buildStockMoatSection(moatAnalysis: MoatAnalysis, scorecardMoatDetails: ReturnType<typeof computeScorecard>['moatDetails']): string {
+  const strengthEmoji = moatStrengthEmoji(moatAnalysis.moatStrength);
+  const chart = buildMoatScoreChart(moatAnalysis, scorecardMoatDetails);
+
+  const metaTable = buildTable(
+    ['Attribute', 'Assessment'],
+    [
+      ['**Moat Type**', moatAnalysis.moatType],
+      ['**Moat Strength**', `${strengthEmoji} ${moatAnalysis.moatStrength}`],
+      ['**Moat Score**', `${Math.round(moatAnalysis.moatScore)}/100`],
+    ],
+    ['left', 'left']
+  );
+
+  const barrierLines = moatAnalysis.barriers.length
+    ? moatAnalysis.barriers.map((b) => `- ${b}`).join('\n')
+    : '_No specific barriers identified._';
+
+  const parts: string[] = [
+    '## 🏰 Competitive Moat',
+    metaTable,
+    ...(chart ? [chart] : []),
+    '### 🔐 Moat Barriers',
+    barrierLines,
+    '### 📝 Moat Analysis',
+    moatAnalysis.narrative,
+    '### 🎯 Best For',
+    moatAnalysis.bestFor,
+  ];
+
+  return parts.join('\n\n');
+}
+
+/**
+ * Builds the moat comparison table and chart section for multi-company reports.
+ */
+function buildComparisonMoatSection(items: ComparisonReportItem[]): string {
+  const itemsWithMoat = items.filter((item) => item.moatAnalysis);
+  if (itemsWithMoat.length === 0) return '';
+
+  const moatRows = itemsWithMoat.map((item) => {
+    const moat = item.moatAnalysis!;
+    const topBarriers = moat.barriers.slice(0, 3).join('; ') || 'N/A';
+    return [
+      `${item.overview?.name || item.symbol} (${item.symbol})`,
+      moat.moatType,
+      `${moatStrengthEmoji(moat.moatStrength)} ${moat.moatStrength}`,
+      `${Math.round(moat.moatScore)}/100`,
+      topBarriers,
+    ];
+  });
+
+  const moatTable = buildTable(
+    ['Company', 'Moat Type', 'Strength', 'Score', 'Key Barriers'],
+    moatRows,
+    ['left', 'left', 'left', 'right', 'left']
+  );
+
+  const chart = buildMoatComparisonChart(itemsWithMoat);
+
+  // Moat leaders
+  const sorted = [...itemsWithMoat].sort((a, b) => (b.moatAnalysis!.moatScore ?? 0) - (a.moatAnalysis!.moatScore ?? 0));
+  const leader = sorted[0];
+  const wideMoat = itemsWithMoat.filter((item) => item.moatAnalysis!.moatStrength === 'Wide');
+
+  const leaderLines: string[] = [];
+  if (leader) {
+    leaderLines.push(`- **Strongest moat:** ${leader.overview?.name || leader.symbol} (${leader.symbol}) — ${leader.moatAnalysis!.moatType}, score ${Math.round(leader.moatAnalysis!.moatScore)}/100`);
+  }
+  if (wideMoat.length > 0) {
+    leaderLines.push(`- **Wide-moat companies:** ${wideMoat.map((item) => `${item.symbol}`).join(', ')}`);
+  }
+
+  // "Best For" table
+  const bestForRows = itemsWithMoat.map((item) => [
+    `**${item.symbol}**`,
+    item.moatAnalysis!.bestFor,
+  ]);
+  const bestForTable = buildTable(
+    ['Company', 'Best For'],
+    bestForRows,
+    ['left', 'left']
+  );
+
+  return [
+    '## 🏰 Moat Analysis',
+    moatTable,
+    ...(chart ? [chart] : []),
+    '### 🏆 Moat Leaders',
+    ...(leaderLines.length ? leaderLines : ['_Insufficient data for moat comparison._']),
+    '### 🎯 What Each Company Does Best',
+    bestForTable,
+  ].join('\n\n');
+}
+
 export function buildStockReport(data: StockReportData): string {
   const priceChart = buildPriceChart(data.priceHistory?.prices || []);
   const epsChart = buildEpsChart(data.earningsHistory?.quarterlyEarnings || []);
@@ -1109,6 +1324,8 @@ export function buildStockReport(data: StockReportData): string {
   if (operatingMargin !== null && operatingMargin > 20) bullSignals.push('Strong operating leverage');
   if (targetUpside !== null && targetUpside > 10) bullSignals.push('Street targets imply upside');
   if ((scorecard.components.moat ?? 0) > 60) bullSignals.push('Moat score above 60');
+  if (data.moatAnalysis && data.moatAnalysis.moatScore >= 61) bullSignals.push(`${data.moatAnalysis.moatStrength} competitive moat (${data.moatAnalysis.moatType})`);
+  else if (data.moatAnalysis && data.moatAnalysis.moatScore >= 31) bullSignals.push(`Narrow moat detected (${data.moatAnalysis.moatType})`);
 
   const watchSignals: string[] = [];
   if (trend50 !== null && trend50 < 0) watchSignals.push('Price below 50D moving average');
@@ -1132,6 +1349,7 @@ export function buildStockReport(data: StockReportData): string {
 
   sections.push('## 🏢 Business Overview', ...(businessLines.length ? businessLines : ['- Business overview data unavailable']));
   sections.push('## 🧩 Competitive Landscape', ...(competitiveLines.length ? competitiveLines : ['- Competitive data unavailable']));
+
   sections.push('## ✨ KPI Dashboard', kpiTable);
 
   if (priceChart || epsChart) {
@@ -1177,6 +1395,11 @@ export function buildStockReport(data: StockReportData): string {
     ...(fromLow !== null ? [`- Price vs 52-Week Low: ${fromLow.toFixed(1)}%`] : []),
   );
 
+  // Moat section — placed after the financial charts and data so existing sections stay in their original positions
+  if (data.moatAnalysis) {
+    sections.push(buildStockMoatSection(data.moatAnalysis, scorecard.moatDetails));
+  }
+
   sections.push('## 🚀 Growth Drivers', '- Period: trailing twelve months unless noted', ...(growthLines.length ? growthLines : ['- Growth drivers unavailable']));
   sections.push('## ⚠️ Risks & Headwinds', ...(riskLines.length ? riskLines : ['- No major risk flags surfaced from available data']));
   sections.push('## 🧭 Investment Highlights', ...highlightsLines);
@@ -1206,7 +1429,7 @@ export function buildStockReport(data: StockReportData): string {
       `- Profitability: ${scorecard.components.profitability?.toFixed(1) ?? 'Unavailable'} (avg of gross/operating margin, ROE)`,
       `- Valuation: ${scorecard.components.valuation?.toFixed(1) ?? 'Unavailable'} (100 - PE/50*100)`,
       `- Momentum: ${scorecard.components.momentum?.toFixed(1) ?? 'Unavailable'}`,
-      `- Moat: ${scorecard.components.moat?.toFixed(1) ?? 'Unavailable'} (avg of margin stability, pricing power, analyst conviction)`,
+      `- Moat: ${scorecard.components.moat?.toFixed(1) ?? 'Unavailable'} (data-derived: avg of margin stability, pricing power, analyst conviction)${data.moatAnalysis ? ` | LLM Moat Score: ${Math.round(data.moatAnalysis.moatScore)}/100 (${data.moatAnalysis.moatStrength})` : ''}`,
       `- Composite Score: ${scorecard.composite?.toFixed(1) ?? 'Unavailable'}`,
     );
   }
@@ -1503,10 +1726,12 @@ export function buildComparisonReport(data: ComparisonReportData): string {
   const topMargin = marginLeaders[0]?.item.symbol;
 
   const allocationRows = scored.map((row, index) => {
+    const moatScore = row.item.moatAnalysis?.moatScore ?? null;
     const reasons = [
       row.item.symbol === topGrowth ? 'Top revenue growth' : null,
       row.item.symbol === topMargin ? 'Best operating margin' : null,
       row.score !== null && row.score > 60 ? 'Strong composite score' : null,
+      moatScore !== null && moatScore >= 61 ? `Wide moat (${row.item.moatAnalysis!.moatType})` : null,
     ].filter(Boolean);
     return [
       `${row.item.overview?.name || row.item.symbol} (${row.item.symbol})`,
@@ -1521,6 +1746,7 @@ export function buildComparisonReport(data: ComparisonReportData): string {
     ['left', 'right', 'right', 'left']
   );
 
+  const moatSection = buildComparisonMoatSection(items);
   const performanceChart = buildComparisonPerformanceChart(
     items.map((item) => ({ symbol: item.symbol, priceHistory: item.priceHistory } as ComparisonReportItem)),
     `Price Performance (${data.range}, Indexed)`
@@ -1550,6 +1776,7 @@ export function buildComparisonReport(data: ComparisonReportData): string {
     '## ⭐ Analyst Picks',
     `- Highest target upside: ${topUpside ? `${topUpside.name} (${topUpside.upside.toFixed(1)}%)` : 'N/A'}`,
     `- Strongest consensus: ${topRating ? `${topRating.name} (${(topRating.score! * 100).toFixed(0)}% buy/strong buy)` : 'N/A'}`,
+    moatSection || null,
     '## 🧩 Data Coverage (Chart Inputs)',
     coverageTable,
     '## 📈 Price Performance (Indexed)',

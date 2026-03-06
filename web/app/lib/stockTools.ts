@@ -2,7 +2,7 @@
 import { promises as fs } from 'fs';
 import path from 'path';
 import { StockDataService } from './stockDataService';
-import { buildStockReport, buildComparisonReport, buildSectorReport, buildDeepSectorReport, saveReport } from './reportGenerator';
+import { buildStockReport, buildComparisonReport, buildSectorReport, buildDeepSectorReport, saveReport, MoatAnalysis } from './reportGenerator';
 
 /**
  * OpenAI-compatible tool definitions for stock information
@@ -206,9 +206,128 @@ function buildDeepSectorDependencyPrompt(
   );
 }
 
+/**
+ * Builds a prompt for the LLM to assess the competitive moat of a single company.
+ * Returns a JSON object with moatType, moatStrength, moatScore, barriers, narrative, and bestFor.
+ */
+function buildMoatAnalysisPrompt(
+  symbol: string,
+  overview: any,
+  basicFinancials: any,
+): string {
+  const name = overview?.name || symbol;
+  const sector = overview?.sector || 'N/A';
+  const industry = overview?.industry || 'N/A';
+  const description = overview?.description
+    ? String(overview.description).slice(0, 400)
+    : 'No description available';
+  const grossMargin = overview?.profitMargin ?? basicFinancials?.metric?.grossMarginTTM;
+  const operatingMargin = overview?.operatingMargin ?? basicFinancials?.metric?.operatingMarginTTM;
+  const roe = overview?.returnOnEquity ?? basicFinancials?.metric?.roeTTM;
+  const revenueGrowth = basicFinancials?.metric?.revenueGrowthTTM ?? overview?.quarterlyRevenueGrowth;
+
+  const fmt = (v: any) => {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return 'N/A';
+    const pct = Math.abs(n) <= 1 ? n * 100 : n;
+    return `${pct.toFixed(1)}%`;
+  };
+
+  return (
+    `You are a senior equity research analyst specialising in Warren Buffett-style economic moat analysis.\n\n` +
+    `Assess the competitive moat for the following company and return a JSON object.\n\n` +
+    `Company: ${name} (${symbol})\n` +
+    `Sector: ${sector}\n` +
+    `Industry: ${industry}\n` +
+    `Description: ${description}\n` +
+    `Gross Margin (TTM): ${fmt(grossMargin)}\n` +
+    `Operating Margin (TTM): ${fmt(operatingMargin)}\n` +
+    `ROE (TTM): ${fmt(roe)}\n` +
+    `Revenue Growth (TTM): ${fmt(revenueGrowth)}\n\n` +
+    `MOAT FRAMEWORK:\n` +
+    `- Network Effects: value grows as more users/customers join\n` +
+    `- Cost Advantage: structurally lower costs than peers\n` +
+    `- Switching Costs: expensive or painful for customers to leave\n` +
+    `- Intangible Assets: brands, patents, regulatory licenses\n` +
+    `- Efficient Scale: niche market where competition is uneconomic\n` +
+    `- Mixed: combination of two or more of the above\n` +
+    `- None: no durable competitive advantage identified\n\n` +
+    `SCORING:\n` +
+    `- moatScore 0-30 = None (easily competed away)\n` +
+    `- moatScore 31-60 = Narrow (3-10 year advantage)\n` +
+    `- moatScore 61-100 = Wide (10+ year durable advantage)\n\n` +
+    `Respond ONLY with valid JSON (no markdown, no extra text):\n` +
+    `{"moatType":"<Network Effects|Cost Advantage|Switching Costs|Intangible Assets|Efficient Scale|Mixed|None>","moatStrength":"<Wide|Narrow|None>","moatScore":<0-100>,"barriers":["<specific barrier 1>","<specific barrier 2>"],"narrative":"<2-4 sentence analysis of moat sources and sustainability>","bestFor":"<1-2 sentences: what this company excels at and who it is best for>"}`
+  );
+}
+
+/**
+ * Builds a single LLM call that assesses the competitive moat for a batch of companies.
+ * Returns a JSON object keyed by ticker symbol.
+ */
+function buildBatchMoatAnalysisPrompt(
+  companies: Array<{ symbol: string; overview: any; basicFinancials: any }>
+): string {
+  const fmt = (v: any) => {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return 'N/A';
+    const pct = Math.abs(n) <= 1 ? n * 100 : n;
+    return `${pct.toFixed(1)}%`;
+  };
+
+  const summaries = companies.map(({ symbol, overview, basicFinancials }) => {
+    const name = overview?.name || symbol;
+    const sector = overview?.sector || 'N/A';
+    const industry = overview?.industry || 'N/A';
+    const description = overview?.description ? String(overview.description).slice(0, 200) : '';
+    const grossMargin = overview?.profitMargin ?? basicFinancials?.metric?.grossMarginTTM;
+    const operatingMargin = overview?.operatingMargin ?? basicFinancials?.metric?.operatingMarginTTM;
+    const roe = overview?.returnOnEquity ?? basicFinancials?.metric?.roeTTM;
+    const revenueGrowth = basicFinancials?.metric?.revenueGrowthTTM ?? overview?.quarterlyRevenueGrowth;
+    return (
+      `${symbol}: ${name} | ${sector} / ${industry}\n` +
+      `  ${description}\n` +
+      `  Gross Margin: ${fmt(grossMargin)} | Operating Margin: ${fmt(operatingMargin)} | ROE: ${fmt(roe)} | Rev Growth: ${fmt(revenueGrowth)}`
+    );
+  }).join('\n\n');
+
+  const exampleTicker = companies[0]?.symbol || 'TICK';
+  const shapeExample = `{"${exampleTicker}":{"moatType":"Mixed","moatStrength":"Wide","moatScore":82,"barriers":["Brand","Ecosystem lock-in"],"narrative":"...","bestFor":"..."}}`;
+
+  return (
+    `You are a senior equity research analyst specialising in Warren Buffett-style economic moat analysis.\n\n` +
+    `Assess the competitive moat for EACH of the following companies.\n\n` +
+    `COMPANY DATA:\n${summaries}\n\n` +
+    `MOAT FRAMEWORK: Network Effects | Cost Advantage | Switching Costs | Intangible Assets | Efficient Scale | Mixed | None\n` +
+    `MOAT STRENGTH: Wide (score 61-100, 10+ yr advantage) | Narrow (31-60, 3-10 yr) | None (0-30)\n\n` +
+    `Respond ONLY with valid JSON keyed by ticker symbol (no markdown, no extra text):\n` +
+    shapeExample
+  );
+}
+
 
 type CacheEntry = { updatedAt: string; data: any };
 type SymbolCache = Record<string, CacheEntry>;
+
+/** Normalises a raw ticker string from LLM output to uppercase alphanumeric. */
+const cleanTicker = (raw: string): string =>
+  String(raw || '').replace(/[^A-Z0-9.]/gi, '').toUpperCase();
+
+/**
+ * Parses one entry from an LLM batch moat response and returns a validated MoatAnalysis,
+ * or null when the entry is missing required fields.
+ */
+function parseMoatEntry(m: any): MoatAnalysis | null {
+  if (!m || typeof m.moatScore !== 'number') return null;
+  return {
+    moatType: String(m.moatType || 'N/A'),
+    moatStrength: String(m.moatStrength || 'N/A'),
+    moatScore: Math.min(100, Math.max(0, Math.round(Number(m.moatScore)))),
+    barriers: Array.isArray(m.barriers) ? m.barriers.map(String) : [],
+    narrative: String(m.narrative || ''),
+    bestFor: String(m.bestFor || ''),
+  };
+}
 
 const loadSymbolCache = async (symbol: string): Promise<SymbolCache> => {
   try {
@@ -944,6 +1063,20 @@ export async function executeTool(
         // Build basic financials from the overview
         const finalBasicFinancials = companyOverview ? buildBasicFinancialsFallback(companyOverview) : undefined;
 
+        // LLM moat analysis — best-effort; report still builds without it
+        let moatAnalysis: MoatAnalysis | undefined;
+        if (options?.llmFill) {
+          try {
+            const moatPrompt = buildMoatAnalysisPrompt(symbol, companyOverview, finalBasicFinancials);
+            const raw = await options.llmFill(moatPrompt);
+            const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+            const parsed = JSON.parse(cleaned);
+            moatAnalysis = parseMoatEntry(parsed) ?? undefined;
+          } catch {
+            // LLM unavailable or invalid JSON — proceed without moat analysis
+          }
+        }
+
         const reportBody = buildStockReport({
           symbol: symbol.toUpperCase(),
           generatedAt: new Date().toISOString(),
@@ -961,6 +1094,7 @@ export async function executeTool(
           peers,
           newsSentiment,
           companyNews,
+          moatAnalysis,
         });
 
         const content = notes.length
@@ -1165,6 +1299,30 @@ export async function executeTool(
           await saveSymbolCache(symbol, item.cache);
         }
 
+        // Phase 3: LLM batch moat analysis for all companies (single call)
+        if (options?.llmFill && items.length > 0) {
+          try {
+            const moatPrompt = buildBatchMoatAnalysisPrompt(
+              items.map((item) => ({ symbol: item.symbol, overview: item.overview, basicFinancials: item.basicFinancials }))
+            );
+            const raw = await options.llmFill(moatPrompt);
+            const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+            const parsed = JSON.parse(cleaned);
+            if (parsed && typeof parsed === 'object') {
+              for (const sym of Object.keys(parsed)) {
+                const entry = parseMoatEntry(parsed[sym]);
+                if (entry) {
+                  const ticker = cleanTicker(sym);
+                  const target = items.find((it) => it.symbol === ticker);
+                  if (target) target.moatAnalysis = entry;
+                }
+              }
+            }
+          } catch {
+            // LLM unavailable or invalid JSON — proceed without moat analysis
+          }
+        }
+
         const content = buildComparisonReport({
           generatedAt: new Date().toISOString(),
           range,
@@ -1344,6 +1502,30 @@ export async function executeTool(
             priceTargets: item.priceTargets,
           });
           await saveSymbolCache(symbol, item.cache);
+        }
+
+        // LLM batch moat analysis for all sector companies (single call)
+        if (options?.llmFill && items.length > 0) {
+          try {
+            const moatPrompt = buildBatchMoatAnalysisPrompt(
+              items.map((item) => ({ symbol: item.symbol, overview: item.overview, basicFinancials: item.basicFinancials }))
+            );
+            const raw = await options.llmFill(moatPrompt);
+            const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+            const parsed = JSON.parse(cleaned);
+            if (parsed && typeof parsed === 'object') {
+              for (const sym of Object.keys(parsed)) {
+                const entry = parseMoatEntry(parsed[sym]);
+                if (entry) {
+                  const ticker = cleanTicker(sym);
+                  const target = items.find((it) => it.symbol === ticker);
+                  if (target) target.moatAnalysis = entry;
+                }
+              }
+            }
+          } catch {
+            // LLM unavailable or invalid JSON — proceed without moat analysis
+          }
         }
 
         const content = buildSectorReport({
@@ -1622,6 +1804,30 @@ export async function executeTool(
             priceTargets: item.priceTargets,
           });
           await saveSymbolCache(symbol, item.cache);
+        }
+
+        // LLM batch moat analysis for the refined deep sector universe (single call)
+        if (options?.llmFill && items.length > 0) {
+          try {
+            const moatPrompt = buildBatchMoatAnalysisPrompt(
+              items.map((item) => ({ symbol: item.symbol, overview: item.overview, basicFinancials: item.basicFinancials }))
+            );
+            const raw = await options.llmFill(moatPrompt);
+            const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+            const parsed = JSON.parse(cleaned);
+            if (parsed && typeof parsed === 'object') {
+              for (const sym of Object.keys(parsed)) {
+                const entry = parseMoatEntry(parsed[sym]);
+                if (entry) {
+                  const ticker = cleanTicker(sym);
+                  const target = items.find((it) => it.symbol === ticker);
+                  if (target) target.moatAnalysis = entry;
+                }
+              }
+            }
+          } catch {
+            // LLM unavailable or invalid JSON — proceed without moat analysis
+          }
         }
 
         const content = buildDeepSectorReport({
