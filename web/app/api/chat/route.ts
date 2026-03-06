@@ -23,10 +23,20 @@ const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/openai/
 // (5 RPM / 250K TPM / 20 RPD as of 2026-03).
 // gemini-2.0-flash has 0 free-tier quota on most projects and will always 429.
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
-// Automatic Gemini model fallback list — tried in order when the primary hits 429.
-// gemini-2.5-flash-lite has a higher RPM (10 vs 5) so it handles per-minute bursts better.
-// Both share the same 20 RPD free-tier limit on AI Studio keys.
-const GEMINI_FALLBACK_MODELS = [GEMINI_MODEL, 'gemini-2.5-flash-lite'];
+// Automatic Gemini model fallback list — tried in order when a model is rate-limited (429),
+// temporarily unavailable (503), or returns an invalid-model error (400).
+// Order: start with best reasoning quality, fall through to higher-RPM / higher-RPD models.
+// All entries below have confirmed free-tier quota on AI Studio keys (as of 2026-03):
+//   gemini-2.5-flash       5 RPM / 250K TPM / 20 RPD
+//   gemini-2.5-flash-lite 10 RPM / 250K TPM / 20 RPD
+//   gemini-3.0-flash       5 RPM / 250K TPM / 20 RPD
+//   gemini-3.1-flash-lite 15 RPM / 250K TPM / 500 RPD  ← highest RPD
+const GEMINI_FALLBACK_MODELS = [
+  GEMINI_MODEL,              // env override or gemini-2.5-flash (default)
+  'gemini-2.5-flash-lite',   // 10 RPM — handles per-minute bursts
+  'gemini-3.0-flash',        // separate quota pool from 2.x models
+  'gemini-3.1-flash-lite',   // 15 RPM / 500 RPD — best free-tier daily allowance
+];
 
 // LLM provider selection — mirrors the STOCK_DATA_PROVIDER pattern for data services.
 // - 'github' (default): GitHub Models API only (GITHUB_TOKEN required)
@@ -477,10 +487,17 @@ async function callGeminiAPI(
         // ignore JSON parse errors
       }
       const err = new Error(
-        `Gemini API rate limit reached (429).${waitMsg} Free tier: 1,500 requests/day for gemini-2.0-flash.`
+        `Gemini API rate limit reached (429) for model '${model}'.${waitMsg}`
       ) as Error & { statusCode: number; retryAfterMs?: number };
       err.statusCode = 429;
       if (retryAfterMs !== undefined) err.retryAfterMs = retryAfterMs;
+      throw err;
+    }
+    if (response.status === 503) {
+      const err = new Error(
+        `Gemini API model '${model}' temporarily unavailable (503) — high demand. Will try next model.`
+      ) as Error & { statusCode: number };
+      err.statusCode = 503;
       throw err;
     }
     if (response.status === 400) {
@@ -498,26 +515,31 @@ async function callGeminiAPI(
 }
 
 /**
- * Call Gemini with automatic model fallback on 429.
- * Steps through GEMINI_FALLBACK_MODELS (e.g. gemini-2.0-flash → gemini-1.5-flash).
- * Useful when a project's free-tier quota for the primary model is exhausted or
- * not yet allocated (limit: 0) — the secondary model has a separate quota pool.
+ * Call Gemini with automatic model fallback on retriable errors.
+ * Steps through GEMINI_FALLBACK_MODELS in order, trying each on:
+ *   429 — quota/rate-limit exhausted (separate quota pool per model)
+ *   503 — model temporarily unavailable due to high demand
+ *   400 — model ID not found / invalid (skip to the next valid model)
+ * Any other error (401 auth, 5xx non-503, etc.) is thrown immediately.
  */
 async function callGeminiWithFallback(
   messages: ChatMessage[],
   geminiToken: string,
   tools: ReturnType<typeof getToolDefinitionsByName>
 ): Promise<any> {
+  // Status codes that mean "this model can't serve right now — try the next one"
+  const RETRIABLE = new Set([429, 503, 400]);
   let lastErr: any;
   for (const model of GEMINI_FALLBACK_MODELS) {
     try {
       return await callGeminiAPI(messages, geminiToken, model, tools);
     } catch (err: any) {
       lastErr = err;
-      if (err?.statusCode !== 429) throw err; // only retry on rate limits
-      if (model !== GEMINI_FALLBACK_MODELS[GEMINI_FALLBACK_MODELS.length - 1]) {
-        console.info(`Gemini model '${model}' rate-limited — trying fallback model`);
-        // Honor the retry delay before trying the next model (capped at 10 s)
+      if (!RETRIABLE.has(err?.statusCode)) throw err;
+      const isLast = model === GEMINI_FALLBACK_MODELS[GEMINI_FALLBACK_MODELS.length - 1];
+      if (!isLast) {
+        console.info(`Gemini model '${model}' unavailable (${err?.statusCode}) — trying next model`);
+        // Honor the provider's requested retry delay before moving on (capped at 10 s).
         const delayMs = Math.min(err?.retryAfterMs ?? 0, 10000);
         if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
       }
@@ -787,8 +809,8 @@ export async function POST(request: NextRequest) {
             // Automatically fall back to Gemini when GitHub Models is rate-limited
             if (err?.statusCode === 429 && geminiToken) {
               console.info('GitHub Models rate limit hit — falling back to Gemini API');
-              // callGeminiWithFallback handles gemini-2.0-flash → gemini-1.5-flash internally.
-              // Any remaining 429 propagates with retryAfterMs for the outer loop to honor.
+              // callGeminiWithFallback steps through GEMINI_FALLBACK_MODELS internally.
+              // Any remaining error propagates with retryAfterMs for the outer loop to honor.
               return await callGeminiWithFallback(messages, geminiToken, tools);
             }
             throw err;
@@ -826,7 +848,7 @@ export async function POST(request: NextRequest) {
           toolDefinitionsUsed = retryTools;
           break;
         } catch (error: any) {
-          const isRateLimit = error?.statusCode === 429;
+          const isRateLimit = error?.statusCode === 429 || error?.statusCode === 503;
           const isUnknownModel = error?.statusCode === 400;
           const isTokensLimit = error?.statusCode === 413;
           // Unknown model: skip to the next fallback without counting as an attempt —
