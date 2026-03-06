@@ -301,8 +301,6 @@ const depPrompt = buildDeepSectorDependencyPrompt(sector, finalCount, ecosystemD
 | `COPILOT_FALLBACK_MODELS` | No | built-in list | Comma-separated ordered fallback model list; overrides `DEFAULT_FALLBACK_MODELS` constant |
 | `AUTO_DOWNGRADE_GPT5` | No | `true` | When `true`, `gpt-5` requests on GitHub provider are downgraded to `gpt-4.1` (GPT-5 not available on GitHub Models) |
 | `USE_FULL_SYSTEM_PROMPT` | No | `false` | When `true`, sends full verbose `SYSTEM_PROMPT`; default uses shorter `COMPACT_SYSTEM_PROMPT` to conserve tokens |
-| `OPENAI_API_KEY` (or `OPENAI_TOKEN`) | No | — | Route through OpenAI-compatible proxy instead of GitHub Models |
-| `OPENAI_PROXY_BASE_URL` | No | `https://openai-api-proxy.geo.arm.com/api/providers/openai/v1` | Custom OpenAI-compatible proxy base URL |
 | `REPORTS_DIR` | No | `/tmp/reports` (Vercel) or `reports/` | Report output directory |
 | `STOCK_CACHE_TTL_MS` | No | `604800000` | Cache TTL ms (7 days) |
 | `ALPHA_VANTAGE_MIN_INTERVAL_MS` | No | `1200` | Min ms between AV requests |

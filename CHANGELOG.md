@@ -22,7 +22,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Dead interface surface: `getStocksBySector` and `screenStocks`** — both methods threw `'unavailable'` errors in all implementations and were never called by any tool or report path. Removed from `StockDataService` interface, `AlphaVantageService`, `FinnhubService`, and `HybridStockDataService` in both `web/app/lib/stockDataService.ts` and `src/stockDataService.ts`.
 - **Duplicate method: `searchCompanies`** — was a pass-through to `searchStock()` in all implementations. Removed from `StockDataService` interface and all implementations in both `web/` and `src/`. The `search_companies` CLI tool definition also removed from `src/stockTools.ts`.
 - **Stale config: `yahoo-finance2` in `next.config.js`** — `serverExternalPackages` and `outputFileTracingIncludes` entries for `yahoo-finance2` were referencing a library no longer used in the codebase. Removed entirely; `next.config.js` now exports an empty config object.
-- **Stale CLI tools: `get_stocks_by_sector` and `screen_stocks`** in `src/stockTools.ts` — their underlying service methods were removed (see above).
+- **OpenAI proxy path removed** — `callOpenAIProxyAPI`, `OPENAI_PROXY_BASE_URL`, `proxyKey`, and all `openai-proxy` provider branches removed from `web/app/api/chat/route.ts`. `callLLMForDataFill` and `createLLMFiller` simplified to GitHub Models only.
+- **`/api/providers` proxy entry removed** — `web/app/api/providers/route.ts` no longer returns an `openai-proxy` provider; only GitHub Models is returned. `OPENAI_PROXY_MODELS` env var support removed.
+- **`OPENAI_API_KEY`, `OPENAI_TOKEN`, `OPENAI_PROXY_BASE_URL`, `OPENAI_PROXY_MODELS`** — removed from all code and documentation. The only LLM provider is now GitHub Models (`GITHUB_TOKEN`).
 
 ### Changed
 - Rewrote README.md, AGENT.md, and CHANGELOG.md to reflect full project requirements and architecture
@@ -65,7 +67,6 @@ Exact dates are unknown; features are listed in approximate development order.
 - `AUTO_DOWNGRADE_GPT5` — silently downgrades `gpt-5` requests to `gpt-4.1` on GitHub provider
 - Multi-model fallback chain: `COPILOT_FALLBACK_MODELS` (comma-separated list); falls back to `openai/gpt-4.1-mini`, `google/gemini-3-flash`
 - `trimHistory()` — keeps last 2 exchanges; prevents 413 token-budget errors on Vercel
-- OpenAI-compatible proxy fallback (`OPENAI_API_KEY` or `OPENAI_TOKEN` + `OPENAI_PROXY_BASE_URL`)
 
 ### Tool Definitions (20 LLM-callable tools)
 - **Data tools:** `search_stock`, `get_stock_price`, `get_price_history`, `get_company_overview`, `get_basic_financials`, `get_earnings_history`, `get_income_statement`, `get_balance_sheet`, `get_cash_flow`, `get_analyst_ratings`, `get_analyst_recommendations`, `get_price_targets`, `get_peers`, `get_insider_trading`, `get_news_sentiment`, `get_company_news`

@@ -192,8 +192,6 @@ npm run dev
 | `COPILOT_MODEL` | No | `openai/gpt-4.1` | Main reasoning model |
 | `FILL_MODEL` | No | `openai/gpt-4.1-mini` | Lighter model for ticker resolution and gap-fill (preserves main model quota) |
 | `COPILOT_FALLBACK_MODEL` | No | same as main | Fallback model if main hits rate limit |
-| `OPENAI_API_KEY` | No | — | Route through OpenAI-compatible proxy instead of GitHub Models |
-| `OPENAI_PROXY_BASE_URL` | No | — | Custom proxy base URL |
 | `REPORTS_DIR` | No | `/tmp/reports` | Report save directory (Vercel: ephemeral `/tmp`) |
 | `STOCK_CACHE_TTL_MS` | No | `604800000` | Cache TTL in milliseconds (default: 7 days) |
 | `ALPHA_VANTAGE_MIN_INTERVAL_MS` | No | `1200` | Minimum ms between Alpha Vantage requests |
