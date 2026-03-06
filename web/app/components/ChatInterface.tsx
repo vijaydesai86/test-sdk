@@ -30,7 +30,7 @@ interface ModelOption {
 }
 
 interface ProviderOption {
-  id: 'github' | 'openai-proxy';
+  id: string;
   label: string;
   available: boolean;
   details?: string;
@@ -380,7 +380,7 @@ export default function ChatInterface() {
               <select
                 value={provider}
                 onChange={(e) => {
-                  const next = e.target.value as ProviderOption['id'];
+                  const next = e.target.value;
                   setProvider(next);
                   setSessionId(null);
                   const sel = availableProviders.find((p) => p.id === next);

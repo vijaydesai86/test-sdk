@@ -9,22 +9,6 @@ const SAFE_DEFAULT = [
   { value: 'google/gemini-3-flash', label: 'Gemini 3 Flash',      rateLimitTier: 'low'  },
 ];
 
-const DEFAULT_PROXY_MODELS = [
-  'gpt-4.1',
-  'gpt-4.1-mini',
-  'gpt-4o-mini',
-  'gpt-5-mini',
-];
-
-const normalizeProxyModels = (raw?: string | null) => {
-  const models = (raw || '')
-    .split(',')
-    .map((item) => item.trim())
-    .filter(Boolean);
-  const list = models.length > 0 ? models : DEFAULT_PROXY_MODELS;
-  return list.map((model) => ({ value: model, label: model }));
-};
-
 const fetchGithubModels = async () => {
   const githubToken =
     process.env.GITHUB_TOKEN ||
@@ -84,9 +68,6 @@ const fetchGithubModels = async () => {
 export async function GET() {
   try {
     const githubModels = await fetchGithubModels();
-    const proxyModels = normalizeProxyModels(process.env.OPENAI_PROXY_MODELS);
-    const hasProxyKey = Boolean(process.env.OPENAI_API_KEY || process.env.OPENAI_TOKEN);
-
     return NextResponse.json({
       providers: [
         {
@@ -95,13 +76,6 @@ export async function GET() {
           available: true,
           models: githubModels,
         },
-        {
-          id: 'openai-proxy',
-          label: 'OpenAI Proxy',
-          available: hasProxyKey,
-          models: proxyModels,
-          details: hasProxyKey ? undefined : 'Set OPENAI_API_KEY in your environment.',
-        },
       ],
     });
   } catch (err) {
@@ -109,3 +83,4 @@ export async function GET() {
     return NextResponse.json({ providers: [] }, { status: 500 });
   }
 }
+
