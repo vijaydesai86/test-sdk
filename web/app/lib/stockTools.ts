@@ -3,6 +3,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { StockDataService } from './stockDataService';
 import { buildStockReport, buildComparisonReport, buildSectorReport, buildDeepSectorReport, saveReport } from './reportGenerator';
+import { REPORTS_DIR } from './config';
 
 /**
  * OpenAI-compatible tool definitions for stock information
@@ -20,17 +21,15 @@ export function getToolDefinitionsByName(toolNames?: string[]) {
   return definitions.filter((tool) => allowList.has(tool.function.name));
 }
 
-const REPORTS_DIR = process.env.REPORTS_DIR || (process.env.VERCEL ? '/tmp/reports' : 'reports');
 const CACHE_DIR = path.join(REPORTS_DIR, 'cache');
 const CACHE_TTL_MS = Number(process.env.STOCK_CACHE_TTL_MS || 1000 * 60 * 60 * 24 * 7);
-// Number of companies to include in comparison/sector/deep-sector reports.
-// Override via NUM_COMPANIES env var (e.g. set to 5 for faster reports, 15 for broader coverage).
-// Optimal value: 10 gives a good balance between breadth and API rate limits.
+// Number of companies in comparison/sector/deep-sector reports.
+// Code default: 10. Production (Vercel): 15. Override via NUM_COMPANIES env var.
+// Lower to 5 for faster/demo runs; raise up to ~20 for broadest coverage.
 const NUM_COMPANIES = Math.max(2, Number(process.env.NUM_COMPANIES || 10));
-// Number of recursive refinement passes in deep sector research.
-// Each pass feeds the previous analysis as context, progressively deepening insights.
-// Override via DEEP_RESEARCH_DEPTH env var (1 = single pass, 3 = very thorough but slower).
-// Optimal value: 2 gives meaningfully richer analysis with only one extra LLM call.
+// Recursive refinement passes in deep sector Phase 3.
+// Code default: 2. Production (Vercel): 4. Override via DEEP_RESEARCH_DEPTH env var.
+// Set to 1 to disable recursion; each additional pass deepens ecosystem insights.
 const DEEP_RESEARCH_DEPTH = Math.max(1, Number(process.env.DEEP_RESEARCH_DEPTH || 2));
 const DEFAULT_SOURCE = (() => {
   const provider = (process.env.STOCK_DATA_PROVIDER || 'alphavantage').toLowerCase();

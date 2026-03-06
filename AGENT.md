@@ -58,6 +58,10 @@ web/
                                  HybridStockDataService, createStockService() factory
       reportGenerator.ts      ← buildStockReport, buildComparisonReport, buildSectorReport,
                                  buildDeepSectorReport, saveReport; ECharts chart blocks
+      config.ts               ← Shared runtime constants (REPORTS_DIR); imported by stockTools,
+                                 reportGenerator, and reports/[filename]/route.ts
+      githubModels.ts         ← fetchGitHubModelsCatalog(), resolveGitHubToken(), SAFE_DEFAULT_MODELS;
+                                 imported by models/route.ts and providers/route.ts
     components/
       ChatInterface.tsx        ← Single-page React UI: chat, report preview, sidebar, model selector
     page.tsx                   ← Root page (renders ChatInterface)
@@ -288,7 +292,7 @@ for (let passIndex = 0; passIndex < DEEP_RESEARCH_DEPTH; passIndex++) {
 // Same as generate_comparison_report for the final company list
 ```
 
-**Important:** Phase 3 runs `DEEP_RESEARCH_DEPTH` times (default 2). The first pass produces the initial refined list; subsequent passes use the prior analysis as context to deepen the ecosystem narrative and further refine the company selection. If a pass fails, recursion stops and the last successful universe is used. Phase 4 always runs exactly once.
+**Important:** Phase 3 runs `DEEP_RESEARCH_DEPTH` times (code default: 2; production: 4). The first pass produces the initial refined list; subsequent passes use the prior analysis as context to deepen the ecosystem narrative and further refine the company selection. If a pass fails, recursion stops and the last successful universe is used. Phase 4 always runs exactly once.
 
 ---
 
@@ -299,7 +303,7 @@ for (let passIndex = 0; passIndex < DEEP_RESEARCH_DEPTH; passIndex++) {
 | `GITHUB_TOKEN` (or `GH_TOKEN`/`COPILOT_GITHUB_TOKEN`) | **Yes** | — | GitHub Models API authentication |
 | `ALPHA_VANTAGE_API_KEY` | Yes (unless `STOCK_DATA_PROVIDER=finnhub`) | — | Alpha Vantage free tier |
 | `FINNHUB_API_KEY` | No | — | Enables Finnhub provider or hybrid fallback. If `STOCK_DATA_PROVIDER=hybrid` but this is not set, silently falls back to AV-only |
-| `STOCK_DATA_PROVIDER` | No | `alphavantage` | `alphavantage`, `finnhub`, or `hybrid` |
+| `STOCK_DATA_PROVIDER` | No | `alphavantage` | `alphavantage`, `finnhub`, or `hybrid`. **Production: `hybrid`** |
 | `COPILOT_MODEL` | No | `openai/gpt-4.1` | Main reasoning model |
 | `FILL_MODEL` | No | `openai/gpt-4.1-mini` | Gap-fill and ticker-resolution model (separate quota from main model) |
 | `COPILOT_FALLBACK_MODEL` | No | same as `COPILOT_MODEL` | Single fallback model if main model hits rate limit |
@@ -308,11 +312,29 @@ for (let passIndex = 0; passIndex < DEEP_RESEARCH_DEPTH; passIndex++) {
 | `USE_FULL_SYSTEM_PROMPT` | No | `false` | When `true`, sends full verbose `SYSTEM_PROMPT`; default uses shorter `COMPACT_SYSTEM_PROMPT` to conserve tokens |
 | `REPORTS_DIR` | No | `/tmp/reports` (Vercel) or `reports/` | Report output directory |
 | `STOCK_CACHE_TTL_MS` | No | `604800000` | Cache TTL ms (7 days) |
-| `NUM_COMPANIES` | No | `10` | Number of companies in comparison, sector, and deep-sector reports. Optimal: 10; raise to 15 for broader research, lower to 5 for faster/demo runs |
-| `DEEP_RESEARCH_DEPTH` | No | `2` | Recursive refinement passes in deep sector Phase 3. Each pass deepens analysis using prior results. Optimal: 2; set to 1 to disable recursion, 3 for most thorough analysis |
+| `NUM_COMPANIES` | No | `10` | Number of companies in comparison, sector, and deep-sector reports. **Production: `15`**; lower to 5 for faster/demo runs |
+| `DEEP_RESEARCH_DEPTH` | No | `2` | Recursive refinement passes in deep sector Phase 3. Each pass deepens analysis using prior results. **Production: `4`**; set to 1 to disable recursion |
 | `ALPHA_VANTAGE_MIN_INTERVAL_MS` | No | `1200` | Min ms between AV requests |
 | `FINNHUB_MIN_INTERVAL_MS` | No | `500` | Min ms between Finnhub requests |
 | `HEALTH_CHECK_SYMBOL` | No | — | If set, health endpoint makes a live API call with this ticker |
+
+---
+
+## Production Configuration (Vercel)
+
+The following values are set in Vercel's environment variable dashboard for all environments.  
+Any agent working on production issues should assume these values unless told otherwise.
+
+| Variable | Production Value |
+|---|---|
+| `STOCK_DATA_PROVIDER` | `hybrid` |
+| `NUM_COMPANIES` | `15` |
+| `DEEP_RESEARCH_DEPTH` | `4` |
+| `FINNHUB_API_KEY` | set |
+| `ALPHA_VANTAGE_API_KEY` | set |
+| `GITHUB_TOKEN` | set |
+
+Code-default values (used when the env var is absent, e.g. local dev without a `.env.local`) differ from the production values above.  See the **Environment Variables** table for all code defaults.
 
 ---
 

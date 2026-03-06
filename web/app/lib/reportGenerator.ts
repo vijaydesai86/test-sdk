@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { promises as fs } from 'fs';
 import path from 'path';
+import { REPORTS_DIR as DEFAULT_REPORTS_DIR } from './config';
 
 type PricePoint = { date: string; close: string | number };
 type EarningsPoint = { fiscalQuarter: string; reportedEPS: string | number };
@@ -63,9 +64,6 @@ export interface DeepSectorReportData extends SectorReportData {
   /** LLM rationale for which companies were kept / excluded in the refinement step */
   refinementNotes?: string;
 }
-
-const DEFAULT_REPORTS_DIR =
-  process.env.REPORTS_DIR || (process.env.VERCEL ? '/tmp/reports' : 'reports');
 
 function formatDateLabel(date: string): string {
   const parsed = new Date(date);

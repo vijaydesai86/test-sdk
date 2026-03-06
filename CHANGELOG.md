@@ -12,7 +12,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
-- `NUM_COMPANIES` env var (default: `10`) — controls the number of companies in comparison, sector, and deep-sector reports. Replaces previously hardcoded limits (6 for comparison/sector, 8 for deep sector). Optimal value is 10; controllable via Vercel environment variables.
+- `web/app/lib/config.ts` — new shared module exporting `REPORTS_DIR` constant. Eliminates the triple-duplication of `process.env.REPORTS_DIR || (process.env.VERCEL ? '/tmp/reports' : 'reports')` that existed in `stockTools.ts`, `reportGenerator.ts`, and `reports/[filename]/route.ts`.
+- `web/app/lib/githubModels.ts` — new shared module exporting `fetchGitHubModelsCatalog()`, `resolveGitHubToken()`, and `SAFE_DEFAULT_MODELS`. Eliminates the duplicated GitHub Models catalogue fetch/filter/sort/map pipeline that existed in both `models/route.ts` and `providers/route.ts`.
+
+### Changed
+- `web/app/api/models/route.ts` — rewritten to import from `githubModels.ts`; reduced from 80 lines to 18.
+- `web/app/api/providers/route.ts` — rewritten to import from `githubModels.ts`; reduced from 80 lines to 28.
+- `web/app/lib/stockTools.ts` — imports `REPORTS_DIR` from `config.ts`; updated `NUM_COMPANIES` and `DEEP_RESEARCH_DEPTH` comments to document production values (15 and 4 respectively).
+- `web/app/lib/reportGenerator.ts` — imports `REPORTS_DIR` from `config.ts`; removes its own local `DEFAULT_REPORTS_DIR` definition.
+- `web/app/api/reports/[filename]/route.ts` — imports `REPORTS_DIR` from `config.ts`; removes its own local definition.
+- `AGENT.md` — env-var table updated: `STOCK_DATA_PROVIDER` notes production=`hybrid`; `NUM_COMPANIES` notes production=`15`; `DEEP_RESEARCH_DEPTH` notes production=`4`. Added **Production Configuration (Vercel)** section listing all deployed env-var values. Architecture diagram updated to include `config.ts` and `githubModels.ts`.
+- `.env.example` (root and `web/`) — `STOCK_DATA_PROVIDER` default changed to `hybrid`; `NUM_COMPANIES` and `DEEP_RESEARCH_DEPTH` comments updated to show production values; `web/.env.example` now includes `NUM_COMPANIES` and `DEEP_RESEARCH_DEPTH` entries.
+
+### Previous entries
 - `DEEP_RESEARCH_DEPTH` env var (default: `2`) — controls how many recursive refinement passes Phase 3 of `generate_deep_sector_report` runs. Each pass feeds the prior dependency analysis as context so the LLM progressively deepens its ecosystem insights and company selection. Optimal value is 2; set to 1 to disable recursion, 3 for maximum depth.
 - `DeepSectorPassContext` exported interface in `stockTools.ts` — carries prior-pass analysis (universe, dependencyAnalysis, ecosystemDiagram, refinementNotes) between recursive Phase 3 iterations.
 - `buildDeepSectorDependencyPrompt` now accepts an optional `previousPass: DeepSectorPassContext` argument; when present the prior analysis is injected into the prompt so the LLM can deepen and correct its previous output.

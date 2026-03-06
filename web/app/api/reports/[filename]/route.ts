@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import path from 'path';
 import { promises as fs } from 'fs';
-
-const REPORTS_DIR = process.env.REPORTS_DIR || (process.env.VERCEL ? '/tmp/reports' : 'reports');
+import { REPORTS_DIR } from '@/app/lib/config';
 
 export async function GET(
   _request: NextRequest,
