@@ -1,49 +1,42 @@
-# AGENT.md — Stock Research App
+# AGENT.md — Stock Research Assistant
 
-This file is the authoritative guide for AI agents (GitHub Copilot, LLMs) working on this codebase. Read it before making any changes.
-
----
-
-## Project Purpose
-
-An AI-powered stock research web app with exactly **two user-facing functionalities**:
-
-1. **Generate Stock Report** — Comprehensive single-stock equity research report (price, financials, valuation, analyst view, scorecard)
-2. **Generate Comparison Report** — Side-by-side multi-company comparison (2–6 companies)
-
-**Any feature outside these two is out of scope and should not be added.**
+**Read this entire file before making any change to the codebase.** It is the authoritative protocol for every AI agent, LLM, or developer working on this project.
 
 ---
 
-## Tech Stack
+## Project Scope — Five Capabilities, No More
 
-| Layer | Technology |
-|---|---|
-| Frontend | Next.js 16 (App Router), React 19, Tailwind CSS v4 |
-| AI Backend | GitHub Models API (via `GITHUB_TOKEN`) or OpenAI-compatible proxy |
-| Data | Alpha Vantage REST API (primary), Finnhub (secondary/hybrid), LLM gap-fill (tertiary) |
-| Report generation | Custom markdown + ECharts charts (`buildStockReport`, `buildComparisonReport`) |
-| Deployment | Vercel (Node.js runtime, 5-minute max duration) |
+This app has exactly **five user-facing capabilities**. Never add features outside this list.
+
+| # | Capability | Entry Tool |
+|---|---|---|
+| 1 | **Stock Details** | `generate_stock_report` |
+| 2 | **Stock Comparison** | `generate_comparison_report` |
+| 3 | **Top Stocks in Sector** | `generate_sector_report` |
+| 4 | **Deep Sector Research** | `generate_deep_sector_report` |
+| 5 | **General Chat** | Direct LLM response (no tool) |
+
+Any feature request outside these five (screeners, portfolio tracking, alerts, etc.) must be declined with a clear explanation.
 
 ---
 
-## LLM as Central Orchestrator
+## LLM is the Final Boss
 
-The LLM is the **central decision-making entity** for all report generation:
+The LLM is the **central decision-maker** for all operations. This is not negotiable.
 
-1. **Market data APIs (Alpha Vantage, Finnhub) are tools** — called first to retrieve real-time/recent data.
-2. **LLM gap-fill** — after all API fetches, any fields still `null`/`undefined` are requested from the LLM using its training knowledge. The LLM returns only values it is certain about; it returns `null` for anything uncertain.
-3. **No fake or mocked data** — the LLM is explicitly instructed not to estimate, approximate, or invent values. Only factual data from training is accepted.
-4. **Report structure is invariant** — the same sections, tables, and charts are always present. LLM fill is invisible to the user; it just populates fields that would otherwise show as N/A.
+### Rules
 
-### LLM Gap-Fill Implementation
+1. **LLM resolves all company names to tickers.** It runs `buildTickerResolutionPrompt` first (before any API call). The search API (`search_stock`) is a fallback, not the primary resolver.
 
-- `buildStockFillPrompt(symbol, data)` in `stockTools.ts` — detects null fields and builds a targeted JSON prompt.
-- `applyLLMFillToStockData(data, llmResponse)` — parses the LLM JSON and merges non-null values into the existing data (only fills null fields; never overwrites valid API data).
-- `callLLMForDataFill(...)` in `route.ts` — makes the LLM call; returns `'{}'` on any error so the report continues with API-only data.
-- `createLLMFiller(...)` in `route.ts` — creates a bound `LLMFiller` callback passed to `executeTool` via `options.llmFill`.
-- The fill covers: company overview (name, sector, industry, description, key metrics), analyst price targets, and analyst ratings breakdowns.
-- Financial statement data (income, balance sheet, cash flow) is **not** LLM-filled — these are complex structured records that the LLM cannot reliably reproduce.
+2. **When the LLM cannot resolve a ticker, it surfaces candidates and the conversation pauses.** If `executeTool` cannot resolve a symbol, it returns an error with candidate matches (e.g. `"Did you mean: GOOGL (Alphabet Class A), GOOG (Alphabet Class C)?"`). The LLM receives this error and naturally asks the user for clarification. This is LLM-emergent behaviour — not an explicit code branch that waits for user input. The LLM decides to re-prompt the user; the task restarts on the next message.
+
+3. **LLM stitches data from multiple sources.** It never surfaces raw API errors to the user. If Alpha Vantage fails, it tries Finnhub. If both fail for a field, it uses its own verified training knowledge to fill the gap.
+
+4. **LLM fills gaps — but never fabricates.** `FILL_MODEL` (`openai/gpt-4.1-mini`) is called after all API fetches. It returns only values it can verify from training data. It returns `null` for anything uncertain. It never overwrites valid API data.
+
+5. **LLM handles rate limits silently.** When a rate limit is hit, it skips remaining API calls for that session (to protect the daily budget), uses cached data where available, and fills remaining gaps from its own knowledge. The user sees a complete report, not an error.
+
+6. **LLM manages token budgets.** Conversation history is trimmed to the last 2 exchanges (`trimHistory()`). Tool call results are summarised before being added to history. The 5-minute Vercel timeout and 30-round tool-call limit are hard caps.
 
 ---
 
@@ -53,235 +46,387 @@ The LLM is the **central decision-making entity** for all report generation:
 web/
   app/
     api/
-      chat/route.ts          ← Main AI chat handler (POST). Orchestrates tool calls + LLM gap-fill.
-      reports/[filename]/    ← Serve / delete saved .md reports
-      providers/route.ts     ← Returns available AI providers + models
-      models/route.ts        ← Live GitHub Models catalog fetch
-      health/route.ts        ← Connectivity health check
+      chat/route.ts           ← LLM orchestrator: POST handler, tool loop, gap-fill, session history
+      reports/[filename]/     ← Serve (GET) and delete (DELETE) saved .md report files
+      providers/route.ts      ← List available AI providers and models
+      models/route.ts         ← Fetch live GitHub Models catalogue
+      health/route.ts         ← Connectivity and API key health check
     lib/
-      stockDataService.ts    ← StockDataService class; wraps Alpha Vantage + Finnhub
-      stockTools.ts          ← Tool definitions exposed to LLM + executeTool() dispatcher + LLM gap-fill helpers
-      reportGenerator.ts     ← buildStockReport(), buildComparisonReport(), saveReport()
+      stockTools.ts           ← Tool definitions (buildToolDefinitions), tool dispatcher (executeTool),
+                                 symbol resolution, LLM prompt builders, per-ticker JSON cache
+      stockDataService.ts     ← StockDataService interface; AlphaVantageService, FinnhubService,
+                                 HybridStockDataService, createStockService() factory
+      reportGenerator.ts      ← buildStockReport, buildComparisonReport, buildSectorReport,
+                                 buildDeepSectorReport, saveReport; ECharts chart blocks
     components/
-      ChatInterface.tsx      ← Single-page React UI (chat + report preview + sidebar)
-    page.tsx                 ← Root page (renders ChatInterface)
-    layout.tsx               ← HTML shell
+      ChatInterface.tsx        ← Single-page React UI: chat, report preview, sidebar, model selector
+    page.tsx                   ← Root page (renders ChatInterface)
+    layout.tsx                 ← HTML shell, global styles, metadata
+src/
+  index.ts                    ← CLI entry point (Node.js chat loop)
+  stockDataService.ts         ← CLI version of data service (mirrors web version)
+  stockTools.ts               ← CLI version of tool dispatcher
+  reportGenerator.ts          ← CLI version of report generator
+  __tests__/
+    webStockTools.test.ts     ← Tests for web/app/lib/stockTools.ts
+    reportGenerator.test.ts   ← Tests for web/app/lib/reportGenerator.ts
+    stockDataService.test.ts  ← Tests for web/app/lib/stockDataService.ts
 ```
 
 ---
 
-## Key Files & Responsibilities
+## Key Files — Responsibilities and Rules
 
 ### `web/app/api/chat/route.ts`
-- Parses user message with `parseReportRequest()` and `parseComparisonCompanies()`
-- For report/comparison requests: calls `executeTool()` directly (no LLM round-trip needed)
-- For general queries: falls back to LLM tool-calling loop (max 30 rounds)
-- Manages per-session conversation history (`sessions` Map)
-- Handles rate-limit fallback across models (GitHub Models → proxy)
+
+**What it does:**
+- `POST /api/chat` — main entry point for all user messages
+- Detects intent: `parseReportRequest()` identifies stock/comparison/sector/deep-sector requests
+- For report requests: calls `executeTool()` directly (bypasses LLM round-trip for speed)
+- For general queries: runs LLM tool-calling loop (max `MAX_TOOL_ROUNDS = 30`)
+- Manages per-session conversation history in `sessions` Map (in-memory, resets on cold start)
+- `trimHistory()` — keeps last 2 exchanges; drops intermediate tool messages to stay within token limit
+- `callLLMForDataFill()` — uses `FILL_MODEL` for gap-fill/ticker-resolution (preserves main model quota)
+- `createLLMFiller()` — creates a bound `LLMFiller` callback passed to `executeTool` via `options.llmFill`
+- Rate-limit fallback: GitHub Models → `COPILOT_FALLBACK_MODEL` → proxy
+
+**Constants:**
+```typescript
+MAX_TOOL_ROUNDS = 30
+MAX_HISTORY_MESSAGE_CHARS = 4000
+maxDuration = 300  // Vercel: 5 minutes
+DEFAULT_MODEL = process.env.COPILOT_MODEL || 'openai/gpt-4.1'
+FILL_MODEL = process.env.FILL_MODEL || 'openai/gpt-4.1-mini'
+```
+
+**GitHub Models API headers (mandatory):**
+```typescript
+'Authorization': `Bearer ${githubToken}`,
+'Content-Type': 'application/json',
+'User-Agent': 'stock-research-assistant/1.0',
+'Accept': 'application/vnd.github+json',
+'X-GitHub-Api-Version': '2022-11-28'
+```
+`User-Agent` is required — its absence triggers GitHub's anti-abuse 429.
+
+---
 
 ### `web/app/lib/stockTools.ts`
-- `buildToolDefinitions()` → returns only the tools the LLM should call:
-  - Data tools: `search_stock`, `get_stock_price`, `get_company_overview`, `get_basic_financials`, `get_analyst_ratings`, `get_analyst_recommendations`, `get_price_targets`, `get_news_sentiment`, `get_company_news`, `get_price_history`, `get_earnings_history`, `get_income_statement`, `get_balance_sheet`, `get_cash_flow`, `get_peers`, `get_insider_trading`
-  - Report tools: `generate_stock_report`, `generate_comparison_report`
-- `executeTool()` → dispatches to `StockDataService` or `reportGenerator` functions
-- `generate_stock_report` fetches all data, builds report, saves to `/tmp/reports/` on Vercel
-- `generate_comparison_report` resolves company names → symbols, fetches data, builds comparison report
 
-### `web/app/lib/reportGenerator.ts`
-- `buildStockReport(data: StockReportData): string` — builds full markdown report with ECharts chart blocks
-- `buildComparisonReport(data: ComparisonReportData): string` — builds comparison markdown with charts
-- `saveReport(content, title, dir?): Promise<{filePath, filename}>` — saves `.md` to disk
-- Report charts use ` ```chart ... ``` ` fences; rendered in the UI by `ChartBlock` component
+**What it does:**
+- `buildToolDefinitions()` — returns all OpenAI-compatible tool definitions for the LLM
+- `executeTool(name, args, options)` — dispatches to `StockDataService` or `reportGenerator`
+- `resolveSymbolFromQuery()` — scores `searchStock` results; detects share-class variants
+- `buildTickerResolutionPrompt(queries[])` — maps informal names/tickers → official US symbols
+- `buildSectorCompaniesPrompt(sector, count)` — LLM selects top N tickers for a sector/theme
+- `buildDeepSectorDependencyPrompt(sector, finalCount, ecosystemData[])` — dependency analysis + list refinement + Mermaid diagram
+- `buildStockFillPrompt(symbol, data)` — detects null fields; builds targeted JSON fill prompt
+- `applyLLMFillToStockData(data, llmResponse)` — merges non-null LLM values; never overwrites API data
+- `buildBatchStockFillPrompt(companies[])` — batch fill for comparison reports (one LLM call)
+- Per-ticker JSON cache: `loadSymbolCache()`, `saveSymbolCache()` — stored in `{REPORTS_DIR}/cache/{SYMBOL}.json`, TTL 7 days
+
+**Tool list:**
+
+| Tool | Data Source | Description |
+|---|---|---|
+| `search_stock` | AV / Finnhub | Find ticker by name or partial symbol |
+| `get_stock_price` | AV / Finnhub | Real-time quote, change, volume |
+| `get_price_history` | AV / Finnhub | OHLCV history (1w/1m/3m/6m/1y/3y/5y/max) |
+| `get_company_overview` | AV / Finnhub | Fundamentals: EPS, PE, PEG, margins, description |
+| `get_basic_financials` | AV / Finnhub | Key ratios and metric history |
+| `get_earnings_history` | AV / Finnhub | Quarterly/annual EPS with beat/miss |
+| `get_income_statement` | AV / Finnhub | Revenue, gross profit, EBITDA, net income |
+| `get_balance_sheet` | AV / Finnhub | Assets, liabilities, equity, cash, debt |
+| `get_cash_flow` | AV / Finnhub | Operating CF, free CF, capex, dividends |
+| `get_analyst_ratings` | AV / Finnhub | Buy/hold/sell consensus breakdown |
+| `get_analyst_recommendations` | Finnhub | Recommendation history |
+| `get_price_targets` | Finnhub | Analyst price target mean/high/low |
+| `get_peers` | Finnhub | Comparable company peer list |
+| `get_insider_trading` | AV / Finnhub | Insider buy/sell transactions |
+| `get_news_sentiment` | AV / Finnhub | News volume + sentiment score |
+| `get_company_news` | Finnhub | Recent company news articles |
+| `generate_stock_report` | All above | Full stock research report + save |
+| `generate_comparison_report` | All above | Multi-company comparison + save |
+| `generate_sector_report` | All above | LLM-selected sector report + save |
+| `generate_deep_sector_report` | All above + LLM | 4-phase deep sector research with dependency analysis + save |
+
+**Error suppression in `safeFetch`:**
+Errors matching these patterns are silently swallowed (not shown in report Data Gaps):
+- `/unavailable (in|via) (Alpha|Finnhub)/i`
+- `message.includes('Alpha-only mode')`
+
+All other errors appear in the report's `## ⚠️ Data Gaps` section.
+
+**Rate-limit detection (`isRateLimit`):**
+- `message.includes('frequency')` — AV per-minute limit
+- `message.includes('Thank you for using Alpha Vantage')` — AV daily limit or premium feature
+- `/rate limit|too many requests/i` — generic rate-limit
+
+When `isRateLimit` triggers: `rateLimitHit = true` → all remaining fetches skipped.
+
+---
 
 ### `web/app/lib/stockDataService.ts`
-- `createStockService(alphaVantageKey?)` → factory that creates a service instance
-- Primary: Alpha Vantage REST API (`ALPHA_VANTAGE_API_KEY` env var required)
-- Fallback: Yahoo Finance via `yahoo-finance2` (works without API key, but blocked by Yahoo on some cloud IPs)
-- **IMPORTANT**: `chart()` in yahoo-finance2 does NOT need crumb auth; `quoteSummary()` DOES and is blocked on Vercel cloud IPs — never call `quoteSummary()` in cloud deployments
 
----
+**What it does:**
+- `createStockService(alphaVantageKey?)` — factory returns the correct service based on `STOCK_DATA_PROVIDER`
+- `AlphaVantageService` — primary data source (free tier, rate-limited, cached)
+- `FinnhubService` — secondary data source (free tier, higher rate limit)
+- `HybridStockDataService` — wraps both; `withFallback()` retries AV failures on Finnhub; tags results with `__source: 'Finnhub'`
 
-## Environment Variables
+**IMPORTANT implementation rules:**
+- **Never call `quoteSummary()` from yahoo-finance2 in Vercel/cloud.** It requires crumb auth blocked by Yahoo on cloud IPs. Only `chart()` is safe if yfinance mode is ever used.
+- **Never use `TIME_SERIES_DAILY outputsize=full`** — this is a premium Alpha Vantage feature and fails on free tier.
+- **Never call Finnhub `/financials-reported`** — returns 403 on free tier.
+- **Never call Finnhub `/stock/financials`** — deprecated, removed from API.
+- Finnhub `/quote` returns `{c:0,t:0}` for unknown symbols — check `data.t===0`, not just falsy.
+- Finnhub `/stock/candle` returns `{s:"no_data"}` for bad symbols — check `data.s !== 'ok'`.
+- Finnhub financial statements come from `/stock/metric?metric=all` → `series.quarterly.ic/bs/cf`; `pivotSeries()` converts to per-quarter records.
 
-| Variable | Required | Purpose |
-|---|---|---|
-| `GITHUB_TOKEN` | Yes (or `GH_TOKEN`/`COPILOT_GITHUB_TOKEN`) | GitHub Models API auth |
-| `ALPHA_VANTAGE_API_KEY` | Yes (unless `STOCK_DATA_PROVIDER=finnhub`) | Financial data |
-| `FINNHUB_API_KEY` | No | Enables Finnhub provider or hybrid fallback |
-| `STOCK_DATA_PROVIDER` | No | `alphavantage` (default), `finnhub`, or `hybrid` |
-| `OPENAI_API_KEY` | No | Alternative AI provider via proxy |
-| `OPENAI_PROXY_BASE_URL` | No | Custom OpenAI-compatible proxy URL |
-| `COPILOT_MODEL` | No | Override default model (default: `openai/gpt-4.1`) |
-| `REPORTS_DIR` | No | Reports output directory (default: `reports/` or `/tmp/reports` on Vercel) |
-| `STOCK_CACHE_TTL_MS` | No | Cache TTL in ms (default: 7 days) |
-| `ALPHA_VANTAGE_MIN_INTERVAL_MS` | No | Min ms between AV requests (default: 1200) |
-| `FINNHUB_MIN_INTERVAL_MS` | No | Min ms between Finnhub requests (default: 500) |
-| `HEALTH_CHECK_SYMBOL` | No | If set, `/api/health` makes a live API call with this ticker to verify connectivity. If unset, health check only verifies the key is configured. |
-
----
-
-## Free-Tier API Reference (CRITICAL — read before modifying data fetching)
-
-### Alpha Vantage Free Tier
-**Limits:** 25 requests/day, 5 requests/minute (per API key).
+**Alpha Vantage free-tier endpoint map:**
 
 | Endpoint | Free | Notes |
 |---|---|---|
 | `GLOBAL_QUOTE` | ✅ | Real-time quote |
-| `OVERVIEW` | ✅ | Fundamentals, analyst ratings, margins |
-| `EARNINGS` | ✅ | Quarterly & annual EPS history |
+| `OVERVIEW` | ✅ | Fundamentals + analyst ratings + margins |
+| `EARNINGS` | ✅ | Quarterly & annual EPS |
 | `INCOME_STATEMENT` | ✅ | Quarterly & annual P&L |
 | `BALANCE_SHEET` | ✅ | Quarterly & annual balance sheet |
 | `CASH_FLOW` | ✅ | Quarterly & annual cash flow |
-| `TIME_SERIES_DAILY` `outputsize=compact` | ✅ | Last 100 trading days |
-| `TIME_SERIES_DAILY` `outputsize=full` | ❌ **PREMIUM** | Do NOT use — causes "premium feature" error |
-| `TIME_SERIES_WEEKLY` | ✅ | Full history, weekly candles. No `outputsize` param. |
-| `TIME_SERIES_MONTHLY` | ✅ | Full history, monthly candles. No `outputsize` param. |
+| `TIME_SERIES_DAILY outputsize=compact` | ✅ | Last 100 trading days |
+| `TIME_SERIES_DAILY outputsize=full` | ❌ **PREMIUM** | Never use |
+| `TIME_SERIES_WEEKLY` | ✅ | Full history, weekly candles. No `outputsize` param |
+| `TIME_SERIES_MONTHLY` | ✅ | Full history, monthly candles. No `outputsize` param |
 | `SYMBOL_SEARCH` | ✅ | Ticker search |
 | `SECTOR` | ✅ | Sector performance |
 | `TOP_GAINERS_LOSERS` | ✅ | Market movers |
-| `INSIDER_TRANSACTIONS` | ❌ **PREMIUM** | Returns premium-feature error; already wrapped in try/catch |
-| `NEWS_SENTIMENT` | ❌ **PREMIUM** | Alpha Intelligence™; throws suppressed "Alpha-only mode" error |
+| `INSIDER_TRANSACTIONS` | ❌ **PREMIUM** | Returns premium error; wrapped in try/catch |
+| `NEWS_SENTIMENT` | ❌ **PREMIUM** | Throws suppressed "Alpha-only mode" error |
 
-**Price history ranges → AV endpoint mapping:**
-- `1w`, `1m`, `3m`, `6m` → `TIME_SERIES_DAILY` + `outputsize=compact` (100 data points ≈ 5 months)
-- `1y`, `3y`, `5y`, `weekly` → `TIME_SERIES_WEEKLY` (free, no `outputsize` param)
-- `max`, `all`, `monthly` → `TIME_SERIES_MONTHLY` (free, no `outputsize` param)
+**Price history range → AV endpoint:**
+- `1w`, `1m`, `3m`, `6m` → `TIME_SERIES_DAILY` + `outputsize=compact`
+- `1y`, `3y`, `5y`, `weekly` → `TIME_SERIES_WEEKLY`
+- `max`, `all`, `monthly` → `TIME_SERIES_MONTHLY`
 
-### Finnhub Free Tier
-**Limits:** 60 requests/minute, ~30,000/month.
+**Finnhub free-tier endpoint map:**
 
 | Endpoint | Free | Notes |
 |---|---|---|
-| `/quote` | ✅ | Real-time quote. Returns `{c:0,t:0}` for unknown symbols — check `t===0` |
-| `/stock/candle` | ✅ | Historical OHLCV. Returns `{s:"no_data"}` for unknown symbols |
-| `/stock/profile2` | ✅ | Company profile; may return `{}` if symbol unknown |
-| `/stock/metric?metric=all` | ✅ | Key metrics **AND** `series.quarterly.ic/bs/cf` financial statement data |
+| `/quote` | ✅ | Real-time quote |
+| `/stock/candle` | ✅ | Historical OHLCV |
+| `/stock/profile2` | ✅ | Company profile; may return `{}` for unknown symbol |
+| `/stock/metric?metric=all` | ✅ | Key metrics + quarterly financial series |
 | `/stock/recommendation` | ✅ | Analyst recommendations |
 | `/stock/price-target` | ✅ | Analyst price targets |
 | `/stock/earnings` | ✅ | EPS history |
 | `/stock/peers` | ✅ | Peer ticker list |
 | `/stock/insider-transactions` | ✅ | Insider trades |
-| `/company-news` | ✅ | Company news articles |
-| `/news-sentiment` | ✅ | Basic news sentiment |
+| `/company-news` | ✅ | Company news |
+| `/news-sentiment` | ✅ | News sentiment |
 | `/search` | ✅ | Symbol/company search |
-| `/news?category=general` | ⚠️ | General news only — no keyword search; `searchNews` throws suppressed error |
-| `/financials-reported` | ❌ **PREMIUM** | Returns 403. **Never call this.** |
-| `/stock/financials` | ❌ **DEPRECATED** | Removed from API. **Never call this.** |
-
-**Finnhub financial statements (income/balance/cashflow) — IMPORTANT:**
-- Use `/stock/metric?metric=all` — the response includes `series.quarterly.ic`, `series.quarterly.bs`, `series.quarterly.cf`
-- Each is a dict of `fieldName → [{period: "YYYY-MM-DD", v: number}]` arrays
-- `FinnhubService.pivotSeries()` pivots these into per-quarter records
-- This is the **same call** already made by `getBasicFinancials`, so it's a cache hit — zero extra API requests
-- Key field names: IC: `revenue`, `grossProfit`, `operatingIncome`, `netIncome`, `ebitda`; BS: `totalAssets`, `totalLiabilities`, `totalEquity`, `cashAndCashEquivalentsAtCarryingValue`, `longTermDebt`; CF: `netCashProvidedByOperatingActivities`, `capitalExpenditures`, `freeCashFlow`, `dividendsPaid`
-
-**Error handling rules:**
-- HTTP 401/403 from Finnhub → thrown as `"Unavailable via Finnhub (plan limitation: …)"` → suppressed by `safeFetch`
-- HTTP 429 from Finnhub → thrown as `"Finnhub rate limit exceeded (429)"` → triggers `rateLimitHit = true`
-- Empty `{}` profile from `/stock/profile2` → thrown as `"Unavailable via Finnhub: company profile not found"` → suppressed
-- `/quote` all-zeros (`t===0`) → thrown as `"Unavailable via Finnhub: no stock price data"` → suppressed
-- `/stock/candle` `s!=="ok"` → thrown as `"Unavailable via Finnhub: price history not available"` → suppressed
-- Empty `series.quarterly` → thrown as `"Unavailable via Finnhub: no income/balance/cashflow data"` → suppressed
-
-### Error suppression in `safeFetch` (stockTools.ts)
-Errors matching these patterns are silently suppressed (not shown in Data Gaps):
-- `/unavailable (in|via) (Alpha|Finnhub)/i` — plan/data limitations
-- `message.includes('Alpha-only mode')` — AV-only mode doesn't support some endpoints
-
-All other errors are shown in the report's `## ⚠️ Data Gaps` section.
-
-Rate-limit detection (`isRateLimit`):
-- `message.includes('frequency')` — AV per-minute limit
-- `message.includes('Thank you for using Alpha Vantage')` — AV daily limit or premium feature error
-- `/rate limit|too many requests/i` — generic rate-limit
-
-When `isRateLimit` triggers, `rateLimitHit = true` and all remaining fetches are skipped to conserve the 25-call/day budget.
-
-### Hybrid Mode (`STOCK_DATA_PROVIDER=hybrid`)
-- `HybridStockDataService` wraps both `AlphaVantageService` (primary) and `FinnhubService` (fallback)
-- `withFallback()` catches **any exception** from AV and retries the same method on Finnhub
-- When Finnhub provides data, it tags the result with `__source: 'Finnhub'` so the Data Sources table shows "Finnhub" instead of "Alpha Vantage"
-- If **both** AV and Finnhub fail, the exception propagates to `safeFetch` which records it in Data Gaps (unless suppressed)
-- `searchNews` uses AV only — Finnhub doesn't support keyword search
+| `/news?category=general` | ⚠️ | General news only; no keyword search |
+| `/financials-reported` | ❌ **PREMIUM** | Returns 403. Never call. |
+| `/stock/financials` | ❌ **DEPRECATED** | Removed from API. Never call. |
 
 ---
 
-## Development
+### `web/app/lib/reportGenerator.ts`
+
+**What it does:**
+- `buildStockReport(data: StockReportData): string` — full markdown report with ECharts chart blocks
+- `buildComparisonReport(data: ComparisonReportData): string` — comparison tables + charts
+- `buildSectorReport(data: SectorReportData): string` — wraps comparison with sector context
+- `buildDeepSectorReport(data: DeepSectorReportData): string` — adds dependency analysis, Mermaid diagram, refinement notes
+- `saveReport(content, title, dir?): Promise<{filePath, filename}>` — saves `.md` to `{REPORTS_DIR}/{safe-title}-{ISO-timestamp}.md`
+
+**Chart format:** All charts MUST use ` ```chart ``` ` fences with valid ECharts JSON. `applyChartTheme()` normalises theming. Mermaid diagrams use standard ` ```mermaid ``` ` fences.
+
+**Report saved as:** `{safe-title}-{ISO-timestamp}.md`  
+**Served via:** `GET /api/reports/{filename}`  
+**Deleted via:** `DELETE /api/reports/{filename}`
+
+---
+
+### `web/app/components/ChatInterface.tsx`
+
+**What it does:**
+- Single-page React UI: chat input, message history, report preview panel, model selector, sidebar
+- Renders `react-markdown` with `remark-gfm` for report output
+- Custom `ChartBlock` component renders ECharts from ` ```chart ``` ` fences
+- Custom `MermaidBlock` component renders ecosystem diagrams
+- **Responsive:** must work on all screen sizes (mobile, tablet, laptop, desktop)
+- Sidebar is a sliding drawer on mobile (`lg:static` for desktop)
+- Never break the responsive layout
+
+---
+
+## Deep Sector Research — 4-Phase Protocol
+
+```typescript
+// Phase 1: LLM identifies initial broad candidate list (~2× final count, max 12)
+const prompt = buildSectorCompaniesPrompt(sector, initialCount);
+initialCandidates = await llmFill(prompt); // → string[] of tickers
+
+// Phase 2: Fetch lightweight ecosystem data for all candidates
+// overview + news sentiment + peers — uses cache where available
+for (const sym of initialCandidates) {
+  ecosystemData.push({ symbol, overview, news, peers });
+}
+
+// Phase 3: LLM dependency analysis + list refinement
+const depPrompt = buildDeepSectorDependencyPrompt(sector, finalCount, ecosystemData);
+// LLM returns JSON: { refinedList, dependencyAnalysis, ecosystemDiagram, refinementNotes }
+// Falls back to initialCandidates if LLM fails
+
+// Phase 4: Full comparison data fetch for refined universe
+// Same as generate_comparison_report for the final company list
+```
+
+**Important:** The 4 phases run exactly once per tool call. There is no automatic recursion or looping. Phase 3's refinement is the single opportunity for the LLM to improve the initial candidate list — if this LLM call fails, the initial candidates are used as-is for Phase 4.
+
+---
+
+## Environment Variables
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `GITHUB_TOKEN` (or `GH_TOKEN`/`COPILOT_GITHUB_TOKEN`) | **Yes** | — | GitHub Models API authentication |
+| `ALPHA_VANTAGE_API_KEY` | Yes (unless `STOCK_DATA_PROVIDER=finnhub`) | — | Alpha Vantage free tier |
+| `FINNHUB_API_KEY` | No | — | Enables Finnhub provider or hybrid fallback. If `STOCK_DATA_PROVIDER=hybrid` but this is not set, silently falls back to AV-only |
+| `STOCK_DATA_PROVIDER` | No | `alphavantage` | `alphavantage`, `finnhub`, or `hybrid` |
+| `COPILOT_MODEL` | No | `openai/gpt-4.1` | Main reasoning model |
+| `FILL_MODEL` | No | `openai/gpt-4.1-mini` | Gap-fill and ticker-resolution model (separate quota from main model) |
+| `COPILOT_FALLBACK_MODEL` | No | same as `COPILOT_MODEL` | Single fallback model if main model hits rate limit |
+| `COPILOT_FALLBACK_MODELS` | No | built-in list | Comma-separated ordered fallback model list; overrides `DEFAULT_FALLBACK_MODELS` constant |
+| `AUTO_DOWNGRADE_GPT5` | No | `true` | When `true`, `gpt-5` requests on GitHub provider are downgraded to `gpt-4.1` (GPT-5 not available on GitHub Models) |
+| `USE_FULL_SYSTEM_PROMPT` | No | `false` | When `true`, sends full verbose `SYSTEM_PROMPT`; default uses shorter `COMPACT_SYSTEM_PROMPT` to conserve tokens |
+| `OPENAI_API_KEY` (or `OPENAI_TOKEN`) | No | — | Route through OpenAI-compatible proxy instead of GitHub Models |
+| `OPENAI_PROXY_BASE_URL` | No | `https://openai-api-proxy.geo.arm.com/api/providers/openai/v1` | Custom OpenAI-compatible proxy base URL |
+| `REPORTS_DIR` | No | `/tmp/reports` (Vercel) or `reports/` | Report output directory |
+| `STOCK_CACHE_TTL_MS` | No | `604800000` | Cache TTL ms (7 days) |
+| `ALPHA_VANTAGE_MIN_INTERVAL_MS` | No | `1200` | Min ms between AV requests |
+| `FINNHUB_MIN_INTERVAL_MS` | No | `500` | Min ms between Finnhub requests |
+| `HEALTH_CHECK_SYMBOL` | No | — | If set, health endpoint makes a live API call with this ticker |
+
+---
+
+## Development Setup
 
 ```bash
 cd web
 npm install
 cp .env.example .env.local   # fill in GITHUB_TOKEN + ALPHA_VANTAGE_API_KEY
-npm run dev                  # starts on http://localhost:3000
+npm run dev                  # http://localhost:3000
 ```
 
-### Build & Lint
+### Build and Lint
+
 ```bash
-npm run build    # Next.js production build
-npm run lint     # ESLint
-npx tsc --noEmit # TypeScript type check
+cd web
+npm run build     # Next.js production build — must pass with zero errors
+npm run lint      # ESLint — must pass with zero warnings or errors
+npx tsc --noEmit  # TypeScript type check — must pass with zero errors
 ```
 
 ### Tests
+
 ```bash
-cd .. && npm test   # runs vitest from repo root (tests in src/__tests__/)
+# From repo root
+npm test   # runs vitest — all tests in src/__tests__/
 ```
 
 ---
 
-## Coding Rules for Agents
+## Testing Requirements
 
-1. **Never add features beyond the 2 core functionalities.** If asked to add sector reports, news feeds, screeners, etc. — refuse and explain the constraint.
+**Tests are mandatory.** Every functional change must be accompanied by test updates. Every new feature must have exhaustive tests before the feature is considered done.
 
-2. **Always fix lint errors you introduce.** Run `npm run lint` after changes. No `no-explicit-any` violations without an `eslint-disable` comment explaining why.
+**Test files:**
+- `src/__tests__/webStockTools.test.ts` — tool dispatch, symbol resolution, gap-fill, error handling, rate-limit behavior
+- `src/__tests__/reportGenerator.test.ts` — report building, chart generation, save/load
+- `src/__tests__/stockDataService.test.ts` — AV and Finnhub service methods, hybrid fallback, cache
 
-3. **TypeScript**: Use `unknown` for dynamic API data, not `any`. Use `asRecord(v)` helper in reportGenerator.ts to safely access object properties.
+**Coverage requirements:**
+- All tool dispatcher `case` branches must have at least one test
+- Rate-limit detection and `rateLimitHit` propagation must be tested
+- Gap-fill apply/merge logic must be tested with null, partial, and full data scenarios
+- Error suppression patterns must be tested
+- Deep sector 4-phase flow must have an integration-style test with mocked LLM and API responses
 
-4. **Never call `quoteSummary()` in cloud/Vercel deployments.** Only `chart()` is safe from cloud IPs. (Applies if yfinance mode is ever re-added.)
+**Before submitting any PR:** run `npm test` from repo root and confirm all tests pass.
 
-5. **Rate limiting**: Alpha Vantage free tier = 25 calls/day. The cache in `stockTools.ts` stores results in `reports/cache/{SYMBOL}.json`. TTL = 7 days (configurable via `STOCK_CACHE_TTL_MS`).
+---
 
-6. **Report format**: All chart blocks MUST use ` ```chart ` fences with valid ECharts JSON. The `applyChartTheme()` function in reportGenerator.ts normalises the chart theme.
+## Coding Rules — Mandatory for All Agents
 
-7. **Mobile-first UI**: `ChatInterface.tsx` uses Tailwind. The sidebar is a sliding drawer on mobile (`lg:static`). Do not break the responsive layout.
+1. **Five capabilities only.** Never add a sixth feature. If asked, explain the constraint.
 
-8. **Session management**: Conversation history is stored in a `sessions` Map (in-memory, reset on serverless function cold start). Max 2 exchanges kept in history to stay within token limits.
+2. **No dead code.** Remove any handler, branch, or function that is not reachable or not used. Every line must serve a purpose.
 
-9. **Dead code policy**: Do NOT add handlers that bypass the two report tools. All user requests should flow through `generate_stock_report` or `generate_comparison_report`.
+3. **No hardcoding.** Never write `symbol === 'AAPL'`, `company === 'Microsoft'`, or any domain-specific literal in logic code. All data comes from APIs or the LLM. **Exception:** the Quick Research section of README.md may show example tickers for illustration.
 
-10. **Vercel deployment**: The app uses `maxDuration = 300` (5 minutes). Reports are stored in `/tmp/reports` (ephemeral). Never assume reports persist between requests on Vercel.
+4. **No code duplication.** Extract shared logic into utilities. If the same pattern appears in more than one place, refactor before adding more.
 
-11. **Do NOT use `outputsize=full` with `TIME_SERIES_DAILY`** — this is a premium AV feature and will fail on free tier. Use `TIME_SERIES_WEEKLY` or `TIME_SERIES_MONTHLY` for ranges ≥ 1y.
+5. **Zero errors and warnings.** `npm run lint`, `npx tsc --noEmit`, and `npm run build` must all pass clean. Fix every error and warning you encounter — including pre-existing ones you did not introduce.
 
-12. **Do NOT use `/financials-reported` on Finnhub free tier** — it returns 403. The error is already handled; do not try to work around it.
+6. **TypeScript strictness.** Use `unknown` for dynamic API responses, not `any`. Use type guards or `asRecord()` helper to access object properties safely. Every `eslint-disable` comment must have an explanation.
 
-13. **No hardcoding** — Do NOT hardcode stock tickers, company names, financial values, or any other domain-specific data anywhere in the codebase. All data must come from APIs or the LLM gap-fill mechanism. The only exception is the **Quick Start section in documentation** (e.g., `QUICKSTART.md`) where example tickers may be shown for illustration. If you find yourself writing `symbol === 'AAPL'` or similar in logic code, stop — there is always a generic way.
+7. **Test every change.** Run `npm test` after every change. If a test fails, fix the code or the test (but never delete tests to make CI green).
 
-14. **LLM gap-fill is a last resort** — LLM fill only runs when API data is null/undefined. It never overwrites valid API data. The LLM is instructed to return `null` for any field it cannot verify from training data. Never bypass this safeguard.
+8. **LLM gap-fill is last resort.** `applyLLMFillToStockData()` only fills `null`/`undefined` fields. It never overwrites valid API data. Financial statement data (income, balance sheet, cash flow) is NOT LLM-filled — too complex for reliable reproduction.
+
+9. **Ticker resolution: ask before assuming.** If the LLM cannot confidently resolve a company name to a ticker, it must ask the user. Never proceed with a guessed ticker.
+
+10. **Report charts must use `chart` fences.** All ECharts output MUST use ` ```chart ... ``` ` fences with valid ECharts JSON. Use `applyChartTheme()` for consistent theming. Never use plain JSON blocks for charts.
+
+11. **Responsive UI.** ChatInterface.tsx must render correctly on all screen sizes. The sidebar is a sliding drawer on mobile. Test at 375px, 768px, and 1280px widths.
+
+12. **Session history management.** `trimHistory()` keeps the last 2 exchanges. Do not raise this limit — it protects against 413 "request too large" errors on Vercel.
+
+13. **Vercel constraints.** Max function duration: 300 seconds. Reports stored in `/tmp/reports` (ephemeral — lost on cold start). Never assume report persistence between requests.
+
+14. **Hybrid mode fallback chain.** In `HybridStockDataService.withFallback()`: catch any AV exception → retry on Finnhub → tag result with `__source: 'Finnhub'`. If both fail, propagate to `safeFetch`. Never silently swallow data.
+
+15. **Update all three docs on every change.** After any functional change, update README.md, AGENT.md, and CHANGELOG.md. Only these three documentation files may exist. Delete any other `.md` files at the root level.
 
 ---
 
 ## Common Pitfalls
 
-| Pitfall | Fix |
+| Pitfall | Correct Behaviour |
 |---|---|
-| AV `TIME_SERIES_DAILY` `outputsize=full` premium error | Use `TIME_SERIES_WEEKLY` (≥1y) or `TIME_SERIES_MONTHLY` (max) instead |
-| "Company overview: Unable to fetch…" in Data Gaps | Error message must match `/unavailable (in\|via) (Alpha\|Finnhub)/i` to be suppressed |
-| Alpha Vantage rate limit (25 req/day) | Check cache before fetching; `safeFetch` sets `rateLimitHit=true` on limit hit |
-| Finnhub `financials-reported` 403 | Already caught; thrown as "Unavailable via Finnhub (plan limitation: 403)" → suppressed |
-| Session history too large (413 Too Large) | `trimHistory()` compacts old exchanges; max 2 kept |
-| Model returns tool calls as plain text | User needs to switch to a tool-calling model |
-| `generate_comparison_report` with company names | `resolveSymbolFromQuery()` resolves names → tickers |
-| `url.parse()` DeprecationWarning in Vercel logs | DEP0169 is emitted by a Node.js dependency (not our code); informational only, no user impact |
+| Using `TIME_SERIES_DAILY outputsize=full` | Use `TIME_SERIES_WEEKLY` (≥1y) or `TIME_SERIES_MONTHLY` (max) |
+| Calling Finnhub `/financials-reported` | Already handled; throws suppressed plan-limitation error |
+| Calling `quoteSummary()` in cloud deployment | Use `chart()` only from cloud/Vercel IPs |
+| "Company overview: Unable to fetch…" showing in Data Gaps | Error message must match suppression pattern: `/unavailable (in\|via) (Alpha\|Finnhub)/i` |
+| AV rate limit hitting mid-report | `safeFetch` detects it and sets `rateLimitHit=true`; remaining fetches skipped |
+| LLM returning tool calls as plain text | User must switch to a tool-calling capable model |
+| Session history too large (413 Too Large) | `trimHistory()` must be called; max 2 exchanges |
+| Missing `User-Agent` on GitHub Models requests | Results in anti-abuse 429. Always include the header. |
+| Comparison report with company names, not tickers | `resolveSymbolFromQuery()` handles this; returns error with candidates if ambiguous |
+| Finnhub `/quote` returning `{c:0,t:0}` for unknown symbol | Check `data.t === 0` explicitly — it's not an error response |
+| Finnhub `/stock/candle` returning `{s:"no_data"}` | Check `data.s !== 'ok'` before reading candle arrays |
+| Adding `search_news` as an LLM-callable tool | `search_news` has an `executeTool` case but is NOT in `buildToolDefinitions()` — the LLM cannot call it. Either add a tool definition or treat it as an internal-only method. |
+| Setting `STOCK_DATA_PROVIDER=hybrid` without `FINNHUB_API_KEY` | `createStockService()` silently falls back to AV-only. Set `FINNHUB_API_KEY` to actually get hybrid coverage. |
+| `next.config.js` referencing `yahoo-finance2` | The `serverExternalPackages` and `outputFileTracingIncludes` entries for `yahoo-finance2` in `next.config.js` are stale — `YahooFinanceService` was removed from `stockDataService.ts`. These entries are harmless but should be cleaned up. |
 
 ---
 
 ## Report File Naming
 
-Reports are saved as: `{safe-title}-{ISO-timestamp}.md`
-
+Format: `{safe-title}-{ISO-timestamp}.md`  
 Example: `nvda-stock-report-2025-01-15T10-30-00-000Z.md`
 
-Served via: `GET /api/reports/{filename}`
-Deleted via: `DELETE /api/reports/{filename}`
+Served: `GET /api/reports/{filename}`  
+Deleted: `DELETE /api/reports/{filename}`
+
+---
+
+## Documentation Rule
+
+**Only three documentation files exist at any time:**
+- `README.md` — human-readable project overview with diagrams
+- `AGENT.md` — this file: machine/AI protocol, coding rules, technical reference
+- `CHANGELOG.md` — all changes recorded chronologically
+
+Any other `.md` files at the root level must be deleted. If a deployment guide or quick-start guide is needed, its content belongs in README.md.
