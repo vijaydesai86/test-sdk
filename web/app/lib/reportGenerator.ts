@@ -1350,11 +1350,6 @@ export function buildStockReport(data: StockReportData): string {
   sections.push('## 🏢 Business Overview', ...(businessLines.length ? businessLines : ['- Business overview data unavailable']));
   sections.push('## 🧩 Competitive Landscape', ...(competitiveLines.length ? competitiveLines : ['- Competitive data unavailable']));
 
-  // Moat section — rendered immediately after competitive landscape when LLM analysis is available
-  if (data.moatAnalysis) {
-    sections.push(buildStockMoatSection(data.moatAnalysis, scorecard.moatDetails));
-  }
-
   sections.push('## ✨ KPI Dashboard', kpiTable);
 
   if (priceChart || epsChart) {
@@ -1399,6 +1394,11 @@ export function buildStockReport(data: StockReportData): string {
     ...(fromHigh !== null ? [`- Price vs 52-Week High: ${fromHigh.toFixed(1)}%`] : []),
     ...(fromLow !== null ? [`- Price vs 52-Week Low: ${fromLow.toFixed(1)}%`] : []),
   );
+
+  // Moat section — placed after the financial charts and data so existing sections stay in their original positions
+  if (data.moatAnalysis) {
+    sections.push(buildStockMoatSection(data.moatAnalysis, scorecard.moatDetails));
+  }
 
   sections.push('## 🚀 Growth Drivers', '- Period: trailing twelve months unless noted', ...(growthLines.length ? growthLines : ['- Growth drivers unavailable']));
   sections.push('## ⚠️ Risks & Headwinds', ...(riskLines.length ? riskLines : ['- No major risk flags surfaced from available data']));

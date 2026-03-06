@@ -72,6 +72,94 @@ describe('web executeTool', () => {
     expect(result.error).toMatch(/Could not identify companies/i);
   });
 
+  it('generate_stock_report produces chart sections when data is available', async () => {
+    const service = stubService();
+    // Provide rich data so chart sections appear in the output
+    (service.getPriceHistory as ReturnType<typeof vi.fn>).mockResolvedValue({
+      prices: [
+        { date: '2024-01-01', close: '170' },
+        { date: '2024-04-01', close: '175' },
+        { date: '2024-07-01', close: '180' },
+      ],
+    });
+    (service.getEarningsHistory as ReturnType<typeof vi.fn>).mockResolvedValue({
+      quarterlyEarnings: [
+        { fiscalQuarter: '2024-09-30', reportedEPS: '1.6' },
+        { fiscalQuarter: '2024-06-30', reportedEPS: '1.5' },
+        { fiscalQuarter: '2024-03-31', reportedEPS: '1.4' },
+      ],
+    });
+    (service.getIncomeStatement as ReturnType<typeof vi.fn>).mockResolvedValue({
+      quarterlyReports: [
+        { fiscalDateEnding: '2024-09-30', totalRevenue: '90000000000', grossProfit: '40000000000', operatingIncome: '27000000000', netIncome: '22000000000' },
+        { fiscalDateEnding: '2024-06-30', totalRevenue: '88000000000', grossProfit: '39000000000', operatingIncome: '26000000000', netIncome: '21000000000' },
+      ],
+    });
+
+    // LLM resolves ticker (first call) and moat analysis (second call, returns non-JSON to gracefully skip)
+    const llmFill = vi.fn()
+      .mockResolvedValueOnce('{"AAPL":"AAPL"}')   // ticker resolution
+      .mockResolvedValueOnce('{}');                 // moat analysis (no valid moat → skipped)
+
+    const result = await executeTool(
+      'generate_stock_report',
+      { symbol: 'AAPL', range: '1y' },
+      service,
+      { llmFill }
+    );
+
+    expect(result.success).toBe(true);
+    const content = result.data?.content as string;
+
+    // Charts must be present when data is available
+    expect(content).toContain('## 📈 Price & EPS Trends');
+    expect(content).toContain('## 📊 Revenue & Margin Trends');
+    expect(content).toContain('## 💰 Financials');
+    expect(content).toContain('```chart');
+
+    // Moat section absent when LLM returns invalid moat JSON
+    expect(content).not.toContain('## 🏰 Competitive Moat');
+  });
+
+  it('generate_stock_report shows moat section when LLM provides valid analysis', async () => {
+    const service = stubService();
+    (service.getPriceHistory as ReturnType<typeof vi.fn>).mockResolvedValue({
+      prices: [{ date: '2024-01-01', close: '170' }, { date: '2024-07-01', close: '180' }],
+    });
+
+    const moatJson = JSON.stringify({
+      moatType: 'Intangible Assets',
+      moatStrength: 'Wide',
+      moatScore: 82,
+      barriers: ['Brand loyalty', 'Ecosystem lock-in'],
+      narrative: 'Apple has a strong moat through its ecosystem.',
+      bestFor: 'Long-term investors seeking stable returns.',
+    });
+
+    const llmFill = vi.fn()
+      .mockResolvedValueOnce('{"AAPL":"AAPL"}')  // ticker resolution
+      .mockResolvedValueOnce(moatJson);            // moat analysis
+
+    const result = await executeTool(
+      'generate_stock_report',
+      { symbol: 'AAPL', range: '1y' },
+      service,
+      { llmFill }
+    );
+
+    expect(result.success).toBe(true);
+    const content = result.data?.content as string;
+    expect(content).toContain('## 🏰 Competitive Moat');
+    expect(content).toContain('Intangible Assets');
+    expect(content).toContain('Wide');
+    expect(content).toContain('82');
+    expect(content).toContain('Best For');
+
+    // Chart sections must still be present alongside moat section
+    expect(content).toContain('## 📈 Price & EPS Trends');
+    expect(content).toContain('## 💰 Financials');
+  });
+
   it('generate_sector_report uses llmFill to identify companies and fetches data', async () => {
     const service = stubService();
     // LLM returns two tickers
