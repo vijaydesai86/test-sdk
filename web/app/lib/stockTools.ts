@@ -23,6 +23,15 @@ export function getToolDefinitionsByName(toolNames?: string[]) {
 const REPORTS_DIR = process.env.REPORTS_DIR || (process.env.VERCEL ? '/tmp/reports' : 'reports');
 const CACHE_DIR = path.join(REPORTS_DIR, 'cache');
 const CACHE_TTL_MS = Number(process.env.STOCK_CACHE_TTL_MS || 1000 * 60 * 60 * 24 * 7);
+// Number of companies to include in comparison/sector/deep-sector reports.
+// Override via NUM_COMPANIES env var (e.g. set to 5 for faster reports, 15 for broader coverage).
+// Optimal value: 10 gives a good balance between breadth and API rate limits.
+const NUM_COMPANIES = Math.max(2, Number(process.env.NUM_COMPANIES || 10));
+// Number of recursive refinement passes in deep sector research.
+// Each pass feeds the previous analysis as context, progressively deepening insights.
+// Override via DEEP_RESEARCH_DEPTH env var (1 = single pass, 3 = very thorough but slower).
+// Optimal value: 2 gives meaningfully richer analysis with only one extra LLM call.
+const DEEP_RESEARCH_DEPTH = Math.max(1, Number(process.env.DEEP_RESEARCH_DEPTH || 2));
 const DEFAULT_SOURCE = (() => {
   const provider = (process.env.STOCK_DATA_PROVIDER || 'alphavantage').toLowerCase();
   if (provider === 'finnhub') return 'Finnhub';
@@ -94,6 +103,15 @@ function buildSectorCompaniesPrompt(sector: string, count: number): string {
   );
 }
 
+/** Prior-pass context fed into subsequent refinement passes for recursive deep research. */
+export interface DeepSectorPassContext {
+  dependencyAnalysis?: string;
+  ecosystemDiagram?: string;
+  refinementNotes?: string;
+  universe?: string[];
+  passIndex?: number;
+}
+
 /**
  * Builds a prompt that asks the LLM to:
  *   1. Analyse sector ecosystem dependencies (supply chain, customers, market, news)
@@ -103,11 +121,15 @@ function buildSectorCompaniesPrompt(sector: string, count: number): string {
  *
  * The prompt feeds real company overview and news-sentiment data gathered in Phase 2
  * so that the LLM can ground its analysis in actual data rather than training memory.
+ *
+ * When `previousPass` is supplied (recursive depth > 1), the prior analysis is included
+ * so the LLM can deepen and further refine the results from the previous pass.
  */
 function buildDeepSectorDependencyPrompt(
   sector: string,
   finalCount: number,
-  candidates: Array<{ symbol: string; overview: any; news: any; peers: any }>
+  candidates: Array<{ symbol: string; overview: any; news: any; peers: any }>,
+  previousPass?: DeepSectorPassContext
 ): string {
   const summaries = candidates
     .map(({ symbol, overview, news, peers }) => {
@@ -136,11 +158,29 @@ function buildDeepSectorDependencyPrompt(
 
   const symbolList = candidates.map((c) => c.symbol).join(', ');
 
+  const previousPassSection = previousPass
+    ? (
+        `\nPREVIOUS PASS ANALYSIS (pass ${(previousPass.passIndex ?? 0) + 1} — deepen and further refine this):\n` +
+        (previousPass.universe?.length
+          ? `  Previously refined universe: ${previousPass.universe.join(', ')}\n`
+          : '') +
+        (previousPass.dependencyAnalysis
+          ? `  Prior dependency analysis: ${previousPass.dependencyAnalysis.slice(0, 600)}\n`
+          : '') +
+        (previousPass.refinementNotes
+          ? `  Prior rationale: ${previousPass.refinementNotes.slice(0, 400)}\n`
+          : '') +
+        `\nUsing the prior analysis above, produce a DEEPER and MORE PRECISE analysis. ` +
+        `Correct any gaps, refine the company selection, and expand the ecosystem diagram.\n`
+      )
+    : '';
+
   return (
     `You are a senior equity research analyst. Your task is to perform a deep sector ecosystem analysis for the "${sector}" sector.\n\n` +
     `CANDIDATE COMPANIES: ${symbolList}\n\n` +
-    `COMPANY DATA:\n${summaries}\n\n` +
-    `TASKS:\n` +
+    `COMPANY DATA:\n${summaries}\n` +
+    previousPassSection +
+    `\nTASKS:\n` +
     `1. ECOSYSTEM ANALYSIS: Write a 2-3 paragraph narrative covering:\n` +
     `   - Supply chain relationships (who supplies inputs to whom, key upstream/downstream dependencies)\n` +
     `   - Customer / revenue dependencies (major end-markets, B2B vs consumer exposure)\n` +
@@ -521,7 +561,7 @@ function buildToolDefinitions() {
         parameters: {
           type: 'object',
           properties: {
-            companies: { type: 'array', items: { type: 'string' }, description: 'Company names or tickers (2-6 items)' },
+            companies: { type: 'array', items: { type: 'string' }, description: `Company names or tickers (2–${NUM_COMPANIES} items)` },
             range: { type: 'string', description: 'Price history range for charts (e.g., "1y", "3y", "5y", "max"). Default is "1y"' },
           },
           required: ['companies'],
@@ -545,7 +585,7 @@ function buildToolDefinitions() {
             },
             count: {
               type: 'number',
-              description: 'Number of top companies to include (default: 5, min: 2, max: 6)',
+              description: `Number of top companies to include (default: ${NUM_COMPANIES}, min: 2, max: ${NUM_COMPANIES})`,
             },
             range: {
               type: 'string',
@@ -564,7 +604,7 @@ function buildToolDefinitions() {
           'Generate a deep sector research report with full ecosystem analysis. ' +
           'Phase 1: AI identifies a broad candidate list of top companies in the sector. ' +
           'Phase 2: Real data (company overviews, news sentiment, peers) is fetched for all candidates. ' +
-          'Phase 3: AI maps supply-chain, customer, market and news dependencies, draws a sector dependency diagram, and refines the company list. ' +
+          `Phase 3: AI maps supply-chain, customer, market and news dependencies, draws a sector dependency diagram, and refines the company list — repeated ${DEEP_RESEARCH_DEPTH} time(s) for progressively deeper analysis. ` +
           'Phase 4: Full financial comparison report is built for the refined universe. ' +
           'Use this when the user asks for DEEP, THOROUGH or COMPREHENSIVE sector research. ' +
           'Prefer generate_sector_report for quick sector overviews.',
@@ -577,7 +617,7 @@ function buildToolDefinitions() {
             },
             count: {
               type: 'number',
-              description: 'Number of companies in the refined final list (default: 5, min: 3, max: 8)',
+              description: `Number of companies in the refined final list (default: ${NUM_COMPANIES}, min: 3, max: ${NUM_COMPANIES})`,
             },
             range: {
               type: 'string',
@@ -941,8 +981,8 @@ export async function executeTool(
           ? args.companies
           : String(args.companies || '').split(',');
         const companies = companiesInput.map((item: string) => item.trim()).filter(Boolean);
-        if (companies.length < 2 || companies.length > 6) {
-          return { success: false, error: 'Provide between 2 and 6 company names or tickers.' };
+        if (companies.length < 2 || companies.length > NUM_COMPANIES) {
+          return { success: false, error: `Provide between 2 and ${NUM_COMPANIES} company names or tickers.` };
         }
 
         // Step 1: LLM resolves ALL inputs to official tickers in one batch call.
@@ -1136,7 +1176,7 @@ export async function executeTool(
         if (!sector) {
           return { success: false, error: 'A sector or theme query is required.' };
         }
-        const count = Math.min(6, Math.max(2, Number(args.count) || 5));
+        const count = Math.min(NUM_COMPANIES, Math.max(2, Number(args.count) || NUM_COMPANIES));
         const range = args.range || '1y';
 
         // Step 1: Use LLM to identify the top companies in this sector.
@@ -1320,9 +1360,9 @@ export async function executeTool(
         if (!sector) {
           return { success: false, error: 'A sector or theme query is required.' };
         }
-        const finalCount = Math.min(8, Math.max(3, Number(args.count) || 5));
-        // Fetch roughly 2x candidates for screening; cap at 12 to avoid rate limits.
-        const initialCount = Math.min(12, finalCount * 2);
+        const finalCount = Math.min(NUM_COMPANIES, Math.max(3, Number(args.count) || NUM_COMPANIES));
+        // Fetch roughly 2x candidates for screening; cap at NUM_COMPANIES * 2 to avoid rate limits.
+        const initialCount = Math.min(NUM_COMPANIES * 2, finalCount * 2);
         const range = args.range || '1y';
 
         if (!options?.llmFill) {
@@ -1389,23 +1429,28 @@ export async function executeTool(
         }
 
         // ── Phase 3: LLM builds dependency analysis and refines the list ─────────
+        // Runs DEEP_RESEARCH_DEPTH times. Each pass feeds the prior analysis as context
+        // so the LLM progressively deepens its insights and further refines the universe.
         let universe: string[] = [];
         let dependencyAnalysis: string | undefined;
         let ecosystemDiagram: string | undefined;
         let refinementNotes: string | undefined;
+        let previousPass: DeepSectorPassContext | undefined;
 
-        {
-          const depPrompt = buildDeepSectorDependencyPrompt(sector, finalCount, ecosystemData);
+        for (let passIndex = 0; passIndex < DEEP_RESEARCH_DEPTH; passIndex++) {
+          const depPrompt = buildDeepSectorDependencyPrompt(sector, finalCount, ecosystemData, previousPass);
           try {
             const raw = await options.llmFill(depPrompt);
             const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
             const parsed = JSON.parse(cleaned);
             if (parsed && typeof parsed === 'object') {
+              let passUniverse: string[] = universe;
               if (Array.isArray(parsed.refinedList)) {
-                universe = parsed.refinedList
+                passUniverse = parsed.refinedList
                   .map((t: any) => String(t || '').replace(/[^A-Z0-9.]/gi, '').toUpperCase())
                   .filter((t: string) => t.length > 0)
                   .slice(0, finalCount);
+                if (passUniverse.length >= 2) universe = passUniverse;
               }
               if (typeof parsed.dependencyAnalysis === 'string') {
                 dependencyAnalysis = parsed.dependencyAnalysis;
@@ -1416,9 +1461,12 @@ export async function executeTool(
               if (typeof parsed.refinementNotes === 'string') {
                 refinementNotes = parsed.refinementNotes;
               }
+              // Carry this pass's output forward as context for the next pass
+              previousPass = { dependencyAnalysis, ecosystemDiagram, refinementNotes, universe, passIndex };
             }
           } catch {
-            // Fall through — will use initial candidates below
+            // Pass failed — stop recursion and use what we have so far
+            break;
           }
         }
 
@@ -1429,7 +1477,7 @@ export async function executeTool(
 
         // ── Phase 4: Fetch full comparison data for the refined universe ──────────
         const notes: string[] = [
-          `Universe refined through deep sector analysis for: "${sector}"`,
+          `Universe refined through deep sector analysis (${DEEP_RESEARCH_DEPTH} pass${DEEP_RESEARCH_DEPTH > 1 ? 'es' : ''}) for: "${sector}"`,
           `Initial candidates: ${initialCandidates.join(', ')}`,
           `Refined universe: ${universe.join(', ')}`,
         ];

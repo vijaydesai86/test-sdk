@@ -119,7 +119,7 @@ FILL_MODEL = process.env.FILL_MODEL || 'openai/gpt-4.1-mini'
 - `resolveSymbolFromQuery()` — scores `searchStock` results; detects share-class variants
 - `buildTickerResolutionPrompt(queries[])` — maps informal names/tickers → official US symbols
 - `buildSectorCompaniesPrompt(sector, count)` — LLM selects top N tickers for a sector/theme
-- `buildDeepSectorDependencyPrompt(sector, finalCount, ecosystemData[])` — dependency analysis + list refinement + Mermaid diagram
+- `buildDeepSectorDependencyPrompt(sector, finalCount, ecosystemData[], previousPass?)` — dependency analysis + list refinement + Mermaid diagram; optional `previousPass` context enables recursive deepening
 - `buildStockFillPrompt(symbol, data)` — detects null fields; builds targeted JSON fill prompt
 - `applyLLMFillToStockData(data, llmResponse)` — merges non-null LLM values; never overwrites API data
 - `buildBatchStockFillPrompt(companies[])` — batch fill for comparison reports (one LLM call)
@@ -150,7 +150,7 @@ FILL_MODEL = process.env.FILL_MODEL || 'openai/gpt-4.1-mini'
 | `generate_stock_report` | All above | Full stock research report + save |
 | `generate_comparison_report` | All above | Multi-company comparison + save |
 | `generate_sector_report` | All above | LLM-selected sector report + save |
-| `generate_deep_sector_report` | All above + LLM | 4-phase deep sector research with dependency analysis + save |
+| `generate_deep_sector_report` | All above + LLM | 4-phase deep sector research with recursive dependency analysis (DEEP_RESEARCH_DEPTH passes) + save |
 
 **Error suppression in `safeFetch`:**
 Errors matching these patterns are silently swallowed (not shown in report Data Gaps):
@@ -261,10 +261,10 @@ When `isRateLimit` triggers: `rateLimitHit = true` → all remaining fetches ski
 
 ---
 
-## Deep Sector Research — 4-Phase Protocol
+## Deep Sector Research — 4-Phase Protocol (with Recursive Refinement)
 
 ```typescript
-// Phase 1: LLM identifies initial broad candidate list (~2× final count, max 12)
+// Phase 1: LLM identifies initial broad candidate list (~2× final count, max NUM_COMPANIES * 2)
 const prompt = buildSectorCompaniesPrompt(sector, initialCount);
 initialCandidates = await llmFill(prompt); // → string[] of tickers
 
@@ -274,16 +274,21 @@ for (const sym of initialCandidates) {
   ecosystemData.push({ symbol, overview, news, peers });
 }
 
-// Phase 3: LLM dependency analysis + list refinement
-const depPrompt = buildDeepSectorDependencyPrompt(sector, finalCount, ecosystemData);
-// LLM returns JSON: { refinedList, dependencyAnalysis, ecosystemDiagram, refinementNotes }
-// Falls back to initialCandidates if LLM fails
+// Phase 3: LLM dependency analysis + list refinement — runs DEEP_RESEARCH_DEPTH times.
+// Each pass feeds the prior analysis as context so the LLM progressively deepens insights.
+let previousPass: DeepSectorPassContext | undefined;
+for (let passIndex = 0; passIndex < DEEP_RESEARCH_DEPTH; passIndex++) {
+  const depPrompt = buildDeepSectorDependencyPrompt(sector, finalCount, ecosystemData, previousPass);
+  // LLM returns JSON: { refinedList, dependencyAnalysis, ecosystemDiagram, refinementNotes }
+  // Falls back to initialCandidates if ALL passes fail; if a mid-loop pass fails, stops recursion.
+  previousPass = { dependencyAnalysis, ecosystemDiagram, refinementNotes, universe, passIndex };
+}
 
 // Phase 4: Full comparison data fetch for refined universe
 // Same as generate_comparison_report for the final company list
 ```
 
-**Important:** The 4 phases run exactly once per tool call. There is no automatic recursion or looping. Phase 3's refinement is the single opportunity for the LLM to improve the initial candidate list — if this LLM call fails, the initial candidates are used as-is for Phase 4.
+**Important:** Phase 3 runs `DEEP_RESEARCH_DEPTH` times (default 2). The first pass produces the initial refined list; subsequent passes use the prior analysis as context to deepen the ecosystem narrative and further refine the company selection. If a pass fails, recursion stops and the last successful universe is used. Phase 4 always runs exactly once.
 
 ---
 
@@ -303,6 +308,8 @@ const depPrompt = buildDeepSectorDependencyPrompt(sector, finalCount, ecosystemD
 | `USE_FULL_SYSTEM_PROMPT` | No | `false` | When `true`, sends full verbose `SYSTEM_PROMPT`; default uses shorter `COMPACT_SYSTEM_PROMPT` to conserve tokens |
 | `REPORTS_DIR` | No | `/tmp/reports` (Vercel) or `reports/` | Report output directory |
 | `STOCK_CACHE_TTL_MS` | No | `604800000` | Cache TTL ms (7 days) |
+| `NUM_COMPANIES` | No | `10` | Number of companies in comparison, sector, and deep-sector reports. Optimal: 10; raise to 15 for broader research, lower to 5 for faster/demo runs |
+| `DEEP_RESEARCH_DEPTH` | No | `2` | Recursive refinement passes in deep sector Phase 3. Each pass deepens analysis using prior results. Optimal: 2; set to 1 to disable recursion, 3 for most thorough analysis |
 | `ALPHA_VANTAGE_MIN_INTERVAL_MS` | No | `1200` | Min ms between AV requests |
 | `FINNHUB_MIN_INTERVAL_MS` | No | `500` | Min ms between Finnhub requests |
 | `HEALTH_CHECK_SYMBOL` | No | — | If set, health endpoint makes a live API call with this ticker |
