@@ -18,7 +18,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - `github`: GitHub Models API only (existing behaviour, `GITHUB_TOKEN` required)
   - `gemini`: Gemini API only (`GEMINI_TOKEN` required)
   - `hybrid`: GitHub Models as primary; Gemini auto-fallback when GitHub returns HTTP 429 rate limit
-- `GEMINI_MODEL` environment variable (default: `gemini-2.0-flash`) — Gemini model name for both main reasoning and gap-fill calls in `gemini` / `hybrid` mode.
+- `GEMINI_MODEL` environment variable (default: `gemini-2.5-flash`) — Gemini model name for both main reasoning and gap-fill calls in `gemini` / `hybrid` mode. `gemini-2.0-flash` is **not** used as default because it has zero free-tier quota on AI Studio keys.
+- `callGeminiWithFallback()` — tries `GEMINI_FALLBACK_MODELS` in order (`gemini-2.5-flash` → `gemini-2.5-flash-lite`) on 429, with per-model retry delay. All Gemini call sites use this instead of `callGeminiAPI` directly.
+- Gemini 429 response parsing: `callGeminiAPI` now extracts `retryDelay` from `RetryInfo` details in the response body and attaches it as `retryAfterMs` on the thrown error. The outer retry loop and `callLLMForDataFill` both honor this delay instead of always waiting a fixed 2 s.
 - `callLLMForDataFill` and `createLLMFiller` updated: both now accept `geminiToken` and select the correct provider for gap-fill / ticker-resolution based on `LLM_PROVIDER`. In `hybrid` mode, gap-fill also falls back to Gemini on 429.
 - `callProvider` (inside `POST /api/chat`) updated: implements provider selection/fallback logic for the main LLM tool-calling loop, consistent with `LLM_PROVIDER`.
 

@@ -15,10 +15,18 @@ const FILL_MODEL = process.env.FILL_MODEL || 'openai/gpt-4.1-mini';
 
 // Gemini API — OpenAI-compatible endpoint; same request/response format as GitHub Models.
 // Auth: GEMINI_TOKEN (Bearer). Get a key at: https://aistudio.google.com/api-keys
+// IMPORTANT: use a key created at aistudio.google.com, NOT Google Cloud Console —
+// AI Studio keys come with free-tier quotas automatically allocated.
 const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions';
-// Default Gemini model for both main reasoning and gap-fill.
-// Override with GEMINI_MODEL env var (e.g. 'gemini-1.5-pro' for heavier workloads).
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
+// Default Gemini model. Override with GEMINI_MODEL env var.
+// gemini-2.5-flash is the recommended default — it has free-tier quota on AI Studio keys
+// (5 RPM / 250K TPM / 20 RPD as of 2026-03).
+// gemini-2.0-flash has 0 free-tier quota on most projects and will always 429.
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+// Automatic Gemini model fallback list — tried in order when the primary hits 429.
+// gemini-2.5-flash-lite has a higher RPM (10 vs 5) so it handles per-minute bursts better.
+// Both share the same 20 RPD free-tier limit on AI Studio keys.
+const GEMINI_FALLBACK_MODELS = [GEMINI_MODEL, 'gemini-2.5-flash-lite'];
 
 // LLM provider selection — mirrors the STOCK_DATA_PROVIDER pattern for data services.
 // - 'github' (default): GitHub Models API only (GITHUB_TOKEN required)
@@ -442,10 +450,37 @@ async function callGeminiAPI(
       );
     }
     if (response.status === 429) {
+      let retryAfterMs: number | undefined;
+      let waitMsg = '';
+      try {
+        const errorJson = JSON.parse(errorText);
+        // Check structured RetryInfo details from Gemini response
+        const details: any[] = errorJson?.error?.details || [];
+        for (const detail of details) {
+          if (detail['@type']?.includes('RetryInfo') && detail.retryDelay) {
+            const match = String(detail.retryDelay).match(/^(\d+(?:\.\d+)?)s?$/);
+            if (match) {
+              retryAfterMs = Math.ceil(parseFloat(match[1]) * 1000);
+              waitMsg = ` Please retry in ${Math.ceil(parseFloat(match[1]))} second(s).`;
+            }
+          }
+        }
+        // Also check plain-text hint in the message field
+        if (!retryAfterMs) {
+          const msgMatch = String(errorJson?.error?.message || '').match(/please retry in (\d+(?:\.\d+)?)s/i);
+          if (msgMatch) {
+            retryAfterMs = Math.ceil(parseFloat(msgMatch[1]) * 1000);
+            waitMsg = ` Please retry in ${Math.ceil(parseFloat(msgMatch[1]))} second(s).`;
+          }
+        }
+      } catch {
+        // ignore JSON parse errors
+      }
       const err = new Error(
-        'Gemini API rate limit reached (429). Free tier: 1,500 requests/day for gemini-2.0-flash.'
-      ) as Error & { statusCode: number };
+        `Gemini API rate limit reached (429).${waitMsg} Free tier: 1,500 requests/day for gemini-2.0-flash.`
+      ) as Error & { statusCode: number; retryAfterMs?: number };
       err.statusCode = 429;
+      if (retryAfterMs !== undefined) err.retryAfterMs = retryAfterMs;
       throw err;
     }
     if (response.status === 400) {
@@ -463,6 +498,35 @@ async function callGeminiAPI(
 }
 
 /**
+ * Call Gemini with automatic model fallback on 429.
+ * Steps through GEMINI_FALLBACK_MODELS (e.g. gemini-2.0-flash → gemini-1.5-flash).
+ * Useful when a project's free-tier quota for the primary model is exhausted or
+ * not yet allocated (limit: 0) — the secondary model has a separate quota pool.
+ */
+async function callGeminiWithFallback(
+  messages: ChatMessage[],
+  geminiToken: string,
+  tools: ReturnType<typeof getToolDefinitionsByName>
+): Promise<any> {
+  let lastErr: any;
+  for (const model of GEMINI_FALLBACK_MODELS) {
+    try {
+      return await callGeminiAPI(messages, geminiToken, model, tools);
+    } catch (err: any) {
+      lastErr = err;
+      if (err?.statusCode !== 429) throw err; // only retry on rate limits
+      if (model !== GEMINI_FALLBACK_MODELS[GEMINI_FALLBACK_MODELS.length - 1]) {
+        console.info(`Gemini model '${model}' rate-limited — trying fallback model`);
+        // Honor the retry delay before trying the next model (capped at 10 s)
+        const delayMs = Math.min(err?.retryAfterMs ?? 0, 10000);
+        if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+    }
+  }
+  throw lastErr;
+}
+
+/**
  * Make a targeted LLM call — used for ticker resolution (resolving informal company
  * names or wrong tickers to official US exchange symbols before any API call).
  * Returns the raw response string (expected to be valid JSON).
@@ -470,9 +534,9 @@ async function callGeminiAPI(
  *
  * Provider selection mirrors LLM_PROVIDER:
  * - 'github':  GitHub Models FILL_MODEL (gpt-4.1-mini) — separate quota from main model
- * - 'gemini':  Gemini GEMINI_MODEL — generous free tier
- * - 'hybrid':  GitHub Models primary; auto-falls back to Gemini on 429
- * On a 429 we wait 2 s and retry once before giving up gracefully.
+ * - 'gemini':  callGeminiWithFallback — tries GEMINI_FALLBACK_MODELS in order
+ * - 'hybrid':  GitHub Models primary; auto-falls back to Gemini (with model fallback) on 429
+ * On 429, waits for the provider's requested retryDelay (capped at 10 s) and retries once.
  */
 async function callLLMForDataFill(
   prompt: string,
@@ -495,21 +559,21 @@ async function callLLMForDataFill(
     let result: any;
     if (LLM_PROVIDER === 'gemini') {
       if (!geminiToken) return '{}';
-      result = await callGeminiAPI(fillMessages, geminiToken, GEMINI_MODEL, []);
+      result = await callGeminiWithFallback(fillMessages, geminiToken, []);
     } else if (LLM_PROVIDER === 'hybrid') {
       if (githubToken) {
         try {
           result = await callGitHubModelsAPI(fillMessages, githubToken, FILL_MODEL, []);
         } catch (err: any) {
-          // Hybrid: auto-fall back to Gemini when GitHub Models is rate-limited
+          // Hybrid: auto-fall back to Gemini (with model fallback) when GitHub is rate-limited
           if (err?.statusCode === 429 && geminiToken) {
-            result = await callGeminiAPI(fillMessages, geminiToken, GEMINI_MODEL, []);
+            result = await callGeminiWithFallback(fillMessages, geminiToken, []);
           } else {
             throw err;
           }
         }
       } else if (geminiToken) {
-        result = await callGeminiAPI(fillMessages, geminiToken, GEMINI_MODEL, []);
+        result = await callGeminiWithFallback(fillMessages, geminiToken, []);
       } else {
         return '{}';
       }
@@ -525,8 +589,10 @@ async function callLLMForDataFill(
     return await attempt();
   } catch (err: any) {
     if (err?.statusCode === 429) {
-      // Brief pause, then one retry — handles transient per-minute bursts.
-      await new Promise((resolve) => setTimeout(resolve, 2000));
+      // Honor the provider's requested retry delay; cap at 10 s to avoid stalling requests.
+      // Falls back to 2 s for providers that don't include a retry hint.
+      const delayMs = Math.min(err?.retryAfterMs ?? 2000, 10000);
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
       try {
         return await attempt();
       } catch {
@@ -699,7 +765,7 @@ export async function POST(request: NextRequest) {
       tools: ReturnType<typeof getToolDefinitionsByName>
     ) => {
       if (LLM_PROVIDER === 'gemini') {
-        // Gemini-only mode: all LLM calls go to Gemini API
+        // Gemini-only mode: all LLM calls go to Gemini API with automatic model fallback
         if (!geminiToken) {
           const err = new Error(
             'Gemini token not configured. Set GEMINI_TOKEN environment variable.'
@@ -707,11 +773,12 @@ export async function POST(request: NextRequest) {
           err.statusCode = 503;
           throw err;
         }
-        return callGeminiAPI(messages, geminiToken, GEMINI_MODEL, tools);
+        return callGeminiWithFallback(messages, geminiToken, tools);
       }
 
       if (LLM_PROVIDER === 'hybrid') {
         // Hybrid mode: GitHub Models primary, Gemini auto-fallback on HTTP 429.
+        // Uses callGeminiWithFallback so gemini-2.0-flash → gemini-1.5-flash if needed.
         // The model-switching fallback chain (fallbackModels) still applies to non-429 errors.
         if (githubToken) {
           try {
@@ -720,14 +787,16 @@ export async function POST(request: NextRequest) {
             // Automatically fall back to Gemini when GitHub Models is rate-limited
             if (err?.statusCode === 429 && geminiToken) {
               console.info('GitHub Models rate limit hit — falling back to Gemini API');
-              return callGeminiAPI(messages, geminiToken, GEMINI_MODEL, tools);
+              // callGeminiWithFallback handles gemini-2.0-flash → gemini-1.5-flash internally.
+              // Any remaining 429 propagates with retryAfterMs for the outer loop to honor.
+              return await callGeminiWithFallback(messages, geminiToken, tools);
             }
             throw err;
           }
         }
         // No GitHub token; use Gemini directly if available
         if (geminiToken) {
-          return callGeminiAPI(messages, geminiToken, GEMINI_MODEL, tools);
+          return callGeminiWithFallback(messages, geminiToken, tools);
         }
         const err = new Error(
           'No LLM provider tokens configured. Set GITHUB_TOKEN and/or GEMINI_TOKEN.'
@@ -774,6 +843,11 @@ export async function POST(request: NextRequest) {
             if (fallbackIndex < fallbackModels.length - 1) {
               fallbackIndex += 1;
               activeModel = fallbackModels[fallbackIndex];
+              // Honor the provider's requested retry delay (e.g. Gemini RetryInfo), capped at 10 s.
+              const delayMs = Math.min(error?.retryAfterMs ?? 0, 10000);
+              if (delayMs > 0) {
+                await new Promise((resolve) => setTimeout(resolve, delayMs));
+              }
               attempt++;
               continue;
             }

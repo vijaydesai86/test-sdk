@@ -186,9 +186,9 @@ npm run dev
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `GITHUB_TOKEN` | Yes (unless `LLM_PROVIDER=gemini`) | — | GitHub Personal Access Token — authenticates GitHub Models API (your Copilot subscription). Get at [github.com/settings/tokens](https://github.com/settings/tokens) |
-| `GEMINI_TOKEN` | Yes (when `LLM_PROVIDER=gemini` or `hybrid`) | — | Gemini API key — get a free key at [aistudio.google.com/api-keys](https://aistudio.google.com/api-keys). Free tier: 1,500 req/day for gemini-2.0-flash. **Never commit — set in Vercel env only.** |
+| `GEMINI_TOKEN` | Yes (when `LLM_PROVIDER=gemini` or `hybrid`) | — | Gemini API key — get a free key at [aistudio.google.com/api-keys](https://aistudio.google.com/api-keys). **Must use AI Studio, not Google Cloud Console.** Free tier (gemini-2.5-flash): 5 RPM / 250K TPM / 20 RPD. **Never commit — set in Vercel env only.** |
 | `LLM_PROVIDER` | No | `github` | LLM API provider: `github` (GitHub Models), `gemini` (Gemini API), or `hybrid` (GitHub primary, auto-falls back to Gemini on HTTP 429) |
-| `GEMINI_MODEL` | No | `gemini-2.0-flash` | Gemini model name (used when `LLM_PROVIDER=gemini` or `hybrid`) |
+| `GEMINI_MODEL` | No | `gemini-2.5-flash` | Gemini model name. Default `gemini-2.5-flash` has free-tier quota on AI Studio keys. `gemini-2.0-flash` has **zero** free quota and will always fail. |
 | `ALPHA_VANTAGE_API_KEY` | **Yes** | — | Free API key from [alphavantage.co](https://www.alphavantage.co/support/#api-key) — real-time market data |
 | `FINNHUB_API_KEY` | Recommended | — | Free key from [finnhub.io](https://finnhub.io) — enables hybrid fallback for higher data completeness |
 | `STOCK_DATA_PROVIDER` | No | `alphavantage` | `alphavantage`, `finnhub`, or `hybrid` (use `hybrid` for best data coverage) |
@@ -273,7 +273,7 @@ CI runs the full test suite on every pull request. All tests must pass before me
 | Reports missing after reload | Vercel `/tmp` is ephemeral. Download reports immediately after generation |
 | "401 Unauthorized" | `GITHUB_TOKEN` expired — regenerate at github.com/settings/tokens; or `GEMINI_TOKEN` invalid — regenerate at aistudio.google.com/api-keys |
 | "429 Too Many Requests" (GitHub Models) | App auto-retries with fallback models. Set `LLM_PROVIDER=hybrid` to automatically fall back to Gemini on 429 |
-| "429 Too Many Requests" (Gemini) | Gemini free tier: 1,500 req/day for gemini-2.0-flash. Try again later or upgrade at aistudio.google.com |
+| "429 Too Many Requests" (Gemini) | Check your model: `gemini-2.0-flash` has **zero** free-tier quota and will always fail. The correct default is `gemini-2.5-flash` (5 RPM / 20 RPD). Keys must be created at [aistudio.google.com/api-keys](https://aistudio.google.com/api-keys), not Google Cloud Console. |
 | Model returns text instead of tool calls | Select a tool-calling capable model in the model selector dropdown |
 | DEP0169 warning in logs | Emitted by a Node.js dependency — informational only, no user impact |
 

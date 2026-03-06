@@ -97,14 +97,14 @@ MAX_HISTORY_MESSAGE_CHARS = 4000
 maxDuration = 300  // Vercel: 5 minutes
 DEFAULT_MODEL = process.env.COPILOT_MODEL || 'openai/gpt-4.1'
 FILL_MODEL = process.env.FILL_MODEL || 'openai/gpt-4.1-mini'
-GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.0-flash'
+GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash'
 LLM_PROVIDER = process.env.LLM_PROVIDER || 'github'  // 'github' | 'gemini' | 'hybrid'
 ```
 
 **LLM provider selection (`LLM_PROVIDER`):**
 - `github`: `callGitHubModelsAPI` — GitHub Models REST API with mandatory headers
-- `gemini`: `callGeminiAPI` — Gemini REST API via OpenAI-compatible endpoint (`/v1beta/openai/chat/completions`)
-- `hybrid`: `callGitHubModelsAPI` primary; auto-falls back to `callGeminiAPI` on HTTP 429; mirrors `STOCK_DATA_PROVIDER` hybrid pattern
+- `gemini`: `callGeminiWithFallback` — tries `GEMINI_FALLBACK_MODELS` in order (`gemini-2.5-flash` → `gemini-2.5-flash-lite`)
+- `hybrid`: `callGitHubModelsAPI` primary; auto-falls back to `callGeminiWithFallback` on HTTP 429; mirrors `STOCK_DATA_PROVIDER` hybrid pattern
 
 **GitHub Models API headers (mandatory):**
 ```typescript
@@ -304,9 +304,9 @@ for (let passIndex = 0; passIndex < DEEP_RESEARCH_DEPTH; passIndex++) {
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `GITHUB_TOKEN` (or `GH_TOKEN`/`COPILOT_GITHUB_TOKEN`) | Yes (unless `LLM_PROVIDER=gemini`) | — | GitHub Models API authentication |
-| `GEMINI_TOKEN` | Yes (when `LLM_PROVIDER=gemini` or `hybrid`) | — | Gemini API key. Get at https://aistudio.google.com/api-keys. Free tier: 1,500 req/day for gemini-2.0-flash. **Server env only — never exposed client-side.** |
+| `GEMINI_TOKEN` | Yes (when `LLM_PROVIDER=gemini` or `hybrid`) | — | Gemini API key. **Must use [aistudio.google.com/api-keys](https://aistudio.google.com/api-keys)** — NOT Google Cloud Console. AI Studio keys include free-tier quota. Free tier (gemini-2.5-flash): 5 RPM / 250K TPM / 20 RPD. **Server env only — never exposed client-side.** |
 | `LLM_PROVIDER` | No | `github` | `github` (GitHub Models only), `gemini` (Gemini only), or `hybrid` (GitHub primary, Gemini auto-fallback on 429). Mirrors `STOCK_DATA_PROVIDER` pattern. |
-| `GEMINI_MODEL` | No | `gemini-2.0-flash` | Gemini model name for both main reasoning and gap-fill calls |
+| `GEMINI_MODEL` | No | `gemini-2.5-flash` | Gemini model name. `gemini-2.5-flash` has free-tier quota on AI Studio keys (5 RPM / 20 RPD). **`gemini-2.0-flash` has zero free quota and will always fail.** Auto-falls back to `gemini-2.5-flash-lite` on 429. |
 | `ALPHA_VANTAGE_API_KEY` | Yes (unless `STOCK_DATA_PROVIDER=finnhub`) | — | Alpha Vantage free tier |
 | `FINNHUB_API_KEY` | No | — | Enables Finnhub provider or hybrid fallback. If `STOCK_DATA_PROVIDER=hybrid` but this is not set, silently falls back to AV-only |
 | `STOCK_DATA_PROVIDER` | No | `alphavantage` | `alphavantage`, `finnhub`, or `hybrid` |
