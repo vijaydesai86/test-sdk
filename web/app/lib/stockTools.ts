@@ -108,6 +108,7 @@ export interface DeepSectorPassContext {
   dependencyAnalysis?: string;
   ecosystemDiagram?: string;
   refinementNotes?: string;
+  companySnapshots?: Record<string, string>;
   universe?: string[];
   passIndex?: number;
 }
@@ -181,19 +182,27 @@ function buildDeepSectorDependencyPrompt(
     `COMPANY DATA:\n${summaries}\n` +
     previousPassSection +
     `\nTASKS:\n` +
-    `1. ECOSYSTEM ANALYSIS: Write a 2-3 paragraph narrative covering:\n` +
-    `   - Supply chain relationships (who supplies inputs to whom, key upstream/downstream dependencies)\n` +
-    `   - Customer / revenue dependencies (major end-markets, B2B vs consumer exposure)\n` +
-    `   - Key market / macro factors affecting the whole sector (regulation, commodities, rates, geopolitics)\n` +
-    `   - Competitive dynamics and news sentiment themes across the candidates\n\n` +
+    `1. ECOSYSTEM ANALYSIS: Write a structured analysis using EXACTLY these four ### markdown subsection headers (one paragraph each):\n` +
+    `   ### 🔗 Supply Chain & Dependencies\n` +
+    `   (key supplier/input relationships, who depends on whom, upstream/downstream links)\n` +
+    `   ### 👥 Customer & Revenue Exposure\n` +
+    `   (major end-markets, B2B vs consumer split, revenue concentration, geographic exposure)\n` +
+    `   ### 📊 Market & Macro Factors\n` +
+    `   (regulation, commodity prices, interest rates, geopolitics affecting the sector)\n` +
+    `   ### ⚔️ Competitive Dynamics & Sentiment\n` +
+    `   (competitive moats, market-share battles, news sentiment themes across candidates)\n\n` +
     `2. ECOSYSTEM DIAGRAM: Create a concise Mermaid diagram (graph LR direction) showing the most important\n` +
     `   supplier-company-customer relationships or competitive positioning. Keep it to at most 15 nodes.\n` +
     `   Use plain node names without special characters.\n\n` +
     `3. REFINEMENT: Select the best ${finalCount} companies from the candidates for deep financial analysis.\n` +
     `   Criteria: sector relevance, financial strength, market leadership, and portfolio diversification.\n\n` +
-    `4. RATIONALE: Briefly explain why each company was kept or excluded.\n\n` +
+    `4. RATIONALE: For EVERY candidate, write exactly one line in this format — no extra text:\n` +
+    `   ✅ TICKER (Company Name) — reason this company was selected\n` +
+    `   ❌ TICKER (Company Name) — reason this company was excluded\n\n` +
+    `5. COMPANY SNAPSHOTS: For each company in the FINAL refined list only, provide a 1-2 sentence summary\n` +
+    `   of their role in the sector and key investment relevance. Use the company ticker as the key.\n\n` +
     `Respond ONLY with valid JSON (no markdown fences, no explanation outside the JSON):\n` +
-    `{"refinedList":["TICK1","TICK2"],"dependencyAnalysis":"narrative...","ecosystemDiagram":"graph LR\\n  NodeA-->NodeB","refinementNotes":"rationale..."}`
+    `{"refinedList":["TICK1","TICK2"],"dependencyAnalysis":"### 🔗 Supply Chain & Dependencies\\n\\ntext...\\n\\n### 👥 Customer & Revenue Exposure\\n\\ntext...","ecosystemDiagram":"graph LR\\n  NodeA-->NodeB","refinementNotes":"✅ TICK1 (Name) — reason\\n❌ TICK2 (Name) — reason","companySnapshots":{"TICK1":"1-2 sentence snapshot...","TICK2":"1-2 sentence snapshot..."}}`
   );
 }
 
@@ -1435,6 +1444,7 @@ export async function executeTool(
         let dependencyAnalysis: string | undefined;
         let ecosystemDiagram: string | undefined;
         let refinementNotes: string | undefined;
+        let companySnapshots: Record<string, string> | undefined;
         let previousPass: DeepSectorPassContext | undefined;
 
         for (let passIndex = 0; passIndex < DEEP_RESEARCH_DEPTH; passIndex++) {
@@ -1461,8 +1471,14 @@ export async function executeTool(
               if (typeof parsed.refinementNotes === 'string') {
                 refinementNotes = parsed.refinementNotes;
               }
+              if (parsed.companySnapshots && typeof parsed.companySnapshots === 'object' && !Array.isArray(parsed.companySnapshots)) {
+                companySnapshots = {};
+                for (const [k, v] of Object.entries(parsed.companySnapshots)) {
+                  if (typeof v === 'string') companySnapshots[k.replace(/[^A-Z0-9.]/gi, '').toUpperCase()] = v;
+                }
+              }
               // Carry this pass's output forward as context for the next pass
-              previousPass = { dependencyAnalysis, ecosystemDiagram, refinementNotes, universe, passIndex };
+              previousPass = { dependencyAnalysis, ecosystemDiagram, refinementNotes, companySnapshots, universe, passIndex };
             }
           } catch {
             // Pass failed — stop recursion and use what we have so far
@@ -1621,6 +1637,7 @@ export async function executeTool(
           dependencyAnalysis,
           ecosystemDiagram,
           refinementNotes,
+          companySnapshots,
         });
         const safeTitle = sector.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
         const saved = await saveReport(content, `${safeTitle}-deep-sector-report`);
