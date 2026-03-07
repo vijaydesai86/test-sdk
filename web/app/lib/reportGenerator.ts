@@ -1447,7 +1447,26 @@ export async function saveReport(content: string, title: string, directory = DEF
   const filePath = path.join(reportDir, filename);
   await fs.writeFile(filePath, content, 'utf8');
 
-  return { filePath, filename };
+  // Also persist to Supabase if configured
+  let supabaseId: string | undefined;
+  const supabaseUrl = process.env.SUPABASE_URL;
+  const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (supabaseUrl && supabaseKey) {
+    try {
+      const { getSupabaseClient } = await import('./supabaseClient');
+      const client = getSupabaseClient();
+      const { data } = await client
+        .from('saved_reports')
+        .insert({ filename, title: safeTitle || title, content })
+        .select('id')
+        .single();
+      if (data?.id) supabaseId = data.id as string;
+    } catch {
+      // Non-fatal: local file is already saved
+    }
+  }
+
+  return { filePath, filename, supabaseId };
 }
 
 export function buildComparisonReport(data: ComparisonReportData): string {

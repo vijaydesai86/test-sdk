@@ -9,6 +9,7 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.50.3",
     "axios": "^1.13.5",
     "dotenv": "^17.3.1",
     "echarts": "^5.6.0",
