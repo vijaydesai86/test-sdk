@@ -1441,13 +1441,56 @@ export async function saveReport(content: string, title: string, directory = DEF
   const safeTitle = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
   const filename = `${safeTitle || 'report'}-${timestamp}.md`;
-  const reportDir = directory;
 
-  await fs.mkdir(reportDir, { recursive: true });
-  const filePath = path.join(reportDir, filename);
-  await fs.writeFile(filePath, content, 'utf8');
+  // Persist to Supabase first (independent of filesystem)
+  let supabaseId: string | undefined;
+  const supabaseUrl = process.env.SUPABASE_URL;
+  const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (supabaseUrl && supabaseKey) {
+    try {
+      const { getSupabaseClient } = await import('./supabaseClient');
+      const client = getSupabaseClient();
+      if (client) {
+        const { data, error } = await client
+          .from('saved_reports')
+          .insert({ filename, title: safeTitle || title, content })
+          .select('id')
+          .single();
+        if (error) {
+          // Surface actionable message so it's visible in Vercel logs
+          if (error.message.includes('schema cache') || error.message.includes('does not exist')) {
+            console.error(
+              '[saveReport] Supabase table missing — run the setup SQL at ' +
+              'https://supabase.com/dashboard/project/bnhnlyiuwlebgmjerueb/sql/new\n' +
+              'SQL: create table if not exists public.saved_reports (id uuid primary key default gen_random_uuid(), filename text not null, title text, content text not null, created_at timestamptz not null default now());'
+            );
+          } else {
+            console.error('[saveReport] Supabase insert error:', error.message);
+          }
+        } else if (data?.id) {
+          supabaseId = data.id as string;
+        }
+      }
+    } catch (err) {
+      console.error('[saveReport] Supabase unexpected error:', err);
+    }
+  }
 
-  return { filePath, filename };
+  // Also write to local filesystem (best-effort; /tmp/reports on Vercel)
+  let filePath = path.join(directory, filename);
+  try {
+    await fs.mkdir(directory, { recursive: true });
+    await fs.writeFile(filePath, content, 'utf8');
+  } catch {
+    filePath = path.join('/tmp', filename);
+    try {
+      await fs.writeFile(filePath, content, 'utf8');
+    } catch {
+      // Filesystem not available — Supabase is the source of truth
+    }
+  }
+
+  return { filePath, filename, supabaseId };
 }
 
 export function buildComparisonReport(data: ComparisonReportData): string {

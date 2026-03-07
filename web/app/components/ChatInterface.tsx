@@ -23,6 +23,13 @@ interface ReportItem {
   downloadUrl?: string;
 }
 
+interface SavedReportMeta {
+  id: string;
+  filename: string;
+  title: string | null;
+  created_at: string;
+}
+
 interface ModelOption {
   value: string;
   label: string;
@@ -157,6 +164,9 @@ export default function ChatInterface() {
   const [deletedReports, setDeletedReports] = useState<Set<string>>(new Set());
   const [savedReports, setSavedReports] = useState<ReportItem[]>([]);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [supabaseReports, setSupabaseReports] = useState<SavedReportMeta[]>([]);
+  const [supabaseReportsLoading, setSupabaseReportsLoading] = useState(false);
+  const [supabaseSetupRequired, setSupabaseSetupRequired] = useState(false);
 
   useEffect(() => {
     fetch('/api/providers')
@@ -175,6 +185,22 @@ export default function ChatInterface() {
       .catch(() => { /* keep fallback model */ })
       .finally(() => setModelsLoading(false));
   // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const fetchSupabaseReports = () => {
+    setSupabaseReportsLoading(true);
+    fetch('/api/saved-reports')
+      .then((res) => res.json())
+      .then((payload: { reports?: SavedReportMeta[]; setupRequired?: boolean }) => {
+        setSupabaseReports(payload.reports ?? []);
+        setSupabaseSetupRequired(payload.setupRequired === true);
+      })
+      .catch(() => { /* Supabase may not be configured */ })
+      .finally(() => setSupabaseReportsLoading(false));
+  };
+
+  useEffect(() => {
+    fetchSupabaseReports();
   }, []);
 
   useEffect(() => {
@@ -249,6 +275,8 @@ export default function ChatInterface() {
           }
           return updated;
         });
+        // Refresh Supabase saved reports list
+        fetchSupabaseReports();
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Unknown error';
@@ -339,6 +367,58 @@ export default function ChatInterface() {
       setDeletedReports((prev) => new Set(prev).add(item.downloadUrl ?? item.filename));
       setSavedReports((prev) => prev.filter((s) => s.filename !== item.filename));
       if (reportUrl === item.downloadUrl) {
+        setReportUrl(null);
+        setReportPreview(null);
+        setReportTitle(null);
+      }
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to delete report');
+    }
+  };
+
+  const handleSupabaseReportClick = async (report: SavedReportMeta) => {
+    setReportLoading(true);
+    const downloadUrl = `/api/saved-reports/${report.id}`;
+    setReportUrl(downloadUrl);
+    try {
+      const res = await fetch(downloadUrl);
+      const content = await res.text();
+      setReportPreview(content);
+      setReportTitle(report.filename);
+    } catch {
+      setReportPreview('Unable to load report preview.');
+      setReportTitle(report.filename);
+    } finally {
+      setReportLoading(false);
+    }
+  };
+
+  const handleSupabaseReportDownload = async (report: SavedReportMeta) => {
+    try {
+      const res = await fetch(`/api/saved-reports/${report.id}`);
+      const content = await res.text();
+      const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = report.filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch {
+      window.open(`/api/saved-reports/${report.id}`, '_blank');
+    }
+  };
+
+  const handleSupabaseReportDelete = async (report: SavedReportMeta) => {
+    setError(null);
+    try {
+      const res = await fetch(`/api/saved-reports/${report.id}`, { method: 'DELETE' });
+      const data = await res.json() as Record<string, unknown>;
+      if (!res.ok) throw new Error(String(data['error'] ?? 'Failed to delete report'));
+      setSupabaseReports((prev) => prev.filter((r) => r.id !== report.id));
+      if (reportUrl === `/api/saved-reports/${report.id}`) {
         setReportUrl(null);
         setReportPreview(null);
         setReportTitle(null);
@@ -493,6 +573,108 @@ export default function ChatInterface() {
                       <button
                         type="button"
                         onClick={() => void handleReportDelete(item)}
+                        title="Delete"
+                        className="text-slate-300 hover:text-red-500 shrink-0 px-1"
+                      >
+                        &#x2715;
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+
+            <section>
+              <div className="flex items-center justify-between mb-2">
+                <h2 className="text-xs font-semibold text-slate-400 dark:text-gray-500 uppercase tracking-widest">
+                  Saved Reports
+                </h2>
+                <button
+                  type="button"
+                  onClick={fetchSupabaseReports}
+                  title="Refresh"
+                  className="text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-300 text-xs px-1"
+                >
+                  &#x21bb;
+                </button>
+              </div>
+              {supabaseReportsLoading ? (
+                <p className="text-xs text-slate-400 dark:text-gray-500">Loading&#8230;</p>
+              ) : supabaseSetupRequired ? (
+                <div className="rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/40 p-2 text-xs space-y-2">
+                  <p className="text-amber-700 dark:text-amber-400 font-medium">
+                    One-time database setup required
+                  </p>
+                  <p className="text-amber-600 dark:text-amber-500 leading-snug">
+                    Run this SQL in the{' '}
+                    <a
+                      href="https://supabase.com/dashboard/project/bnhnlyiuwlebgmjerueb/sql/new"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="underline font-medium hover:text-amber-700 dark:hover:text-amber-300"
+                    >
+                      Supabase SQL editor ↗
+                    </a>
+                    , then click &#x21bb; above.
+                  </p>
+                  <div className="relative">
+                    <pre className="bg-slate-900 text-green-400 rounded p-2 text-[10px] leading-relaxed overflow-x-auto whitespace-pre-wrap break-all select-all">
+{`create table if not exists public.saved_reports (
+  id         uuid primary key default gen_random_uuid(),
+  filename   text not null,
+  title      text,
+  content    text not null,
+  created_at timestamptz not null default now()
+);
+alter table public.saved_reports enable row level security;
+create policy "service role full access"
+  on public.saved_reports as permissive for all
+  to service_role using (true) with check (true);`}
+                    </pre>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void navigator.clipboard.writeText(
+                          `create table if not exists public.saved_reports (\n  id         uuid primary key default gen_random_uuid(),\n  filename   text not null,\n  title      text,\n  content    text not null,\n  created_at timestamptz not null default now()\n);\nalter table public.saved_reports enable row level security;\ncreate policy "service role full access"\n  on public.saved_reports as permissive for all\n  to service_role using (true) with check (true);`
+                        );
+                      }}
+                      className="absolute top-1.5 right-1.5 bg-slate-700 hover:bg-slate-600 text-slate-200 text-[10px] px-1.5 py-0.5 rounded"
+                      title="Copy SQL"
+                    >
+                      Copy
+                    </button>
+                  </div>
+                </div>
+              ) : supabaseReports.length === 0 ? (
+                <p className="text-xs text-slate-400 dark:text-gray-500">
+                  No saved reports yet.
+                </p>
+              ) : (
+                <ul className="space-y-1.5">
+                  {supabaseReports.map((report) => (
+                    <li
+                      key={report.id}
+                      className="flex items-center gap-1 rounded-lg border border-slate-200 dark:border-gray-700 px-2 py-1.5 text-xs"
+                    >
+                      <button
+                        type="button"
+                        onClick={() => void handleSupabaseReportClick(report)}
+                        className="flex-1 text-left truncate text-indigo-600 dark:text-indigo-300 hover:underline"
+                        title={report.filename}
+                      >
+                        {report.title || report.filename}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleSupabaseReportDownload(report)}
+                        title="Download"
+                        className="text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-300 shrink-0 px-1"
+                      >
+                        &#x2193;
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleSupabaseReportDelete(report)}
                         title="Delete"
                         className="text-slate-300 hover:text-red-500 shrink-0 px-1"
                       >
