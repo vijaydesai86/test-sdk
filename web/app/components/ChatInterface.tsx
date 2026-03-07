@@ -601,18 +601,50 @@ export default function ChatInterface() {
               {supabaseReportsLoading ? (
                 <p className="text-xs text-slate-400 dark:text-gray-500">Loading&#8230;</p>
               ) : supabaseSetupRequired ? (
-                <p className="text-xs text-amber-600 dark:text-amber-400 leading-snug">
-                  Database table not set up.{' '}
-                  <a
-                    href="https://supabase.com/dashboard/project/bnhnlyiuwlebgmjerueb/sql/new"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="underline hover:text-amber-700 dark:hover:text-amber-300"
-                  >
-                    Run the setup SQL
-                  </a>{' '}
-                  then click &#x21bb;
-                </p>
+                <div className="rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/40 p-2 text-xs space-y-2">
+                  <p className="text-amber-700 dark:text-amber-400 font-medium">
+                    One-time database setup required
+                  </p>
+                  <p className="text-amber-600 dark:text-amber-500 leading-snug">
+                    Run this SQL in the{' '}
+                    <a
+                      href="https://supabase.com/dashboard/project/bnhnlyiuwlebgmjerueb/sql/new"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="underline font-medium hover:text-amber-700 dark:hover:text-amber-300"
+                    >
+                      Supabase SQL editor ↗
+                    </a>
+                    , then click &#x21bb; above.
+                  </p>
+                  <div className="relative">
+                    <pre className="bg-slate-900 text-green-400 rounded p-2 text-[10px] leading-relaxed overflow-x-auto whitespace-pre-wrap break-all select-all">
+{`create table if not exists public.saved_reports (
+  id         uuid primary key default gen_random_uuid(),
+  filename   text not null,
+  title      text,
+  content    text not null,
+  created_at timestamptz not null default now()
+);
+alter table public.saved_reports enable row level security;
+create policy "service role full access"
+  on public.saved_reports as permissive for all
+  to service_role using (true) with check (true);`}
+                    </pre>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void navigator.clipboard.writeText(
+                          `create table if not exists public.saved_reports (\n  id         uuid primary key default gen_random_uuid(),\n  filename   text not null,\n  title      text,\n  content    text not null,\n  created_at timestamptz not null default now()\n);\nalter table public.saved_reports enable row level security;\ncreate policy "service role full access"\n  on public.saved_reports as permissive for all\n  to service_role using (true) with check (true);`
+                        );
+                      }}
+                      className="absolute top-1.5 right-1.5 bg-slate-700 hover:bg-slate-600 text-slate-200 text-[10px] px-1.5 py-0.5 rounded"
+                      title="Copy SQL"
+                    >
+                      Copy
+                    </button>
+                  </div>
+                </div>
               ) : supabaseReports.length === 0 ? (
                 <p className="text-xs text-slate-400 dark:text-gray-500">
                   No saved reports yet.
