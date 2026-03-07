@@ -86,9 +86,9 @@ src/
 - For general queries: runs LLM tool-calling loop (max `MAX_TOOL_ROUNDS = 30`)
 - Manages per-session conversation history in `sessions` Map (in-memory, resets on cold start)
 - `trimHistory()` — keeps last 2 exchanges; drops intermediate tool messages to stay within token limit
-- `callLLMForDataFill()` — uses `FILL_MODEL` for gap-fill/ticker-resolution (preserves main model quota)
-- `createLLMFiller()` — creates a bound `LLMFiller` callback passed to `executeTool` via `options.llmFill`
-- Rate-limit fallback: GitHub Models → `COPILOT_FALLBACK_MODEL` → proxy
+- `callLLMForDataFill()` — uses `FILL_MODEL` (GitHub) or `GEMINI_MODEL` (Gemini) for gap-fill/ticker-resolution; provider selection mirrors `LLM_PROVIDER`
+- `createLLMFiller()` — creates a bound `LLMFiller` callback passed to `executeTool` via `options.llmFill`; receives both `githubToken` and `geminiToken`
+- Rate-limit fallback: in `hybrid` mode, HTTP 429 from GitHub Models automatically switches to Gemini API
 
 **Constants:**
 ```typescript
@@ -97,7 +97,14 @@ MAX_HISTORY_MESSAGE_CHARS = 4000
 maxDuration = 300  // Vercel: 5 minutes
 DEFAULT_MODEL = process.env.COPILOT_MODEL || 'openai/gpt-4.1'
 FILL_MODEL = process.env.FILL_MODEL || 'openai/gpt-4.1-mini'
+GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash'
+LLM_PROVIDER = process.env.LLM_PROVIDER || 'github'  // 'github' | 'gemini' | 'hybrid'
 ```
+
+**LLM provider selection (`LLM_PROVIDER`):**
+- `github`: `callGitHubModelsAPI` — GitHub Models REST API with mandatory headers
+- `gemini`: `callGeminiWithFallback` — tries `GEMINI_FALLBACK_MODELS` in order (`gemini-2.5-flash` → `gemini-2.5-flash-lite`)
+- `hybrid`: `callGitHubModelsAPI` primary; auto-falls back to `callGeminiWithFallback` on HTTP 429; mirrors `STOCK_DATA_PROVIDER` hybrid pattern
 
 **GitHub Models API headers (mandatory):**
 ```typescript
@@ -296,13 +303,16 @@ for (let passIndex = 0; passIndex < DEEP_RESEARCH_DEPTH; passIndex++) {
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `GITHUB_TOKEN` (or `GH_TOKEN`/`COPILOT_GITHUB_TOKEN`) | **Yes** | — | GitHub Models API authentication |
+| `GITHUB_TOKEN` (or `GH_TOKEN`/`COPILOT_GITHUB_TOKEN`) | Yes (unless `LLM_PROVIDER=gemini`) | — | GitHub Models API authentication |
+| `GEMINI_TOKEN` | Yes (when `LLM_PROVIDER=gemini` or `hybrid`) | — | Gemini API key. **Must use [aistudio.google.com/api-keys](https://aistudio.google.com/api-keys)** — NOT Google Cloud Console. AI Studio keys include free-tier quota. Free tier (gemini-2.5-flash): 5 RPM / 250K TPM / 20 RPD. **Server env only — never exposed client-side.** |
+| `LLM_PROVIDER` | No | `github` | `github` (GitHub Models only), `gemini` (Gemini only), or `hybrid` (GitHub primary, Gemini auto-fallback on 429). Mirrors `STOCK_DATA_PROVIDER` pattern. |
+| `GEMINI_MODEL` | No | `gemini-2.5-flash` | Gemini model name. `gemini-2.5-flash` has free-tier quota on AI Studio keys (5 RPM / 20 RPD). **`gemini-2.0-flash` has zero free quota and will always fail.** Auto-falls back to `gemini-2.5-flash-lite` on 429. |
 | `ALPHA_VANTAGE_API_KEY` | Yes (unless `STOCK_DATA_PROVIDER=finnhub`) | — | Alpha Vantage free tier |
 | `FINNHUB_API_KEY` | No | — | Enables Finnhub provider or hybrid fallback. If `STOCK_DATA_PROVIDER=hybrid` but this is not set, silently falls back to AV-only |
 | `STOCK_DATA_PROVIDER` | No | `alphavantage` | `alphavantage`, `finnhub`, or `hybrid` |
-| `COPILOT_MODEL` | No | `openai/gpt-4.1` | Main reasoning model |
-| `FILL_MODEL` | No | `openai/gpt-4.1-mini` | Gap-fill and ticker-resolution model (separate quota from main model) |
-| `COPILOT_FALLBACK_MODEL` | No | same as `COPILOT_MODEL` | Single fallback model if main model hits rate limit |
+| `COPILOT_MODEL` | No | `openai/gpt-4.1` | Main reasoning model (GitHub Models name; ignored when `LLM_PROVIDER=gemini`) |
+| `FILL_MODEL` | No | `openai/gpt-4.1-mini` | Gap-fill and ticker-resolution model on GitHub Models (separate quota from main model) |
+| `COPILOT_FALLBACK_MODEL` | No | same as `COPILOT_MODEL` | Single fallback model if main model hits rate limit (GitHub Models only) |
 | `COPILOT_FALLBACK_MODELS` | No | built-in list | Comma-separated ordered fallback model list; overrides `DEFAULT_FALLBACK_MODELS` constant |
 | `AUTO_DOWNGRADE_GPT5` | No | `true` | When `true`, `gpt-5` requests on GitHub provider are downgraded to `gpt-4.1` (GPT-5 not available on GitHub Models) |
 | `USE_FULL_SYSTEM_PROMPT` | No | `false` | When `true`, sends full verbose `SYSTEM_PROMPT`; default uses shorter `COMPACT_SYSTEM_PROMPT` to conserve tokens |
@@ -412,6 +422,8 @@ npm test   # runs vitest — all tests in src/__tests__/
 | Finnhub `/quote` returning `{c:0,t:0}` for unknown symbol | Check `data.t === 0` explicitly — it's not an error response |
 | Finnhub `/stock/candle` returning `{s:"no_data"}` | Check `data.s !== 'ok'` before reading candle arrays |
 | Setting `STOCK_DATA_PROVIDER=hybrid` without `FINNHUB_API_KEY` | `createStockService()` silently falls back to AV-only. Set `FINNHUB_API_KEY` to actually get hybrid coverage. |
+| `GEMINI_TOKEN` in client-side code | Never expose Gemini token client-side. It is only read in `web/app/api/chat/route.ts` from `process.env` on the server. |
+| Setting `LLM_PROVIDER=hybrid` without any token | `callProvider` throws 503. Set at least one of `GITHUB_TOKEN` or `GEMINI_TOKEN`. |
 
 ---
 

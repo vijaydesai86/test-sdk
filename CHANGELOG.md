@@ -12,6 +12,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- **Gemini API integration** — `callGeminiAPI()` in `web/app/api/chat/route.ts` calls Gemini via its OpenAI-compatible endpoint (`https://generativelanguage.googleapis.com/v1beta/openai/chat/completions`). Same request/response format as GitHub Models; all existing message building, tool definitions, and response parsing work unchanged.
+- `GEMINI_TOKEN` environment variable — supply a Gemini API key (get one at [aistudio.google.com/api-keys](https://aistudio.google.com/api-keys)). **Server-side only** — never exposed to client-side code.
+- `LLM_PROVIDER` environment variable (default: `github`) — selects the LLM API provider, mirroring the `STOCK_DATA_PROVIDER` pattern used for data services:
+  - `github`: GitHub Models API only (existing behaviour, `GITHUB_TOKEN` required)
+  - `gemini`: Gemini API only (`GEMINI_TOKEN` required)
+  - `hybrid`: GitHub Models as primary; Gemini auto-fallback when GitHub returns HTTP 429 rate limit
+- `GEMINI_MODEL` environment variable (default: `gemini-2.5-flash`) — Gemini model name for both main reasoning and gap-fill calls in `gemini` / `hybrid` mode. `gemini-2.0-flash` is **not** used as default because it has zero free-tier quota on AI Studio keys.
+- `callGeminiWithFallback()` — tries `GEMINI_FALLBACK_MODELS` in order (`gemini-2.5-flash` → `gemini-2.5-flash-lite`) on 429, with per-model retry delay. All Gemini call sites use this instead of `callGeminiAPI` directly.
+- Gemini 429 response parsing: `callGeminiAPI` now extracts `retryDelay` from `RetryInfo` details in the response body and attaches it as `retryAfterMs` on the thrown error. The outer retry loop and `callLLMForDataFill` both honor this delay instead of always waiting a fixed 2 s.
+- `callLLMForDataFill` and `createLLMFiller` updated: both now accept `geminiToken` and select the correct provider for gap-fill / ticker-resolution based on `LLM_PROVIDER`. In `hybrid` mode, gap-fill also falls back to Gemini on 429.
+- `callProvider` (inside `POST /api/chat`) updated: implements provider selection/fallback logic for the main LLM tool-calling loop, consistent with `LLM_PROVIDER`.
+
+### Changed
+- `provider` field in `POST /api/chat` response now reflects `LLM_PROVIDER` (was hardcoded `'github'`).
+- Error detail message for HTTP 503 (missing token) is now provider-aware: guides users to set `GEMINI_TOKEN` in Gemini/hybrid mode, or `GITHUB_TOKEN` in GitHub mode.
+- `web/.env.example` and `.env.example` (root/CLI): added commented `GEMINI_TOKEN` and `LLM_PROVIDER` entries with usage notes.
+- README.md and AGENT.md: updated environment variables table, troubleshooting, tech stack, and architecture sections to document the new Gemini integration and `LLM_PROVIDER` options.
 - `NUM_COMPANIES` env var (default: `10`) — controls the number of companies in comparison, sector, and deep-sector reports. Replaces previously hardcoded limits (6 for comparison/sector, 8 for deep sector). Optimal value is 10; controllable via Vercel environment variables.
 - `DEEP_RESEARCH_DEPTH` env var (default: `2`) — controls how many recursive refinement passes Phase 3 of `generate_deep_sector_report` runs. Each pass feeds the prior dependency analysis as context so the LLM progressively deepens its ecosystem insights and company selection. Optimal value is 2; set to 1 to disable recursion, 3 for maximum depth.
 - `DeepSectorPassContext` exported interface in `stockTools.ts` — carries prior-pass analysis (universe, dependencyAnalysis, ecosystemDiagram, refinementNotes) between recursive Phase 3 iterations.

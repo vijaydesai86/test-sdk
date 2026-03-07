@@ -185,13 +185,16 @@ npm run dev
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `GITHUB_TOKEN` | **Yes** | — | GitHub Personal Access Token — authenticates GitHub Models API (your Copilot subscription). Get at [github.com/settings/tokens](https://github.com/settings/tokens) |
+| `GITHUB_TOKEN` | Yes (unless `LLM_PROVIDER=gemini`) | — | GitHub Personal Access Token — authenticates GitHub Models API (your Copilot subscription). Get at [github.com/settings/tokens](https://github.com/settings/tokens) |
+| `GEMINI_TOKEN` | Yes (when `LLM_PROVIDER=gemini` or `hybrid`) | — | Gemini API key — get a free key at [aistudio.google.com/api-keys](https://aistudio.google.com/api-keys). **Must use AI Studio, not Google Cloud Console.** Free tier (gemini-2.5-flash): 5 RPM / 250K TPM / 20 RPD. **Never commit — set in Vercel env only.** |
+| `LLM_PROVIDER` | No | `github` | LLM API provider: `github` (GitHub Models), `gemini` (Gemini API), or `hybrid` (GitHub primary, auto-falls back to Gemini on HTTP 429) |
+| `GEMINI_MODEL` | No | `gemini-2.5-flash` | Gemini model name. Default `gemini-2.5-flash` has free-tier quota on AI Studio keys. `gemini-2.0-flash` has **zero** free quota and will always fail. |
 | `ALPHA_VANTAGE_API_KEY` | **Yes** | — | Free API key from [alphavantage.co](https://www.alphavantage.co/support/#api-key) — real-time market data |
 | `FINNHUB_API_KEY` | Recommended | — | Free key from [finnhub.io](https://finnhub.io) — enables hybrid fallback for higher data completeness |
 | `STOCK_DATA_PROVIDER` | No | `alphavantage` | `alphavantage`, `finnhub`, or `hybrid` (use `hybrid` for best data coverage) |
-| `COPILOT_MODEL` | No | `openai/gpt-4.1` | Main reasoning model |
-| `FILL_MODEL` | No | `openai/gpt-4.1-mini` | Lighter model for ticker resolution and gap-fill (preserves main model quota) |
-| `COPILOT_FALLBACK_MODEL` | No | same as main | Fallback model if main hits rate limit |
+| `COPILOT_MODEL` | No | `openai/gpt-4.1` | Main reasoning model (GitHub Models name; ignored when `LLM_PROVIDER=gemini`) |
+| `FILL_MODEL` | No | `openai/gpt-4.1-mini` | Lighter model for ticker resolution and gap-fill on GitHub Models (preserves main model quota) |
+| `COPILOT_FALLBACK_MODEL` | No | same as main | Fallback model if main hits rate limit (GitHub Models only) |
 | `REPORTS_DIR` | No | `/tmp/reports` | Report save directory (Vercel: ephemeral `/tmp`) |
 | `STOCK_CACHE_TTL_MS` | No | `604800000` | Cache TTL in milliseconds (default: 7 days) |
 | `NUM_COMPANIES` | No | `10` | Companies per comparison/sector/deep-sector report. Optimal: 10; raise to 15 for broader research, lower to 5 for faster runs |
@@ -249,7 +252,7 @@ CI runs the full test suite on every pull request. All tests must pass before me
 |---|---|
 | Frontend | Next.js 16 (App Router), React 19, TypeScript, Tailwind CSS v4 |
 | Charts | ECharts 5 (interactive), Mermaid (ecosystem diagrams) |
-| AI Orchestrator | GitHub Models API via `GITHUB_TOKEN` — or OpenAI-compatible proxy |
+| AI Orchestrator | GitHub Models API (`GITHUB_TOKEN`), Gemini API (`GEMINI_TOKEN`), or hybrid — controlled by `LLM_PROVIDER` |
 | Data — Primary | Alpha Vantage REST API (free tier) |
 | Data — Fallback | Finnhub REST API (free tier, hybrid mode) |
 | Data — Gap-fill | LLM knowledge (null fields only, never overwrites API data) |
@@ -268,8 +271,9 @@ CI runs the full test suite on every pull request. All tests must pass before me
 | "API rate limit" error | Alpha Vantage free tier: 25 req/day. Use hybrid mode or wait until next day; cache prevents re-fetching |
 | Vercel deploy fails | Set **Root Directory** to `web` in Vercel project settings |
 | Reports missing after reload | Vercel `/tmp` is ephemeral. Download reports immediately after generation |
-| "401 Unauthorized" | `GITHUB_TOKEN` expired — regenerate at github.com/settings/tokens |
-| "429 Too Many Requests" | App auto-retries with fallback models. If persistent, switch model in UI |
+| "401 Unauthorized" | `GITHUB_TOKEN` expired — regenerate at github.com/settings/tokens; or `GEMINI_TOKEN` invalid — regenerate at aistudio.google.com/api-keys |
+| "429 Too Many Requests" (GitHub Models) | App auto-retries with fallback models. Set `LLM_PROVIDER=hybrid` to automatically fall back to Gemini on 429 |
+| "429 Too Many Requests" (Gemini) | Check your model: `gemini-2.0-flash` has **zero** free-tier quota and will always fail. The correct default is `gemini-2.5-flash` (5 RPM / 20 RPD). Keys must be created at [aistudio.google.com/api-keys](https://aistudio.google.com/api-keys), not Google Cloud Console. |
 | Model returns text instead of tool calls | Select a tool-calling capable model in the model selector dropdown |
 | DEP0169 warning in logs | Emitted by a Node.js dependency — informational only, no user impact |
 
