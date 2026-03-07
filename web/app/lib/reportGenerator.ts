@@ -1455,12 +1455,14 @@ export async function saveReport(content: string, title: string, directory = DEF
     try {
       const { getSupabaseClient } = await import('./supabaseClient');
       const client = getSupabaseClient();
-      const { data } = await client
-        .from('saved_reports')
-        .insert({ filename, title: safeTitle || title, content })
-        .select('id')
-        .single();
-      if (data?.id) supabaseId = data.id as string;
+      if (client) {
+        const { data } = await client
+          .from('saved_reports')
+          .insert({ filename, title: safeTitle || title, content })
+          .select('id')
+          .single();
+        if (data?.id) supabaseId = data.id as string;
+      }
     } catch {
       // Non-fatal: local file is already saved
     }

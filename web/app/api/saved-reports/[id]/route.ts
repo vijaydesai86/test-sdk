@@ -16,6 +16,10 @@ export async function GET(
   }
 
   const supabase = getSupabaseClient();
+  if (!supabase) {
+    return NextResponse.json({ error: 'Supabase not configured' }, { status: 503 });
+  }
+
   const { data, error } = await supabase
     .from('saved_reports')
     .select('id, filename, title, content, created_at')
@@ -53,6 +57,10 @@ export async function DELETE(
   }
 
   const supabase = getSupabaseClient();
+  if (!supabase) {
+    return NextResponse.json({ error: 'Supabase not configured' }, { status: 503 });
+  }
+
   const { error } = await supabase.from('saved_reports').delete().eq('id', id);
 
   if (error) {

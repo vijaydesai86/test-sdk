@@ -4,16 +4,26 @@ import { getSupabaseClient } from '../../lib/supabaseClient';
 /**
  * GET /api/saved-reports
  * Returns metadata list (id, filename, title, created_at) for all saved reports.
+ * Returns an empty list gracefully when Supabase is not configured or the table
+ * has not been created yet.
  */
 export async function GET() {
   const supabase = getSupabaseClient();
+  if (!supabase) {
+    // Supabase not configured — degrade gracefully
+    return NextResponse.json({ reports: [] });
+  }
+
   const { data, error } = await supabase
     .from('saved_reports')
     .select('id, filename, title, created_at')
     .order('created_at', { ascending: false });
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    // Table may not exist yet or connection failed — return empty list so the UI
+    // can still render without an error state.
+    console.error('[saved-reports] Supabase error:', error.message);
+    return NextResponse.json({ reports: [], setupRequired: true });
   }
 
   return NextResponse.json({ reports: data ?? [] });
@@ -46,6 +56,10 @@ export async function POST(request: NextRequest) {
   const title = typeof body.title === 'string' ? body.title.trim() || null : null;
 
   const supabase = getSupabaseClient();
+  if (!supabase) {
+    return NextResponse.json({ error: 'Supabase not configured' }, { status: 503 });
+  }
+
   const { data, error } = await supabase
     .from('saved_reports')
     .insert({ filename, title, content })
@@ -53,6 +67,7 @@ export async function POST(request: NextRequest) {
     .single();
 
   if (error) {
+    console.error('[saved-reports] Supabase insert error:', error.message);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
