@@ -166,6 +166,7 @@ export default function ChatInterface() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [supabaseReports, setSupabaseReports] = useState<SavedReportMeta[]>([]);
   const [supabaseReportsLoading, setSupabaseReportsLoading] = useState(false);
+  const [supabaseSetupRequired, setSupabaseSetupRequired] = useState(false);
 
   useEffect(() => {
     fetch('/api/providers')
@@ -190,8 +191,9 @@ export default function ChatInterface() {
     setSupabaseReportsLoading(true);
     fetch('/api/saved-reports')
       .then((res) => res.json())
-      .then((payload: { reports?: SavedReportMeta[] }) => {
+      .then((payload: { reports?: SavedReportMeta[]; setupRequired?: boolean }) => {
         setSupabaseReports(payload.reports ?? []);
+        setSupabaseSetupRequired(payload.setupRequired === true);
       })
       .catch(() => { /* Supabase may not be configured */ })
       .finally(() => setSupabaseReportsLoading(false));
@@ -598,6 +600,19 @@ export default function ChatInterface() {
               </div>
               {supabaseReportsLoading ? (
                 <p className="text-xs text-slate-400 dark:text-gray-500">Loading&#8230;</p>
+              ) : supabaseSetupRequired ? (
+                <p className="text-xs text-amber-600 dark:text-amber-400 leading-snug">
+                  Database table not set up.{' '}
+                  <a
+                    href="https://supabase.com/dashboard/project/bnhnlyiuwlebgmjerueb/sql/new"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="underline hover:text-amber-700 dark:hover:text-amber-300"
+                  >
+                    Run the setup SQL
+                  </a>{' '}
+                  then click &#x21bb;
+                </p>
               ) : supabaseReports.length === 0 ? (
                 <p className="text-xs text-slate-400 dark:text-gray-500">
                   No saved reports yet.
