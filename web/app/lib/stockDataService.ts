@@ -23,7 +23,7 @@ export interface StockDataService {
   searchNews(query: string, days?: number): Promise<any>;
 }
 
-type Provider = 'alphavantage' | 'finnhub' | 'hybrid';
+type Provider = 'alphavantage' | 'finnhub' | 'yfinance' | 'hybrid';
 const PROVIDER_ENV = (process.env.STOCK_DATA_PROVIDER || 'alphavantage').toLowerCase() as Provider;
 
 /**
@@ -1035,78 +1035,217 @@ export class FinnhubService implements StockDataService {
   }
 }
 
+/**
+ * Stock data service backed by a Python yfinance HTTP microservice.
+ * The proxy URL is configured via the YFINANCE_PROXY_URL environment variable.
+ * The Python REST server is out of scope for this repository and must be provided separately.
+ * Note: yfinance data is not real-time; it reflects delayed/end-of-day data.
+ */
+export class YFinanceService implements StockDataService {
+  private baseUrl: string;
+  private cache = new Map<string, { expiresAt: number; data: any }>();
+
+  constructor(proxyUrl?: string) {
+    this.baseUrl = (proxyUrl || process.env.YFINANCE_PROXY_URL || '').replace(/\/$/, '');
+  }
+
+  private async makeRequest(path: string, params: Record<string, string> = {}, ttlMs = 0): Promise<any> {
+    if (!this.baseUrl) {
+      throw new Error('Unavailable via YFinance: YFINANCE_PROXY_URL is not configured');
+    }
+    const cacheKey = `yfinance:${path}:${JSON.stringify(params)}`;
+    if (ttlMs > 0) {
+      const cached = this.cache.get(cacheKey);
+      if (cached && cached.expiresAt > Date.now()) return cached.data;
+    }
+    try {
+      const qs = Object.keys(params).length
+        ? '?' + Object.entries(params).map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join('&')
+        : '';
+      const response = await axios.get(`${this.baseUrl}${path}${qs}`, { timeout: 15000 });
+      const data = response.data;
+      if (data?.error) throw new Error(`Unavailable via YFinance: ${data.error}`);
+      if (ttlMs > 0) this.cache.set(cacheKey, { expiresAt: Date.now() + ttlMs, data });
+      return data;
+    } catch (error: any) {
+      if (error.message?.startsWith('Unavailable via YFinance')) throw error;
+      const detail = error.response?.data?.error || error.message;
+      throw new Error(`Unavailable via YFinance: ${detail}`);
+    }
+  }
+
+  async getStockPrice(symbol: string): Promise<any> {
+    return this.makeRequest('/price', { symbol: symbol.toUpperCase() }, 60000);
+  }
+
+  async getPriceHistory(symbol: string, range = '1y'): Promise<any> {
+    return this.makeRequest('/price-history', { symbol: symbol.toUpperCase(), range }, 60 * 60 * 1000);
+  }
+
+  async getCompanyOverview(symbol: string): Promise<any> {
+    return this.makeRequest('/overview', { symbol: symbol.toUpperCase() }, 6 * 60 * 60 * 1000);
+  }
+
+  async getBasicFinancials(symbol: string): Promise<any> {
+    return this.makeRequest('/financials', { symbol: symbol.toUpperCase() }, 60 * 60 * 1000);
+  }
+
+  async getInsiderTrading(symbol: string): Promise<any> {
+    return this.makeRequest('/insider', { symbol: symbol.toUpperCase() }, 60 * 60 * 1000);
+  }
+
+  async getAnalystRatings(symbol: string): Promise<any> {
+    return this.makeRequest('/analyst-ratings', { symbol: symbol.toUpperCase() }, 60 * 60 * 1000);
+  }
+
+  async getAnalystRecommendations(symbol: string): Promise<any> {
+    return this.makeRequest('/analyst-recommendations', { symbol: symbol.toUpperCase() }, 60 * 60 * 1000);
+  }
+
+  async getPriceTargets(symbol: string): Promise<any> {
+    return this.makeRequest('/price-targets', { symbol: symbol.toUpperCase() }, 60 * 60 * 1000);
+  }
+
+  async getPeers(symbol: string): Promise<any> {
+    return this.makeRequest('/peers', { symbol: symbol.toUpperCase() }, 6 * 60 * 60 * 1000);
+  }
+
+  async searchStock(query: string): Promise<any> {
+    return this.makeRequest('/search', { query }, 60 * 60 * 1000);
+  }
+
+  async getEarningsHistory(symbol: string): Promise<any> {
+    return this.makeRequest('/earnings', { symbol: symbol.toUpperCase() }, 60 * 60 * 1000);
+  }
+
+  async getIncomeStatement(symbol: string): Promise<any> {
+    return this.makeRequest('/income', { symbol: symbol.toUpperCase() }, 60 * 60 * 1000);
+  }
+
+  async getBalanceSheet(symbol: string): Promise<any> {
+    return this.makeRequest('/balance-sheet', { symbol: symbol.toUpperCase() }, 60 * 60 * 1000);
+  }
+
+  async getCashFlow(symbol: string): Promise<any> {
+    return this.makeRequest('/cash-flow', { symbol: symbol.toUpperCase() }, 60 * 60 * 1000);
+  }
+
+  async getSectorPerformance(): Promise<any> {
+    return this.makeRequest('/sector-performance', {}, 60 * 60 * 1000);
+  }
+
+  async getTopGainersLosers(): Promise<any> {
+    return this.makeRequest('/top-gainers-losers', {}, 30 * 60 * 1000);
+  }
+
+  async getNewsSentiment(symbol: string): Promise<any> {
+    return this.makeRequest('/news-sentiment', { symbol: symbol.toUpperCase() }, 30 * 60 * 1000);
+  }
+
+  async getCompanyNews(symbol: string, days = 30): Promise<any> {
+    return this.makeRequest('/company-news', { symbol: symbol.toUpperCase(), days: days.toString() }, 30 * 60 * 1000);
+  }
+
+  async searchNews(query: string, days = 30): Promise<any> {
+    return this.makeRequest('/search-news', { query, days: days.toString() }, 30 * 60 * 1000);
+  }
+}
+
 
 class HybridStockDataService implements StockDataService {
   constructor(
     private primary: StockDataService,
-    private fallback: StockDataService
+    private secondary: StockDataService,
+    private tertiary?: StockDataService
   ) {}
 
-  private async withFallback<T>(primaryCall: () => Promise<T>, fallbackCall: () => Promise<T>): Promise<T> {
+  private async withFallback<T>(
+    primaryCall: () => Promise<T>,
+    secondaryCall: () => Promise<T>,
+    tertiaryCall?: () => Promise<T>
+  ): Promise<T> {
     try {
       return await primaryCall();
     } catch {
-      const result = await fallbackCall();
-      // Tag with source so stockTools.ts correctly attributes Finnhub data in the sources table
-      if (result != null && typeof result === 'object' && !Array.isArray(result)) {
-        return { ...(result as object), __source: 'Finnhub' } as T;
+      try {
+        const result = await secondaryCall();
+        // Tag with source so stockTools.ts correctly attributes Finnhub data in the sources table
+        if (result != null && typeof result === 'object' && !Array.isArray(result)) {
+          return { ...(result as object), __source: 'Finnhub' } as T;
+        }
+        return result;
+      } catch (secondaryError) {
+        if (!tertiaryCall) throw secondaryError;
+        const result = await tertiaryCall();
+        if (result != null && typeof result === 'object' && !Array.isArray(result)) {
+          return { ...(result as object), __source: 'YFinance' } as T;
+        }
+        return result;
       }
-      return result;
     }
   }
 
   getStockPrice(symbol: string) {
     return this.withFallback(
       () => this.primary.getStockPrice(symbol),
-      () => this.fallback.getStockPrice(symbol)
+      () => this.secondary.getStockPrice(symbol),
+      this.tertiary ? () => this.tertiary!.getStockPrice(symbol) : undefined
     );
   }
   getPriceHistory(symbol: string, range?: string) {
     return this.withFallback(
       () => this.primary.getPriceHistory(symbol, range),
-      () => this.fallback.getPriceHistory(symbol, range)
+      () => this.secondary.getPriceHistory(symbol, range),
+      this.tertiary ? () => this.tertiary!.getPriceHistory(symbol, range) : undefined
     );
   }
   getCompanyOverview(symbol: string) {
     return this.withFallback(
       () => this.primary.getCompanyOverview(symbol),
-      () => this.fallback.getCompanyOverview(symbol)
+      () => this.secondary.getCompanyOverview(symbol),
+      this.tertiary ? () => this.tertiary!.getCompanyOverview(symbol) : undefined
     );
   }
   getBasicFinancials(symbol: string) {
     return this.withFallback(
       () => this.primary.getBasicFinancials(symbol),
-      () => this.fallback.getBasicFinancials(symbol)
+      () => this.secondary.getBasicFinancials(symbol),
+      this.tertiary ? () => this.tertiary!.getBasicFinancials(symbol) : undefined
     );
   }
   getInsiderTrading(symbol: string) {
     return this.withFallback(
       () => this.primary.getInsiderTrading(symbol),
-      () => this.fallback.getInsiderTrading(symbol)
+      () => this.secondary.getInsiderTrading(symbol),
+      this.tertiary ? () => this.tertiary!.getInsiderTrading(symbol) : undefined
     );
   }
   getAnalystRatings(symbol: string) {
     return this.withFallback(
       () => this.primary.getAnalystRatings(symbol),
-      () => this.fallback.getAnalystRatings(symbol)
+      () => this.secondary.getAnalystRatings(symbol),
+      this.tertiary ? () => this.tertiary!.getAnalystRatings(symbol) : undefined
     );
   }
   getAnalystRecommendations(symbol: string) {
     return this.withFallback(
       () => this.primary.getAnalystRecommendations(symbol),
-      () => this.fallback.getAnalystRecommendations(symbol)
+      () => this.secondary.getAnalystRecommendations(symbol),
+      this.tertiary ? () => this.tertiary!.getAnalystRecommendations(symbol) : undefined
     );
   }
   getPriceTargets(symbol: string) {
     return this.withFallback(
       () => this.primary.getPriceTargets(symbol),
-      () => this.fallback.getPriceTargets(symbol)
+      () => this.secondary.getPriceTargets(symbol),
+      this.tertiary ? () => this.tertiary!.getPriceTargets(symbol) : undefined
     );
   }
   getPeers(symbol: string) {
     return this.withFallback(
       () => this.primary.getPeers(symbol),
-      () => this.fallback.getPeers(symbol)
+      () => this.secondary.getPeers(symbol),
+      this.tertiary ? () => this.tertiary!.getPeers(symbol) : undefined
     );
   }
   searchStock(query: string) {
@@ -1115,25 +1254,29 @@ class HybridStockDataService implements StockDataService {
   getEarningsHistory(symbol: string) {
     return this.withFallback(
       () => this.primary.getEarningsHistory(symbol),
-      () => this.fallback.getEarningsHistory(symbol)
+      () => this.secondary.getEarningsHistory(symbol),
+      this.tertiary ? () => this.tertiary!.getEarningsHistory(symbol) : undefined
     );
   }
   getIncomeStatement(symbol: string) {
     return this.withFallback(
       () => this.primary.getIncomeStatement(symbol),
-      () => this.fallback.getIncomeStatement(symbol)
+      () => this.secondary.getIncomeStatement(symbol),
+      this.tertiary ? () => this.tertiary!.getIncomeStatement(symbol) : undefined
     );
   }
   getBalanceSheet(symbol: string) {
     return this.withFallback(
       () => this.primary.getBalanceSheet(symbol),
-      () => this.fallback.getBalanceSheet(symbol)
+      () => this.secondary.getBalanceSheet(symbol),
+      this.tertiary ? () => this.tertiary!.getBalanceSheet(symbol) : undefined
     );
   }
   getCashFlow(symbol: string) {
     return this.withFallback(
       () => this.primary.getCashFlow(symbol),
-      () => this.fallback.getCashFlow(symbol)
+      () => this.secondary.getCashFlow(symbol),
+      this.tertiary ? () => this.tertiary!.getCashFlow(symbol) : undefined
     );
   }
   getSectorPerformance() {
@@ -1156,15 +1299,26 @@ class HybridStockDataService implements StockDataService {
 export function createStockService(apiKey?: string): StockDataService {
   const provider = PROVIDER_ENV;
   const finnhubKey = process.env.FINNHUB_API_KEY;
+  const yfinanceUrl = process.env.YFINANCE_PROXY_URL;
   if (provider === 'finnhub') {
     return new FinnhubService(finnhubKey);
   }
+  if (provider === 'yfinance') {
+    return new YFinanceService(yfinanceUrl);
+  }
   if (provider === 'hybrid') {
-    if (finnhubKey) {
-      return new HybridStockDataService(new AlphaVantageService(apiKey), new FinnhubService(finnhubKey));
+    const av = new AlphaVantageService(apiKey);
+    if (finnhubKey && yfinanceUrl) {
+      return new HybridStockDataService(av, new FinnhubService(finnhubKey), new YFinanceService(yfinanceUrl));
     }
-    // No Finnhub key configured; fall back to Alpha Vantage only to avoid 403 errors
-    return new AlphaVantageService(apiKey);
+    if (finnhubKey) {
+      return new HybridStockDataService(av, new FinnhubService(finnhubKey));
+    }
+    if (yfinanceUrl) {
+      return new HybridStockDataService(av, new YFinanceService(yfinanceUrl));
+    }
+    // No secondary configured; fall back to Alpha Vantage only to avoid 403 errors
+    return av;
   }
   return new AlphaVantageService(apiKey);
 }

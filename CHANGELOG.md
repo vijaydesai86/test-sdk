@@ -12,6 +12,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- **yfinance provider** — `YFinanceService` class in `src/stockDataService.ts` and `web/app/lib/stockDataService.ts`. Calls a Python HTTP microservice (configured via `YFINANCE_PROXY_URL`). All 19 `StockDataService` methods map to REST endpoints on the proxy. The Python proxy server is out of scope for this repo and must be provided separately.
+- `STOCK_DATA_PROVIDER=yfinance` — new sole-provider mode; returns `YFinanceService` directly.
+- **Tertiary fallback in hybrid mode** — `HybridStockDataService` now accepts an optional `tertiary` provider. In `hybrid` mode with all three keys/URLs configured, the fallback chain is: Alpha Vantage → Finnhub → YFinance. The factory automatically wires the tertiary only if `YFINANCE_PROXY_URL` is set.
+- `YFINANCE_PROXY_URL` environment variable — base URL of the Python yfinance REST microservice.
+- yfinance health check in `GET /api/health` — shown when `STOCK_DATA_PROVIDER=yfinance` or `hybrid`. Hits `{YFINANCE_PROXY_URL}/health` with a 5-second timeout.
+- Error suppression extended: `safeFetch` regex in `web/app/lib/stockTools.ts` updated from `(Alpha|Finnhub)` to `(Alpha|Finnhub|YFinance)` so yfinance unavailability errors are silently swallowed, consistent with AV and Finnhub behaviour.
+- `YFINANCE_PROXY_URL` added to `.env.example` and `web/.env.example` (commented out).
+
+### Changed
+- `Provider` type in both service files updated from `'alphavantage' | 'finnhub' | 'hybrid'` to `'alphavantage' | 'finnhub' | 'yfinance' | 'hybrid'`.
+- `HybridStockDataService` constructor now takes `primary`, `secondary`, and optional `tertiary` (was `primary`, `fallback`). `withFallback` updated to three-level chain: primary → secondary (tagged `__source: 'Finnhub'`) → tertiary (tagged `__source: 'YFinance'`). Existing two-provider behaviour is unchanged when `tertiary` is omitted.
+- `createStockService` factory in `web/app/lib/stockDataService.ts` updated: handles new `yfinance` provider case and builds `HybridStockDataService` with tertiary when both `FINNHUB_API_KEY` and `YFINANCE_PROXY_URL` are set.
+- README.md, web/README.md, and AGENT.md updated with yfinance setup instructions, proxy endpoint spec, fallback order documentation, and Vercel deployment note.
+
+### Known Limitations
+- yfinance data is delayed/end-of-day — not suitable for real-time quotes.
+- `getSectorPerformance` and `getTopGainersLosers` are not available via the yfinance proxy; calls return a suppressed `Unavailable via YFinance` error.
+- The Python proxy must be publicly reachable to work on Vercel — host it on Railway, Fly.io, or a VPS.
+
+### Added
 - **Gemini API integration** — `callGeminiAPI()` in `web/app/api/chat/route.ts` calls Gemini via its OpenAI-compatible endpoint (`https://generativelanguage.googleapis.com/v1beta/openai/chat/completions`). Same request/response format as GitHub Models; all existing message building, tool definitions, and response parsing work unchanged.
 - `GEMINI_TOKEN` environment variable — supply a Gemini API key (get one at [aistudio.google.com/api-keys](https://aistudio.google.com/api-keys)). **Server-side only** — never exposed to client-side code.
 - `LLM_PROVIDER` environment variable (default: `github`) — selects the LLM API provider, mirroring the `STOCK_DATA_PROVIDER` pattern used for data services:

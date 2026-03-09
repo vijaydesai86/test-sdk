@@ -1007,7 +1007,7 @@ export async function executeTool(
               );
               return cachedValue !== null ? (cachedValue as T) : (undefined as T);
             }
-            if (!/unavailable (in|via) (Alpha|Finnhub)/i.test(message) && !message.includes('Alpha-only mode')) {
+            if (!/unavailable (in|via) (Alpha|Finnhub|YFinance)/i.test(message) && !message.includes('Alpha-only mode')) {
               notes.push(`${label}: ${message}`);
             }
             if (cachedValue && typeof cachedValue === 'object' && '__source' in cachedValue) {
@@ -1217,7 +1217,7 @@ export async function executeTool(
               );
               return cachedValue !== null ? (cachedValue as T) : (undefined as T);
             }
-            if (!/unavailable (in|via) (Alpha|Finnhub)/i.test(message) && !message.includes('Alpha-only mode')) {
+            if (!/unavailable (in|via) (Alpha|Finnhub|YFinance)/i.test(message) && !message.includes('Alpha-only mode')) {
               notes.push(`${label}: ${message}`);
             }
           if (cachedValue && typeof cachedValue === 'object') {
@@ -1423,7 +1423,7 @@ export async function executeTool(
               );
               return cachedValue !== null ? (cachedValue as T) : (undefined as T);
             }
-            if (!/unavailable (in|via) (Alpha|Finnhub)/i.test(message) && !message.includes('Alpha-only mode')) {
+            if (!/unavailable (in|via) (Alpha|Finnhub|YFinance)/i.test(message) && !message.includes('Alpha-only mode')) {
               notes.push(`${label}: ${message}`);
             }
             if (cachedValue && typeof cachedValue === 'object') {
@@ -1725,7 +1725,7 @@ export async function executeTool(
               );
               return cachedValue !== null ? (cachedValue as T) : (undefined as T);
             }
-            if (!/unavailable (in|via) (Alpha|Finnhub)/i.test(message) && !message.includes('Alpha-only mode')) {
+            if (!/unavailable (in|via) (Alpha|Finnhub|YFinance)/i.test(message) && !message.includes('Alpha-only mode')) {
               notes.push(`${label}: ${message}`);
             }
             if (cachedValue && typeof cachedValue === 'object') {

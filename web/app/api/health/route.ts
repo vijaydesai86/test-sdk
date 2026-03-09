@@ -8,10 +8,11 @@ export async function GET() {
   const provider = (process.env.STOCK_DATA_PROVIDER || 'alphavantage').toLowerCase();
   const alphaVantageKey = process.env.ALPHA_VANTAGE_API_KEY;
   const finnhubKey = process.env.FINNHUB_API_KEY;
+  const yfinanceUrl = process.env.YFINANCE_PROXY_URL;
 
   const results: Record<string, any> = { provider };
 
-  if (provider !== 'finnhub') {
+  if (provider !== 'finnhub' && provider !== 'yfinance') {
     if (!alphaVantageKey) {
       results.alphaVantage = { ok: false, error: 'ALPHA_VANTAGE_API_KEY not set' };
     } else {
@@ -34,6 +35,22 @@ export async function GET() {
 
   if (provider === 'finnhub' || provider === 'hybrid') {
     results.finnhub = finnhubKey ? { ok: true, configured: true } : { ok: false, error: 'FINNHUB_API_KEY not set' };
+  }
+
+  if (provider === 'yfinance' || provider === 'hybrid') {
+    if (!yfinanceUrl) {
+      results.yfinance = { ok: false, error: 'YFINANCE_PROXY_URL not set' };
+    } else {
+      try {
+        const { default: axios } = await import('axios');
+        const resp = await axios.get(`${yfinanceUrl.replace(/\/$/, '')}/health`, { timeout: 5000 });
+        results.yfinance = resp.data?.ok === true
+          ? { ok: true, configured: true }
+          : { ok: false, error: resp.data?.error || 'Proxy returned unhealthy status' };
+      } catch (error: any) {
+        results.yfinance = { ok: false, error: error?.message || 'Proxy unreachable' };
+      }
+    }
   }
 
   return NextResponse.json({ ok: true, results });
