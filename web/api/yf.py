@@ -2,12 +2,13 @@
 Vercel Python Serverless Function — yfinance proxy for the Stock Research Assistant.
 
 Deployed automatically by Vercel alongside the Next.js app.
-Accessible at:  https://<your-app>.vercel.app/api/yf/<endpoint>
+Accessible at:  https://<your-app>.vercel.app/api/yf
 
 No separate server required. Set YFINANCE_PROXY_URL=/api/yf in Vercel env vars.
 
-Route matching:
-  vercel.json rewrites  /api/yf/:endpoint?<qs>  →  /api/yf?_path=:endpoint&<qs>
+Route dispatching:
+  The TypeScript YFinanceService passes the endpoint name via the _path query parameter,
+  e.g. GET /api/yf?_path=price&symbol=AAPL  (no URL rewrite rules required).
   This handler reads _path to dispatch to the correct yfinance call.
 
 Note: Yahoo Finance may rate-limit detailed endpoints (quoteSummary) from
@@ -100,6 +101,13 @@ def _overview(p):
     i = t.info
     if not i or not (i.get('longName') or i.get('shortName')):
         raise ValueError(f'No overview data for {symbol}')
+    # Return field names that match AlphaVantageService.getCompanyOverview() so that
+    # reportGenerator.ts and stockTools.ts work identically across all providers.
+    market_cap = i.get('marketCap')
+    total_revenue = i.get('totalRevenue')
+    gross_profits = i.get('grossProfits')
+    profit_margins = i.get('profitMargins')
+    operating_margins = i.get('operatingMargins')
     return {
         'symbol': symbol,
         'name': i.get('longName') or i.get('shortName'),
@@ -108,15 +116,39 @@ def _overview(p):
         'industry': i.get('industry'),
         'country': i.get('country'),
         'exchange': i.get('exchange'),
-        'marketCap': i.get('marketCap'),
+        # Match AlphaVantage field names used by reportGenerator.ts / stockTools.ts
+        'marketCapitalization': market_cap,
+        'revenueTTM': total_revenue,
+        'grossProfitTTM': gross_profits,
+        'eps': i.get('trailingEps'),
         'peRatio': i.get('trailingPE'),
         'forwardPE': i.get('forwardPE'),
-        'pbRatio': i.get('priceToBook'),
+        'pegRatio': i.get('pegRatio'),
+        'bookValue': i.get('bookValue'),
+        'dividendPerShare': i.get('dividendRate'),
         'dividendYield': i.get('dividendYield'),
-        'eps': i.get('trailingEps'),
+        '52WeekHigh': i.get('fiftyTwoWeekHigh'),
+        '52WeekLow': i.get('fiftyTwoWeekLow'),
+        '50DayMovingAverage': i.get('fiftyDayAverage'),
+        '200DayMovingAverage': i.get('twoHundredDayAverage'),
         'beta': i.get('beta'),
+        'profitMargin': profit_margins,
+        'operatingMargin': operating_margins,
+        'returnOnAssets': i.get('returnOnAssets'),
+        'returnOnEquity': i.get('returnOnEquity'),
+        'revenuePerShare': i.get('revenuePerShare'),
+        'quarterlyRevenueGrowth': i.get('revenueGrowth'),
+        'quarterlyEarningsGrowth': i.get('earningsQuarterlyGrowth'),
+        'sharesOutstanding': i.get('sharesOutstanding'),
+        'sharesFloat': i.get('floatShares'),
+        'percentInsiders': i.get('heldPercentInsiders'),
+        'percentInstitutions': i.get('heldPercentInstitutions'),
+        'shortRatio': i.get('shortRatio'),
+        'shortPercentFloat': i.get('shortPercentOfFloat'),
+        'analystTargetPrice': i.get('targetMeanPrice'),
         'website': i.get('website'),
         'employees': i.get('fullTimeEmployees'),
+        'exDividendDate': i.get('exDividendDate'),
     }
 
 
@@ -151,15 +183,24 @@ def _analyst_ratings(p):
     symbol = p.get('symbol', '').upper()
     t = yf.Ticker(symbol)
     i = t.info
+    # Return field names matching AlphaVantageService.getAnalystRatings() output.
     return {
         'symbol': symbol,
+        'analystTargetPrice': i.get('targetMeanPrice'),
         'targetLow': i.get('targetLowPrice'),
         'targetHigh': i.get('targetHighPrice'),
-        'targetMean': i.get('targetMeanPrice'),
         'targetMedian': i.get('targetMedianPrice'),
         'recommendationMean': i.get('recommendationMean'),
         'recommendationKey': i.get('recommendationKey'),
         'numberOfAnalysts': i.get('numberOfAnalystOpinions'),
+        # Alpha Vantage-style consensus counts — Yahoo Finance does not provide
+        # the individual strongBuy/buy/hold/sell/strongSell breakdown via info,
+        # so these are not available. reportGenerator.ts handles None gracefully.
+        'strongBuy': None,
+        'buy': None,
+        'hold': None,
+        'sell': None,
+        'strongSell': None,
     }
 
 
@@ -176,11 +217,12 @@ def _price_targets(p):
     symbol = p.get('symbol', '').upper()
     t = yf.Ticker(symbol)
     i = t.info
+    # Match FinnhubService.getPriceTargets() field names (targetMean is the key field used by reports)
     return {
         'symbol': symbol,
-        'targetLow': i.get('targetLowPrice'),
-        'targetHigh': i.get('targetHighPrice'),
         'targetMean': i.get('targetMeanPrice'),
+        'targetHigh': i.get('targetHighPrice'),
+        'targetLow': i.get('targetLowPrice'),
         'targetMedian': i.get('targetMedianPrice'),
     }
 

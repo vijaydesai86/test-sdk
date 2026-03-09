@@ -35,12 +35,14 @@ const DEEP_RESEARCH_DEPTH = Math.max(1, Number(process.env.DEEP_RESEARCH_DEPTH |
 const DEFAULT_SOURCE = (() => {
   const provider = (process.env.STOCK_DATA_PROVIDER || 'alphavantage').toLowerCase();
   if (provider === 'finnhub') return 'Finnhub';
+  if (provider === 'yfinance') return 'YFinance';
   return 'Alpha Vantage';
 })();
 const SOURCE_LEGEND = (() => {
   const provider = (process.env.STOCK_DATA_PROVIDER || 'alphavantage').toLowerCase();
   if (provider === 'hybrid') return '_Legend: Alpha Vantage is primary; Finnhub fills gaps._';
   if (provider === 'finnhub') return '_Legend: Finnhub provider._';
+  if (provider === 'yfinance') return '_Legend: YFinance (Yahoo Finance) provider._';
   return '_Legend: Alpha Vantage provider._';
 })();
 

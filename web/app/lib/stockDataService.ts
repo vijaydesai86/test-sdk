@@ -1065,20 +1065,24 @@ export class YFinanceService implements StockDataService {
     this.baseUrl = resolveProxyUrl(url).replace(/\/$/, '');
   }
 
-  private async makeRequest(path: string, params: Record<string, string> = {}, ttlMs = 0): Promise<any> {
+  private async makeRequest(endpoint: string, params: Record<string, string> = {}, ttlMs = 0): Promise<any> {
     if (!this.baseUrl) {
       throw new Error('Unavailable via YFinance: YFINANCE_PROXY_URL is not configured');
     }
-    const cacheKey = `yfinance:${path}:${JSON.stringify(params)}`;
+    const cacheKey = `yfinance:${endpoint}:${JSON.stringify(params)}`;
     if (ttlMs > 0) {
       const cached = this.cache.get(cacheKey);
       if (cached && cached.expiresAt > Date.now()) return cached.data;
     }
     try {
-      const qs = Object.keys(params).length
-        ? '?' + Object.entries(params).map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join('&')
-        : '';
-      const response = await axios.get(`${this.baseUrl}${path}${qs}`, { timeout: 15000 });
+      // Pass the endpoint as _path query param instead of a URL path segment.
+      // This avoids needing a Vercel rewrite rule and works with any rootDirectory
+      // configuration (e.g. root-directory=web in the Vercel project settings).
+      const endpointName = endpoint.replace(/^\//, '');
+      const allParams: Record<string, string> = endpointName ? { _path: endpointName, ...params } : params;
+      const qs = '?' + Object.entries(allParams)
+        .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join('&');
+      const response = await axios.get(`${this.baseUrl}${qs}`, { timeout: 15000 });
       const data = response.data;
       if (data?.error) throw new Error(`Unavailable via YFinance: ${data.error}`);
       if (ttlMs > 0) this.cache.set(cacheKey, { expiresAt: Date.now() + ttlMs, data });
