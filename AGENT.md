@@ -320,6 +320,7 @@ for (let passIndex = 0; passIndex < DEEP_RESEARCH_DEPTH; passIndex++) {
 | `STOCK_CACHE_TTL_MS` | No | `604800000` | Cache TTL ms (7 days) |
 | `NUM_COMPANIES` | No | `10` | Number of companies in comparison, sector, and deep-sector reports. Optimal: 10; raise to 15 for broader research, lower to 5 for faster/demo runs |
 | `DEEP_RESEARCH_DEPTH` | No | `2` | Recursive refinement passes in deep sector Phase 3. Each pass deepens analysis using prior results. Optimal: 2; set to 1 to disable recursion, 3 for most thorough analysis |
+| `DEBUG` | No | _(unset)_ | When `true`, reports include "Data Sources" and "Data Coverage (Chart Inputs)" debug sections. Omit or set to `false` in production |
 | `ALPHA_VANTAGE_MIN_INTERVAL_MS` | No | `1200` | Min ms between AV requests |
 | `FINNHUB_MIN_INTERVAL_MS` | No | `500` | Min ms between Finnhub requests |
 | `HEALTH_CHECK_SYMBOL` | No | — | If set, health endpoint makes a live API call with this ticker |

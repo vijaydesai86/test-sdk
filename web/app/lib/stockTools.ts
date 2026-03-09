@@ -1104,7 +1104,8 @@ export async function executeTool(
             )
           : reportBody;
 
-        const sourceSection = sources.size
+        const debugMode = process.env.DEBUG === 'true';
+        const sourceSection = debugMode && sources.size
           ? `## 🧾 Data Sources\n${SOURCE_LEGEND}\n${Array.from(sources.entries()).map(([key, value]) => `- ${key}: ${value}`).join('\n')}`
           : '';
         const finalContent = sourceSection
