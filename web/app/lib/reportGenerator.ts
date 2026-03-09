@@ -1797,13 +1797,14 @@ export function buildComparisonReport(data: ComparisonReportData): string {
   const scatterChart = buildValuationGrowthScatter(items);
   const marginChart = buildMarginComparisonChart(items);
 
+  const debugMode = process.env.DEBUG === 'true';
   const sections = [
     header,
     `Generated: ${data.generatedAt}`,
     `Universe: ${data.universe.join(', ')}`,
     notes ? `## ⚠️ Data Gaps\n${notes}` : null,
-    sourceTable ? '## 🧾 Data Sources' : null,
-    sourceTable ? `${sourceLegend}\n\n${sourceTable}` : null,
+    debugMode && sourceTable ? '## 🧾 Data Sources' : null,
+    debugMode && sourceTable ? `${sourceLegend}\n\n${sourceTable}` : null,
     '## 📊 Snapshot',
     snapshotTable,
     '## 🧾 Scale & Profitability',
@@ -1820,8 +1821,8 @@ export function buildComparisonReport(data: ComparisonReportData): string {
     `- Highest target upside: ${topUpside ? `${topUpside.name} (${topUpside.upside.toFixed(1)}%)` : 'N/A'}`,
     `- Strongest consensus: ${topRating ? `${topRating.name} (${(topRating.score! * 100).toFixed(0)}% buy/strong buy)` : 'N/A'}`,
     moatSection || null,
-    '## 🧩 Data Coverage (Chart Inputs)',
-    coverageTable,
+    debugMode ? '## 🧩 Data Coverage (Chart Inputs)' : null,
+    debugMode ? coverageTable : null,
     '## 📈 Price Performance (Indexed)',
     performanceChart || '_Price performance data unavailable._',
     '## 📊 Valuation vs Growth',
