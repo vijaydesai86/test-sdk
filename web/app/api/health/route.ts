@@ -2,7 +2,7 @@
 import { NextResponse } from 'next/server';
 
 export const runtime = 'nodejs';
-import { createStockService } from '@/app/lib/stockDataService';
+import { createStockService, resolveProxyUrl } from '@/app/lib/stockDataService';
 
 export async function GET() {
   const provider = (process.env.STOCK_DATA_PROVIDER || 'alphavantage').toLowerCase();
@@ -43,7 +43,8 @@ export async function GET() {
     } else {
       try {
         const { default: axios } = await import('axios');
-        const resp = await axios.get(`${yfinanceUrl.replace(/\/$/, '')}/health`, { timeout: 5000 });
+        const absoluteUrl = resolveProxyUrl(yfinanceUrl.replace(/\/$/, ''));
+        const resp = await axios.get(`${absoluteUrl}/health`, { timeout: 5000 });
         results.yfinance = resp.data?.ok === true
           ? { ok: true, configured: true }
           : { ok: false, error: resp.data?.error || 'Proxy returned unhealthy status' };

@@ -1,6 +1,21 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import axios from 'axios';
 
+/**
+ * Expand a relative YFINANCE_PROXY_URL (e.g. "/api/yf") to an absolute URL.
+ * On Vercel, the VERCEL_URL env var is automatically set to the deployment hostname.
+ * For external or localhost proxies the URL is returned unchanged.
+ */
+export function resolveProxyUrl(url: string): string {
+  if (url.startsWith('/')) {
+    const vercelUrl = process.env.VERCEL_URL;
+    if (vercelUrl && vercelUrl.trim()) {
+      return `https://${vercelUrl}${url}`;
+    }
+  }
+  return url;
+}
+
 export interface StockDataService {
   getStockPrice(symbol: string): Promise<any>;
   getPriceHistory(symbol: string, range?: string): Promise<any>;
@@ -1046,7 +1061,8 @@ export class YFinanceService implements StockDataService {
   private cache = new Map<string, { expiresAt: number; data: any }>();
 
   constructor(proxyUrl?: string) {
-    this.baseUrl = (proxyUrl || process.env.YFINANCE_PROXY_URL || '').replace(/\/$/, '');
+    const url = proxyUrl || process.env.YFINANCE_PROXY_URL || '';
+    this.baseUrl = resolveProxyUrl(url).replace(/\/$/, '');
   }
 
   private async makeRequest(path: string, params: Record<string, string> = {}, ttlMs = 0): Promise<any> {

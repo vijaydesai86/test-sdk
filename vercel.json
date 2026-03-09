@@ -1,5 +1,11 @@
 {
   "buildCommand": "npm run build",
   "outputDirectory": ".next",
-  "installCommand": "npm install"
+  "installCommand": "npm install",
+  "rewrites": [
+    {
+      "source": "/api/yf/:endpoint",
+      "destination": "/api/yf?_path=:endpoint"
+    }
+  ]
 }

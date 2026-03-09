@@ -241,12 +241,23 @@ When `isRateLimit` triggers: `rateLimitHit = true` → all remaining fetches ski
 
 ### yfinance Integration
 
-**What it is:** An optional third stock-data provider backed by a Python HTTP microservice (not bundled in this repo).
+**What it is:** An optional third stock-data provider backed by a Python serverless function **bundled in this repo** at `web/api/yf.py`. Vercel deploys it automatically — no separate server required.
 
-**Required setup:**
-1. Run a Python REST server that implements the yfinance proxy API (see `web/README.md` for full endpoint spec).
-2. Set `YFINANCE_PROXY_URL=http://<host>:<port>` in your environment.
+**Vercel setup (recommended — zero extra infrastructure):**
+1. The Python function is already in the repo at `web/api/yf.py` — Vercel deploys it automatically.
+2. In Vercel project settings → Environment Variables, add: `YFINANCE_PROXY_URL` = `/api/yf`
 3. Set `STOCK_DATA_PROVIDER=yfinance` (sole provider) or `STOCK_DATA_PROVIDER=hybrid` (tertiary fallback).
+
+   That's it. Vercel auto-expands the `/api/yf` relative path to `https://<your-app>.vercel.app/api/yf` via the built-in `VERCEL_URL` env var.
+
+**Local dev setup (if you want to test yfinance locally):**
+1. `pip install flask yfinance` and run a local Flask server on port 5001.
+2. Set `YFINANCE_PROXY_URL=http://localhost:5001` in `.env.local`.
+
+**How the Vercel routing works:**
+- `vercel.json` rewrite: `/api/yf/:endpoint?<qs>` → `/api/yf?_path=:endpoint&<qs>`
+- `web/api/yf.py` reads `_path` from query params and dispatches to the correct `yfinance` call.
+- `web/requirements.txt` lists `yfinance`; Vercel installs it as part of the Python function build.
 
 **Fallback order in hybrid mode:**
 1. Alpha Vantage (primary, requires `ALPHA_VANTAGE_API_KEY`)
@@ -257,13 +268,12 @@ In hybrid mode the factory automatically wires whichever secondary/tertiary prov
 
 **Known limitations:**
 - yfinance data is **delayed / end-of-day** — not suitable for real-time quotes.
-- The Python proxy server is **out of scope** for this repo and must be provided separately.
+- Yahoo Finance rate-limits `quoteSummary`-based endpoints (overview, financials, etc.) from Vercel cloud IPs. Price and price-history (chart-based) always work from Vercel. Other endpoints fail gracefully with a suppressed `Unavailable via YFinance` error.
 - `getSectorPerformance` and `getTopGainersLosers` are unavailable via yfinance; errors are automatically suppressed.
-- Calling the proxy from Vercel cloud IPs is fine for most endpoints. Yahoo Finance's `quoteSummary` crumb auth is NOT needed since this proxy uses yfinance's chart/fast_info paths.
 
 **Error suppression:** All `YFinanceService` errors use the `Unavailable via YFinance: <detail>` prefix, which is suppressed by `safeFetch` in `stockTools.ts` (regex: `/unavailable (in|via) (Alpha|Finnhub|YFinance)/i`).
 
-**Health check:** `GET /api/health` hits `{YFINANCE_PROXY_URL}/health` and reports `yfinance: { ok: true/false }` when yfinance is part of the active provider configuration.
+**Health check:** `GET /api/health` hits `{YFINANCE_PROXY_URL}/health` and reports `yfinance: { ok: true/false }` when yfinance is part of the active provider configuration. Relative URLs are auto-expanded using `VERCEL_URL`.
 
 ### `web/app/lib/reportGenerator.ts`
 
