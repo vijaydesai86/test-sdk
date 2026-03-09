@@ -20,6 +20,7 @@ by the TypeScript safeFetch layer via the "Unavailable via YFinance" prefix.
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 import json
+import math
 import yfinance as yf
 
 PERIOD_MAP = {
@@ -46,6 +47,30 @@ def _safe(fn):
         return None
 
 
+def _safe_float(v):
+    """Convert v to float, returning None for NaN/Inf/None/errors."""
+    if v is None:
+        return None
+    try:
+        f = float(v)
+        return None if (math.isnan(f) or math.isinf(f)) else f
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_int(v):
+    """Convert v to int, returning None for NaN/Inf/None/errors."""
+    if v is None:
+        return None
+    try:
+        f = float(v)
+        if math.isnan(f) or math.isinf(f):
+            return None
+        return int(f)
+    except (TypeError, ValueError):
+        return None
+
+
 def _health(_p):
     return {'ok': True}
 
@@ -53,25 +78,25 @@ def _health(_p):
 def _price(p):
     symbol = p.get('symbol', '').upper()
     t = yf.Ticker(symbol)
-    fi = t.fast_info
-    raw_price = getattr(fi, 'last_price', None)
-    raw_prev = getattr(fi, 'previous_close', None)
-    try:
-        price_val = float(raw_price) if raw_price is not None else None
-        prev = float(raw_prev) if raw_prev is not None else None
-    except (TypeError, ValueError):
-        price_val, prev = None, None
-    change = round(price_val - prev, 4) if price_val is not None and prev is not None else None
-    change_pct = f"{round(change / prev * 100, 2)}%" if change is not None and prev else 'N/A'
+    # Use chart API (t.history) — works reliably from Vercel/cloud IPs.
+    # fast_info / quoteSummary may be blocked by Yahoo Finance on cloud IPs.
+    hist = t.history(period='5d', interval='1d')
+    if hist.empty:
+        raise ValueError(f'No price data available for {symbol}')
+    last = hist.iloc[-1]
+    prev = hist.iloc[-2] if len(hist) >= 2 else last
+    price = _safe_float(last['Close'])
+    prev_close = _safe_float(prev['Close'])
+    if price is None:
+        raise ValueError(f'No price data available for {symbol}')
+    change = round(price - prev_close, 4) if prev_close is not None else None
+    change_pct = f"{round(change / prev_close * 100, 2)}%" if change is not None and prev_close else 'N/A'
     return {
         'symbol': symbol,
-        'price': str(price_val) if price_val is not None else None,
+        'price': str(price),
         'change': str(change) if change is not None else None,
         'changePercent': change_pct,
-        'high': str(getattr(fi, 'day_high', None)),
-        'low': str(getattr(fi, 'day_low', None)),
-        'open': str(getattr(fi, 'open', None)),
-        'previousClose': str(prev) if prev is not None else None,
+        'latestTradingDay': str(hist.index[-1].date()),
     }
 
 
@@ -81,14 +106,19 @@ def _price_history(p):
     period, interval = PERIOD_MAP.get(range_val, ('1y', '1wk'))
     t = yf.Ticker(symbol)
     hist = t.history(period=period, interval=interval)
+    if hist.empty:
+        return {'symbol': symbol, 'prices': []}
+    # _safe_float / _safe_int convert pandas NaN → None (null in JSON).
+    # The plain `is not None` check does NOT catch pandas NaN, so float/int
+    # conversions would either raise ValueError or produce invalid JSON (NaN).
     prices = [
         {
             'date': str(idx.date()),
-            'open': float(row['Open']) if row['Open'] is not None else None,
-            'high': float(row['High']) if row['High'] is not None else None,
-            'low': float(row['Low']) if row['Low'] is not None else None,
-            'close': float(row['Close']) if row['Close'] is not None else None,
-            'volume': int(row['Volume']) if row['Volume'] is not None else None,
+            'open': _safe_float(row['Open']),
+            'high': _safe_float(row['High']),
+            'low': _safe_float(row['Low']),
+            'close': _safe_float(row['Close']),
+            'volume': _safe_int(row['Volume']),
         }
         for idx, row in hist.iterrows()
     ]
@@ -98,28 +128,50 @@ def _price_history(p):
 def _overview(p):
     symbol = p.get('symbol', '').upper()
     t = yf.Ticker(symbol)
-    i = t.info
-    if not i or not (i.get('longName') or i.get('shortName')):
-        raise ValueError(f'No overview data for {symbol}')
-    # Return field names that match AlphaVantageService.getCompanyOverview() so that
-    # reportGenerator.ts and stockTools.ts work identically across all providers.
-    market_cap = i.get('marketCap')
-    total_revenue = i.get('totalRevenue')
-    gross_profits = i.get('grossProfits')
-    profit_margins = i.get('profitMargins')
-    operating_margins = i.get('operatingMargins')
+
+    # Try t.info first — provides full financial data but quoteSummary is
+    # blocked by Yahoo Finance on some cloud IPs (Vercel, AWS, GCP, etc.).
+    i = {}
+    try:
+        info = t.info
+        if info and (info.get('longName') or info.get('shortName')):
+            i = info
+    except Exception:
+        pass
+
+    # When t.info is unavailable, fall back to t.fast_info for basic metrics.
+    # fast_info uses a lightweight quote endpoint that works from cloud IPs.
+    fi = None
+    if not i:
+        try:
+            fi = t.fast_info
+        except Exception:
+            pass
+
+    if not i and fi is None:
+        raise ValueError(f'Unavailable via YFinance: company data not accessible for {symbol}')
+
+    # Safely read a fast_info attribute (handles camelCase/snake_case naming variations
+    # across yfinance versions, and catches any property-access exceptions).
+    def fi_get(*attrs):
+        for attr in attrs:
+            v = _safe(lambda a=attr: getattr(fi, a))
+            if v is not None:
+                return v
+        return None
+
     return {
         'symbol': symbol,
-        'name': i.get('longName') or i.get('shortName'),
+        'name': i.get('longName') or i.get('shortName') or symbol,
         'description': i.get('longBusinessSummary'),
         'sector': i.get('sector'),
         'industry': i.get('industry'),
         'country': i.get('country'),
-        'exchange': i.get('exchange'),
+        'exchange': i.get('exchange') or (fi_get('exchange') if fi else None),
         # Match AlphaVantage field names used by reportGenerator.ts / stockTools.ts
-        'marketCapitalization': market_cap,
-        'revenueTTM': total_revenue,
-        'grossProfitTTM': gross_profits,
+        'marketCapitalization': i.get('marketCap') or (fi_get('marketCap', 'market_cap') if fi else None),
+        'revenueTTM': i.get('totalRevenue'),
+        'grossProfitTTM': i.get('grossProfits'),
         'eps': i.get('trailingEps'),
         'peRatio': i.get('trailingPE'),
         'forwardPE': i.get('forwardPE'),
@@ -127,19 +179,19 @@ def _overview(p):
         'bookValue': i.get('bookValue'),
         'dividendPerShare': i.get('dividendRate'),
         'dividendYield': i.get('dividendYield'),
-        '52WeekHigh': i.get('fiftyTwoWeekHigh'),
-        '52WeekLow': i.get('fiftyTwoWeekLow'),
-        '50DayMovingAverage': i.get('fiftyDayAverage'),
-        '200DayMovingAverage': i.get('twoHundredDayAverage'),
+        '52WeekHigh': i.get('fiftyTwoWeekHigh') or (fi_get('yearHigh', 'year_high') if fi else None),
+        '52WeekLow': i.get('fiftyTwoWeekLow') or (fi_get('yearLow', 'year_low') if fi else None),
+        '50DayMovingAverage': i.get('fiftyDayAverage') or (fi_get('fiftyDayAverage', 'fifty_day_average') if fi else None),
+        '200DayMovingAverage': i.get('twoHundredDayAverage') or (fi_get('twoHundredDayAverage', 'two_hundred_day_average') if fi else None),
         'beta': i.get('beta'),
-        'profitMargin': profit_margins,
-        'operatingMargin': operating_margins,
+        'profitMargin': i.get('profitMargins'),
+        'operatingMargin': i.get('operatingMargins'),
         'returnOnAssets': i.get('returnOnAssets'),
         'returnOnEquity': i.get('returnOnEquity'),
         'revenuePerShare': i.get('revenuePerShare'),
         'quarterlyRevenueGrowth': i.get('revenueGrowth'),
         'quarterlyEarningsGrowth': i.get('earningsQuarterlyGrowth'),
-        'sharesOutstanding': i.get('sharesOutstanding'),
+        'sharesOutstanding': i.get('sharesOutstanding') or (fi_get('shares') if fi else None),
         'sharesFloat': i.get('floatShares'),
         'percentInsiders': i.get('heldPercentInsiders'),
         'percentInstitutions': i.get('heldPercentInstitutions'),
@@ -155,7 +207,7 @@ def _overview(p):
 def _financials(p):
     symbol = p.get('symbol', '').upper()
     t = yf.Ticker(symbol)
-    i = t.info
+    i = _safe(lambda: t.info) or {}
     return {
         'symbol': symbol,
         'revenueGrowth': i.get('revenueGrowth'),
@@ -182,7 +234,7 @@ def _insider(p):
 def _analyst_ratings(p):
     symbol = p.get('symbol', '').upper()
     t = yf.Ticker(symbol)
-    i = t.info
+    i = _safe(lambda: t.info) or {}
     # Return field names matching AlphaVantageService.getAnalystRatings() output.
     return {
         'symbol': symbol,
@@ -216,7 +268,7 @@ def _analyst_recommendations(p):
 def _price_targets(p):
     symbol = p.get('symbol', '').upper()
     t = yf.Ticker(symbol)
-    i = t.info
+    i = _safe(lambda: t.info) or {}
     # Match FinnhubService.getPriceTargets() field names (targetMean is the key field used by reports)
     return {
         'symbol': symbol,
@@ -330,10 +382,19 @@ class handler(BaseHTTPRequestHandler):
             result = fn(params)
             self._json(200, result)
         except Exception as e:
+            # Print to stdout so errors appear in Vercel function logs.
+            print(f'[yf] ERROR endpoint={endpoint} symbol={params.get("symbol", "?")} error={e}')
             self._json(500, {'error': str(e)})
 
     def _json(self, status: int, data: dict):
-        body = json.dumps(data, default=str).encode('utf-8')
+        try:
+            # allow_nan=False ensures NaN/Inf raise ValueError rather than
+            # silently producing invalid JSON tokens (NaN) that break JS parsing.
+            body = json.dumps(data, default=str, allow_nan=False).encode('utf-8')
+        except (ValueError, TypeError) as json_err:
+            print(f'[yf] JSON serialization error: {json_err}')
+            body = json.dumps({'error': f'JSON serialization error: {json_err}'}).encode('utf-8')
+            status = 500
         self.send_response(status)
         self.send_header('Content-Type', 'application/json')
         self.send_header('Content-Length', str(len(body)))
