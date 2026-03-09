@@ -86,11 +86,11 @@ web/
 |---|---|
 | `alphavantage` | Alpha Vantage only (default) |
 | `finnhub` | Finnhub only |
-| `yfinance` | Python yfinance proxy only — requires `YFINANCE_PROXY_URL` |
+| `yfinance` | Python yfinance proxy — set `YFINANCE_PROXY_URL=/api/yf` on Vercel (bundled, no extra server) |
 | `hybrid` | Alpha Vantage → Finnhub → YFinance fallback chain; uses whichever secondary/tertiary providers are configured |
 
-> **yfinance note:** The Python proxy is not bundled in this repo. Host it separately and set `YFINANCE_PROXY_URL` to its public URL. See [yfinance Proxy Setup](../README.md#yfinance-proxy-setup) in the root README for endpoint specs and a minimal server example.  
-> yfinance provides end-of-day / delayed data — it is not suitable for real-time quotes.
+> **yfinance on Vercel:** The proxy is **bundled in this repo** at `web/api/yf.py` — Vercel deploys it automatically. Just set `YFINANCE_PROXY_URL=/api/yf` in Vercel environment variables. No separate server required. See [yfinance Setup](../README.md#yfinance-setup-vercel) in the root README.  
+> yfinance provides end-of-day / delayed data — not real-time quotes.
 
 ## Usage Examples
 
@@ -109,7 +109,8 @@ See [DEPLOYMENT.md](../DEPLOYMENT.md) in the root directory for detailed deploym
 1. Import your repository on [vercel.com](https://vercel.com)
 2. Set **Root Directory** to `web`
 3. Add environment variables: `GITHUB_TOKEN`, `ALPHA_VANTAGE_API_KEY`
-4. Deploy!
+4. **Optional — to enable yfinance:** add `STOCK_DATA_PROVIDER=hybrid` and `YFINANCE_PROXY_URL=/api/yf` (the Python proxy in `web/api/yf.py` deploys automatically)
+5. Deploy!
 
 ## Tech Stack
 

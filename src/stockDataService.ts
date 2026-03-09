@@ -1027,7 +1027,12 @@ export class YFinanceService implements StockDataService {
   private cache = new Map<string, { expiresAt: number; data: any }>();
 
   constructor(proxyUrl?: string) {
-    this.baseUrl = (proxyUrl || process.env.YFINANCE_PROXY_URL || '').replace(/\/$/, '');
+    let url = proxyUrl || process.env.YFINANCE_PROXY_URL || '';
+    // Support relative paths on Vercel: /api/yf → https://<VERCEL_URL>/api/yf
+    if (url.startsWith('/') && process.env.VERCEL_URL) {
+      url = `https://${process.env.VERCEL_URL}${url}`;
+    }
+    this.baseUrl = url.replace(/\/$/, '');
   }
 
   private async makeRequest(path: string, params: Record<string, string> = {}, ttlMs = 0): Promise<any> {
