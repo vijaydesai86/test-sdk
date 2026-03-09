@@ -74,8 +74,23 @@ web/
 |----------|-------------|---------|
 | `GITHUB_TOKEN` | GitHub Personal Access Token (required) | — |
 | `ALPHA_VANTAGE_API_KEY` | Alpha Vantage API key (required for stock data) | — |
+| `FINNHUB_API_KEY` | Finnhub API key (optional; enables hybrid secondary fallback) | — |
+| `STOCK_DATA_PROVIDER` | `alphavantage` / `finnhub` / `yfinance` / `hybrid` | `alphavantage` |
+| `YFINANCE_PROXY_URL` | Base URL of your Python yfinance REST proxy (e.g. `http://localhost:5001`) | — |
 | `NUM_COMPANIES` | Companies per comparison/sector/deep-sector report | `10` |
 | `DEEP_RESEARCH_DEPTH` | Recursive refinement passes in deep sector research | `2` |
+
+### STOCK_DATA_PROVIDER options
+
+| Value | Behaviour |
+|---|---|
+| `alphavantage` | Alpha Vantage only (default) |
+| `finnhub` | Finnhub only |
+| `yfinance` | Python yfinance proxy only — requires `YFINANCE_PROXY_URL` |
+| `hybrid` | Alpha Vantage → Finnhub → YFinance fallback chain; uses whichever secondary/tertiary providers are configured |
+
+> **yfinance note:** The Python proxy is not bundled in this repo. Host it separately and set `YFINANCE_PROXY_URL` to its public URL. See [yfinance Proxy Setup](../README.md#yfinance-proxy-setup) in the root README for endpoint specs and a minimal server example.  
+> yfinance provides end-of-day / delayed data — it is not suitable for real-time quotes.
 
 ## Usage Examples
 

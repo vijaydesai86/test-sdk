@@ -181,7 +181,8 @@ When `isRateLimit` triggers: `rateLimitHit = true` → all remaining fetches ski
 - `createStockService(alphaVantageKey?)` — factory returns the correct service based on `STOCK_DATA_PROVIDER`
 - `AlphaVantageService` — primary data source (free tier, rate-limited, cached)
 - `FinnhubService` — secondary data source (free tier, higher rate limit)
-- `HybridStockDataService` — wraps both; `withFallback()` retries AV failures on Finnhub; tags results with `__source: 'Finnhub'`
+- `YFinanceService` — tertiary data source (Python proxy microservice; delayed data; no API key needed)
+- `HybridStockDataService` — wraps up to three providers; `withFallback()` tries primary → secondary → tertiary; tags results with `__source: 'Finnhub'` or `__source: 'YFinance'`
 
 **IMPORTANT implementation rules:**
 - **Never use `TIME_SERIES_DAILY outputsize=full`** — this is a premium Alpha Vantage feature and fails on free tier.
@@ -237,6 +238,32 @@ When `isRateLimit` triggers: `rateLimitHit = true` → all remaining fetches ski
 | `/stock/financials` | ❌ **DEPRECATED** | Removed from API. Never call. |
 
 ---
+
+### yfinance Integration
+
+**What it is:** An optional third stock-data provider backed by a Python HTTP microservice (not bundled in this repo).
+
+**Required setup:**
+1. Run a Python REST server that implements the yfinance proxy API (see `web/README.md` for full endpoint spec).
+2. Set `YFINANCE_PROXY_URL=http://<host>:<port>` in your environment.
+3. Set `STOCK_DATA_PROVIDER=yfinance` (sole provider) or `STOCK_DATA_PROVIDER=hybrid` (tertiary fallback).
+
+**Fallback order in hybrid mode:**
+1. Alpha Vantage (primary, requires `ALPHA_VANTAGE_API_KEY`)
+2. Finnhub (secondary, requires `FINNHUB_API_KEY`)
+3. YFinance (tertiary, requires `YFINANCE_PROXY_URL`)
+
+In hybrid mode the factory automatically wires whichever secondary/tertiary providers have their URL/key configured. If none are set, falls back to Alpha Vantage only.
+
+**Known limitations:**
+- yfinance data is **delayed / end-of-day** — not suitable for real-time quotes.
+- The Python proxy server is **out of scope** for this repo and must be provided separately.
+- `getSectorPerformance` and `getTopGainersLosers` are unavailable via yfinance; errors are automatically suppressed.
+- Calling the proxy from Vercel cloud IPs is fine for most endpoints. Yahoo Finance's `quoteSummary` crumb auth is NOT needed since this proxy uses yfinance's chart/fast_info paths.
+
+**Error suppression:** All `YFinanceService` errors use the `Unavailable via YFinance: <detail>` prefix, which is suppressed by `safeFetch` in `stockTools.ts` (regex: `/unavailable (in|via) (Alpha|Finnhub|YFinance)/i`).
+
+**Health check:** `GET /api/health` hits `{YFINANCE_PROXY_URL}/health` and reports `yfinance: { ok: true/false }` when yfinance is part of the active provider configuration.
 
 ### `web/app/lib/reportGenerator.ts`
 

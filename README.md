@@ -191,7 +191,8 @@ npm run dev
 | `GEMINI_MODEL` | No | `gemini-2.5-flash` | Gemini model name. Default `gemini-2.5-flash` has free-tier quota on AI Studio keys. `gemini-2.0-flash` has **zero** free quota and will always fail. |
 | `ALPHA_VANTAGE_API_KEY` | **Yes** | — | Free API key from [alphavantage.co](https://www.alphavantage.co/support/#api-key) — real-time market data |
 | `FINNHUB_API_KEY` | Recommended | — | Free key from [finnhub.io](https://finnhub.io) — enables hybrid fallback for higher data completeness |
-| `STOCK_DATA_PROVIDER` | No | `alphavantage` | `alphavantage`, `finnhub`, or `hybrid` (use `hybrid` for best data coverage) |
+| `STOCK_DATA_PROVIDER` | No | `alphavantage` | `alphavantage`, `finnhub`, `yfinance`, or `hybrid` (use `hybrid` for best data coverage; see below) |
+| `YFINANCE_PROXY_URL` | Only for yfinance | — | Base URL of your Python yfinance REST microservice (e.g. `http://localhost:5001`). Required when `STOCK_DATA_PROVIDER=yfinance` or for yfinance tertiary fallback in `hybrid` mode. The proxy is **not bundled** — see [yfinance proxy setup](#yfinance-proxy-setup) below. |
 | `COPILOT_MODEL` | No | `openai/gpt-4.1` | Main reasoning model (GitHub Models name; ignored when `LLM_PROVIDER=gemini`) |
 | `FILL_MODEL` | No | `openai/gpt-4.1-mini` | Lighter model for ticker resolution and gap-fill on GitHub Models (preserves main model quota) |
 | `COPILOT_FALLBACK_MODEL` | No | same as main | Fallback model if main hits rate limit (GitHub Models only) |
@@ -255,6 +256,7 @@ CI runs the full test suite on every pull request. All tests must pass before me
 | AI Orchestrator | GitHub Models API (`GITHUB_TOKEN`), Gemini API (`GEMINI_TOKEN`), or hybrid — controlled by `LLM_PROVIDER` |
 | Data — Primary | Alpha Vantage REST API (free tier) |
 | Data — Fallback | Finnhub REST API (free tier, hybrid mode) |
+| Data — Tertiary | yfinance Python proxy (optional, hybrid mode; end-of-day data) |
 | Data — Gap-fill | LLM knowledge (null fields only, never overwrites API data) |
 | Report rendering | `react-markdown` + `remark-gfm` in chat UI |
 | Deployment | Vercel (Node.js runtime, 5-minute max function duration) |
@@ -276,8 +278,70 @@ CI runs the full test suite on every pull request. All tests must pass before me
 | "429 Too Many Requests" (Gemini) | Check your model: `gemini-2.0-flash` has **zero** free-tier quota and will always fail. The correct default is `gemini-2.5-flash` (5 RPM / 20 RPD). Keys must be created at [aistudio.google.com/api-keys](https://aistudio.google.com/api-keys), not Google Cloud Console. |
 | Model returns text instead of tool calls | Select a tool-calling capable model in the model selector dropdown |
 | DEP0169 warning in logs | Emitted by a Node.js dependency — informational only, no user impact |
+| yfinance data shows N/A | yfinance proxy is unreachable. Confirm `YFINANCE_PROXY_URL` points to a running server and `GET {url}/health` returns `{"ok":true}` |
 
 ---
+
+## yfinance Proxy Setup
+
+> **The Python yfinance REST microservice is NOT bundled in this repo.**  
+> You must run it separately and point `YFINANCE_PROXY_URL` at it.
+
+### Minimal example server
+
+```python
+# requirements: flask yfinance
+from flask import Flask, request, jsonify
+import yfinance as yf
+
+app = Flask(__name__)
+
+@app.route('/health')
+def health():
+    return jsonify({'ok': True})
+
+@app.route('/price')
+def price():
+    t = yf.Ticker(request.args['symbol'])
+    fi = t.fast_info
+    return jsonify({'symbol': request.args['symbol'],
+                    'price': str(fi.last_price), ...})
+# … implement remaining endpoints (see AGENT.md for full list)
+
+if __name__ == '__main__':
+    app.run(port=5001)
+```
+
+### Required endpoints
+
+| Endpoint | Query params |
+|---|---|
+| `GET /health` | — |
+| `GET /price` | `symbol` |
+| `GET /price-history` | `symbol`, `range` |
+| `GET /overview` | `symbol` |
+| `GET /financials` | `symbol` |
+| `GET /insider` | `symbol` |
+| `GET /analyst-ratings` | `symbol` |
+| `GET /analyst-recommendations` | `symbol` |
+| `GET /price-targets` | `symbol` |
+| `GET /peers` | `symbol` |
+| `GET /search` | `query` |
+| `GET /earnings` | `symbol` |
+| `GET /income` | `symbol` |
+| `GET /balance-sheet` | `symbol` |
+| `GET /cash-flow` | `symbol` |
+| `GET /sector-performance` | — |
+| `GET /top-gainers-losers` | — |
+| `GET /news-sentiment` | `symbol` |
+| `GET /company-news` | `symbol`, `days` |
+| `GET /search-news` | `query`, `days` |
+
+Endpoints that are unavailable should return `{"error": "..."}` with a 4xx status. The TypeScript service will wrap this as `Unavailable via YFinance: <message>` and it will be silently suppressed.
+
+### Vercel deployment note
+
+To use yfinance on Vercel you must host your Python proxy separately (Railway, Fly.io, a VPS, etc.) and set `YFINANCE_PROXY_URL` to its public HTTPS URL in your Vercel environment variables.
 
 ## License
 
