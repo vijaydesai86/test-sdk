@@ -47,3 +47,9 @@ temp/
 
 # Generated reports and cache (runtime artifacts)
 reports/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
