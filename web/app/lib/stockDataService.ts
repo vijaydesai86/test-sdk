@@ -1153,11 +1153,17 @@ export class YFinanceService implements StockDataService {
 
 
 class HybridStockDataService implements StockDataService {
+  private secondaryTag: string;
+  private tertiaryTag: string;
+
   constructor(
     private primary: StockDataService,
     private secondary: StockDataService,
     private tertiary?: StockDataService
-  ) {}
+  ) {
+    this.secondaryTag = secondary instanceof YFinanceService ? 'YFinance' : 'Finnhub';
+    this.tertiaryTag = tertiary instanceof YFinanceService ? 'YFinance' : 'Finnhub';
+  }
 
   private async withFallback<T>(
     primaryCall: () => Promise<T>,
@@ -1169,16 +1175,16 @@ class HybridStockDataService implements StockDataService {
     } catch {
       try {
         const result = await secondaryCall();
-        // Tag with source so stockTools.ts correctly attributes Finnhub data in the sources table
+        // Tag with source so stockTools.ts correctly attributes provider data in the sources table
         if (result != null && typeof result === 'object' && !Array.isArray(result)) {
-          return { ...(result as object), __source: 'Finnhub' } as T;
+          return { ...(result as object), __source: this.secondaryTag } as T;
         }
         return result;
       } catch (secondaryError) {
         if (!tertiaryCall) throw secondaryError;
         const result = await tertiaryCall();
         if (result != null && typeof result === 'object' && !Array.isArray(result)) {
-          return { ...(result as object), __source: 'YFinance' } as T;
+          return { ...(result as object), __source: this.tertiaryTag } as T;
         }
         return result;
       }
