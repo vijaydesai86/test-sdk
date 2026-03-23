@@ -318,6 +318,21 @@ function selectToolNames() {
     'generate_deep_sector_report',
     'get_sector_performance',
     'get_top_gainers_losers',
+    // ── New data tools (added in wave 1 — AV + Finnhub) ──────────────────────
+    'get_dividend_history',
+    'get_stock_splits',
+    'get_earnings_calendar',
+    'get_ipo_calendar',
+    'get_economic_indicators',
+    'get_technical_indicators',
+    'get_commodity_prices',
+    'get_forex_rate',
+    'get_market_status',
+    // ── New data tools (wave 2 — SEC EDGAR, FRED, CoinGecko) ─────────────────
+    'get_recent_filings',
+    'get_market_indicators',
+    'get_crypto_price',
+    'get_top_cryptos',
   ];
   return { toolNames };
 }

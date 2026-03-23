@@ -150,7 +150,13 @@ function computeTechnicalIndicators(
 
 /**
  * Stock data service using Alpha Vantage API (free tier)
- * Note: Alpha Vantage free tier has a limit of 5 API calls per minute
+ * Note: Alpha Vantage free tier has a limit of 5 API calls per minute and 25 per day.
+ *
+ * Circuit breaker: once a rate-limit response is detected the class-level
+ * `rateLimitedUntilMs` flag is set.  All subsequent `makeRequest` calls skip
+ * the throttle and throw immediately (matching the "Unavailable via Alpha Vantage"
+ * suppression pattern) so HybridStockDataService falls back to Finnhub instantly
+ * instead of wasting 1200 ms per call.
  */
 export class AlphaVantageService implements StockDataService {
   private apiKey: string;
@@ -161,6 +167,17 @@ export class AlphaVantageService implements StockDataService {
   private minIntervals = {
     alphavantage: Number(process.env.ALPHA_VANTAGE_MIN_INTERVAL_MS || 1200),
   };
+
+  // ── Circuit breaker ──────────────────────────────────────────────────────────
+  // Shared across every AlphaVantageService instance in the same Node.js process.
+  // When > Date.now() all makeRequest calls throw immediately without throttling.
+  private static rateLimitedUntilMs = 0;
+  // Conservative lockout for the 25 req/day limit — 1 hour gives the daily counter
+  // time to partially reset without hammering AV until midnight.
+  private static readonly DAILY_LIMIT_LOCKOUT_MS = 60 * 60 * 1000;
+  // 65-second lockout for the 5 req/min limit (adds 5 s of buffer over 1 minute).
+  private static readonly PER_MINUTE_LOCKOUT_MS = 65 * 1000;
+  // ────────────────────────────────────────────────────────────────────────────
 
   constructor(apiKey?: string) {
     this.apiKey = apiKey || process.env.ALPHA_VANTAGE_API_KEY || 'demo';
@@ -215,6 +232,14 @@ export class AlphaVantageService implements StockDataService {
     const ttlMs = options.ttlMs || 0;
 
     return this.fetchWithCache(cacheKey, ttlMs, async () => {
+      // ── Circuit breaker: skip throttle + HTTP when rate-limited ─────────────
+      if (AlphaVantageService.rateLimitedUntilMs > Date.now()) {
+        throw new Error(
+          'Unavailable via Alpha Vantage: rate limit active — falling back to alternative source'
+        );
+      }
+      // ─────────────────────────────────────────────────────────────────────────
+
       await this.throttle('alphavantage', this.minIntervals.alphavantage);
       try {
         const response = await axios.get(this.baseUrl, {
@@ -225,18 +250,32 @@ export class AlphaVantageService implements StockDataService {
           timeout: 10000,
         });
         const data = response.data;
-        if (data?.Note) {
-          throw new Error(data.Note);
+
+        // Detect rate-limit messages in the response body (AV returns HTTP 200 even when limited).
+        const limitMsg: string = (data?.Note || data?.Information || '') as string;
+        if (limitMsg) {
+          // Determine lockout duration: per-day limit is much longer than per-minute.
+          const isDaily = /per day|\d+ requests per day/i.test(limitMsg);
+          AlphaVantageService.rateLimitedUntilMs =
+            Date.now() +
+            (isDaily
+              ? AlphaVantageService.DAILY_LIMIT_LOCKOUT_MS
+              : AlphaVantageService.PER_MINUTE_LOCKOUT_MS);
+          // Use the suppression-compatible prefix so HybridStockDataService's
+          // withFallback can catch it silently and route straight to Finnhub.
+          throw new Error(
+            'Unavailable via Alpha Vantage: rate limit active — falling back to alternative source'
+          );
         }
-        if (data?.Information) {
-          throw new Error(data.Information);
-        }
+
         if (data?.['Error Message']) {
           throw new Error(data['Error Message']);
         }
         return data;
       } catch (error: any) {
-        console.error('API request failed:', error.message);
+        // Re-throw AV rate-limit errors as-is (already in "Unavailable via" format).
+        if ((error.message as string).startsWith('Unavailable via Alpha Vantage:')) throw error;
+        console.error('Alpha Vantage API error:', error.message);
         throw new Error(`Failed to fetch data: ${error.message}`);
       }
     });

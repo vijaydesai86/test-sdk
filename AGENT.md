@@ -197,11 +197,21 @@ All other errors appear in the report's `## ⚠️ Data Gaps` section.
 
 When `isRateLimit` triggers: `rateLimitHit = true` → all remaining fetches skipped.
 
+**AV circuit breaker (`AlphaVantageService.rateLimitedUntilMs`):**
+
+`AlphaVantageService.makeRequest()` checks a static timestamp flag before throttling:
+- If `rateLimitedUntilMs > Date.now()`: immediately throw `'Unavailable via Alpha Vantage: rate limit active'` — **no throttle wait, no HTTP call**.
+- When AV returns `data.Note` or `data.Information` (rate-limit response): set the flag and throw the same suppressed error.
+  - Daily limit (`/per day|\d+ requests per day/i`): lock out for **1 hour**
+  - Per-minute limit: lock out for **65 seconds**
+
+**Why this matters:** Without the circuit breaker, each AV call in hybrid mode wastes ~1200 ms (throttle) before the rate-limit error is detected and Finnhub is tried. With the circuit breaker, once the limit fires, every subsequent call immediately falls through to Finnhub in ~0 ms, reducing fallback path from ~2200 ms to ~800 ms per data point.
+
 ### `web/app/lib/stockDataService.ts`
 
 **What it does:**
 - `createStockService(alphaVantageKey?)` — factory returns the correct service based on `STOCK_DATA_PROVIDER`
-- `AlphaVantageService` — primary data source (free tier, rate-limited, cached)
+- `AlphaVantageService` — primary data source (free tier, rate-limited, cached, **circuit-breaker protected**)
 - `FinnhubService` — secondary data source (free tier, higher rate limit)
 - `HybridStockDataService` — wraps both; `withFallback()` retries AV failures on Finnhub; tags results with `__source: 'Finnhub'`
 - `SecEdgarService` — SEC EDGAR (no API key required); CIK lookup + recent filings
