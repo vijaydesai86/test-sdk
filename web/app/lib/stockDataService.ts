@@ -21,10 +21,132 @@ export interface StockDataService {
   getNewsSentiment(symbol: string): Promise<any>;
   getCompanyNews(symbol: string, days?: number): Promise<any>;
   searchNews(query: string, days?: number): Promise<any>;
+  getDividendHistory(symbol: string, years?: number): Promise<any>;
+  getStockSplits(symbol: string, years?: number): Promise<any>;
+  getEarningsCalendar(symbol?: string, weeks?: number): Promise<any>;
+  getIpoCalendar(weeks?: number): Promise<any>;
+  getEconomicIndicators(): Promise<any>;
+  getTechnicalIndicators(symbol: string): Promise<any>;
+  getCommodityPrices(commodities?: string[]): Promise<any>;
+  getForexRate(fromCurrency: string, toCurrency: string): Promise<any>;
+  getMarketStatus(): Promise<any>;
 }
 
 type Provider = 'alphavantage' | 'finnhub' | 'hybrid';
 const PROVIDER_ENV = (process.env.STOCK_DATA_PROVIDER || 'alphavantage').toLowerCase() as Provider;
+
+/**
+ * Compute RSI-14 (Wilder), MACD(12,26,9), SMA-20, SMA-50, and Bollinger Bands(20,2)
+ * from a closing-price series. `closes` must be in ascending date order (oldest first).
+ * Returns the most recent computed values along with a plain-English interpretation.
+ */
+function computeTechnicalIndicators(
+  symbol: string,
+  closes: number[],
+  prices: Array<{ date: string }>
+): any {
+  const len = closes.length;
+  const lastDate = len > 0 ? (prices[len - 1]?.date ?? null) : null;
+
+  // --- SMA ---
+  const smaOf = (n: number): number | null => {
+    if (len < n) return null;
+    return parseFloat((closes.slice(len - n).reduce((a, b) => a + b, 0) / n).toFixed(4));
+  };
+
+  // --- EMA (returns full series from seed) ---
+  const emaOf = (n: number, data: number[]): number[] => {
+    if (data.length < n) return [];
+    const k = 2 / (n + 1);
+    let val = data.slice(0, n).reduce((a, b) => a + b, 0) / n;
+    const out = [val];
+    for (let i = n; i < data.length; i++) {
+      val = data[i] * k + val * (1 - k);
+      out.push(val);
+    }
+    return out;
+  };
+
+  // --- Wilder's RSI-14 ---
+  const computeRsi14 = (): number | null => {
+    if (len < 15) return null;
+    const changes = closes.slice(1).map((v, i) => v - closes[i]);
+    let avgGain = 0;
+    let avgLoss = 0;
+    for (let i = 0; i < 14; i++) {
+      if (changes[i] > 0) avgGain += changes[i];
+      else avgLoss -= changes[i];
+    }
+    avgGain /= 14;
+    avgLoss /= 14;
+    for (let i = 14; i < changes.length; i++) {
+      const gain = changes[i] > 0 ? changes[i] : 0;
+      const loss = changes[i] < 0 ? -changes[i] : 0;
+      avgGain = (avgGain * 13 + gain) / 14;
+      avgLoss = (avgLoss * 13 + loss) / 14;
+    }
+    if (avgLoss === 0) return 100;
+    return parseFloat((100 - 100 / (1 + avgGain / avgLoss)).toFixed(2));
+  };
+
+  // --- MACD(12,26,9) ---
+  const computeMACD = (): { macd: number; signal: number; histogram: number } | null => {
+    const ema12 = emaOf(12, closes);
+    const ema26 = emaOf(26, closes);
+    if (ema12.length < 9 || ema26.length < 9) return null;
+    const n = Math.min(ema12.length, ema26.length);
+    const macdLine = ema26.slice(ema26.length - n).map((v, i) => ema12[ema12.length - n + i] - v);
+    const signal9 = emaOf(9, macdLine);
+    if (!signal9.length) return null;
+    const lastMacd = macdLine[macdLine.length - 1];
+    const lastSignal = signal9[signal9.length - 1];
+    return {
+      macd: parseFloat(lastMacd.toFixed(4)),
+      signal: parseFloat(lastSignal.toFixed(4)),
+      histogram: parseFloat((lastMacd - lastSignal).toFixed(4)),
+    };
+  };
+
+  // --- Bollinger Bands(20, 2σ) ---
+  const computeBBands = (): { upper: number; middle: number; lower: number } | null => {
+    if (len < 20) return null;
+    const slice = closes.slice(-20);
+    const mid = slice.reduce((a, b) => a + b, 0) / 20;
+    const variance = slice.reduce((s, v) => s + (v - mid) ** 2, 0) / 20;
+    const sd = Math.sqrt(variance);
+    return {
+      upper: parseFloat((mid + 2 * sd).toFixed(4)),
+      middle: parseFloat(mid.toFixed(4)),
+      lower: parseFloat((mid - 2 * sd).toFixed(4)),
+    };
+  };
+
+  const rsi14 = computeRsi14();
+  const macd = computeMACD();
+  const bbands = computeBBands();
+
+  return {
+    symbol,
+    asOf: lastDate,
+    rsi14,
+    macd,
+    sma20: smaOf(20),
+    sma50: smaOf(50),
+    bbands,
+    interpretation: {
+      rsi: rsi14 === null
+        ? null
+        : rsi14 > 70 ? 'Overbought (>70)'
+        : rsi14 < 30 ? 'Oversold (<30)'
+        : 'Neutral (30–70)',
+      macd: !macd
+        ? null
+        : macd.histogram > 0
+          ? 'Bullish (MACD above signal line)'
+          : 'Bearish (MACD below signal line)',
+    },
+  };
+}
 
 /**
  * Stock data service using Alpha Vantage API (free tier)
@@ -640,6 +762,151 @@ export class AlphaVantageService implements StockDataService {
   async searchNews(query: string, days: number = 30): Promise<any> {
     throw new Error('News search unavailable in Alpha-only mode');
   }
+
+  async getDividendHistory(_symbol: string, _years = 5): Promise<any> {
+    throw new Error('Dividend history unavailable in Alpha-only mode');
+  }
+
+  async getStockSplits(_symbol: string, _years = 10): Promise<any> {
+    throw new Error('Stock splits unavailable in Alpha-only mode');
+  }
+
+  async getEarningsCalendar(_symbol?: string, _weeks = 4): Promise<any> {
+    throw new Error('Earnings calendar unavailable in Alpha-only mode');
+  }
+
+  async getIpoCalendar(_weeks = 4): Promise<any> {
+    throw new Error('IPO calendar unavailable in Alpha-only mode');
+  }
+
+  async getEconomicIndicators(): Promise<any> {
+    // Sequential fetches — respects the per-provider throttle (1200 ms between calls).
+    // 24-hour cache means these 5 calls are only made once per day in practice.
+    const getLatest = (data: any) => {
+      if (!data?.data?.length) return null;
+      const latest = data.data[0];
+      return { date: latest.date, value: latest.value, unit: data.unit ?? null };
+    };
+
+    const result: Record<string, any> = {};
+    const fetches: Array<[string, Record<string, string>]> = [
+      ['realGdp', { function: 'REAL_GDP', interval: 'quarterly' }],
+      ['fedFundsRate', { function: 'FEDERAL_FUNDS_RATE', interval: 'monthly' }],
+      ['cpi', { function: 'CPI', interval: 'monthly' }],
+      ['inflation', { function: 'INFLATION' }],
+      ['treasury10y', { function: 'TREASURY_YIELD', interval: 'monthly', maturity: '10year' }],
+    ];
+
+    for (const [key, params] of fetches) {
+      try {
+        const data = await this.makeRequest(params, { ttlMs: 24 * 60 * 60 * 1000 });
+        result[key] = getLatest(data);
+      } catch {
+        result[key] = null;
+      }
+    }
+
+    if (Object.values(result).every((v) => v === null)) {
+      throw new Error('Unavailable via Alpha Vantage: economic indicators not available');
+    }
+    return result;
+  }
+
+  async getTechnicalIndicators(symbol: string): Promise<any> {
+    // Reuse 6-month daily price history (already cached by getStockPrice / generate_stock_report).
+    // No extra API calls if the cache is warm; 1 API call if cold.
+    let history: any;
+    try {
+      history = await this.getPriceHistory(symbol, '6m');
+    } catch {
+      throw new Error('Unavailable via Alpha Vantage: price history required for technical indicators');
+    }
+    const rawPrices: Array<{ date: string; close: string }> = (history?.prices ?? [])
+      .filter((p: any) => p.close != null)
+      .slice()
+      .reverse(); // oldest first
+    if (rawPrices.length < 30) {
+      throw new Error('Unavailable via Alpha Vantage: insufficient price history for technical indicators');
+    }
+    const closes = rawPrices.map((p) => parseFloat(String(p.close)));
+    return computeTechnicalIndicators(symbol.toUpperCase(), closes, rawPrices);
+  }
+
+  async getCommodityPrices(commodities?: string[]): Promise<any> {
+    // Supported AV commodity functions on the free tier.
+    const ALL_COMMODITIES: Array<[string, string]> = [
+      ['wti', 'WTI'],
+      ['brent', 'BRENT'],
+      ['naturalGas', 'NATURAL_GAS'],
+      ['copper', 'COPPER'],
+      ['aluminum', 'ALUMINUM'],
+      ['wheat', 'WHEAT'],
+      ['corn', 'CORN'],
+    ];
+    // Filter to requested commodities, or default to the four most common.
+    const requested = commodities?.map((c) => c.toLowerCase()) ?? ['wti', 'brent', 'naturalgas', 'copper'];
+    const selected = ALL_COMMODITIES.filter(([key]) =>
+      requested.some((r) => r.replace(/[^a-z]/g, '') === key.replace(/[^a-z]/g, ''))
+    );
+    if (!selected.length) {
+      return { error: `No recognised commodity names. Available: ${ALL_COMMODITIES.map(([k]) => k).join(', ')}` };
+    }
+
+    const getLatest = (data: any) => {
+      if (!data?.data?.length) return null;
+      return {
+        date: data.data[0].date,
+        value: data.data[0].value,
+        unit: data.unit ?? null,
+        name: data.name ?? null,
+      };
+    };
+
+    const result: Record<string, any> = {};
+    for (const [key, fn] of selected) {
+      try {
+        const data = await this.makeRequest({ function: fn, interval: 'monthly' }, { ttlMs: 6 * 60 * 60 * 1000 });
+        result[key] = getLatest(data);
+      } catch {
+        result[key] = null;
+      }
+    }
+
+    if (Object.values(result).every((v) => v === null)) {
+      throw new Error('Unavailable via Alpha Vantage: commodity prices not available');
+    }
+    return result;
+  }
+
+  async getForexRate(fromCurrency: string, toCurrency: string): Promise<any> {
+    const data = await this.makeRequest(
+      {
+        function: 'CURRENCY_EXCHANGE_RATE',
+        from_currency: fromCurrency.toUpperCase(),
+        to_currency: toCurrency.toUpperCase(),
+      },
+      { ttlMs: 5 * 60 * 1000 } // 5-minute cache — rates change frequently
+    );
+    const rate = data?.['Realtime Currency Exchange Rate'];
+    if (!rate) {
+      throw new Error('Unavailable via Alpha Vantage: forex rate not found');
+    }
+    return {
+      fromCurrency: rate['1. From_Currency Code'],
+      fromCurrencyName: rate['2. From_Currency Name'],
+      toCurrency: rate['3. To_Currency Code'],
+      toCurrencyName: rate['4. To_Currency Name'],
+      exchangeRate: rate['5. Exchange Rate'],
+      lastRefreshed: rate['6. Last Refreshed'],
+      timeZone: rate['7. Time Zone'],
+      bidPrice: rate['8. Bid Price'],
+      askPrice: rate['9. Ask Price'],
+    };
+  }
+
+  async getMarketStatus(): Promise<any> {
+    throw new Error('Market status unavailable in Alpha-only mode');
+  }
 }
 
 export class FinnhubService implements StockDataService {
@@ -1033,6 +1300,145 @@ export class FinnhubService implements StockDataService {
     // not keyword search. Throw a suppressed error rather than returning unrelated results.
     throw new Error('Unavailable via Finnhub: keyword news search not supported');
   }
+
+  async getDividendHistory(symbol: string, years = 5): Promise<any> {
+    const to = new Date().toISOString().slice(0, 10);
+    const from = new Date(Date.now() - years * 365 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const data = await this.makeRequest('/stock/dividend', {
+      symbol: symbol.toUpperCase(),
+      from,
+      to,
+    }, 24 * 60 * 60 * 1000);
+    const dividends = Array.isArray(data) ? data : [];
+    return {
+      symbol: symbol.toUpperCase(),
+      dividends: dividends.slice(0, 20).map((d: any) => ({
+        exDate: d.date,
+        payDate: d.payDate,
+        recordDate: d.recordDate,
+        declarationDate: d.declarationDate,
+        amount: d.amount,
+        adjustedAmount: d.adjustedAmount,
+        currency: d.currency,
+      })),
+    };
+  }
+
+  async getStockSplits(symbol: string, years = 10): Promise<any> {
+    const to = new Date().toISOString().slice(0, 10);
+    const from = new Date(Date.now() - years * 365 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const data = await this.makeRequest('/stock/split', {
+      symbol: symbol.toUpperCase(),
+      from,
+      to,
+    }, 7 * 24 * 60 * 60 * 1000);
+    const splits = Array.isArray(data) ? data : [];
+    return {
+      symbol: symbol.toUpperCase(),
+      splits: splits.map((s: any) => ({
+        date: s.date,
+        fromFactor: s.fromFactor,
+        toFactor: s.toFactor,
+      })),
+    };
+  }
+
+  async getEarningsCalendar(symbol?: string, weeks = 4): Promise<any> {
+    const from = new Date().toISOString().slice(0, 10);
+    const to = new Date(Date.now() + weeks * 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const params: Record<string, string> = { from, to };
+    if (symbol) params.symbol = symbol.toUpperCase();
+    const data = await this.makeRequest('/calendar/earnings', params, 60 * 60 * 1000);
+    const earnings = Array.isArray(data?.earningsCalendar) ? data.earningsCalendar : [];
+    return {
+      from,
+      to,
+      earnings: earnings.slice(0, 50).map((e: any) => ({
+        symbol: e.symbol,
+        date: e.date,
+        hour: e.hour,
+        epsEstimate: e.epsEstimate,
+        epsActual: e.epsActual,
+        revenueEstimate: e.revenueEstimate,
+        revenueActual: e.revenueActual,
+      })),
+    };
+  }
+
+  async getIpoCalendar(weeks = 4): Promise<any> {
+    const from = new Date().toISOString().slice(0, 10);
+    const to = new Date(Date.now() + weeks * 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const data = await this.makeRequest('/calendar/ipo', { from, to }, 60 * 60 * 1000);
+    const ipos = Array.isArray(data?.ipoCalendar) ? data.ipoCalendar : [];
+    return {
+      from,
+      to,
+      ipos: ipos.slice(0, 30).map((ipo: any) => ({
+        symbol: ipo.symbol,
+        date: ipo.date,
+        name: ipo.name,
+        numberOfShares: ipo.numberOfShares,
+        price: ipo.price,
+        status: ipo.status,
+        exchange: ipo.exchange,
+      })),
+    };
+  }
+
+  async getEconomicIndicators(): Promise<any> {
+    throw new Error('Unavailable via Finnhub: economic indicators not supported');
+  }
+
+  async getTechnicalIndicators(symbol: string): Promise<any> {
+    // Compute from 6-month price history — same as AlphaVantageService; no extra Finnhub calls.
+    let history: any;
+    try {
+      history = await this.getPriceHistory(symbol, '6m');
+    } catch {
+      throw new Error('Unavailable via Finnhub: price history required for technical indicators');
+    }
+    const rawPrices: Array<{ date: string; close: string }> = (history?.prices ?? [])
+      .filter((p: any) => p.close != null)
+      .slice()
+      .reverse(); // oldest first
+    if (rawPrices.length < 30) {
+      throw new Error('Unavailable via Finnhub: insufficient price history for technical indicators');
+    }
+    const closes = rawPrices.map((p) => parseFloat(String(p.close)));
+    return computeTechnicalIndicators(symbol.toUpperCase(), closes, rawPrices);
+  }
+
+  async getCommodityPrices(_commodities?: string[]): Promise<any> {
+    throw new Error('Unavailable via Finnhub: commodity prices not supported');
+  }
+
+  async getForexRate(fromCurrency: string, toCurrency: string): Promise<any> {
+    // Finnhub /forex/rates?base={currency} returns exchange rates relative to a base currency.
+    const data = await this.makeRequest('/forex/rates', { base: fromCurrency.toUpperCase() }, 5 * 60 * 1000);
+    const rates = data?.quote ?? {};
+    const rate = rates[toCurrency.toUpperCase()];
+    if (rate === undefined || rate === null) {
+      throw new Error(`Unavailable via Finnhub: no rate found for ${fromCurrency}/${toCurrency}`);
+    }
+    return {
+      fromCurrency: fromCurrency.toUpperCase(),
+      toCurrency: toCurrency.toUpperCase(),
+      exchangeRate: String(rate),
+      source: 'Finnhub',
+    };
+  }
+
+  async getMarketStatus(): Promise<any> {
+    const data = await this.makeRequest('/market-status', { exchange: 'US' }, 60 * 1000);
+    return {
+      exchange: data.exchange,
+      isOpen: data.isOpen,
+      session: data.session,
+      holiday: data.holiday ?? null,
+      timezone: data.timezone,
+      timestamp: data.t,
+    };
+  }
 }
 
 
@@ -1142,14 +1548,72 @@ class HybridStockDataService implements StockDataService {
   getTopGainersLosers() {
     return this.primary.getTopGainersLosers();
   }
+  // Bug fix: both methods must use withFallback so that in hybrid mode
+  // AV's "Alpha-only mode" throw is caught and Finnhub's implementation is used.
   getNewsSentiment(symbol: string) {
-    return this.primary.getNewsSentiment(symbol);
+    return this.withFallback(
+      () => this.primary.getNewsSentiment(symbol),
+      () => this.fallback.getNewsSentiment(symbol)
+    );
   }
   getCompanyNews(symbol: string, days?: number) {
-    return this.primary.getCompanyNews(symbol, days);
+    return this.withFallback(
+      () => this.primary.getCompanyNews(symbol, days),
+      () => this.fallback.getCompanyNews(symbol, days)
+    );
   }
   searchNews(query: string, days?: number) {
     return this.primary.searchNews(query, days);
+  }
+  getDividendHistory(symbol: string, years?: number) {
+    return this.withFallback(
+      () => this.primary.getDividendHistory(symbol, years),
+      () => this.fallback.getDividendHistory(symbol, years)
+    );
+  }
+  getStockSplits(symbol: string, years?: number) {
+    return this.withFallback(
+      () => this.primary.getStockSplits(symbol, years),
+      () => this.fallback.getStockSplits(symbol, years)
+    );
+  }
+  getEarningsCalendar(symbol?: string, weeks?: number) {
+    return this.withFallback(
+      () => this.primary.getEarningsCalendar(symbol, weeks),
+      () => this.fallback.getEarningsCalendar(symbol, weeks)
+    );
+  }
+  getIpoCalendar(weeks?: number) {
+    return this.withFallback(
+      () => this.primary.getIpoCalendar(weeks),
+      () => this.fallback.getIpoCalendar(weeks)
+    );
+  }
+  getEconomicIndicators() {
+    // Economic indicators only from AV (Finnhub does not provide macro data)
+    return this.primary.getEconomicIndicators();
+  }
+  getTechnicalIndicators(symbol: string) {
+    return this.withFallback(
+      () => this.primary.getTechnicalIndicators(symbol),
+      () => this.fallback.getTechnicalIndicators(symbol)
+    );
+  }
+  getCommodityPrices(commodities?: string[]) {
+    // Only AV has commodity prices; Finnhub throws. No meaningful fallback.
+    return this.primary.getCommodityPrices(commodities);
+  }
+  getForexRate(fromCurrency: string, toCurrency: string) {
+    return this.withFallback(
+      () => this.primary.getForexRate(fromCurrency, toCurrency),
+      () => this.fallback.getForexRate(fromCurrency, toCurrency)
+    );
+  }
+  getMarketStatus() {
+    return this.withFallback(
+      () => this.primary.getMarketStatus(),
+      () => this.fallback.getMarketStatus()
+    );
   }
 }
 

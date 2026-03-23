@@ -779,6 +779,131 @@ function buildToolDefinitions() {
         },
       },
     },
+    {
+      type: 'function' as const,
+      function: {
+        name: 'get_dividend_history',
+        description: 'Get historical dividend payments for a US stock (ex-date, pay date, amount, currency). Useful for dividend yield analysis and income investing research.',
+        parameters: {
+          type: 'object',
+          properties: {
+            symbol: { type: 'string', description: 'Ticker symbol (e.g. AAPL)' },
+            years: { type: 'number', description: 'Number of years of dividend history to retrieve (default: 5)' },
+          },
+          required: ['symbol'],
+        },
+      },
+    },
+    {
+      type: 'function' as const,
+      function: {
+        name: 'get_stock_splits',
+        description: 'Get the historical stock split record for a US stock (split date, from/to ratio). Useful for understanding share-price adjustments and capital structure history.',
+        parameters: {
+          type: 'object',
+          properties: {
+            symbol: { type: 'string', description: 'Ticker symbol (e.g. AAPL)' },
+            years: { type: 'number', description: 'Number of years of split history to retrieve (default: 10)' },
+          },
+          required: ['symbol'],
+        },
+      },
+    },
+    {
+      type: 'function' as const,
+      function: {
+        name: 'get_earnings_calendar',
+        description: 'Get upcoming earnings announcements for US stocks. Can be filtered to a specific ticker or return all upcoming earnings within a date window.',
+        parameters: {
+          type: 'object',
+          properties: {
+            symbol: { type: 'string', description: 'Optional: filter to a specific ticker (e.g. AAPL). Omit to get all upcoming earnings.' },
+            weeks: { type: 'number', description: 'Look-ahead window in weeks (default: 4)' },
+          },
+        },
+      },
+    },
+    {
+      type: 'function' as const,
+      function: {
+        name: 'get_ipo_calendar',
+        description: 'Get upcoming IPO listings on US exchanges (company name, ticker, date, price range, number of shares, status).',
+        parameters: {
+          type: 'object',
+          properties: {
+            weeks: { type: 'number', description: 'Look-ahead window in weeks (default: 4)' },
+          },
+        },
+      },
+    },
+    {
+      type: 'function' as const,
+      function: {
+        name: 'get_economic_indicators',
+        description: 'Get key US macroeconomic indicators: Real GDP (quarterly), Federal Funds Rate (monthly), CPI (monthly), annual Inflation rate, and 10-year Treasury yield. Use for macro context in sector or investment theme research.',
+        parameters: {
+          type: 'object',
+          properties: {},
+        },
+      },
+    },
+    {
+      type: 'function' as const,
+      function: {
+        name: 'get_technical_indicators',
+        description: 'Get technical analysis indicators for a US stock: RSI-14 (momentum/overbought/oversold), MACD with signal line and histogram (trend direction), SMA-20 and SMA-50 (short and medium-term trend), and Bollinger Bands (volatility range). Computed from recent price history — no additional API quota consumed beyond the price fetch.',
+        parameters: {
+          type: 'object',
+          properties: {
+            symbol: { type: 'string', description: 'Ticker symbol (e.g. AAPL)' },
+          },
+          required: ['symbol'],
+        },
+      },
+    },
+    {
+      type: 'function' as const,
+      function: {
+        name: 'get_commodity_prices',
+        description: 'Get current prices for key commodity markets: crude oil (WTI), crude oil (Brent), natural gas, copper, aluminum, wheat, and corn. Use for macro context, energy sector research, or commodity-linked stock analysis.',
+        parameters: {
+          type: 'object',
+          properties: {
+            commodities: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Optional list of commodities to fetch. Supported: wti, brent, naturalGas, copper, aluminum, wheat, corn. Defaults to wti, brent, naturalGas, copper.',
+            },
+          },
+        },
+      },
+    },
+    {
+      type: 'function' as const,
+      function: {
+        name: 'get_forex_rate',
+        description: 'Get the real-time exchange rate between two currencies (e.g. USD to EUR, USD to JPY). Useful for international company analysis, currency risk assessment, or global macro context.',
+        parameters: {
+          type: 'object',
+          properties: {
+            fromCurrency: { type: 'string', description: 'Base currency code (e.g. USD)' },
+            toCurrency: { type: 'string', description: 'Quote currency code (e.g. EUR)' },
+          },
+          required: ['fromCurrency', 'toCurrency'],
+        },
+      },
+    },
+    {
+      type: 'function' as const,
+      function: {
+        name: 'get_market_status',
+        description: 'Check whether the US stock market is currently open or closed, including the current trading session (pre-market, regular, after-hours) and any market holidays.',
+        parameters: {
+          type: 'object',
+          properties: {},
+        },
+      },
+    },
   ];
 }
 
@@ -929,6 +1054,83 @@ export async function executeTool(
       case 'get_top_gainers_losers': {
         const data = await stockService.getTopGainersLosers();
         return { success: true, data, message: 'Retrieved top gainers, losers, and most active stocks' };
+      }
+      case 'get_dividend_history': {
+        const dividends = await stockService.getDividendHistory(args.symbol || '', args.years ? Number(args.years) : undefined);
+        return {
+          success: true,
+          data: dividends,
+          message: `Retrieved dividend history for ${args.symbol}`,
+        };
+      }
+      case 'get_stock_splits': {
+        const splits = await stockService.getStockSplits(args.symbol || '', args.years ? Number(args.years) : undefined);
+        return {
+          success: true,
+          data: splits,
+          message: `Retrieved stock split history for ${args.symbol}`,
+        };
+      }
+      case 'get_earnings_calendar': {
+        const calendar = await stockService.getEarningsCalendar(
+          args.symbol || undefined,
+          args.weeks ? Number(args.weeks) : undefined
+        );
+        return {
+          success: true,
+          data: calendar,
+          message: `Retrieved upcoming earnings calendar${args.symbol ? ` for ${args.symbol}` : ''}`,
+        };
+      }
+      case 'get_ipo_calendar': {
+        const ipos = await stockService.getIpoCalendar(args.weeks ? Number(args.weeks) : undefined);
+        return {
+          success: true,
+          data: ipos,
+          message: 'Retrieved upcoming IPO calendar',
+        };
+      }
+      case 'get_economic_indicators': {
+        const economics = await stockService.getEconomicIndicators();
+        return {
+          success: true,
+          data: economics,
+          message: 'Retrieved US macroeconomic indicators',
+        };
+      }
+      case 'get_technical_indicators': {
+        const indicators = await stockService.getTechnicalIndicators(args.symbol || '');
+        return {
+          success: true,
+          data: indicators,
+          message: `Retrieved technical indicators for ${args.symbol}`,
+        };
+      }
+      case 'get_commodity_prices': {
+        const commodities = await stockService.getCommodityPrices(
+          Array.isArray(args.commodities) ? args.commodities : undefined
+        );
+        return {
+          success: true,
+          data: commodities,
+          message: 'Retrieved commodity prices',
+        };
+      }
+      case 'get_forex_rate': {
+        const forex = await stockService.getForexRate(args.fromCurrency || 'USD', args.toCurrency || 'EUR');
+        return {
+          success: true,
+          data: forex,
+          message: `Retrieved exchange rate for ${args.fromCurrency || 'USD'}/${args.toCurrency || 'EUR'}`,
+        };
+      }
+      case 'get_market_status': {
+        const status = await stockService.getMarketStatus();
+        return {
+          success: true,
+          data: status,
+          message: `US market is currently ${status.isOpen ? 'OPEN' : 'CLOSED'}`,
+        };
       }
       case 'generate_stock_report': {
         const symbolQuery = args.symbol || '';
