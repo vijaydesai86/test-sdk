@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { promises as fs } from 'fs';
 import path from 'path';
-import { StockDataService } from './stockDataService';
+import { StockDataService, SecEdgarService, FredService, CoinGeckoService } from './stockDataService';
 import { buildStockReport, buildComparisonReport, buildSectorReport, buildDeepSectorReport, saveReport, MoatAnalysis } from './reportGenerator';
 
 /**
@@ -904,6 +904,64 @@ function buildToolDefinitions() {
         },
       },
     },
+    {
+      type: 'function' as const,
+      function: {
+        name: 'get_recent_filings',
+        description: 'Get the most recent SEC regulatory filings for a US company from the SEC EDGAR database (no API key required). Returns 8-K (material events), 10-K (annual report), 10-Q (quarterly report), DEF14A (proxy), and other form types with filing dates and direct EDGAR links. Essential for understanding recent material disclosures, earnings releases, acquisitions, and management changes.',
+        parameters: {
+          type: 'object',
+          properties: {
+            symbol: { type: 'string', description: 'US stock ticker (e.g. AAPL)' },
+            formTypes: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Optional filter by form type (e.g. ["8-K","10-K","10-Q"]). Omit to return all recent filing types.',
+            },
+            count: { type: 'number', description: 'Max number of filings to return (default: 15)' },
+          },
+          required: ['symbol'],
+        },
+      },
+    },
+    {
+      type: 'function' as const,
+      function: {
+        name: 'get_market_indicators',
+        description: 'Get comprehensive US market and macroeconomic indicators from the Federal Reserve (FRED). Requires FRED_API_KEY. Returns: VIX (fear gauge), S&P 500, yield curve (10Y-2Y spread with recession signal), 10/2-year treasury yields, 3-month T-bill, Fed funds rate, unemployment, CPI, Core PCE (Fed inflation target), 30-year mortgage rate, Baa corporate bond spread, housing starts, retail sales, industrial production, and consumer sentiment. Critical for macro context in any investment thesis.',
+        parameters: {
+          type: 'object',
+          properties: {},
+        },
+      },
+    },
+    {
+      type: 'function' as const,
+      function: {
+        name: 'get_crypto_price',
+        description: 'Get detailed cryptocurrency price and market data from CoinGecko. Supports common symbols (BTC, ETH, SOL, XRP, ADA, AVAX, DOGE, etc.) or any CoinGecko coin ID. Returns: current price, market cap, rank, 24h/7d/30d/1y price changes, ATH, supply data, and a brief description. Useful for crypto-adjacent stock research (Coinbase, MicroStrategy, miners) or direct crypto analysis.',
+        parameters: {
+          type: 'object',
+          properties: {
+            coinId: { type: 'string', description: 'Crypto symbol (e.g. BTC, ETH, SOL) or CoinGecko coin ID (e.g. bitcoin, ethereum)' },
+          },
+          required: ['coinId'],
+        },
+      },
+    },
+    {
+      type: 'function' as const,
+      function: {
+        name: 'get_top_cryptos',
+        description: 'Get the top cryptocurrencies ranked by market capitalization from CoinGecko, with 24h/7d/30d price changes, volume, and ATH data. Use for crypto market overview or sector research.',
+        parameters: {
+          type: 'object',
+          properties: {
+            limit: { type: 'number', description: 'Number of top cryptos to return (default: 10, max: 50)' },
+          },
+        },
+      },
+    },
   ];
 }
 
@@ -1130,6 +1188,46 @@ export async function executeTool(
           success: true,
           data: status,
           message: `US market is currently ${status.isOpen ? 'OPEN' : 'CLOSED'}`,
+        };
+      }
+      case 'get_recent_filings': {
+        const secEdgar = new SecEdgarService();
+        const filings = await secEdgar.getRecentFilings(
+          args.symbol || '',
+          Array.isArray(args.formTypes) ? args.formTypes : undefined,
+          args.count ? Number(args.count) : undefined
+        );
+        return {
+          success: true,
+          data: filings,
+          message: `Retrieved ${filings.filings?.length ?? 0} SEC filings for ${args.symbol}`,
+        };
+      }
+      case 'get_market_indicators': {
+        const fred = new FredService();
+        const indicators = await fred.getMarketIndicators();
+        return {
+          success: true,
+          data: indicators,
+          message: 'Retrieved FRED US market and macroeconomic indicators',
+        };
+      }
+      case 'get_crypto_price': {
+        const coinGecko = new CoinGeckoService();
+        const price = await coinGecko.getCryptoPrice(args.coinId || '');
+        return {
+          success: true,
+          data: price,
+          message: `Retrieved crypto price for ${price.name ?? args.coinId} (${price.symbol})`,
+        };
+      }
+      case 'get_top_cryptos': {
+        const coinGecko = new CoinGeckoService();
+        const cryptos = await coinGecko.getTopCryptos(args.limit ? Number(args.limit) : undefined);
+        return {
+          success: true,
+          data: cryptos,
+          message: `Retrieved top ${cryptos.length} cryptocurrencies by market cap`,
         };
       }
       case 'generate_stock_report': {

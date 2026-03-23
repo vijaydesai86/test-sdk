@@ -1632,3 +1632,378 @@ export function createStockService(apiKey?: string): StockDataService {
   }
   return new AlphaVantageService(apiKey);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Supplementary services — independent of the StockDataService interface.
+// These are created on demand inside executeTool.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * SEC EDGAR API — completely free, no API key required.
+ * Rate limit: ≤ 10 requests/second. User-Agent with contact info is required.
+ *
+ * Provides:
+ *  - Ticker → CIK mapping (company_tickers.json, cached 24h)
+ *  - Recent filings list (8-K, 10-K, 10-Q, DEF14A …) per company
+ */
+export class SecEdgarService {
+  /** Class-level cache shared across instances (module singleton within a request). */
+  private static sharedCache = new Map<string, { expiresAt: number; data: any }>();
+  private lastRequestAt = 0;
+  private minIntervalMs = 200; // conservative: 5 req/s
+
+  private get headers() {
+    return {
+      // SEC EDGAR policy: User-Agent must contain a contact email
+      'User-Agent': 'stock-research-assistant/1.0 (institutional-research@github.com)',
+      'Accept': 'application/json',
+    };
+  }
+
+  private async throttle(): Promise<void> {
+    const wait = this.minIntervalMs - (Date.now() - this.lastRequestAt);
+    if (wait > 0) await new Promise((res) => setTimeout(res, wait));
+    this.lastRequestAt = Date.now();
+  }
+
+  private async fetchJson(url: string, ttlMs: number): Promise<any> {
+    const cached = SecEdgarService.sharedCache.get(url);
+    if (cached && cached.expiresAt > Date.now()) return cached.data;
+    await this.throttle();
+    const response = await axios.get(url, { headers: this.headers, timeout: 15000 });
+    SecEdgarService.sharedCache.set(url, { expiresAt: Date.now() + ttlMs, data: response.data });
+    return response.data;
+  }
+
+  /** Returns the 10-digit padded CIK for the given ticker, or null if not found. */
+  async getCikForTicker(ticker: string): Promise<string | null> {
+    const url = 'https://www.sec.gov/files/company_tickers.json';
+    const data = await this.fetchJson(url, 24 * 60 * 60 * 1000); // 24h cache
+    const entry = (Object.values(data) as any[]).find(
+      (e) => String(e.ticker ?? '').toUpperCase() === ticker.toUpperCase()
+    );
+    return entry ? String(entry.cik_str).padStart(10, '0') : null;
+  }
+
+  /**
+   * Get the most recent SEC filings for a company.
+   * @param symbol  US stock ticker
+   * @param formTypes  Optional filter (e.g. ['8-K', '10-K']). Defaults to all types.
+   * @param count  Max number of filings to return (default 15)
+   */
+  async getRecentFilings(symbol: string, formTypes?: string[], count = 15): Promise<any> {
+    const cik = await this.getCikForTicker(symbol);
+    if (!cik) {
+      throw new Error(`SEC EDGAR: no company found for ticker "${symbol.toUpperCase()}"`);
+    }
+    const url = `https://data.sec.gov/submissions/CIK${cik}.json`;
+    const data = await this.fetchJson(url, 6 * 60 * 60 * 1000); // 6h cache
+
+    const recent = data.filings?.recent ?? {};
+    const forms: string[] = recent.form ?? [];
+    const dates: string[] = recent.filingDate ?? [];
+    const accessions: string[] = recent.accessionNumber ?? [];
+    const descriptions: string[] = recent.primaryDocDescription ?? [];
+    const primaryDocs: string[] = recent.primaryDocument ?? [];
+
+    let filings = forms.map((form, i) => ({
+      formType: form,
+      filingDate: dates[i] ?? null,
+      description: descriptions[i] || null,
+      primaryDocument: primaryDocs[i] || null,
+      // Direct URL to the filing index page on EDGAR — use the original padded CIK string
+      filingUrl: accessions[i]
+        ? `https://www.sec.gov/Archives/edgar/data/${cik.replace(/^0+/, '')}/` +
+          `${accessions[i].replace(/-/g, '')}/`
+        : null,
+    }));
+
+    if (formTypes?.length) {
+      const upper = formTypes.map((t) => t.toUpperCase());
+      filings = filings.filter((f) => upper.includes(f.formType.toUpperCase()));
+    }
+
+    return {
+      symbol: symbol.toUpperCase(),
+      cik,
+      companyName: data.name ?? null,
+      filings: filings.slice(0, count),
+    };
+  }
+}
+
+/**
+ * FRED (Federal Reserve Economic Data) — free with API key.
+ * Register at https://fred.stlouisfed.org/docs/api/api_key.html (instant, free).
+ *
+ * Provides ~800,000 US and international economic time series including:
+ *  - VIX, S&P 500, yield curve, Fed funds rate, CPI, unemployment, GDP,
+ *    mortgage rates, corporate bond spreads, housing starts, and more.
+ */
+export class FredService {
+  private apiKey: string;
+  private cache = new Map<string, { expiresAt: number; data: any }>();
+  private lastRequestAt = 0;
+  private minIntervalMs = 300;
+
+  constructor(apiKey?: string) {
+    this.apiKey = apiKey || process.env.FRED_API_KEY || '';
+  }
+
+  get isConfigured(): boolean { return !!this.apiKey; }
+
+  private async throttle(): Promise<void> {
+    const wait = this.minIntervalMs - (Date.now() - this.lastRequestAt);
+    if (wait > 0) await new Promise((res) => setTimeout(res, wait));
+    this.lastRequestAt = Date.now();
+  }
+
+  private async fetchSeries(seriesId: string, limit = 5): Promise<any> {
+    if (!this.apiKey) {
+      throw new Error(
+        'FRED API key not configured. ' +
+        'Get a free key at https://fred.stlouisfed.org/docs/api/api_key.html and set FRED_API_KEY.'
+      );
+    }
+    const cacheKey = `fred:${seriesId}`;
+    const cached = this.cache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) return cached.data;
+
+    await this.throttle();
+    const response = await axios.get('https://api.stlouisfed.org/fred/series/observations', {
+      params: {
+        series_id: seriesId,
+        api_key: this.apiKey,
+        file_type: 'json',
+        limit,
+        sort_order: 'desc',
+        // No observation_start — sort_order + limit already returns the N most recent observations
+      },
+      timeout: 10000,
+    });
+    const data = response.data;
+    this.cache.set(cacheKey, { expiresAt: Date.now() + 6 * 60 * 60 * 1000, data });
+    return data;
+  }
+
+  /** Returns the latest non-missing observation for a series, plus the previous one. */
+  private getLatest(data: any): { value: string; date: string; previousValue: string | null; previousDate: string | null } | null {
+    const obs: any[] = data?.observations ?? [];
+    const valid = obs.filter((o) => o.value !== '.');
+    if (!valid.length) return null;
+    return {
+      value: valid[0].value,
+      date: valid[0].date,
+      previousValue: valid[1]?.value ?? null,
+      previousDate: valid[1]?.date ?? null,
+    };
+  }
+
+  /**
+   * Fetch a comprehensive set of US market & macro indicators.
+   * Includes VIX, yield curve, treasury rates, employment, inflation, GDP, mortgage rates,
+   * credit spreads, and S&P 500 level — all from the Federal Reserve's public database.
+   */
+  async getMarketIndicators(): Promise<any> {
+    // Each [key, seriesId, friendlyName] triple
+    const series: Array<[string, string, string]> = [
+      ['vix', 'VIXCLS', 'CBOE Volatility Index (VIX)'],
+      ['sp500', 'SP500', 'S&P 500 Index'],
+      ['yieldCurve10y2y', 'T10Y2Y', '10-Year minus 2-Year Treasury Spread'],
+      ['treasury10y', 'DGS10', '10-Year Treasury Yield (daily)'],
+      ['treasury2y', 'DGS2', '2-Year Treasury Yield (daily)'],
+      ['treasury3m', 'DTB3', '3-Month Treasury Bill Rate'],
+      ['fedFundsRate', 'FEDFUNDS', 'Effective Federal Funds Rate'],
+      ['realGdpGrowth', 'A191RL1Q225SBEA', 'Real GDP Growth Rate (QoQ, annualized)'],
+      ['unemployment', 'UNRATE', 'US Unemployment Rate'],
+      ['cpiYoy', 'CPIAUCSL', 'Consumer Price Index (All Urban Consumers)'],
+      ['pce', 'PCEPI', 'PCE Price Index (Fed preferred inflation gauge)'],
+      ['corePce', 'PCEPILFE', 'Core PCE Price Index (ex food & energy)'],
+      ['mortgageRate30y', 'MORTGAGE30US', '30-Year Fixed Mortgage Rate'],
+      ['creditSpreadBaa', 'BAA10Y', 'Baa Corporate Bond Spread over 10-Year Treasury'],
+      ['housingStarts', 'HOUST', 'Housing Starts (thousands of units)'],
+      ['retailSales', 'RSAFS', 'Advance Retail Sales (millions $)'],
+      ['industrialProduction', 'INDPRO', 'Industrial Production Index'],
+      ['consumerSentiment', 'UMCSENT', 'University of Michigan Consumer Sentiment'],
+    ];
+
+    const result: Record<string, any> = {};
+    for (const [key, seriesId, name] of series) {
+      try {
+        const data = await this.fetchSeries(seriesId, 5);
+        const latest = this.getLatest(data);
+        result[key] = latest ? { ...latest, seriesId, name } : null;
+      } catch {
+        result[key] = null;
+      }
+    }
+
+    // Derived: yield curve interpretation
+    const ycValue = result.yieldCurve10y2y?.value;
+    if (ycValue !== undefined && ycValue !== null) {
+      const spread = parseFloat(ycValue);
+      result.yieldCurveSignal = Number.isFinite(spread)
+        ? spread < 0
+          ? `⚠️ Inverted (${spread.toFixed(2)} ppts) — historically precedes recessions by 6–18 months`
+          : spread < 0.5
+          ? `⚡ Near-flat (${spread.toFixed(2)} ppts) — caution; watch for further flattening`
+          : `✅ Normal (${spread.toFixed(2)} ppts) — no near-term recession signal from curve`
+        : null;
+    }
+
+    return result;
+  }
+}
+
+/**
+ * CoinGecko API — free with optional demo key.
+ * Without key: ~5–15 req/min (public).
+ * With free demo key: 30 req/min, 10,000/month.
+ * Get a free key at https://www.coingecko.com/en/api — click "Get API Key".
+ *
+ * Provides crypto prices, market caps, historical data, and top-market rankings.
+ */
+export class CoinGeckoService {
+  private cache = new Map<string, { expiresAt: number; data: any }>();
+  private lastRequestAt = 0;
+  private apiKey: string | null;
+  // Free public: ~10/min; free demo key: 30/min
+  private minIntervalMs: number;
+
+  constructor(apiKey?: string) {
+    this.apiKey = apiKey || process.env.COINGECKO_API_KEY || null;
+    // Free public: ~5–15 req/min; 4s interval stays well within that.
+    // Free demo key: 30 req/min; tighten to 2s interval.
+    this.minIntervalMs = this.apiKey ? 2000 : 4000;
+  }
+
+  private async throttle(): Promise<void> {
+    const wait = this.minIntervalMs - (Date.now() - this.lastRequestAt);
+    if (wait > 0) await new Promise((res) => setTimeout(res, wait));
+    this.lastRequestAt = Date.now();
+  }
+
+  private getParams(extra: Record<string, any> = {}): Record<string, any> {
+    const p: Record<string, any> = { ...extra };
+    if (this.apiKey) p['x_cg_demo_api_key'] = this.apiKey;
+    return p;
+  }
+
+  /**
+   * Resolve a common crypto symbol (BTC, ETH, SOL …) or CoinGecko coin-ID
+   * to a CoinGecko coin-ID (e.g. 'bitcoin', 'ethereum').
+   * Falls back to lower-casing the input if not in the built-in map.
+   */
+  private resolveId(symbolOrId: string): string {
+    const symbolMap: Record<string, string> = {
+      BTC: 'bitcoin', ETH: 'ethereum', BNB: 'binancecoin',
+      SOL: 'solana', XRP: 'ripple', ADA: 'cardano',
+      AVAX: 'avalanche-2', DOGE: 'dogecoin', DOT: 'polkadot',
+      MATIC: 'matic-network', LINK: 'chainlink', UNI: 'uniswap',
+      LTC: 'litecoin', ATOM: 'cosmos', NEAR: 'near',
+      ALGO: 'algorand', SHIB: 'shiba-inu', USDT: 'tether',
+      USDC: 'usd-coin', TON: 'the-open-network', SUI: 'sui',
+      APT: 'aptos', ARB: 'arbitrum', OP: 'optimism',
+      PEPE: 'pepe', WIF: 'dogwifcoin', BONK: 'bonk',
+    };
+    const upper = symbolOrId.toUpperCase();
+    return symbolMap[upper] ?? symbolOrId.toLowerCase();
+  }
+
+  /** Get detailed price, market cap, and change data for a single cryptocurrency. */
+  async getCryptoPrice(symbolOrId: string): Promise<any> {
+    const coinId = this.resolveId(symbolOrId);
+    const cacheKey = `cg:coin:${coinId}`;
+    const cached = this.cache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) return cached.data;
+
+    await this.throttle();
+    const response = await axios.get(`https://api.coingecko.com/api/v3/coins/${coinId}`, {
+      params: this.getParams({
+        localization: false, tickers: false,
+        market_data: true, community_data: false, developer_data: false,
+      }),
+      timeout: 10000,
+    });
+    const d = response.data;
+    const md = d.market_data ?? {};
+    const result = {
+      id: d.id,
+      symbol: String(d.symbol ?? '').toUpperCase(),
+      name: d.name,
+      currentPrice: md.current_price?.usd ?? null,
+      marketCap: md.market_cap?.usd ?? null,
+      marketCapRank: d.market_cap_rank ?? null,
+      fullyDilutedValuation: md.fully_diluted_valuation?.usd ?? null,
+      tradingVolume24h: md.total_volume?.usd ?? null,
+      high24h: md.high_24h?.usd ?? null,
+      low24h: md.low_24h?.usd ?? null,
+      priceChange24h: md.price_change_24h ?? null,
+      priceChangePercent24h: md.price_change_percentage_24h ?? null,
+      priceChangePercent7d: md.price_change_percentage_7d ?? null,
+      priceChangePercent30d: md.price_change_percentage_30d ?? null,
+      priceChangePercent1y: md.price_change_percentage_1y ?? null,
+      ath: md.ath?.usd ?? null,
+      athDate: md.ath_date?.usd ?? null,
+      athChangePercent: md.ath_change_percentage?.usd ?? null,
+      atl: md.atl?.usd ?? null,
+      atlDate: md.atl_date?.usd ?? null,
+      circulatingSupply: md.circulating_supply ?? null,
+      totalSupply: md.total_supply ?? null,
+      maxSupply: md.max_supply ?? null,
+      description: d.description?.en
+        ? String(d.description.en)
+            // Two-pass HTML strip: remove complete tags, then any stray '<' to
+            // prevent incomplete-tag injection (e.g. bare <script without closing >).
+            .replace(/<[^>]*>/g, ' ')
+            .replace(/</g, '')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .slice(0, 400)
+        : null,
+      categories: Array.isArray(d.categories) ? d.categories.slice(0, 5) : [],
+      lastUpdated: md.last_updated ?? null,
+    };
+    this.cache.set(cacheKey, { expiresAt: Date.now() + 5 * 60 * 1000, data: result });
+    return result;
+  }
+
+  /** Get top N cryptocurrencies by market cap with 24h/7d/30d price changes. */
+  async getTopCryptos(limit = 10): Promise<any> {
+    const n = Math.min(Math.max(1, limit), 50);
+    const cacheKey = `cg:top:${n}`;
+    const cached = this.cache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) return cached.data;
+
+    await this.throttle();
+    const response = await axios.get('https://api.coingecko.com/api/v3/coins/markets', {
+      params: this.getParams({
+        vs_currency: 'usd',
+        order: 'market_cap_desc',
+        per_page: n,
+        page: 1,
+        sparkline: false,
+        price_change_percentage: '24h,7d,30d',
+      }),
+      timeout: 10000,
+    });
+    const result = (Array.isArray(response.data) ? response.data : []).map((c: any) => ({
+      rank: c.market_cap_rank,
+      id: c.id,
+      symbol: String(c.symbol ?? '').toUpperCase(),
+      name: c.name,
+      currentPrice: c.current_price ?? null,
+      marketCap: c.market_cap ?? null,
+      priceChangePercent24h: c.price_change_percentage_24h ?? null,
+      priceChangePercent7d: c.price_change_percentage_7d_in_currency ?? null,
+      priceChangePercent30d: c.price_change_percentage_30d_in_currency ?? null,
+      volume24h: c.total_volume ?? null,
+      circulatingSupply: c.circulating_supply ?? null,
+      ath: c.ath ?? null,
+      athChangePercent: c.ath_change_percentage ?? null,
+    }));
+    this.cache.set(cacheKey, { expiresAt: Date.now() + 5 * 60 * 1000, data: result });
+    return result;
+  }
+}
+

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { executeTool } from '../../web/app/lib/stockTools';
 import type { StockDataService } from '../../web/app/lib/stockDataService';
-import { FinnhubService } from '../../web/app/lib/stockDataService';
+import { FinnhubService, SecEdgarService, FredService, CoinGeckoService } from '../../web/app/lib/stockDataService';
 
 const stubService = (): StockDataService => ({
   getStockPrice: vi.fn().mockResolvedValue({ price: '100.00', changePercent: '1.00%' }),
@@ -23,6 +23,15 @@ const stubService = (): StockDataService => ({
   getNewsSentiment: vi.fn().mockResolvedValue({}),
   getCompanyNews: vi.fn().mockResolvedValue({}),
   searchNews: vi.fn().mockResolvedValue({}),
+  getDividendHistory: vi.fn().mockResolvedValue({ dividends: [] }),
+  getStockSplits: vi.fn().mockResolvedValue({ splits: [] }),
+  getEarningsCalendar: vi.fn().mockResolvedValue({ earnings: [] }),
+  getIpoCalendar: vi.fn().mockResolvedValue({ ipos: [] }),
+  getEconomicIndicators: vi.fn().mockResolvedValue({ realGdp: null }),
+  getTechnicalIndicators: vi.fn().mockResolvedValue({ rsi14: 55, macd: null, sma20: 150, sma50: 145 }),
+  getCommodityPrices: vi.fn().mockResolvedValue({ wti: { value: '75.00', date: '2024-01-01' } }),
+  getForexRate: vi.fn().mockResolvedValue({ fromCurrency: 'USD', toCurrency: 'EUR', exchangeRate: '0.9200' }),
+  getMarketStatus: vi.fn().mockResolvedValue({ isOpen: true, session: 'regular' }),
 });
 
 describe('web executeTool', () => {
@@ -203,5 +212,137 @@ describe('FinnhubService error messages', () => {
     const suppressionRegex = /unavailable (in|via) (Alpha|Finnhub)/i;
     const errorMessage = 'Unavailable via Alpha Vantage: company data not found';
     expect(suppressionRegex.test(errorMessage)).toBe(true);
+  });
+});
+
+describe('new data tools (wave 1 — AV + Finnhub)', () => {
+  it('routes get_dividend_history to getDividendHistory', async () => {
+    const service = stubService();
+    const result = await executeTool('get_dividend_history', { symbol: 'AAPL', years: 5 }, service);
+    expect(result.success).toBe(true);
+    expect(service.getDividendHistory).toHaveBeenCalledWith('AAPL', 5);
+  });
+
+  it('routes get_stock_splits to getStockSplits', async () => {
+    const service = stubService();
+    const result = await executeTool('get_stock_splits', { symbol: 'TSLA' }, service);
+    expect(result.success).toBe(true);
+    expect(service.getStockSplits).toHaveBeenCalledWith('TSLA', undefined);
+  });
+
+  it('routes get_earnings_calendar to getEarningsCalendar', async () => {
+    const service = stubService();
+    const result = await executeTool('get_earnings_calendar', { weeks: 2 }, service);
+    expect(result.success).toBe(true);
+    expect(service.getEarningsCalendar).toHaveBeenCalledWith(undefined, 2);
+  });
+
+  it('routes get_ipo_calendar to getIpoCalendar', async () => {
+    const service = stubService();
+    const result = await executeTool('get_ipo_calendar', {}, service);
+    expect(result.success).toBe(true);
+    expect(service.getIpoCalendar).toHaveBeenCalledWith(undefined);
+  });
+
+  it('routes get_economic_indicators to getEconomicIndicators', async () => {
+    const service = stubService();
+    const result = await executeTool('get_economic_indicators', {}, service);
+    expect(result.success).toBe(true);
+    expect(service.getEconomicIndicators).toHaveBeenCalled();
+  });
+
+  it('routes get_technical_indicators to getTechnicalIndicators', async () => {
+    const service = stubService();
+    const result = await executeTool('get_technical_indicators', { symbol: 'NVDA' }, service);
+    expect(result.success).toBe(true);
+    expect(service.getTechnicalIndicators).toHaveBeenCalledWith('NVDA');
+  });
+
+  it('routes get_commodity_prices to getCommodityPrices', async () => {
+    const service = stubService();
+    const result = await executeTool('get_commodity_prices', { commodities: ['wti', 'brent'] }, service);
+    expect(result.success).toBe(true);
+    expect(service.getCommodityPrices).toHaveBeenCalledWith(['wti', 'brent']);
+  });
+
+  it('routes get_forex_rate to getForexRate', async () => {
+    const service = stubService();
+    const result = await executeTool('get_forex_rate', { fromCurrency: 'USD', toCurrency: 'EUR' }, service);
+    expect(result.success).toBe(true);
+    expect(service.getForexRate).toHaveBeenCalledWith('USD', 'EUR');
+  });
+
+  it('routes get_market_status to getMarketStatus', async () => {
+    const service = stubService();
+    const result = await executeTool('get_market_status', {}, service);
+    expect(result.success).toBe(true);
+    expect(service.getMarketStatus).toHaveBeenCalled();
+    expect(result.message).toMatch(/OPEN|CLOSED/);
+  });
+});
+
+describe('new data tools (wave 2 — SEC EDGAR, FRED, CoinGecko)', () => {
+  it('get_recent_filings calls SecEdgarService.getRecentFilings', async () => {
+    const service = stubService();
+    // Mock SecEdgarService to avoid real network calls in tests
+    const mockFilings = { symbol: 'AAPL', cik: '0000320193', companyName: 'Apple Inc.', filings: [] };
+    vi.spyOn(SecEdgarService.prototype, 'getRecentFilings').mockResolvedValueOnce(mockFilings);
+
+    const result = await executeTool('get_recent_filings', { symbol: 'AAPL', formTypes: ['8-K'], count: 5 }, service);
+    expect(result.success).toBe(true);
+    expect(result.data).toEqual(mockFilings);
+  });
+
+  it('get_recent_filings returns error message on failure', async () => {
+    const service = stubService();
+    vi.spyOn(SecEdgarService.prototype, 'getRecentFilings').mockRejectedValueOnce(
+      new Error('SEC EDGAR: no company found for ticker "FAKE"')
+    );
+
+    const result = await executeTool('get_recent_filings', { symbol: 'FAKE' }, service);
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/SEC EDGAR/i);
+  });
+
+  it('get_market_indicators calls FredService.getMarketIndicators', async () => {
+    const service = stubService();
+    const mockIndicators = { vix: { value: '18.5', date: '2024-01-15' } };
+    vi.spyOn(FredService.prototype, 'getMarketIndicators').mockResolvedValueOnce(mockIndicators);
+
+    const result = await executeTool('get_market_indicators', {}, service);
+    expect(result.success).toBe(true);
+    expect(result.data).toEqual(mockIndicators);
+  });
+
+  it('get_market_indicators returns error when FRED key is not configured', async () => {
+    const service = stubService();
+    vi.spyOn(FredService.prototype, 'getMarketIndicators').mockRejectedValueOnce(
+      new Error('FRED API key not configured. Set FRED_API_KEY.')
+    );
+
+    const result = await executeTool('get_market_indicators', {}, service);
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/FRED/i);
+  });
+
+  it('get_crypto_price calls CoinGeckoService.getCryptoPrice', async () => {
+    const service = stubService();
+    const mockCrypto = { id: 'bitcoin', symbol: 'BTC', name: 'Bitcoin', currentPrice: 45000 };
+    vi.spyOn(CoinGeckoService.prototype, 'getCryptoPrice').mockResolvedValueOnce(mockCrypto);
+
+    const result = await executeTool('get_crypto_price', { coinId: 'BTC' }, service);
+    expect(result.success).toBe(true);
+    expect(result.data).toEqual(mockCrypto);
+  });
+
+  it('get_top_cryptos calls CoinGeckoService.getTopCryptos', async () => {
+    const service = stubService();
+    const mockTop = [{ rank: 1, symbol: 'BTC', name: 'Bitcoin', currentPrice: 45000 }];
+    vi.spyOn(CoinGeckoService.prototype, 'getTopCryptos').mockResolvedValueOnce(mockTop);
+
+    const result = await executeTool('get_top_cryptos', { limit: 5 }, service);
+    expect(result.success).toBe(true);
+    expect(result.data).toEqual(mockTop);
+    expect(result.message).toContain('1');
   });
 });

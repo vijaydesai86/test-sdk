@@ -122,7 +122,7 @@ LLM_PROVIDER = process.env.LLM_PROVIDER || 'github'  // 'github' | 'gemini' | 'h
 
 **What it does:**
 - `buildToolDefinitions()` — returns all OpenAI-compatible tool definitions for the LLM
-- `executeTool(name, args, options)` — dispatches to `StockDataService` or `reportGenerator`
+- `executeTool(name, args, options)` — dispatches to `StockDataService`, `reportGenerator`, or supplementary services
 - `resolveSymbolFromQuery()` — scores `searchStock` results; detects share-class variants
 - `buildTickerResolutionPrompt(queries[])` — maps informal names/tickers → official US symbols
 - `buildSectorCompaniesPrompt(sector, count)` — LLM selects top N tickers for a sector/theme
@@ -146,18 +146,42 @@ LLM_PROVIDER = process.env.LLM_PROVIDER || 'github'  // 'github' | 'gemini' | 'h
 | `get_balance_sheet` | AV / Finnhub | Assets, liabilities, equity, cash, debt |
 | `get_cash_flow` | AV / Finnhub | Operating CF, free CF, capex, dividends |
 | `get_analyst_ratings` | AV / Finnhub | Buy/hold/sell consensus breakdown |
-| `get_analyst_recommendations` | Finnhub | Recommendation history |
-| `get_price_targets` | Finnhub | Analyst price target mean/high/low |
-| `get_peers` | Finnhub | Comparable company peer list |
+| `get_analyst_recommendations` | Finnhub | Recommendation history (last 4 periods) |
+| `get_price_targets` | Finnhub | Analyst price target mean/high/low/median |
+| `get_peers` | AV / Finnhub | Comparable company peer list |
 | `get_insider_trading` | AV / Finnhub | Insider buy/sell transactions |
-| `get_news_sentiment` | AV / Finnhub | News volume + sentiment score |
-| `get_company_news` | Finnhub | Recent company news articles |
-| `get_sector_performance` | AV | Real-time sector returns across 1d/5d/1m/3m/YTD/1y timeframes |
-| `get_top_gainers_losers` | AV | Today's top gaining, top losing, and most actively traded US stocks |
+| `get_news_sentiment` | Finnhub | News volume + sentiment score |
+| `get_company_news` | Finnhub | Recent company news articles (last N days) |
+| `get_sector_performance` | AV | Real-time sector returns across 1d/5d/1m/3m/YTD/1y |
+| `get_top_gainers_losers` | AV | Today's top gaining, losing, and most active US stocks |
+| `get_dividend_history` | Finnhub | Historical dividend payments (ex-date, amount, currency) |
+| `get_stock_splits` | Finnhub | Historical stock split record |
+| `get_earnings_calendar` | Finnhub | Upcoming earnings announcements (with EPS estimates) |
+| `get_ipo_calendar` | Finnhub | Upcoming IPO listings on US exchanges |
+| `get_economic_indicators` | AV | US macro: GDP, Fed funds rate, CPI, inflation, 10y Treasury |
+| `get_technical_indicators` | AV / Finnhub | RSI-14, MACD, SMA-20/50, Bollinger Bands — computed from price history, zero extra API calls |
+| `get_commodity_prices` | AV | WTI, Brent, Natural Gas, Copper, Aluminum, Wheat, Corn |
+| `get_forex_rate` | AV / Finnhub | Real-time currency exchange rate (e.g. USD/EUR) |
+| `get_market_status` | Finnhub | US market open/closed, session type, holidays |
+| `get_recent_filings` | SEC EDGAR | Recent 8-K, 10-K, 10-Q, DEF14A filings with dates and EDGAR links — **no API key needed** |
+| `get_market_indicators` | FRED | VIX, S&P 500, yield curve + recession signal, 2y/10y/3m yields, Fed rate, unemployment, CPI, Core PCE, mortgage rate, Baa spread, housing starts, retail sales, consumer sentiment |
+| `get_crypto_price` | CoinGecko | Single crypto: price, market cap, rank, 24h/7d/30d/1y changes, ATH, supply |
+| `get_top_cryptos` | CoinGecko | Top N cryptos by market cap with price changes and volume |
 | `generate_stock_report` | All above | Full stock research report + save |
 | `generate_comparison_report` | All above | Multi-company comparison + save |
 | `generate_sector_report` | All above | LLM-selected sector report + save |
 | `generate_deep_sector_report` | All above + LLM | 4-phase deep sector research with recursive dependency analysis (DEEP_RESEARCH_DEPTH passes) + save |
+
+**LLM fallback strategy for data tools:**
+- AV hits daily limit → Finnhub fallback (via `HybridStockDataService.withFallback`)
+- `get_technical_indicators`: computed from price history — AV price fetch fails → Finnhub price fetch
+- `get_forex_rate`: AV primary → Finnhub `/forex/rates` fallback
+- `get_market_status`: Finnhub only (AV has no equivalent)
+- `get_commodity_prices`: AV only (Finnhub has no commodity data)
+- `get_economic_indicators`: AV only — if quota exhausted, use `get_market_indicators` (FRED) for overlapping series
+- `get_recent_filings`: SEC EDGAR (no quota, no key — always available)
+- `get_market_indicators`: FRED (requires `FRED_API_KEY`) — if not set, returns a clear error with setup instructions
+- `get_crypto_price` / `get_top_cryptos`: CoinGecko — works without a key (rate-limited), faster with `COINGECKO_API_KEY`
 
 **Error suppression in `safeFetch`:**
 Errors matching these patterns are silently swallowed (not shown in report Data Gaps):
@@ -173,8 +197,6 @@ All other errors appear in the report's `## ⚠️ Data Gaps` section.
 
 When `isRateLimit` triggers: `rateLimitHit = true` → all remaining fetches skipped.
 
----
-
 ### `web/app/lib/stockDataService.ts`
 
 **What it does:**
@@ -182,6 +204,10 @@ When `isRateLimit` triggers: `rateLimitHit = true` → all remaining fetches ski
 - `AlphaVantageService` — primary data source (free tier, rate-limited, cached)
 - `FinnhubService` — secondary data source (free tier, higher rate limit)
 - `HybridStockDataService` — wraps both; `withFallback()` retries AV failures on Finnhub; tags results with `__source: 'Finnhub'`
+- `SecEdgarService` — SEC EDGAR (no API key required); CIK lookup + recent filings
+- `FredService` — FRED macroeconomic database (requires `FRED_API_KEY`); VIX, yield curve, S&P 500, CPI, PCE, unemployment, mortgage rates, credit spreads, consumer sentiment
+- `CoinGeckoService` — cryptocurrency market data (no key required; optional `COINGECKO_API_KEY` for higher rate limits)
+- `computeTechnicalIndicators()` — module-level helper computing RSI-14 (Wilder), MACD(12,26,9), SMA-20, SMA-50, Bollinger Bands(20,2σ) from a closing-price array; used by both AV and Finnhub `getTechnicalIndicators()`
 
 **IMPORTANT implementation rules:**
 - **Never use `TIME_SERIES_DAILY outputsize=full`** — this is a premium Alpha Vantage feature and fails on free tier.
@@ -190,6 +216,8 @@ When `isRateLimit` triggers: `rateLimitHit = true` → all remaining fetches ski
 - Finnhub `/quote` returns `{c:0,t:0}` for unknown symbols — check `data.t===0`, not just falsy.
 - Finnhub `/stock/candle` returns `{s:"no_data"}` for bad symbols — check `data.s !== 'ok'`.
 - Finnhub financial statements come from `/stock/metric?metric=all` → `series.quarterly.ic/bs/cf`; `pivotSeries()` converts to per-quarter records.
+- SEC EDGAR requires `User-Agent` header with contact info or requests may be blocked (10 req/s max).
+- `HybridStockDataService.getNewsSentiment` and `getCompanyNews` MUST use `withFallback` — AV throws "Alpha-only mode"; Finnhub provides both endpoints.
 
 **Alpha Vantage free-tier endpoint map:**
 
@@ -203,11 +231,14 @@ When `isRateLimit` triggers: `rateLimitHit = true` → all remaining fetches ski
 | `CASH_FLOW` | ✅ | Quarterly & annual cash flow |
 | `TIME_SERIES_DAILY outputsize=compact` | ✅ | Last 100 trading days |
 | `TIME_SERIES_DAILY outputsize=full` | ❌ **PREMIUM** | Never use |
-| `TIME_SERIES_WEEKLY` | ✅ | Full history, weekly candles. No `outputsize` param |
-| `TIME_SERIES_MONTHLY` | ✅ | Full history, monthly candles. No `outputsize` param |
+| `TIME_SERIES_WEEKLY` | ✅ | Full history, weekly candles |
+| `TIME_SERIES_MONTHLY` | ✅ | Full history, monthly candles |
 | `SYMBOL_SEARCH` | ✅ | Ticker search |
 | `SECTOR` | ✅ | Sector performance |
 | `TOP_GAINERS_LOSERS` | ✅ | Market movers |
+| `CURRENCY_EXCHANGE_RATE` | ✅ | Real-time FX rate |
+| `WTI` / `BRENT` / `NATURAL_GAS` / `COPPER` / `ALUMINUM` / `WHEAT` / `CORN` | ✅ | Commodity price series |
+| `REAL_GDP` / `FEDERAL_FUNDS_RATE` / `CPI` / `INFLATION` / `TREASURY_YIELD` | ✅ | US macro series |
 | `INSIDER_TRANSACTIONS` | ❌ **PREMIUM** | Returns premium error; wrapped in try/catch |
 | `NEWS_SENTIMENT` | ❌ **PREMIUM** | Throws suppressed "Alpha-only mode" error |
 
@@ -232,9 +263,41 @@ When `isRateLimit` triggers: `rateLimitHit = true` → all remaining fetches ski
 | `/company-news` | ✅ | Company news |
 | `/news-sentiment` | ✅ | News sentiment |
 | `/search` | ✅ | Symbol/company search |
-| `/news?category=general` | ⚠️ | General news only; no keyword search |
+| `/stock/dividend` | ✅ | Dividend payment history |
+| `/stock/split` | ✅ | Stock split history |
+| `/calendar/earnings` | ✅ | Upcoming earnings calendar |
+| `/calendar/ipo` | ✅ | Upcoming IPO calendar |
+| `/market-status` | ✅ | US market open/closed status |
+| `/forex/rates` | ✅ | FX rates relative to base currency |
 | `/financials-reported` | ❌ **PREMIUM** | Returns 403. Never call. |
 | `/stock/financials` | ❌ **DEPRECATED** | Removed from API. Never call. |
+
+**SEC EDGAR endpoint map (no API key):**
+
+| Endpoint | Notes |
+|---|---|
+| `https://www.sec.gov/files/company_tickers.json` | Ticker → CIK mapping, ~10k entries, cached 24h |
+| `https://data.sec.gov/submissions/CIK{10-digit}.json` | Company filing history (form type, date, accession number), cached 6h |
+
+Rate limit: 10 req/s max. `User-Agent` header with contact info is mandatory.
+
+**FRED endpoint map (free with API key):**
+
+Key series IDs used by `getMarketIndicators()`:
+`VIXCLS`, `SP500`, `T10Y2Y`, `DGS10`, `DGS2`, `DTB3`, `FEDFUNDS`, `A191RL1Q225SBEA`, `UNRATE`, `CPIAUCSL`, `PCEPI`, `PCEPILFE`, `MORTGAGE30US`, `BAA10Y`, `HOUST`, `RSAFS`, `INDPRO`, `UMCSENT`
+
+Base URL: `https://api.stlouisfed.org/fred/series/observations`  
+Key params: `series_id`, `api_key`, `file_type=json`, `limit`, `sort_order=desc`
+
+**CoinGecko endpoint map:**
+
+| Endpoint | Notes |
+|---|---|
+| `/api/v3/coins/{id}` | Detailed coin data: price, market cap, ATH, supply, changes — 5min cache |
+| `/api/v3/coins/markets` | Top N coins ranked by market cap — 5min cache |
+
+Without key: ~5–15 req/min. With free demo key (`COINGECKO_API_KEY`): 30 req/min, 10k/month.
+API key param: `x_cg_demo_api_key={key}`
 
 ---
 

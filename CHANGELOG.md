@@ -12,7 +12,47 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
-- **Gemini API integration** — `callGeminiAPI()` in `web/app/api/chat/route.ts` calls Gemini via its OpenAI-compatible endpoint (`https://generativelanguage.googleapis.com/v1beta/openai/chat/completions`). Same request/response format as GitHub Models; all existing message building, tool definitions, and response parsing work unchanged.
+- **13 new data tools** — the LLM can now access far more data sources for richer, more comprehensive reports:
+
+  **AV + Finnhub (existing keys, no new setup):**
+  - `get_dividend_history` — historical dividend payments (ex-date, pay date, amount, currency) via Finnhub `/stock/dividend`
+  - `get_stock_splits` — complete stock split record via Finnhub `/stock/split`
+  - `get_earnings_calendar` — upcoming earnings announcements with EPS estimates via Finnhub `/calendar/earnings`
+  - `get_ipo_calendar` — upcoming IPO listings on US exchanges via Finnhub `/calendar/ipo`
+  - `get_economic_indicators` — US macro data via AV (GDP, Fed Funds Rate, CPI, Inflation, 10-year Treasury) with 24h cache
+  - `get_technical_indicators` — RSI-14 (Wilder), MACD(12,26,9), SMA-20, SMA-50, Bollinger Bands(20,2σ) with bullish/bearish interpretation; computed from price history — **zero extra API calls** when price data is already cached
+  - `get_commodity_prices` — WTI, Brent crude, Natural Gas, Copper, Aluminum, Wheat, Corn via AV commodity endpoints; 6h cache
+  - `get_forex_rate` — real-time FX exchange rate via AV `CURRENCY_EXCHANGE_RATE`, Finnhub `/forex/rates` fallback
+  - `get_market_status` — US market open/closed, current session, market holidays via Finnhub `/market-status`
+
+  **SEC EDGAR (new source — no API key required):**
+  - `get_recent_filings` — recent 8-K, 10-K, 10-Q, DEF14A and other SEC filings with dates and direct EDGAR links; uses `SecEdgarService` which resolves ticker → CIK via `https://www.sec.gov/files/company_tickers.json` (cached 24h) then fetches `https://data.sec.gov/submissions/CIK{cik}.json` (cached 6h); rate-limited to 5 req/s with proper `User-Agent` header
+
+  **FRED Federal Reserve (new source — free key: `FRED_API_KEY`):**
+  - `get_market_indicators` — 18 US macro + market series in one call: VIX, S&P 500, 10Y-2Y yield curve (with plain-English recession signal), 10y/2y/3m treasury yields, Fed funds rate, real GDP growth, unemployment, CPI, Core PCE, PCE, 30-year mortgage rate, Baa corporate bond spread, housing starts, retail sales, industrial production, consumer sentiment; `FredService` uses FRED REST API with sequential throttle (300ms) and 6h cache
+
+  **CoinGecko (new source — optional free key: `COINGECKO_API_KEY`):**
+  - `get_crypto_price` — detailed single-coin data: price, market cap, rank, FDV, 24h/7d/30d/1y changes, ATH/ATL, supply, categories; works without a key (rate limited), faster with free demo key
+  - `get_top_cryptos` — top N coins by market cap (up to 50) with price changes and volume
+
+- **`SecEdgarService`**, **`FredService`**, **`CoinGeckoService`** — three new exported service classes in `web/app/lib/stockDataService.ts`; instantiated on demand inside `executeTool`; each has its own TTL-based in-memory cache and per-instance throttle
+- **`computeTechnicalIndicators()`** — module-level helper implementing Wilder's RSI-14, EMA-based MACD, and Bollinger Bands from a price series; shared by both `AlphaVantageService.getTechnicalIndicators` and `FinnhubService.getTechnicalIndicators`
+
+### Fixed
+- **`HybridStockDataService.getNewsSentiment`** — was calling `this.primary` (AV) only, which always throws "Alpha-only mode" in hybrid mode, silently suppressing all news sentiment data. Now uses `withFallback` → Finnhub's `/news-sentiment` is correctly called.
+- **`HybridStockDataService.getCompanyNews`** — same bug; now uses `withFallback` → Finnhub's `/company-news` is used in hybrid mode.
+
+### Changed
+- `web/.env.example`: added `FRED_API_KEY`, `COINGECKO_API_KEY`; changed `STOCK_DATA_PROVIDER` default to `hybrid`; expanded comments with URLs and rate-limit info
+- `.env.example` (root/CLI): same additions
+- `README.md`: updated architecture diagram to show 3 new data sources; added **Vercel Setup Guide** table showing exactly which variables to add/change; expanded environment variable table with `FRED_API_KEY` and `COINGECKO_API_KEY`; updated tech stack table; added new example queries for the new tools
+- `AGENT.md`: expanded tool table (18 → 33 data tools); updated `stockDataService.ts` section to document all three new service classes and their endpoints; added SEC EDGAR, FRED, and CoinGecko endpoint maps; added fallback strategy notes
+
+### Tests
+- Updated stub `StockDataService` in `webStockTools.test.ts` to include all 12 new interface methods (required for TypeScript conformance)
+- Added 9 tests for new AV+Finnhub tools (`get_dividend_history`, `get_stock_splits`, `get_earnings_calendar`, `get_ipo_calendar`, `get_economic_indicators`, `get_technical_indicators`, `get_commodity_prices`, `get_forex_rate`, `get_market_status`)
+- Added 5 tests for new service tools (`get_recent_filings`, `get_market_indicators`, `get_crypto_price`, `get_top_cryptos`) using `vi.spyOn` to mock network calls
+- Test count: 24 → 39
 - `GEMINI_TOKEN` environment variable — supply a Gemini API key (get one at [aistudio.google.com/api-keys](https://aistudio.google.com/api-keys)). **Server-side only** — never exposed to client-side code.
 - `LLM_PROVIDER` environment variable (default: `github`) — selects the LLM API provider, mirroring the `STOCK_DATA_PROVIDER` pattern used for data services:
   - `github`: GitHub Models API only (existing behaviour, `GITHUB_TOKEN` required)

@@ -70,7 +70,7 @@ Any question that doesn't fit the above — macro trends, industry news, "explai
 ┌──────▼───────────────────┐             ┌─────────────▼──────────────────┐
 │   Tool Dispatcher        │             │   LLM Gap-Fill (FILL_MODEL)    │
 │   stockTools.ts          │             │                                │
-│   20+ data & report      │             │   • Ticker resolution          │
+│   33 data & report       │             │   • Ticker resolution          │
 │   tools exposed to LLM   │             │   • Sector company selection   │
 └──────┬───────────────────┘             │   • Dependency mapping         │
        │                                 │   • Null-field recovery        │
@@ -81,16 +81,32 @@ Any question that doesn't fit the above — macro trends, industry news, "explai
 │  Alpha Vantage (primary)          │
 │  • Fundamentals, financials,      │
 │    earnings, price history,       │
-│    sector data, movers            │
+│    sector data, movers,           │
+│    commodities, forex, macro      │
 │  • Free: 25 req/day, 5/min        │
 │                    ↓ fallback     │
 │  Finnhub (secondary)              │
-│  • Real-time quotes, profiles,    │
-│    analyst data, insider trades,  │
-│    news, peers, candles           │
+│  • Quotes, profiles, analyst data │
+│    insider trades, news, peers,   │
+│    dividends, splits, calendars,  │
+│    market status, candles         │
 │  • Free: 60 req/min               │
 │                    ↓ cache        │
 │  7-day JSON cache per ticker      │
+│                                   │
+│  ── Supplementary Services ──     │
+│  SEC EDGAR (no key needed)        │
+│  • Recent filings: 8-K, 10-K,    │
+│    10-Q, DEF14A + EDGAR links     │
+│                                   │
+│  FRED Federal Reserve (free key)  │
+│  • VIX, S&P 500, yield curve,    │
+│    CPI, PCE, unemployment, GDP,   │
+│    mortgage rates, credit spreads │
+│                                   │
+│  CoinGecko (free / free key)      │
+│  • Crypto prices, market caps,    │
+│    rankings, historical changes   │
 └──────┬────────────────────────────┘
        │
 ┌──────▼────────────────────────────┐
@@ -189,9 +205,11 @@ npm run dev
 | `GEMINI_TOKEN` | Yes (when `LLM_PROVIDER=gemini` or `hybrid`) | — | Gemini API key — get a free key at [aistudio.google.com/api-keys](https://aistudio.google.com/api-keys). **Must use AI Studio, not Google Cloud Console.** Free tier (gemini-2.5-flash): 5 RPM / 250K TPM / 20 RPD. **Never commit — set in Vercel env only.** |
 | `LLM_PROVIDER` | No | `github` | LLM API provider: `github` (GitHub Models), `gemini` (Gemini API), or `hybrid` (GitHub primary, auto-falls back to Gemini on HTTP 429) |
 | `GEMINI_MODEL` | No | `gemini-2.5-flash` | Gemini model name. Default `gemini-2.5-flash` has free-tier quota on AI Studio keys. `gemini-2.0-flash` has **zero** free quota and will always fail. |
-| `ALPHA_VANTAGE_API_KEY` | **Yes** | — | Free API key from [alphavantage.co](https://www.alphavantage.co/support/#api-key) — real-time market data |
-| `FINNHUB_API_KEY` | Recommended | — | Free key from [finnhub.io](https://finnhub.io) — enables hybrid fallback for higher data completeness |
-| `STOCK_DATA_PROVIDER` | No | `alphavantage` | `alphavantage`, `finnhub`, or `hybrid` (use `hybrid` for best data coverage) |
+| `ALPHA_VANTAGE_API_KEY` | **Yes** | — | Free API key from [alphavantage.co](https://www.alphavantage.co/support/#api-key) — real-time quotes, fundamentals, financials, economic indicators, commodities, forex |
+| `FINNHUB_API_KEY` | **Recommended** | — | Free key from [finnhub.io](https://finnhub.io) — enables hybrid fallback, plus dividends, splits, earnings/IPO calendars, market status |
+| `FRED_API_KEY` | **Recommended** | — | Free key from [fred.stlouisfed.org/docs/api/api_key.html](https://fred.stlouisfed.org/docs/api/api_key.html) — unlocks `get_market_indicators`: VIX, yield curve, S&P 500, CPI, PCE, unemployment, mortgage rates, credit spreads, consumer sentiment |
+| `COINGECKO_API_KEY` | Optional | — | Free demo key from [coingecko.com](https://www.coingecko.com/en/api) — improves crypto rate limits from ~10 req/min to 30 req/min. App works without this key (just slower). |
+| `STOCK_DATA_PROVIDER` | **Recommended** | `alphavantage` | `alphavantage`, `finnhub`, or **`hybrid`** — set to `hybrid` to use BOTH AV + Finnhub for maximum data coverage |
 | `COPILOT_MODEL` | No | `openai/gpt-4.1` | Main reasoning model (GitHub Models name; ignored when `LLM_PROVIDER=gemini`) |
 | `FILL_MODEL` | No | `openai/gpt-4.1-mini` | Lighter model for ticker resolution and gap-fill on GitHub Models (preserves main model quota) |
 | `COPILOT_FALLBACK_MODEL` | No | same as main | Fallback model if main hits rate limit (GitHub Models only) |
@@ -205,14 +223,55 @@ npm run dev
 
 ---
 
+## Vercel Setup Guide
+
+Based on your existing Vercel environment variables, here's exactly what to do:
+
+### ✅ Already Configured
+You have: `ALPHA_VANTAGE_API_KEY`, `FINNHUB_API_KEY`, `GEMINI_TOKEN`, `LLM_PROVIDER`, `NUM_COMPANIES`, `DEEP_RESEARCH_DEPTH`, `SUPABASE_*`, `DEBUG`
+
+### 🔴 Critical — Set This Now
+| Variable | Value | Why |
+|---|---|---|
+| `STOCK_DATA_PROVIDER` | `hybrid` | You have BOTH API keys — this tells the app to use them together. AV is primary, Finnhub fallbacks. Without this, you're only using Alpha Vantage. |
+
+### 🟡 Recommended — Add for Best Reports
+| Variable | How to Get | Why |
+|---|---|---|
+| `FRED_API_KEY` | Free at [fred.stlouisfed.org/docs/api/api_key.html](https://fred.stlouisfed.org/docs/api/api_key.html) (instant signup) | Unlocks `get_market_indicators`: VIX, yield curve + recession signal, S&P 500, CPI, PCE, unemployment, mortgage rates, credit spreads. 18 macro series in one tool. Strictly required for serious macro analysis. |
+| `COINGECKO_API_KEY` | Free at [coingecko.com](https://www.coingecko.com/en/api) → "Get API Key" | Improves crypto data rate limits (10→30 req/min). App works without it, just slower. |
+
+### 🟢 Optional — Advanced Tuning
+| Variable | Recommended Value | Why |
+|---|---|---|
+| `LLM_PROVIDER` | `gemini` (if no `GITHUB_TOKEN`) or `hybrid` (if you add `GITHUB_TOKEN`) | You already have `GEMINI_TOKEN` — if not also adding a GitHub token, set to `gemini` to avoid startup errors |
+| `GITHUB_TOKEN` | [github.com/settings/tokens](https://github.com/settings/tokens) | Adds GitHub Models as primary LLM with Gemini as fallback when using `hybrid` LLM mode |
+| `NUM_COMPANIES` | `10` (current) or `15` for deeper research | Controls how many companies appear in sector reports |
+| `DEEP_RESEARCH_DEPTH` | `2` (current) or `3` for maximum depth | More passes = deeper ecosystem analysis, slower reports |
+
+### SEC EDGAR
+No configuration needed. The `get_recent_filings` tool works immediately — it uses the SEC's public API with no key required.
+
+---
+
 ## Example Queries
 
 ```
-# Stock details
-"Research NVDA"
-"Full report on Apple"
-"What's Tesla's current PE ratio and analyst consensus?"
-"Show me Amazon's last 8 quarters of earnings"
+# Stock details + new tools
+"Research NVDA — include technical indicators and recent SEC filings"
+"Full report on Apple — show dividend history and insider transactions"
+"What's Tesla's current PE ratio, RSI, and upcoming earnings date?"
+
+# Market context
+"What are current macro conditions? VIX, yield curve, inflation"
+"Is the US market currently open? Show me today's biggest movers"
+"What are commodity prices — oil, gas, copper?"
+"USD to EUR and USD to JPY rates?"
+
+# Crypto
+"What's Bitcoin's current price and market stats?"
+"Show me the top 10 cryptos by market cap"
+"Compare Coinbase stock with BTC performance"
 
 # Comparison
 "Compare Microsoft, Google, and Meta"
@@ -253,8 +312,11 @@ CI runs the full test suite on every pull request. All tests must pass before me
 | Frontend | Next.js 16 (App Router), React 19, TypeScript, Tailwind CSS v4 |
 | Charts | ECharts 5 (interactive), Mermaid (ecosystem diagrams) |
 | AI Orchestrator | GitHub Models API (`GITHUB_TOKEN`), Gemini API (`GEMINI_TOKEN`), or hybrid — controlled by `LLM_PROVIDER` |
-| Data — Primary | Alpha Vantage REST API (free tier) |
-| Data — Fallback | Finnhub REST API (free tier, hybrid mode) |
+| Data — Primary | Alpha Vantage REST API (free tier: fundamentals, financials, macro, commodities, forex) |
+| Data — Fallback | Finnhub REST API (free tier: quotes, news, analyst data, dividends, splits, calendars) |
+| Data — Macro | FRED Federal Reserve API (free key: VIX, yield curve, 18 macro series) |
+| Data — Filings | SEC EDGAR (no key: recent 8-K/10-K/10-Q filing list + EDGAR links) |
+| Data — Crypto | CoinGecko (free / free key: prices, market cap, rankings) |
 | Data — Gap-fill | LLM knowledge (null fields only, never overwrites API data) |
 | Report rendering | `react-markdown` + `remark-gfm` in chat UI |
 | Deployment | Vercel (Node.js runtime, 5-minute max function duration) |
