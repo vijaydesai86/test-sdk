@@ -32,11 +32,25 @@ export class AlphaVantageService implements StockDataService {
   private apiKey: string;
   private baseUrl = 'https://www.alphavantage.co/query';
   private cache = new Map<string, { expiresAt: number; data: any }>();
-  private lastRequestAt = new Map<string, number>();
   private static sharedCache = new Map<string, { expiresAt: number; data: any }>();
   private minIntervals = {
     alphavantage: Number(process.env.ALPHA_VANTAGE_MIN_INTERVAL_MS || 1200),
   };
+
+  // ── Circuit breaker ───────────────────────────────────────────────────────
+  // Static so it is shared across all instances in the same process.
+  // When > Date.now() every makeRequest call throws immediately without
+  // throttling, letting HybridStockDataService fall back to Finnhub in 0 ms.
+  private static rateLimitedUntilMs = 0;
+  private static readonly DAILY_LIMIT_LOCKOUT_MS = 60 * 60 * 1000; // 1 h
+  private static readonly PER_MINUTE_LOCKOUT_MS = 65 * 1000;        // 65 s
+  // ─────────────────────────────────────────────────────────────────────────
+
+  // ── Queue-based throttle ─────────────────────────────────────────────────
+  // Prevents the race condition where concurrent callers (e.g. Promise.all)
+  // all read the same lastRequestAt timestamp and fire simultaneously.
+  private throttleQueue = Promise.resolve();
+  // ─────────────────────────────────────────────────────────────────────────
 
   constructor(apiKey?: string) {
     this.apiKey = apiKey || process.env.ALPHA_VANTAGE_API_KEY || 'demo';
@@ -50,15 +64,13 @@ export class AlphaVantageService implements StockDataService {
     return `${prefix}:${JSON.stringify(sorted)}`;
   }
 
-  private async throttle(provider: string, minIntervalMs: number): Promise<void> {
-    if (minIntervalMs <= 0) return;
-    const last = this.lastRequestAt.get(provider) || 0;
-    const now = Date.now();
-    const wait = minIntervalMs - (now - last);
-    if (wait > 0) {
-      await new Promise((resolve) => setTimeout(resolve, wait));
-    }
-    this.lastRequestAt.set(provider, Date.now());
+  private throttle(minIntervalMs: number): Promise<void> {
+    if (minIntervalMs <= 0) return Promise.resolve();
+    const slot = this.throttleQueue.then(
+      () => new Promise<void>(resolve => setTimeout(resolve, minIntervalMs))
+    );
+    this.throttleQueue = slot;
+    return slot;
   }
 
   private async fetchWithCache(
@@ -91,7 +103,15 @@ export class AlphaVantageService implements StockDataService {
     const ttlMs = options.ttlMs || 0;
 
     return this.fetchWithCache(cacheKey, ttlMs, async () => {
-      await this.throttle('alphavantage', this.minIntervals.alphavantage);
+      // ── Circuit breaker ──────────────────────────────────────────────────
+      if (AlphaVantageService.rateLimitedUntilMs > Date.now()) {
+        throw new Error(
+          'Unavailable via Alpha Vantage: rate limit active — falling back to alternative source'
+        );
+      }
+      // ────────────────────────────────────────────────────────────────────
+
+      await this.throttle(this.minIntervals.alphavantage);
       try {
         const response = await axios.get(this.baseUrl, {
           params: {
@@ -101,18 +121,28 @@ export class AlphaVantageService implements StockDataService {
           timeout: 10000,
         });
         const data = response.data;
-        if (data?.Note) {
-          throw new Error(data.Note);
+
+        // Detect rate-limit messages (AV returns HTTP 200 even when limited).
+        const limitMsg: string = (data?.Note || data?.Information || '') as string;
+        if (limitMsg) {
+          const isDaily = /per day|\d+ requests per day/i.test(limitMsg);
+          AlphaVantageService.rateLimitedUntilMs =
+            Date.now() +
+            (isDaily
+              ? AlphaVantageService.DAILY_LIMIT_LOCKOUT_MS
+              : AlphaVantageService.PER_MINUTE_LOCKOUT_MS);
+          throw new Error(
+            'Unavailable via Alpha Vantage: rate limit active — falling back to alternative source'
+          );
         }
-        if (data?.Information) {
-          throw new Error(data.Information);
-        }
+
         if (data?.['Error Message']) {
           throw new Error(data['Error Message']);
         }
         return data;
       } catch (error: any) {
-        console.error('API request failed:', error.message);
+        if ((error.message as string).startsWith('Unavailable via Alpha Vantage:')) throw error;
+        console.error('Alpha Vantage API error:', error.message);
         throw new Error(`Failed to fetch data: ${error.message}`);
       }
     });
@@ -645,19 +675,28 @@ export class FinnhubService implements StockDataService {
   private apiKey: string;
   private baseUrl = 'https://finnhub.io/api/v1';
   private cache = new Map<string, { expiresAt: number; data: any }>();
-  private lastRequestAt = 0;
   private minIntervalMs = Number(process.env.FINNHUB_MIN_INTERVAL_MS || 500);
+
+  // ── Circuit breaker ───────────────────────────────────────────────────────
+  private static rateLimitedUntilMs = 0;
+  private static readonly RATE_LIMIT_LOCKOUT_MS = 65 * 1000;
+  // ─────────────────────────────────────────────────────────────────────────
+
+  // ── Queue-based throttle ─────────────────────────────────────────────────
+  private throttleQueue = Promise.resolve();
+  // ─────────────────────────────────────────────────────────────────────────
 
   constructor(apiKey?: string) {
     this.apiKey = apiKey || process.env.FINNHUB_API_KEY || '';
   }
 
-  private async throttle(): Promise<void> {
-    if (this.minIntervalMs <= 0) return;
-    const now = Date.now();
-    const wait = this.minIntervalMs - (now - this.lastRequestAt);
-    if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
-    this.lastRequestAt = Date.now();
+  private throttle(): Promise<void> {
+    if (this.minIntervalMs <= 0) return Promise.resolve();
+    const slot = this.throttleQueue.then(
+      () => new Promise<void>(resolve => setTimeout(resolve, this.minIntervalMs))
+    );
+    this.throttleQueue = slot;
+    return slot;
   }
 
   private async makeRequest(path: string, params: Record<string, string> = {}, ttlMs = 0): Promise<any> {
@@ -666,6 +705,13 @@ export class FinnhubService implements StockDataService {
       const cached = this.cache.get(cacheKey);
       if (cached && cached.expiresAt > Date.now()) return cached.data;
     }
+
+    // ── Circuit breaker ──────────────────────────────────────────────────
+    if (FinnhubService.rateLimitedUntilMs > Date.now()) {
+      throw new Error('Unavailable via Finnhub: rate limit active — please wait a moment');
+    }
+    // ────────────────────────────────────────────────────────────────────
+
     await this.throttle();
     try {
       const response = await axios.get(`${this.baseUrl}${path}`, {
@@ -676,6 +722,15 @@ export class FinnhubService implements StockDataService {
       if (ttlMs > 0) this.cache.set(cacheKey, { expiresAt: Date.now() + ttlMs, data });
       return data;
     } catch (error: any) {
+      const statusCode = error?.response?.status;
+      if (statusCode === 401 || statusCode === 403) {
+        throw new Error(`Unavailable via Finnhub (plan limitation: ${statusCode})`);
+      }
+      if (statusCode === 429) {
+        FinnhubService.rateLimitedUntilMs = Date.now() + FinnhubService.RATE_LIMIT_LOCKOUT_MS;
+        console.warn('Finnhub rate limit (429) hit — circuit breaker open for 65 s');
+        throw new Error('Unavailable via Finnhub: rate limit active — please wait a moment');
+      }
       throw new Error(`Finnhub request failed: ${error.message}`);
     }
   }

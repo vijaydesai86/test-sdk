@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import axios from 'axios';
-import { AlphaVantageService } from '../stockDataService';
+import { AlphaVantageService, FinnhubService } from '../stockDataService';
 
 vi.mock('axios', () => ({
   default: {
@@ -34,6 +34,9 @@ describe('AlphaVantageService', () => {
     // Clear the shared in-process cache so each test makes real requests
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (AlphaVantageService as any).sharedCache.clear();
+    // Reset circuit breaker between tests
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (AlphaVantageService as any).rateLimitedUntilMs = 0;
   });
 
   it('caches stock price responses', async () => {
@@ -123,5 +126,72 @@ describe('AlphaVantageService', () => {
     const service = new AlphaVantageService('test');
     await expect(service.getCompanyOverview('AAPL')).rejects.toThrow('Unavailable via Alpha Vantage');
   });
+
+  // ── Circuit breaker tests ──────────────────────────────────────────────────
+
+  it('opens daily circuit breaker on per-day rate limit response and skips subsequent HTTP calls', async () => {
+    // First call returns the 25 req/day limit message in Information
+    mockedAxios.get.mockResolvedValueOnce({
+      data: { Information: 'We have detected your API key as TEST and our standard API rate limit is 25 requests per day.' },
+    });
+
+    const service = new AlphaVantageService('test');
+
+    // First call should trigger the circuit breaker
+    await expect(service.getStockPrice('AAPL')).rejects.toThrow('Unavailable via Alpha Vantage: rate limit active');
+    expect(mockedAxios.get).toHaveBeenCalledTimes(1);
+
+    // Second call should NOT make an HTTP request — circuit is open
+    await expect(service.getStockPrice('MSFT')).rejects.toThrow('Unavailable via Alpha Vantage: rate limit active');
+    expect(mockedAxios.get).toHaveBeenCalledTimes(1); // still 1 — no extra HTTP call
+  });
+
+  it('opens short-lockout circuit breaker on per-second rate limit (Note field)', async () => {
+    mockedAxios.get.mockResolvedValueOnce({
+      data: { Note: 'Thank you for using Alpha Vantage! Please consider spreading out your free API requests more sparingly (1 request per second).' },
+    });
+
+    const service = new AlphaVantageService('test');
+    await expect(service.getStockPrice('AAPL')).rejects.toThrow('Unavailable via Alpha Vantage: rate limit active');
+
+    // Circuit breaker is open — no second HTTP call
+    await expect(service.getStockPrice('MSFT')).rejects.toThrow('Unavailable via Alpha Vantage: rate limit active');
+    expect(mockedAxios.get).toHaveBeenCalledTimes(1);
+  });
+
+  it('daily lockout is longer than per-minute lockout', () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const daily = (AlphaVantageService as any).DAILY_LIMIT_LOCKOUT_MS as number;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const perMin = (AlphaVantageService as any).PER_MINUTE_LOCKOUT_MS as number;
+    expect(daily).toBeGreaterThan(perMin);
+    expect(daily).toBe(60 * 60 * 1000);   // 1 hour
+    expect(perMin).toBe(65 * 1000);         // 65 seconds
+  });
 });
 
+describe('FinnhubService', () => {
+  beforeEach(() => {
+    mockedAxios.get.mockReset();
+    process.env.FINNHUB_API_KEY = 'test-fh';
+    process.env.FINNHUB_MIN_INTERVAL_MS = '0';
+    // Reset circuit breaker between tests
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (FinnhubService as any).rateLimitedUntilMs = 0;
+  });
+
+  it('opens circuit breaker on HTTP 429 and skips subsequent HTTP calls', async () => {
+    const err = Object.assign(new Error('429'), { response: { status: 429 } });
+    mockedAxios.get.mockRejectedValueOnce(err);
+
+    const service = new FinnhubService('test-fh');
+
+    // First call hits 429 → circuit opens
+    await expect(service.getStockPrice('AAPL')).rejects.toThrow('Unavailable via Finnhub: rate limit active');
+    expect(mockedAxios.get).toHaveBeenCalledTimes(1);
+
+    // Second call: circuit is open — no HTTP call made
+    await expect(service.getStockPrice('MSFT')).rejects.toThrow('Unavailable via Finnhub: rate limit active');
+    expect(mockedAxios.get).toHaveBeenCalledTimes(1); // still 1
+  });
+});

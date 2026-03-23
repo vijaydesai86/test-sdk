@@ -162,7 +162,6 @@ export class AlphaVantageService implements StockDataService {
   private apiKey: string;
   private baseUrl = 'https://www.alphavantage.co/query';
   private cache = new Map<string, { expiresAt: number; data: any }>();
-  private lastRequestAt = new Map<string, number>();
   private static sharedCache = new Map<string, { expiresAt: number; data: any }>();
   private minIntervals = {
     alphavantage: Number(process.env.ALPHA_VANTAGE_MIN_INTERVAL_MS || 1200),
@@ -175,8 +174,16 @@ export class AlphaVantageService implements StockDataService {
   // Conservative lockout for the 25 req/day limit — 1 hour gives the daily counter
   // time to partially reset without hammering AV until midnight.
   private static readonly DAILY_LIMIT_LOCKOUT_MS = 60 * 60 * 1000;
-  // 65-second lockout for the 5 req/min limit (adds 5 s of buffer over 1 minute).
+  // 65-second lockout for per-second/per-minute limit messages (5 s buffer).
   private static readonly PER_MINUTE_LOCKOUT_MS = 65 * 1000;
+  // ────────────────────────────────────────────────────────────────────────────
+
+  // ── Queue-based throttle ─────────────────────────────────────────────────────
+  // Each new call chains a fixed-interval slot onto the previous one.
+  // This correctly serialises both sequential AND concurrent callers without the
+  // race condition in the timestamp-comparison approach (where all concurrent calls
+  // read the same lastRequestAt and all fire simultaneously).
+  private throttleQueue = Promise.resolve();
   // ────────────────────────────────────────────────────────────────────────────
 
   constructor(apiKey?: string) {
@@ -191,15 +198,17 @@ export class AlphaVantageService implements StockDataService {
     return `${prefix}:${JSON.stringify(sorted)}`;
   }
 
-  private async throttle(provider: string, minIntervalMs: number): Promise<void> {
-    if (minIntervalMs <= 0) return;
-    const last = this.lastRequestAt.get(provider) || 0;
-    const now = Date.now();
-    const wait = minIntervalMs - (now - last);
-    if (wait > 0) {
-      await new Promise((resolve) => setTimeout(resolve, wait));
-    }
-    this.lastRequestAt.set(provider, Date.now());
+  /** Queue a slot in the throttle chain.  Safe for concurrent callers. */
+  private throttle(minIntervalMs: number): Promise<void> {
+    if (minIntervalMs <= 0) return Promise.resolve();
+    // Append a new slot that fires `minIntervalMs` after the previous slot resolves.
+    // Because Promise.all calls this synchronously for each entry, the chain is built
+    // atomically within a single event-loop tick — no race condition.
+    const slot = this.throttleQueue.then(
+      () => new Promise<void>(resolve => setTimeout(resolve, minIntervalMs))
+    );
+    this.throttleQueue = slot;
+    return slot;
   }
 
   private async fetchWithCache(
@@ -240,7 +249,7 @@ export class AlphaVantageService implements StockDataService {
       }
       // ─────────────────────────────────────────────────────────────────────────
 
-      await this.throttle('alphavantage', this.minIntervals.alphavantage);
+      await this.throttle(this.minIntervals.alphavantage);
       try {
         const response = await axios.get(this.baseUrl, {
           params: {
@@ -254,7 +263,7 @@ export class AlphaVantageService implements StockDataService {
         // Detect rate-limit messages in the response body (AV returns HTTP 200 even when limited).
         const limitMsg: string = (data?.Note || data?.Information || '') as string;
         if (limitMsg) {
-          // Determine lockout duration: per-day limit is much longer than per-minute.
+          // Determine lockout duration: per-day limit is much longer than per-second/minute.
           const isDaily = /per day|\d+ requests per day/i.test(limitMsg);
           AlphaVantageService.rateLimitedUntilMs =
             Date.now() +
@@ -952,19 +961,35 @@ export class FinnhubService implements StockDataService {
   private apiKey: string;
   private baseUrl = 'https://finnhub.io/api/v1';
   private cache = new Map<string, { expiresAt: number; data: any }>();
-  private lastRequestAt = 0;
   private minIntervalMs = Number(process.env.FINNHUB_MIN_INTERVAL_MS || 500);
+
+  // ── Circuit breaker ──────────────────────────────────────────────────────────
+  // When Finnhub returns HTTP 429, set this flag to prevent the retry loop from
+  // hammering the API.  Shared across all FinnhubService instances in the process.
+  // 65-second lockout matches the Finnhub sliding-window (60 req/min + 5 s buffer).
+  private static rateLimitedUntilMs = 0;
+  private static readonly RATE_LIMIT_LOCKOUT_MS = 65 * 1000;
+  // ────────────────────────────────────────────────────────────────────────────
+
+  // ── Queue-based throttle ─────────────────────────────────────────────────────
+  // Serialises concurrent callers correctly — the timestamp-comparison approach
+  // has a race condition where all calls fired via Promise.all() read the same
+  // lastRequestAt value and fire simultaneously.
+  private throttleQueue = Promise.resolve();
+  // ────────────────────────────────────────────────────────────────────────────
 
   constructor(apiKey?: string) {
     this.apiKey = apiKey || process.env.FINNHUB_API_KEY || '';
   }
 
-  private async throttle(): Promise<void> {
-    if (this.minIntervalMs <= 0) return;
-    const now = Date.now();
-    const wait = this.minIntervalMs - (now - this.lastRequestAt);
-    if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
-    this.lastRequestAt = Date.now();
+  /** Queue a throttle slot.  Each caller fires minIntervalMs after the previous. */
+  private throttle(): Promise<void> {
+    if (this.minIntervalMs <= 0) return Promise.resolve();
+    const slot = this.throttleQueue.then(
+      () => new Promise<void>(resolve => setTimeout(resolve, this.minIntervalMs))
+    );
+    this.throttleQueue = slot;
+    return slot;
   }
 
   private async makeRequest(path: string, params: Record<string, string> = {}, ttlMs = 0): Promise<any> {
@@ -973,6 +998,13 @@ export class FinnhubService implements StockDataService {
       const cached = this.cache.get(cacheKey);
       if (cached && cached.expiresAt > Date.now()) return cached.data;
     }
+
+    // ── Circuit breaker: skip throttle + HTTP when rate-limited ───────────────
+    if (FinnhubService.rateLimitedUntilMs > Date.now()) {
+      throw new Error('Unavailable via Finnhub: rate limit active — please wait a moment');
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
     await this.throttle();
     try {
       const response = await axios.get(`${this.baseUrl}${path}`, {
@@ -985,15 +1017,15 @@ export class FinnhubService implements StockDataService {
     } catch (error: any) {
       const statusCode = error?.response?.status;
       // 401/403 means the API key lacks access to this endpoint (free-tier plan limitation).
-      // Use the "unavailable via Finnhub" phrasing so safeFetch silently suppresses it
-      // rather than surfacing it as a user-visible report data gap.
       if (statusCode === 401 || statusCode === 403) {
         throw new Error(`Unavailable via Finnhub (plan limitation: ${statusCode})`);
       }
-      // 429 = Finnhub rate limit hit; use a message that isRateLimit() in stockTools
-      // will recognise so rateLimitHit is set and remaining fetches are skipped.
       if (statusCode === 429) {
-        throw new Error('Finnhub rate limit exceeded (429)');
+        // Open the circuit breaker so all subsequent calls in this invocation skip
+        // the 500ms throttle wait and fail immediately.
+        FinnhubService.rateLimitedUntilMs = Date.now() + FinnhubService.RATE_LIMIT_LOCKOUT_MS;
+        console.warn('Finnhub rate limit (429) hit — circuit breaker open for 65 s');
+        throw new Error('Unavailable via Finnhub: rate limit active — please wait a moment');
       }
       throw new Error(`Finnhub request failed: ${error.message}`);
     }
@@ -1752,7 +1784,7 @@ export class SecEdgarService {
       primaryDocument: primaryDocs[i] || null,
       // Direct URL to the filing index page on EDGAR — use the original padded CIK string
       filingUrl: accessions[i]
-        ? `https://www.sec.gov/Archives/edgar/data/${cik.replace(/^0+/, '')}/` +
+        ? `https://www.sec.gov/Archives/edgar/data/${parseInt(cik, 10)}/` +
           `${accessions[i].replace(/-/g, '')}/`
         : null,
     }));
@@ -1992,10 +2024,12 @@ export class CoinGeckoService {
       maxSupply: md.max_supply ?? null,
       description: d.description?.en
         ? String(d.description.en)
-            // Two-pass HTML strip: remove complete tags, then any stray '<' to
-            // prevent incomplete-tag injection (e.g. bare <script without closing >).
+            // Remove all HTML tags and every remaining angle bracket in two passes.
+            // After both passes the string is structurally guaranteed to contain
+            // no '<' or '>' characters, so no HTML/script injection is possible
+            // regardless of what exotic closing-tag variants AV response may use.
             .replace(/<[^>]*>/g, ' ')
-            .replace(/</g, '')
+            .replace(/[<>]/g, '')
             .replace(/\s+/g, ' ')
             .trim()
             .slice(0, 400)

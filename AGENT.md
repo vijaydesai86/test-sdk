@@ -380,7 +380,7 @@ for (let passIndex = 0; passIndex < DEEP_RESEARCH_DEPTH; passIndex++) {
 | `GEMINI_TOKEN` | Yes (when `LLM_PROVIDER=gemini` or `hybrid`) | — | Gemini API key. **Must use [aistudio.google.com/api-keys](https://aistudio.google.com/api-keys)** — NOT Google Cloud Console. AI Studio keys include free-tier quota. Free tier (gemini-2.5-flash): 5 RPM / 250K TPM / 20 RPD. **Server env only — never exposed client-side.** |
 | `LLM_PROVIDER` | No | `github` | `github` (GitHub Models only), `gemini` (Gemini only), or `hybrid` (GitHub primary, Gemini auto-fallback on 429). Mirrors `STOCK_DATA_PROVIDER` pattern. |
 | `GEMINI_MODEL` | No | `gemini-2.5-flash` | Gemini model name. `gemini-2.5-flash` has free-tier quota on AI Studio keys (5 RPM / 20 RPD). **`gemini-2.0-flash` has zero free quota and will always fail.** Auto-falls back to `gemini-2.5-flash-lite` on 429. |
-| `ALPHA_VANTAGE_API_KEY` | Yes (unless `STOCK_DATA_PROVIDER=finnhub`) | — | Alpha Vantage free tier |
+| `ALPHA_VANTAGE_API_KEY` | Yes (unless `STOCK_DATA_PROVIDER=finnhub`) | — | Alpha Vantage free tier: **25 req/day**, 1 req/sec burst limit |
 | `FINNHUB_API_KEY` | No | — | Enables Finnhub provider or hybrid fallback. If `STOCK_DATA_PROVIDER=hybrid` but this is not set, silently falls back to AV-only |
 | `STOCK_DATA_PROVIDER` | No | `alphavantage` | `alphavantage`, `finnhub`, or `hybrid` |
 | `COPILOT_MODEL` | No | `openai/gpt-4.1` | Main reasoning model (GitHub Models name; ignored when `LLM_PROVIDER=gemini`) |
@@ -394,9 +394,88 @@ for (let passIndex = 0; passIndex < DEEP_RESEARCH_DEPTH; passIndex++) {
 | `NUM_COMPANIES` | No | `10` | Number of companies in comparison, sector, and deep-sector reports. Optimal: 10; raise to 15 for broader research, lower to 5 for faster/demo runs |
 | `DEEP_RESEARCH_DEPTH` | No | `2` | Recursive refinement passes in deep sector Phase 3. Each pass deepens analysis using prior results. Optimal: 2; set to 1 to disable recursion, 3 for most thorough analysis |
 | `DEBUG` | No | _(unset)_ | When `true`, reports include "Data Sources" and "Data Coverage (Chart Inputs)" debug sections. Omit or set to `false` in production |
-| `ALPHA_VANTAGE_MIN_INTERVAL_MS` | No | `1200` | Min ms between AV requests |
-| `FINNHUB_MIN_INTERVAL_MS` | No | `500` | Min ms between Finnhub requests |
+| `ALPHA_VANTAGE_MIN_INTERVAL_MS` | No | `1200` | Min ms between AV requests (1200ms = 0.83 req/s, safely under the 1 req/s burst limit) |
+| `FINNHUB_MIN_INTERVAL_MS` | No | `500` | Min ms between Finnhub requests (500ms = 2 req/s theoretical; Finnhub free tier = 60 req/min) |
 | `HEALTH_CHECK_SYMBOL` | No | — | If set, health endpoint makes a live API call with this ticker |
+
+---
+
+## Free-Tier API Rate Limits & Circuit Breakers
+
+Understanding the limits of each data source prevents the retry-loop timeout pattern seen when a limit is hit and the code keeps retrying.
+
+### Alpha Vantage (free tier)
+
+| Limit | Value | Notes |
+|---|---|---|
+| Daily | **25 requests/day** | Hard limit — returns HTTP 200 with `Information` field set |
+| Per-second burst | **1 request/second** | Advisory — returns HTTP 200 with `Note` field set |
+| Response format | HTTP 200 always | Rate-limit is embedded in the JSON body, not the HTTP status |
+
+**Circuit breaker (`AlphaVantageService.rateLimitedUntilMs`):**
+- First call that hits the limit: sets static flag → **lockout for 1 hour** (daily limit) or **65 seconds** (per-second/per-minute)
+- All subsequent calls within the same process: **skip throttle + HTTP immediately**, throw `'Unavailable via Alpha Vantage: rate limit active'`
+- `HybridStockDataService.withFallback` catches this and routes to Finnhub with **0 ms overhead** instead of wasting 1200 ms per call
+- **Impact:** Reduces a 100-call sector report from ~200 s (AV throttle loop) to ~80 s (Finnhub fallback)
+
+**Before circuit breaker (the timeout you saw):**
+```
+100 calls × (1200ms AV throttle + 200ms HTTP + 800ms Finnhub fallback) = 220 s
++ LLM overhead = ~280 s → hits 300 s Vercel limit
+```
+**After circuit breaker:**
+```
+1 call × (1200ms AV + 200ms HTTP + circuit opens)
++ 99 calls × (0ms AV skip + 500ms Finnhub throttle + 300ms response) = 79 s
++ LLM overhead = ~120 s ✅
+```
+
+### Finnhub (free tier)
+
+| Limit | Value | Notes |
+|---|---|---|
+| Per-minute | **60 req/min** | Returns HTTP 429 on breach |
+| Default throttle | 500 ms between requests | Set via `FINNHUB_MIN_INTERVAL_MS` |
+
+**Circuit breaker (`FinnhubService.rateLimitedUntilMs`):**
+- On HTTP 429: sets static flag → **65-second lockout**
+- All subsequent calls skip throttle + HTTP immediately
+- Throws `'Unavailable via Finnhub: rate limit active'` → `isRateLimit()` in `safeFetch` matches → `rateLimitHit = true` → remaining fetches in the report are skipped instantly
+
+### Queue-based throttle (both services)
+
+Both `AlphaVantageService` and `FinnhubService` use a **promise-chain throttle queue** instead of a mutable timestamp. The timestamp approach has a race condition: when `Promise.all` fires concurrent calls, they all read the same `lastRequestAt` and all execute simultaneously. The queue approach chains each slot onto the previous one — built synchronously within a single event-loop tick — so concurrent callers are always properly serialised.
+
+### GitHub Copilot / GitHub Models (your subscription)
+
+| Model | Requests/day | RPM | Notes |
+|---|---|---|---|
+| `gpt-4.1` | ~50 | 10 | Primary — use for reports |
+| `gpt-4.1-mini` | much higher | 20 | Gap-fill model (`FILL_MODEL`) |
+| `google/gemini-3-flash` | ~50 | — | Fallback in `DEFAULT_FALLBACK_MODELS` |
+
+### Gemini (free AI Studio key)
+
+| Model | RPM | RPD | Notes |
+|---|---|---|---|
+| `gemini-2.5-flash` | 5 | 20 | Default; best reasoning |
+| `gemini-2.5-flash-lite` | 10 | 20 | Auto fallback on 429 |
+| `gemini-3.1-flash-lite` | 15 | 500 | Highest free daily quota |
+
+### SEC EDGAR
+
+No API key required. Rate limit: 10 req/s (enforced via `User-Agent` header). `SecEdgarService` applies a 200ms inter-request delay internally.
+
+### FRED Federal Reserve
+
+Free API key. Very generous limits (10,000 req/day, no per-second stated). `FredService` applies a 300ms delay internally.
+
+### CoinGecko
+
+| Mode | Rate limit |
+|---|---|
+| No key | ~10–15 req/min |
+| Free demo key (`COINGECKO_API_KEY`) | 30 req/min, 10,000/month |
 
 ---
 
