@@ -168,6 +168,18 @@ describe('AlphaVantageService', () => {
     expect(daily).toBe(60 * 60 * 1000);   // 1 hour
     expect(perMin).toBe(65 * 1000);         // 65 seconds
   });
+
+  it('getPeers propagates circuit-breaker error so withFallback can try Finnhub', async () => {
+    // getCompanyOverview call (OVERVIEW) returns rate-limit message → circuit opens
+    mockedAxios.get.mockResolvedValueOnce({
+      data: { Information: 'We have detected your API key as TEST and our standard API rate limit is 25 requests per day.' },
+    });
+
+    const service = new AlphaVantageService('test');
+    // The circuit fires on the OVERVIEW call inside getCompanyOverview, so getPeers must throw
+    // rather than silently returning an empty peer list.
+    await expect(service.getPeers('NVDA')).rejects.toThrow('Unavailable via Alpha Vantage');
+  });
 });
 
 describe('FinnhubService', () => {
@@ -193,5 +205,38 @@ describe('FinnhubService', () => {
     // Second call: circuit is open — no HTTP call made
     await expect(service.getStockPrice('MSFT')).rejects.toThrow('Unavailable via Finnhub: rate limit active');
     expect(mockedAxios.get).toHaveBeenCalledTimes(1); // still 1
+  });
+
+  it('falls back to 1y daily candles when the requested weekly resolution returns no_data', async () => {
+    // First call: weekly 5y → Finnhub returns no_data
+    mockedAxios.get.mockResolvedValueOnce({ data: { s: 'no_data' } });
+    // Second call: daily 1y fallback → returns valid candles
+    const t = [1700000000, 1700086400];
+    mockedAxios.get.mockResolvedValueOnce({
+      data: { s: 'ok', t, o: [100, 101], h: [102, 103], l: [99, 100], c: [101, 102], v: [1000, 2000] },
+    });
+
+    const service = new FinnhubService('test-fh');
+    const result = await service.getPriceHistory('NVDA', '5y');
+
+    expect(result.prices).toHaveLength(2);
+    expect(result.prices[0].close).toBe(101);
+    expect(mockedAxios.get).toHaveBeenCalledTimes(2);
+    // Second call must use resolution=D
+    const secondCall = mockedAxios.get.mock.calls[1];
+    expect(secondCall[1]?.params?.resolution).toBe('D');
+  });
+
+  it('returns price history directly when the first request succeeds', async () => {
+    const t = [1700000000];
+    mockedAxios.get.mockResolvedValueOnce({
+      data: { s: 'ok', t, o: [150], h: [155], l: [148], c: [152], v: [500] },
+    });
+
+    const service = new FinnhubService('test-fh');
+    const result = await service.getPriceHistory('AAPL', '1y');
+
+    expect(result.prices).toHaveLength(1);
+    expect(mockedAxios.get).toHaveBeenCalledTimes(1);
   });
 });

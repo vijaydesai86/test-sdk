@@ -568,7 +568,11 @@ export class AlphaVantageService implements StockDataService {
       .filter(Boolean);
     const queries = Array.from(new Set(rawQueries)).slice(0, 2);
     const results = await Promise.all(
-      queries.map((query) => this.searchStock(query).catch(() => ({ results: [] })))
+      queries.map((query) => this.searchStock(query).catch((err: any) => {
+        // Rate-limit errors must propagate so withFallback can try Finnhub's /stock/peers.
+        if (String(err?.message || '').startsWith('Unavailable via Alpha Vantage')) throw err;
+        return { results: [] };
+      }))
     );
     const peers = results
       .flatMap((result) => result.results || [])
@@ -1064,22 +1068,45 @@ export class FinnhubService implements StockDataService {
       if (lower.includes('1w') || lower === 'weekly') return { from: now - 7 * DAY, resolution: 'D' };
       return { from: now - 90 * DAY, resolution: 'D' };
     })();
+
+    // Parse a Finnhub /stock/candle response into a prices array, or return null if the
+    // response indicates no data (free-tier restriction, symbol not found, etc.).
+    const parseCandles = (d: any) => {
+      if (d?.s !== 'ok' || !Array.isArray(d?.c) || d.c.length === 0) return null;
+      return (d.t as number[]).map((ts, i) => ({
+        date: new Date(ts * 1000).toISOString().slice(0, 10),
+        open: d.o?.[i],
+        high: d.h?.[i],
+        low: d.l?.[i],
+        close: d.c[i],
+        volume: d.v?.[i],
+      }));
+    };
+
     const data = await this.makeRequest('/stock/candle', {
       symbol: symbol.toUpperCase(),
       resolution,
       from: from.toString(),
       to: now.toString(),
     }, 60 * 60 * 1000);
-    if (data.s !== 'ok' || !Array.isArray(data.c)) throw new Error('Unavailable via Finnhub: price history not available');
-    const prices = (data.t as number[]).map((ts, i) => ({
-      date: new Date(ts * 1000).toISOString().slice(0, 10),
-      open: data.o?.[i],
-      high: data.h?.[i],
-      low: data.l?.[i],
-      close: data.c[i],
-      volume: data.v?.[i],
-    }));
-    return { symbol: symbol.toUpperCase(), prices };
+
+    const prices = parseCandles(data);
+    if (prices) return { symbol: symbol.toUpperCase(), prices };
+
+    // Free-tier fallback: weekly/monthly resolutions are often unavailable on Finnhub's
+    // free plan.  Retry with 1-year daily data which is reliably available at no cost.
+    if (resolution !== 'D') {
+      const fallback = await this.makeRequest('/stock/candle', {
+        symbol: symbol.toUpperCase(),
+        resolution: 'D',
+        from: (now - 365 * DAY).toString(),
+        to: now.toString(),
+      }, 60 * 60 * 1000);
+      const fallbackPrices = parseCandles(fallback);
+      if (fallbackPrices) return { symbol: symbol.toUpperCase(), prices: fallbackPrices };
+    }
+
+    throw new Error('Unavailable via Finnhub: price history not available');
   }
 
   async getCompanyOverview(symbol: string): Promise<any> {
@@ -1268,7 +1295,29 @@ export class FinnhubService implements StockDataService {
     const data = await this.makeRequest('/stock/metric', { symbol: symbol.toUpperCase(), metric: 'all' }, 60 * 60 * 1000);
     const ic = (data.series?.quarterly?.ic ?? {}) as Record<string, Array<{ period: string; v: number }>>;
     const rows = this.pivotSeries(ic, 8);
-    if (!rows.length) throw new Error('Unavailable via Finnhub: no income statement data');
+    if (!rows.length) {
+      // Free-tier fallback: quarterly series may be absent; derive a single TTM entry from the
+      // metric snapshot (which is always present on the free plan).
+      const m = data.metric || {};
+      const rev = m.revenueTTM != null ? Number(m.revenueTTM) : null;
+      if (rev != null && rev > 0) {
+        const gross = m.grossMarginTTM != null ? Math.round(rev * Number(m.grossMarginTTM)) : null;
+        const opInc = m.operatingMarginTTM != null ? Math.round(rev * Number(m.operatingMarginTTM)) : null;
+        const netInc = m.netProfitMarginTTM != null ? Math.round(rev * Number(m.netProfitMarginTTM)) : null;
+        return {
+          symbol: symbol.toUpperCase(),
+          quarterlyReports: [{
+            fiscalQuarter: 'TTM',
+            totalRevenue: String(Math.round(rev)),
+            grossProfit: gross != null ? String(gross) : null,
+            operatingIncome: opInc != null ? String(opInc) : null,
+            netIncome: netInc != null ? String(netInc) : null,
+            ebitda: null,
+          }],
+        };
+      }
+      throw new Error('Unavailable via Finnhub: no income statement data');
+    }
     return {
       symbol: symbol.toUpperCase(),
       quarterlyReports: rows.map((r) => ({
@@ -1304,7 +1353,23 @@ export class FinnhubService implements StockDataService {
     const data = await this.makeRequest('/stock/metric', { symbol: symbol.toUpperCase(), metric: 'all' }, 60 * 60 * 1000);
     const cf = (data.series?.quarterly?.cf ?? {}) as Record<string, Array<{ period: string; v: number }>>;
     const rows = this.pivotSeries(cf, 4);
-    if (!rows.length) throw new Error('Unavailable via Finnhub: no cash flow data');
+    if (!rows.length) {
+      // Free-tier fallback: quarterly series may be absent; derive TTM entry from metric snapshot.
+      const m = data.metric || {};
+      if (m.freeCashFlowTTM != null || m.cashFlowPerShareTTM != null) {
+        return {
+          symbol: symbol.toUpperCase(),
+          quarterlyReports: [{
+            fiscalQuarter: 'TTM',
+            operatingCashflow: null,
+            capitalExpenditures: null,
+            freeCashFlow: m.freeCashFlowTTM != null ? String(m.freeCashFlowTTM) : null,
+            dividendPayout: null,
+          }],
+        };
+      }
+      throw new Error('Unavailable via Finnhub: no cash flow data');
+    }
     return {
       symbol: symbol.toUpperCase(),
       quarterlyReports: rows.map((r) => {
@@ -2025,9 +2090,8 @@ export class CoinGeckoService {
       description: d.description?.en
         ? String(d.description.en)
             // Remove all HTML tags and every remaining angle bracket in two passes.
-            // After both passes the string is structurally guaranteed to contain
-            // no '<' or '>' characters, so no HTML/script injection is possible
-            // regardless of what exotic closing-tag variants AV response may use.
+            // After both passes the string is guaranteed to contain no '<' or '>'
+            // characters, producing clean plain text safe for UI display.
             .replace(/<[^>]*>/g, ' ')
             .replace(/[<>]/g, '')
             .replace(/\s+/g, ' ')
