@@ -280,7 +280,7 @@ describe('FinnhubService', () => {
     const result = await service.getBalanceSheet('TEST');
 
     expect(result.quarterlyReports).toHaveLength(1);
-    // equity = 20 $/share × 200M shares × 1e6 = 20 × 200,000,000 = 4,000,000,000
+    // equity = 20 $/share × 200M shares × 1e6 = 20 × 200 × 1e6 = 4,000,000,000
     expect(result.quarterlyReports[0].totalShareholderEquity).toBe('4000000000');
     // cash = 5 $/share × 200M shares × 1e6 = 1,000,000,000
     expect(result.quarterlyReports[0].cashAndEquivalents).toBe('1000000000');

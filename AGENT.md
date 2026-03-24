@@ -24,17 +24,27 @@ Any feature request outside these five (screeners, portfolio tracking, alerts, e
 
 The LLM is the **central decision-maker** for all operations. This is not negotiable.
 
+### ⛔ ABSOLUTE RULE — No Training Data for Financial Values
+
+**The LLM MUST NEVER provide financial figures from training knowledge.** This means: prices, revenue, EPS, margins, PE ratios, debt, book value, market cap, analyst targets, or any numeric financial metric.
+
+- If a tool returns `null` or fails → the report shows **N/A**. That is correct and honest.
+- **N/A is always preferable to training-data estimates, approximations, or "reasonable guesses".**
+- Training knowledge is permitted ONLY for: (a) mapping company names → ticker symbols, (b) qualitative analysis (moat assessment, sector dependencies) based on real data already provided by tools.
+
+This rule is enforced in every system prompt and every LLM prompt builder. Any change that relaxes this rule must be rejected.
+
 ### Rules
 
 1. **LLM resolves all company names to tickers.** It runs `buildTickerResolutionPrompt` first (before any API call). The search API (`search_stock`) is a fallback, not the primary resolver.
 
 2. **When the LLM cannot resolve a ticker, it surfaces candidates and the conversation pauses.** If `executeTool` cannot resolve a symbol, it returns an error with candidate matches (e.g. `"Did you mean: GOOGL (Alphabet Class A), GOOG (Alphabet Class C)?"`). The LLM receives this error and naturally asks the user for clarification. This is LLM-emergent behaviour — not an explicit code branch that waits for user input. The LLM decides to re-prompt the user; the task restarts on the next message.
 
-3. **LLM stitches data from multiple sources.** It never surfaces raw API errors to the user. If Alpha Vantage fails, it tries Finnhub. If both fail for a field, it uses its own verified training knowledge to fill the gap.
+3. **LLM stitches data from multiple sources.** It never surfaces raw API errors to the user. If Alpha Vantage fails, it tries Finnhub. If both fail for a field, the field shows **N/A** — the LLM does NOT fill it from training knowledge.
 
-4. **LLM fills gaps — but never fabricates.** `FILL_MODEL` (`openai/gpt-4.1-mini`) is called after all API fetches. It returns only values it can verify from training data. It returns `null` for anything uncertain. It never overwrites valid API data.
+4. **`FILL_MODEL` (`openai/gpt-4.1-mini`) handles qualitative tasks only.** It is called via `callLLMForDataFill` for: ticker resolution, moat analysis, and sector dependency mapping. It NEVER fills numeric financial values. It always uses only data provided in the prompt.
 
-5. **LLM handles rate limits silently.** When a rate limit is hit, it skips remaining API calls for that session (to protect the daily budget), uses cached data where available, and fills remaining gaps from its own knowledge. The user sees a complete report, not an error.
+5. **LLM handles rate limits silently.** When a rate limit is hit, it skips remaining API calls for that session (to protect the daily budget) and uses cached data where available. Fields without real data show N/A.
 
 6. **LLM manages token budgets.** Conversation history is trimmed to the last 2 exchanges (`trimHistory()`). Tool call results are summarised before being added to history. The 5-minute Vercel timeout and 30-round tool-call limit are hard caps.
 
@@ -127,9 +137,8 @@ LLM_PROVIDER = process.env.LLM_PROVIDER || 'github'  // 'github' | 'gemini' | 'h
 - `buildTickerResolutionPrompt(queries[])` — maps informal names/tickers → official US symbols
 - `buildSectorCompaniesPrompt(sector, count)` — LLM selects top N tickers for a sector/theme
 - `buildDeepSectorDependencyPrompt(sector, finalCount, ecosystemData[], previousPass?)` — dependency analysis + list refinement + Mermaid diagram; optional `previousPass` context enables recursive deepening
-- `buildStockFillPrompt(symbol, data)` — detects null fields; builds targeted JSON fill prompt
-- `applyLLMFillToStockData(data, llmResponse)` — merges non-null LLM values; never overwrites API data
-- `buildBatchStockFillPrompt(companies[])` — batch fill for comparison reports (one LLM call)
+- `buildMoatAnalysisPrompt(symbol, overview, basicFinancials)` — single-company moat analysis from real API data
+- `buildBatchMoatAnalysisPrompt(companies[])` — batch moat analysis for comparison/sector reports
 - Per-ticker JSON cache: `loadSymbolCache()`, `saveSymbolCache()` — stored in `{REPORTS_DIR}/cache/{SYMBOL}.json`, TTL 7 days
 
 **Tool list:**
@@ -542,7 +551,7 @@ npm test   # runs vitest — all tests in src/__tests__/
 
 7. **Test every change.** Run `npm test` after every change. If a test fails, fix the code or the test (but never delete tests to make CI green).
 
-8. **LLM gap-fill is last resort.** `applyLLMFillToStockData()` only fills `null`/`undefined` fields. It never overwrites valid API data. Financial statement data (income, balance sheet, cash flow) is NOT LLM-filled — too complex for reliable reproduction.
+8. **LLM NEVER fills financial values.** The LLM does not fill numeric financial fields (prices, revenue, margins, ratios, etc.) — ever. These come exclusively from real API data. Fields without real data show N/A. Qualitative fields (moat analysis, dependency narratives) may use LLM judgment based on real data provided in the prompt.
 
 9. **Ticker resolution: ask before assuming.** If the LLM cannot confidently resolve a company name to a ticker, it must ask the user. Never proceed with a guessed ticker.
 

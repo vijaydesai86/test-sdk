@@ -221,7 +221,7 @@ function buildMoatAnalysisPrompt(
   const description = overview?.description
     ? String(overview.description).slice(0, 400)
     : 'No description available';
-  const grossMargin = overview?.profitMargin ?? basicFinancials?.metric?.grossMarginTTM;
+  const grossMargin = overview?.grossMarginTTM ?? basicFinancials?.metric?.grossMarginTTM ?? null;
   const operatingMargin = overview?.operatingMargin ?? basicFinancials?.metric?.operatingMarginTTM;
   const roe = overview?.returnOnEquity ?? basicFinancials?.metric?.roeTTM;
   const revenueGrowth = basicFinancials?.metric?.revenueGrowthTTM ?? overview?.quarterlyRevenueGrowth;
@@ -280,7 +280,7 @@ function buildBatchMoatAnalysisPrompt(
     const sector = overview?.sector || 'N/A';
     const industry = overview?.industry || 'N/A';
     const description = overview?.description ? String(overview.description).slice(0, 200) : '';
-    const grossMargin = overview?.profitMargin ?? basicFinancials?.metric?.grossMarginTTM;
+    const grossMargin = overview?.grossMarginTTM ?? basicFinancials?.metric?.grossMarginTTM ?? null;
     const operatingMargin = overview?.operatingMargin ?? basicFinancials?.metric?.operatingMarginTTM;
     const roe = overview?.returnOnEquity ?? basicFinancials?.metric?.roeTTM;
     const revenueGrowth = basicFinancials?.metric?.revenueGrowthTTM ?? overview?.quarterlyRevenueGrowth;

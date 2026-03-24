@@ -1122,6 +1122,16 @@ export class FinnhubService implements StockDataService {
     }
     if (!profile?.name) throw new Error('Unavailable via Finnhub: company profile not found');
     const m = metrics?.metric || {};
+    // Derive total TTM revenue from per-share × shares when the aggregate is unavailable.
+    // revenuePerShareTTM is in $/share; sharesM is millions of shares.
+    // $/share × sharesM × 1e6 = $/share × 1e6 shares = raw dollar total revenue.
+    // Both values come from real Finnhub API responses — no estimation involved.
+    const sharesM = profile?.shareOutstanding ?? 0; // millions
+    const rawRevenue = m.revenueTTM != null
+      ? Number(m.revenueTTM) * 1e6
+      : m.revenuePerShareTTM != null && sharesM > 0
+        ? Number(m.revenuePerShareTTM) * sharesM * 1e6
+        : null;
     return {
       symbol: symbol.toUpperCase(),
       name: profile.name,
@@ -1136,9 +1146,9 @@ export class FinnhubService implements StockDataService {
       bookValue: m.bookValuePerShareQuarterly ?? null,
       dividendPerShare: m.dividendsPerShareAnnual ?? null,
       dividendYield: m.dividendYieldIndicatedAnnual ?? null,
-      revenueTTM: m.revenueTTM != null ? String(Math.round(Number(m.revenueTTM) * 1e6)) : null,
-      grossProfitTTM: m.grossMarginTTM != null && m.revenueTTM != null
-        ? String(Math.round(m.grossMarginTTM * Number(m.revenueTTM) * 1e6))
+      revenueTTM: rawRevenue != null ? String(Math.round(rawRevenue)) : null,
+      grossProfitTTM: m.grossMarginTTM != null && rawRevenue != null
+        ? String(Math.round(m.grossMarginTTM * rawRevenue))
         : null,
       // grossMarginTTM as a ratio (0–1) so buildBasicFinancialsFallback can use it
       // directly when revenueTTM/grossProfitTTM are unavailable for this stock.

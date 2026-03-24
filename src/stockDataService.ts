@@ -818,6 +818,14 @@ export class FinnhubService implements StockDataService {
     ]);
     if (!profile?.name) throw new Error('Unavailable via Finnhub: company profile not found');
     const m = metrics?.metric || {};
+    // revenuePerShareTTM is in $/share; sharesM is millions of shares.
+    // $/share × sharesM × 1e6 = $/share × 1e6 shares = raw dollar total revenue.
+    const sharesM = profile?.shareOutstanding ?? 0;
+    const rawRevenue = m.revenueTTM != null
+      ? Number(m.revenueTTM) * 1e6
+      : m.revenuePerShareTTM != null && sharesM > 0
+        ? Number(m.revenuePerShareTTM) * sharesM * 1e6
+        : null;
     return {
       symbol: symbol.toUpperCase(),
       name: profile.name,
@@ -832,9 +840,9 @@ export class FinnhubService implements StockDataService {
       bookValue: m.bookValuePerShareQuarterly ?? null,
       dividendPerShare: m.dividendsPerShareAnnual ?? null,
       dividendYield: m.dividendYieldIndicatedAnnual ?? null,
-      revenueTTM: m.revenueTTM != null ? String(Math.round(Number(m.revenueTTM) * 1e6)) : null,
-      grossProfitTTM: m.grossMarginTTM != null && m.revenueTTM != null
-        ? String(Math.round(m.grossMarginTTM * Number(m.revenueTTM) * 1e6))
+      revenueTTM: rawRevenue != null ? String(Math.round(rawRevenue)) : null,
+      grossProfitTTM: m.grossMarginTTM != null && rawRevenue != null
+        ? String(Math.round(m.grossMarginTTM * rawRevenue))
         : null,
       grossMarginTTM: m.grossMarginTTM ?? null,
       '52WeekHigh': m['52WeekHigh'] ?? null,
