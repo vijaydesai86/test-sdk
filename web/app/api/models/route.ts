@@ -4,11 +4,14 @@ import { NextResponse } from 'next/server';
 const GITHUB_MODELS_CATALOG_URL = 'https://models.github.ai/catalog/models';
 
 // Safe fallback used only when the live catalog is unreachable.
-// Contains one confirmed-working model per supported provider.
+// Contains confirmed-working models spanning all three supported providers.
 const SAFE_DEFAULT = [
-  { value: 'openai/gpt-4.1',       label: 'OpenAI GPT-4.1',      rateLimitTier: 'high' },
-  { value: 'openai/gpt-4.1-mini',  label: 'OpenAI GPT-4.1 Mini', rateLimitTier: 'low'  },
-  { value: 'google/gemini-3-flash', label: 'Gemini 3 Flash',      rateLimitTier: 'low'  },
+  { value: 'openai/gpt-4.1',             label: 'OpenAI GPT-4.1',         rateLimitTier: 'high' },
+  { value: 'openai/gpt-5',               label: 'OpenAI GPT-5',           rateLimitTier: 'high' },
+  { value: 'anthropic/claude-sonnet-4-5', label: 'Claude Sonnet 4.5',     rateLimitTier: 'high' },
+  { value: 'openai/gpt-4.1-mini',        label: 'OpenAI GPT-4.1 Mini',    rateLimitTier: 'low'  },
+  { value: 'google/gemini-2.5-pro',      label: 'Gemini 2.5 Pro',         rateLimitTier: 'high' },
+  { value: 'google/gemini-3-flash',      label: 'Gemini 3 Flash',         rateLimitTier: 'low'  },
 ];
 
 export async function GET() {
@@ -47,10 +50,16 @@ export async function GET() {
     // shortened to ~2,200 tokens total so all models (including gpt-5 at 4,000 input
     // token limit) now have enough headroom for typical queries.
     const ALLOWED_PUBLISHERS = new Set(['openai', 'anthropic', 'google']);
-    const SUPERSEDED_IDS     = new Set([
-      'openai/gpt-4o',
-      'openai/gpt-4o-mini',
-      'openai/gpt-5-chat',
+    // Models superseded by newer releases — excluded from the user-facing dropdown so
+    // users are automatically directed to the best current version.
+    // Note: the GitHub catalog !m.deprecated filter handles properly deprecated models;
+    // SUPERSEDED_IDS covers models still "active" in the catalog but inferior to replacements.
+    const SUPERSEDED_IDS = new Set([
+      'openai/gpt-4o',             // superseded by gpt-4.1
+      'openai/gpt-4o-mini',        // superseded by gpt-4.1-mini
+      'anthropic/claude-3-7-sonnet',    // deprecated Oct 2025 → claude-sonnet-4-5
+      'anthropic/claude-3-5-sonnet',    // deprecated Oct 2025 → claude-sonnet-4-5
+      'anthropic/claude-3-5-haiku',     // deprecated Oct 2025 → claude-haiku-4-5
     ]);
     const MAX_MODELS = 8;
 

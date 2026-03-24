@@ -309,6 +309,120 @@ function buildBatchMoatAnalysisPrompt(
 type CacheEntry = { updatedAt: string; data: any };
 type SymbolCache = Record<string, CacheEntry>;
 
+/**
+ * Builds a prompt for the LLM to generate a thorough, data-driven investment conclusion
+ * for a single stock report. Uses ONLY data already fetched from real APIs.
+ */
+function buildStockConclusionPrompt(
+  symbol: string,
+  overview: any,
+  price: any,
+  basicFinancials: any,
+  analystRatings: any,
+  priceTargets: any,
+  moatAnalysis: any,
+): string {
+  const fmt = (v: any, pct = false) => {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return 'N/A';
+    if (pct) return `${(Math.abs(n) <= 1 ? n * 100 : n).toFixed(1)}%`;
+    return String(n);
+  };
+  const fmtCcy = (v: any) => {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return 'N/A';
+    if (Math.abs(n) >= 1e9) return `$${(n / 1e9).toFixed(2)}B`;
+    if (Math.abs(n) >= 1e6) return `$${(n / 1e6).toFixed(1)}M`;
+    return `$${n.toFixed(2)}`;
+  };
+
+  const m = basicFinancials?.metric || {};
+  const data = [
+    `Company: ${overview?.name || symbol} (${symbol})`,
+    `Price: ${fmtCcy(price?.price)}  Day Change: ${fmt(price?.changePercent, true)}`,
+    `Market Cap: ${fmtCcy(overview?.marketCapitalization)}`,
+    `Revenue TTM: ${fmtCcy(overview?.revenueTTM)}  Gross Margin: ${fmt(overview?.grossMarginTTM, true)}  Operating Margin: ${fmt(overview?.operatingMargin, true)}`,
+    `EPS TTM: ${fmt(overview?.eps)}  PE: ${fmt(overview?.peRatio)}  Forward PE: ${fmt(overview?.forwardPE)}  PEG: ${fmt(overview?.pegRatio)}`,
+    `Revenue Growth TTM: ${fmt(m.revenueGrowthTTM || overview?.quarterlyRevenueGrowth, true)}`,
+    `ROE: ${fmt(overview?.returnOnEquity, true)}  Beta: ${fmt(overview?.beta)}`,
+    `52W High: ${fmtCcy(m['52WeekHigh'])}  52W Low: ${fmtCcy(m['52WeekLow'])}`,
+    `Analyst Target Mean: ${fmtCcy(priceTargets?.targetMean || analystRatings?.analystTargetPrice)}`,
+    `Ratings: SB ${analystRatings?.strongBuy || 'N/A'} / B ${analystRatings?.buy || 'N/A'} / H ${analystRatings?.hold || 'N/A'} / S ${analystRatings?.sell || 'N/A'}`,
+    moatAnalysis ? `Moat: ${moatAnalysis.moatType} (${moatAnalysis.moatStrength}, score ${moatAnalysis.moatScore}/100) — ${moatAnalysis.narrative}` : '',
+  ].filter(Boolean).join('\n');
+
+  return (
+    `You are a senior buy-side equity analyst. Using ONLY the real API data below (no training knowledge for figures), ` +
+    `write a thorough, precise, actionable investment conclusion for ${symbol}.\n\n` +
+    `DATA:\n${data}\n\n` +
+    `REQUIREMENTS:\n` +
+    `1. Structure with short sub-headings: Investment Case, Key Risks, Valuation Verdict, Action.\n` +
+    `2. Every claim must reference a specific number from the data above.\n` +
+    `3. Action must be one of: Strong Buy / Buy / Hold / Reduce / Avoid — with a price target rationale.\n` +
+    `4. Length: 200-350 words. No bullet soup — use flowing paragraphs per sub-heading.\n` +
+    `5. NEVER invent or estimate any figure not present in the data.\n\n` +
+    `Respond ONLY with plain markdown text (no JSON, no outer code block).`
+  );
+}
+
+/**
+ * Builds a prompt for the LLM to generate a thorough, data-driven investment conclusion
+ * for a comparison / sector / deep-sector report. Uses ONLY data fetched from real APIs.
+ */
+function buildComparisonConclusionPrompt(
+  items: Array<{ symbol: string; overview?: any; price?: any; basicFinancials?: any; analystRatings?: any; priceTargets?: any; moatAnalysis?: any }>,
+  sectorQuery?: string,
+): string {
+  const fmt = (v: any, pct = false) => {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return 'N/A';
+    if (pct) return `${(Math.abs(n) <= 1 ? n * 100 : n).toFixed(1)}%`;
+    return String(n);
+  };
+  const fmtCcy = (v: any) => {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return 'N/A';
+    if (Math.abs(n) >= 1e9) return `$${(n / 1e9).toFixed(2)}B`;
+    if (Math.abs(n) >= 1e6) return `$${(n / 1e6).toFixed(1)}M`;
+    return `$${n.toFixed(2)}`;
+  };
+
+  const rows = items.map((item) => {
+    const m = item.basicFinancials?.metric || {};
+    const target = item.priceTargets?.targetMean || item.analystRatings?.analystTargetPrice;
+    const price = Number(item.price?.price);
+    const upside = Number.isFinite(price) && Number.isFinite(Number(target)) && price > 0
+      ? `${(((Number(target) - price) / price) * 100).toFixed(1)}%`
+      : 'N/A';
+    return (
+      `${item.symbol}: Price ${fmtCcy(price)} | Rev ${fmtCcy(item.overview?.revenueTTM)} | ` +
+      `GrossMargin ${fmt(item.overview?.grossMarginTTM, true)} | OpMargin ${fmt(item.overview?.operatingMargin, true)} | ` +
+      `PE ${fmt(item.overview?.peRatio)} | FwdPE ${fmt(item.overview?.forwardPE)} | ` +
+      `RevGrowth ${fmt(m.revenueGrowthTTM || item.overview?.quarterlyRevenueGrowth, true)} | ` +
+      `Target ${fmtCcy(target)} (${upside} upside) | ` +
+      `Moat ${item.moatAnalysis ? `${item.moatAnalysis.moatStrength} ${item.moatAnalysis.moatScore}/100` : 'N/A'}`
+    );
+  }).join('\n');
+
+  const context = sectorQuery ? `Sector/Theme: ${sectorQuery}\n\n` : '';
+
+  return (
+    `You are a senior buy-side portfolio manager. Using ONLY the real API data below (no training knowledge for figures), ` +
+    `write a thorough, precise, actionable investment conclusion for this ${sectorQuery ? 'sector' : 'company comparison'}.\n\n` +
+    `${context}COMPANY DATA (one per line):\n${rows}\n\n` +
+    `REQUIREMENTS:\n` +
+    `1. Structure with sub-headings: Sector Outlook, Top Picks (ranked 1-3 with reasons), Avoid / Underweight, Risk Factors, Portfolio Strategy.\n` +
+    `2. Every claim must reference specific numbers from the data above — margins, PE, growth rates, upside.\n` +
+    `3. Top Picks must name the tickers explicitly with a one-sentence data-driven rationale each.\n` +
+    `4. Portfolio Strategy: suggest rough allocation weightings (e.g. 40% NVDA / 25% AVGO) with brief reasoning.\n` +
+    `5. Length: 300-500 words. Flowing paragraphs per sub-heading, not bullet lists.\n` +
+    `6. NEVER invent or estimate any figure not present in the data.\n\n` +
+    `Respond ONLY with plain markdown text (no JSON, no outer code block).`
+  );
+}
+
+
+
 /** Normalises a raw ticker string from LLM output to uppercase alphanumeric. */
 const cleanTicker = (raw: string): string =>
   String(raw || '').replace(/[^A-Z0-9.]/gi, '').toUpperCase();
@@ -1379,6 +1493,22 @@ export async function executeTool(
           }
         }
 
+        // LLM conclusion — data-driven investment outlook using only real API data
+        let conclusion: string | undefined;
+        if (options?.llmFill) {
+          try {
+            const conclusionPrompt = buildStockConclusionPrompt(
+              symbol, companyOverview, price, finalBasicFinancials,
+              analystRatings, priceTargets, moatAnalysis,
+            );
+            const raw = await options.llmFill(conclusionPrompt);
+            const cleaned = raw.replace(/^```(?:markdown)?\s*/i, '').replace(/\s*```$/i, '').trim();
+            if (cleaned && cleaned.length > 50) conclusion = cleaned;
+          } catch {
+            // LLM unavailable — proceed without conclusion
+          }
+        }
+
         const reportBody = buildStockReport({
           symbol: symbol.toUpperCase(),
           generatedAt: new Date().toISOString(),
@@ -1397,13 +1527,10 @@ export async function executeTool(
           newsSentiment,
           companyNews,
           moatAnalysis,
+          conclusion,
         });
 
-        const content = notes.length
-          ? reportBody.replace(
-              '## 📊 Snapshot',
-              `## ⚠️ Data Gaps\n${notes.map((item) => `- ${item}`).join('\n')}\n\n## 📊 Snapshot`
-          const finalContent = notes.length
+        const finalContent = notes.length
           ? reportBody.replace(
               '## 📊 Snapshot',
               `## ⚠️ Data Gaps\n${notes.map((item) => `- ${item}`).join('\n')}\n\n## 📊 Snapshot`
@@ -1625,6 +1752,19 @@ export async function executeTool(
           }
         }
 
+        // Phase 4: LLM conclusion — data-driven investment outlook using only real API data
+        let conclusion: string | undefined;
+        if (options?.llmFill && items.length > 0) {
+          try {
+            const conclusionPrompt = buildComparisonConclusionPrompt(items);
+            const raw = await options.llmFill(conclusionPrompt);
+            const cleaned = raw.replace(/^```(?:markdown)?\s*/i, '').replace(/\s*```$/i, '').trim();
+            if (cleaned && cleaned.length > 50) conclusion = cleaned;
+          } catch {
+            // LLM unavailable — proceed without conclusion
+          }
+        }
+
         const content = buildComparisonReport({
           generatedAt: new Date().toISOString(),
           range,
@@ -1632,6 +1772,7 @@ export async function executeTool(
           items,
           notes,
           sources: sourceMap,
+          conclusion,
         });
         const saved = await saveReport(content, `${universe.join('-')}-comparison-report`);
         return {
@@ -1832,6 +1973,19 @@ export async function executeTool(
           }
         }
 
+        // LLM conclusion — data-driven investment outlook for this sector
+        let sectorConclusion: string | undefined;
+        if (options?.llmFill && items.length > 0) {
+          try {
+            const conclusionPrompt = buildComparisonConclusionPrompt(items, sector);
+            const raw = await options.llmFill(conclusionPrompt);
+            const cleaned = raw.replace(/^```(?:markdown)?\s*/i, '').replace(/\s*```$/i, '').trim();
+            if (cleaned && cleaned.length > 50) sectorConclusion = cleaned;
+          } catch {
+            // LLM unavailable — proceed without conclusion
+          }
+        }
+
         const content = buildSectorReport({
           sectorQuery: sector,
           selectedBy: 'llm',
@@ -1841,6 +1995,7 @@ export async function executeTool(
           items,
           notes,
           sources: sourceMap,
+          conclusion: sectorConclusion,
         });
         const safeTitle = sector.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
         const saved = await saveReport(content, `${safeTitle}-sector-report`);
@@ -2136,6 +2291,19 @@ export async function executeTool(
           }
         }
 
+        // LLM conclusion — data-driven investment outlook for the deep sector universe
+        let deepConclusion: string | undefined;
+        if (options?.llmFill && items.length > 0) {
+          try {
+            const conclusionPrompt = buildComparisonConclusionPrompt(items, sector);
+            const raw = await options.llmFill(conclusionPrompt);
+            const cleaned = raw.replace(/^```(?:markdown)?\s*/i, '').replace(/\s*```$/i, '').trim();
+            if (cleaned && cleaned.length > 50) deepConclusion = cleaned;
+          } catch {
+            // LLM unavailable — proceed without conclusion
+          }
+        }
+
         const content = buildDeepSectorReport({
           sectorQuery: sector,
           selectedBy: 'llm',
@@ -2150,6 +2318,7 @@ export async function executeTool(
           ecosystemDiagram,
           refinementNotes,
           companySnapshots,
+          conclusion: deepConclusion,
         });
         const safeTitle = sector.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
         const saved = await saveReport(content, `${safeTitle}-deep-sector-report`);

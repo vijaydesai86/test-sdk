@@ -8,10 +8,37 @@ import { createStockService, StockDataService } from '@/app/lib/stockDataService
 const GITHUB_MODELS_URL = 'https://models.github.ai/inference/chat/completions';
 const DEFAULT_MODEL = process.env.COPILOT_MODEL || 'openai/gpt-4.1';
 const FALLBACK_MODEL = process.env.COPILOT_FALLBACK_MODEL || DEFAULT_MODEL;
-// Gap-fill uses the lightest available model — gpt-4.1-nano has the highest GitHub Models
-// rate limits (qualitative-only tasks: ticker resolution, moat, sector dependencies).
-// Override with FILL_MODEL env var if needed.
-const FILL_MODEL = process.env.FILL_MODEL || 'openai/gpt-4.1-nano';
+
+// Quality-ordered chain across ALL GitHub Models providers.
+// CRITICAL INSIGHT: OpenAI, Anthropic, and Google each have completely independent
+// rate-limit pools on GitHub Models. Exhausting one provider does NOT affect the others.
+// Strategy: best quality first → interleave providers to maximise independent pools.
+// On 429 (rate limit) or 400 (model unavailable), the next model is tried immediately.
+// After all GitHub models are exhausted, the code falls back to the direct Gemini API.
+//
+// Current GitHub Models with Copilot Pro ($10/mo) as of 2026:
+//   openai/gpt-4.1              Reliable workhorse; 50 req/day, 10 req/min
+//   openai/gpt-5                Best OpenAI quality; separate pool (~50 req/day)
+//   anthropic/claude-opus-4-5   Highest Anthropic quality; independent pool
+//   anthropic/claude-sonnet-4-5 Current Claude Sonnet (3.x deprecated Oct 2025); independent pool
+//   openai/gpt-4.1-mini         Separate OpenAI pool; 2000 req/day, 50 req/min
+//   anthropic/claude-haiku-4-5  Fastest Anthropic; independent pool
+//   openai/gpt-4.1-nano         Lightest OpenAI; 2000 req/day, 50 req/min
+//   google/gemini-2.5-pro       Best Google quality; independent pool
+//   google/gemini-3-flash        Google Flash; independent pool
+// Note: IDs that do not exist in the catalog return 400, which is handled gracefully
+// by skipping to the next model — so the chain self-heals as the catalog evolves.
+const GITHUB_MODEL_CHAIN: string[] = [
+  DEFAULT_MODEL,                       // env override or openai/gpt-4.1
+  'openai/gpt-5',                      // Best OpenAI quality — separate pool
+  'anthropic/claude-opus-4-5',         // Best Anthropic — independent pool
+  'anthropic/claude-sonnet-4-5',       // Current Claude Sonnet — independent pool
+  'openai/gpt-4.1-mini',              // OpenAI mid-tier — separate pool
+  'anthropic/claude-haiku-4-5',        // Fast Anthropic — independent pool
+  'openai/gpt-4.1-nano',              // OpenAI lightest — highest rate limits
+  'google/gemini-2.5-pro',            // Best Google — independent pool
+  'google/gemini-3-flash',            // Google Flash — independent pool
+];
 
 // Gemini API — OpenAI-compatible endpoint; same request/response format as GitHub Models.
 // Auth: GEMINI_TOKEN (Bearer). Get a key at: https://aistudio.google.com/api-keys
@@ -44,12 +71,22 @@ const GEMINI_FALLBACK_MODELS = [
 // - 'hybrid':           GitHub Models primary; Gemini auto-fallback on HTTP 429 rate limit
 type LLMProviderType = 'github' | 'gemini' | 'hybrid';
 const LLM_PROVIDER = (process.env.LLM_PROVIDER || 'github').toLowerCase() as LLMProviderType;
-const AUTO_DOWNGRADE_GPT5 = process.env.AUTO_DOWNGRADE_GPT5 !== 'false';
+// GPT-5 was previously auto-downgraded because the system prompt overhead (~5,500 tokens)
+// exceeded GPT-5's 4,000-token input limit. The system prompt has since been trimmed to
+// ~2,200 tokens, so GPT-5 fits comfortably. AUTO_DOWNGRADE_GPT5 now defaults to false.
+// isSmallContextModel() already applies aggressive history trimming for gpt-5 models.
+// Set AUTO_DOWNGRADE_GPT5=true in env to force downgrade (e.g. if context grows again).
+const AUTO_DOWNGRADE_GPT5 = process.env.AUTO_DOWNGRADE_GPT5 === 'true';
 const DEFAULT_FALLBACK_MODELS = [
-  DEFAULT_MODEL,
-  'openai/gpt-4.1-mini',
-  'openai/gpt-4.1-nano',
-  'google/gemini-3-flash',
+  DEFAULT_MODEL,                       // openai/gpt-4.1 (default)
+  'openai/gpt-5',                      // Best OpenAI quality — separate pool
+  'anthropic/claude-opus-4-5',         // Best Anthropic — independent pool
+  'anthropic/claude-sonnet-4-5',       // Current Claude Sonnet — independent pool
+  'openai/gpt-4.1-mini',              // OpenAI mid-tier — separate pool
+  'anthropic/claude-haiku-4-5',        // Fast Anthropic — independent pool
+  'openai/gpt-4.1-nano',              // OpenAI lightest — highest rate limits
+  'google/gemini-2.5-pro',            // Best Google — independent pool
+  'google/gemini-3-flash',            // Google Flash — independent pool
 ];
 // Allow enough rounds for multi-stock research. With parallel batching, each round
 // can execute dozens of tool calls simultaneously — so 30 rounds is ample even for
@@ -568,16 +605,19 @@ async function callGeminiWithFallback(
 }
 
 /**
- * Make a targeted LLM call — used for ticker resolution (resolving informal company
- * names or wrong tickers to official US exchange symbols before any API call).
+ * Make a targeted LLM call — used for qualitative tasks: ticker resolution,
+ * moat analysis, sector dependency mapping, and investment conclusions.
  * Returns the raw response string (expected to be valid JSON).
- * Failures are caught and return '{}' so callers can continue gracefully.
  *
- * Provider selection mirrors LLM_PROVIDER:
- * - 'github':  GitHub Models FILL_MODEL (gpt-4.1-mini) — separate quota from main model
- * - 'gemini':  callGeminiWithFallback — tries GEMINI_FALLBACK_MODELS in order
- * - 'hybrid':  GitHub Models primary; auto-falls back to Gemini (with model fallback) on 429
- * On 429, waits for the provider's requested retryDelay (capped at 10 s) and retries once.
+ * Model selection strategy — best quality first, separate pools exhausted in order:
+ * 1. GitHub Models chain (GITHUB_MODEL_CHAIN): gpt-4.1 → Claude 3.7 → gpt-4.1-mini →
+ *    Claude 3.5 → gpt-4.1-nano → Gemini via GitHub — each is a separate rate-limit pool.
+ *    On 429 (rate-limited) or 400 (model unavailable), the next model is tried immediately.
+ * 2. Gemini direct API (callGeminiWithFallback) — completely independent service.
+ * 3. Returns '{}' only when every option is exhausted.
+ *
+ * Override the chain start with FILL_MODEL env var when you want a specific model first.
+ * Provider selection still honours LLM_PROVIDER (github / gemini / hybrid).
  */
 async function callLLMForDataFill(
   prompt: string,
@@ -590,7 +630,7 @@ async function callLLMForDataFill(
       content:
         'You are a financial research assistant. You perform qualitative analysis tasks: ' +
         'resolving company names to official ticker symbols, assessing competitive moats, ' +
-        'and mapping sector ecosystem dependencies. ' +
+        'mapping sector ecosystem dependencies, and writing data-driven investment conclusions. ' +
         'ABSOLUTE RULE: NEVER provide financial figures (prices, revenue, EPS, margins, ' +
         'PE ratios, debt, book value, or any numeric financial metric) from training knowledge. ' +
         'All financial values must come exclusively from real API data already supplied in the prompt. ' +
@@ -600,52 +640,54 @@ async function callLLMForDataFill(
     { role: 'user', content: prompt },
   ];
 
-  const attempt = async (): Promise<string> => {
-    let result: any;
-    if (LLM_PROVIDER === 'gemini') {
-      if (!geminiToken) return '{}';
-      result = await callGeminiWithFallback(fillMessages, geminiToken, []);
-    } else if (LLM_PROVIDER === 'hybrid') {
-      if (githubToken) {
-        try {
-          result = await callGitHubModelsAPI(fillMessages, githubToken, FILL_MODEL, []);
-        } catch (err: any) {
-          // Hybrid: auto-fall back to Gemini (with model fallback) when GitHub is rate-limited
-          if (err?.statusCode === 429 && geminiToken) {
-            result = await callGeminiWithFallback(fillMessages, geminiToken, []);
-          } else {
-            throw err;
-          }
-        }
-      } else if (geminiToken) {
-        result = await callGeminiWithFallback(fillMessages, geminiToken, []);
-      } else {
-        return '{}';
-      }
-    } else {
-      // Default: github mode
-      if (!githubToken) return '{}';
-      result = await callGitHubModelsAPI(fillMessages, githubToken, FILL_MODEL, []);
-    }
-    return String(result.choices?.[0]?.message?.content || '{}');
+  // Status codes that mean "try the next model" — same as callGeminiWithFallback.
+  // 429 = rate-limited, 400 = model not found/unavailable, 503 = temporarily overloaded.
+  const RETRIABLE = new Set([429, 400, 503]);
+
+  const tryGemini = async (): Promise<string> => {
+    if (!geminiToken) return '{}';
+    try {
+      const r = await callGeminiWithFallback(fillMessages, geminiToken, []);
+      return String(r.choices?.[0]?.message?.content || '{}');
+    } catch { return '{}'; }
   };
 
-  try {
-    return await attempt();
-  } catch (err: any) {
-    if (err?.statusCode === 429) {
-      // Honor the provider's requested retry delay; cap at 10 s to avoid stalling requests.
-      // Falls back to 2 s for providers that don't include a retry hint.
-      const delayMs = Math.min(err?.retryAfterMs ?? 2000, 10000);
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
+  // Pure Gemini mode — skip GitHub entirely
+  if (LLM_PROVIDER === 'gemini') return tryGemini();
+
+  // Build the chain: honour FILL_MODEL env var as first choice if set
+  const envOverride = process.env.FILL_MODEL;
+  const chain: string[] = envOverride
+    ? [envOverride, ...GITHUB_MODEL_CHAIN.filter((m) => m !== envOverride)]
+    : GITHUB_MODEL_CHAIN;
+
+  // GitHub or Hybrid: walk the chain — best quality first, each is a separate pool
+  if (githubToken) {
+    for (let i = 0; i < chain.length; i++) {
+      const model = chain[i];
       try {
-        return await attempt();
-      } catch {
-        return '{}';
+        const r = await callGitHubModelsAPI(fillMessages, githubToken, model, []);
+        return String(r.choices?.[0]?.message?.content || '{}');
+      } catch (err: any) {
+        if (!RETRIABLE.has(err?.statusCode)) {
+          // Auth failure or unexpected error — no point trying more GitHub models
+          break;
+        }
+        if (i < chain.length - 1) {
+          console.info(`[fill] '${model}' unavailable (${err?.statusCode}) — trying '${chain[i + 1]}'`);
+          // Honor Retry-After hint from rate-limited providers (capped at 3 s)
+          const delayMs = Math.min(err?.retryAfterMs ?? 0, 3000);
+          if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
+        }
       }
     }
+    // All GitHub models exhausted — fall through to Gemini in hybrid mode
+    if (LLM_PROVIDER === 'hybrid') return tryGemini();
     return '{}';
   }
+
+  // No GitHub token — use Gemini directly
+  return tryGemini();
 }
 
 /** Creates an LLMFiller callback bound to the active tokens. */

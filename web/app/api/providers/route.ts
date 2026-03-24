@@ -4,9 +4,12 @@ import { NextResponse } from 'next/server';
 const GITHUB_MODELS_CATALOG_URL = 'https://models.github.ai/catalog/models';
 
 const SAFE_DEFAULT = [
-  { value: 'openai/gpt-4.1',       label: 'OpenAI GPT-4.1',      rateLimitTier: 'high' },
-  { value: 'openai/gpt-4.1-mini',  label: 'OpenAI GPT-4.1 Mini', rateLimitTier: 'low'  },
-  { value: 'google/gemini-3-flash', label: 'Gemini 3 Flash',      rateLimitTier: 'low'  },
+  { value: 'openai/gpt-4.1',              label: 'OpenAI GPT-4.1',       rateLimitTier: 'high' },
+  { value: 'openai/gpt-5',               label: 'OpenAI GPT-5',          rateLimitTier: 'high' },
+  { value: 'anthropic/claude-sonnet-4-5', label: 'Claude Sonnet 4.5',    rateLimitTier: 'high' },
+  { value: 'openai/gpt-4.1-mini',        label: 'OpenAI GPT-4.1 Mini',   rateLimitTier: 'low'  },
+  { value: 'google/gemini-2.5-pro',      label: 'Gemini 2.5 Pro',        rateLimitTier: 'high' },
+  { value: 'google/gemini-3-flash',      label: 'Gemini 3 Flash',        rateLimitTier: 'low'  },
 ];
 
 const fetchGithubModels = async () => {
@@ -34,7 +37,13 @@ const fetchGithubModels = async () => {
 
   const catalog: any[] = await response.json();
   const ALLOWED_PUBLISHERS = new Set(['openai', 'anthropic', 'google']);
-  const SUPERSEDED_IDS = new Set(['openai/gpt-4o', 'openai/gpt-4o-mini', 'openai/gpt-5-chat']);
+  const SUPERSEDED_IDS = new Set([
+    'openai/gpt-4o',                  // superseded by gpt-4.1
+    'openai/gpt-4o-mini',             // superseded by gpt-4.1-mini
+    'anthropic/claude-3-7-sonnet',    // deprecated Oct 2025 → claude-sonnet-4-5
+    'anthropic/claude-3-5-sonnet',    // deprecated Oct 2025 → claude-sonnet-4-5
+    'anthropic/claude-3-5-haiku',     // deprecated Oct 2025 → claude-haiku-4-5
+  ]);
   const MAX_MODELS = 8;
 
   const getModelDate = (model: any) => {

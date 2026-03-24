@@ -97,6 +97,8 @@ export interface MoatAnalysis {
 const DEFAULT_REPORTS_DIR =
   process.env.REPORTS_DIR || (process.env.VERCEL ? '/tmp/reports' : 'reports');
 
+const CONCLUSION_HEADING = '## 🏁 Conclusion & Investment Outlook';
+
 function formatDateLabel(date: string): string {
   const parsed = new Date(date);
   if (Number.isNaN(parsed.getTime())) {
@@ -1439,7 +1441,7 @@ export function buildStockReport(data: StockReportData): string {
   }
 
   if (data.conclusion) {
-    sections.push(`## 🏁 Conclusion & Investment Outlook\n\n${data.conclusion}`);
+    sections.push(`${CONCLUSION_HEADING}\n\n${data.conclusion}`);
   }
 
   return sections.filter(Boolean).join('\n\n');
@@ -1837,7 +1839,7 @@ export function buildComparisonReport(data: ComparisonReportData): string {
     validScores.length < scored.length
       ? '_Some companies lack composite scores; weights are normalized across available scores._'
       : '_Indicative allocation is derived from normalized composite scores. It is not investment advice._',
-    data.conclusion ? `## 🏁 Conclusion & Investment Outlook\n\n${data.conclusion}` : null,
+    data.conclusion ? `${CONCLUSION_HEADING}\n\n${data.conclusion}` : null,
   ].filter(Boolean) as string[];
 
   return sections.join('\n\n');

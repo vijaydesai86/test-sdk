@@ -42,7 +42,7 @@ This rule is enforced in every system prompt and every LLM prompt builder. Any c
 
 3. **LLM stitches data from multiple sources.** It never surfaces raw API errors to the user. If Alpha Vantage fails, it tries Finnhub. If both fail for a field, the field shows **N/A** — the LLM does NOT fill it from training knowledge.
 
-4. **`FILL_MODEL` (`openai/gpt-4.1-mini`) handles qualitative tasks only.** It is called via `callLLMForDataFill` for: ticker resolution, moat analysis, and sector dependency mapping. It NEVER fills numeric financial values. It always uses only data provided in the prompt.
+4. **`callLLMForDataFill` iterates a quality-ordered multi-provider chain.** It is called for qualitative tasks only: ticker resolution, moat analysis, sector dependency mapping, and investment conclusions. It NEVER fills numeric financial values. It always uses only data already in the prompt. The chain starts with the best-quality model and on 429/400/503 immediately tries the next model — each provider (OpenAI, Anthropic, Google) has completely independent rate-limit pools on GitHub Models, so exhausting one does not affect the others.
 
 5. **LLM handles rate limits silently.** When a rate limit is hit, it skips remaining API calls for that session (to protect the daily budget) and uses cached data where available. Fields without real data show N/A.
 
@@ -96,7 +96,7 @@ src/
 - For general queries: runs LLM tool-calling loop (max `MAX_TOOL_ROUNDS = 30`)
 - Manages per-session conversation history in `sessions` Map (in-memory, resets on cold start)
 - `trimHistory()` — keeps last 2 exchanges; drops intermediate tool messages to stay within token limit
-- `callLLMForDataFill()` — uses `FILL_MODEL` (GitHub) or `GEMINI_MODEL` (Gemini) for gap-fill/ticker-resolution; provider selection mirrors `LLM_PROVIDER`
+- `callLLMForDataFill()` — iterates `GITHUB_MODEL_CHAIN` (best quality first, then next provider on 429/400/503); after all GitHub models exhausted, falls back to Gemini; provider selection mirrors `LLM_PROVIDER`
 - `createLLMFiller()` — creates a bound `LLMFiller` callback passed to `executeTool` via `options.llmFill`; receives both `githubToken` and `geminiToken`
 - Rate-limit fallback: in `hybrid` mode, HTTP 429 from GitHub Models automatically switches to Gemini API
 
@@ -106,9 +106,13 @@ MAX_TOOL_ROUNDS = 30
 MAX_HISTORY_MESSAGE_CHARS = 4000
 maxDuration = 300  // Vercel: 5 minutes
 DEFAULT_MODEL = process.env.COPILOT_MODEL || 'openai/gpt-4.1'
-FILL_MODEL = process.env.FILL_MODEL || 'openai/gpt-4.1-mini'
+// Quality-ordered multi-provider chain — best first, independent pools, 400/429 → try next
+GITHUB_MODEL_CHAIN = [DEFAULT_MODEL, 'openai/gpt-5', 'anthropic/claude-opus-4-5',
+  'anthropic/claude-sonnet-4-5', 'openai/gpt-4.1-mini', 'anthropic/claude-haiku-4-5',
+  'openai/gpt-4.1-nano', 'google/gemini-2.5-pro', 'google/gemini-3-flash']
 GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash'
 LLM_PROVIDER = process.env.LLM_PROVIDER || 'github'  // 'github' | 'gemini' | 'hybrid'
+AUTO_DOWNGRADE_GPT5 = false  // default OFF — system prompt fits in GPT-5's 4k input limit
 ```
 
 **LLM provider selection (`LLM_PROVIDER`):**
@@ -393,16 +397,16 @@ for (let passIndex = 0; passIndex < DEEP_RESEARCH_DEPTH; passIndex++) {
 | `FINNHUB_API_KEY` | No | — | Enables Finnhub provider or hybrid fallback. If `STOCK_DATA_PROVIDER=hybrid` but this is not set, silently falls back to AV-only |
 | `STOCK_DATA_PROVIDER` | No | `alphavantage` | `alphavantage`, `finnhub`, or `hybrid` |
 | `COPILOT_MODEL` | No | `openai/gpt-4.1` | Main reasoning model (GitHub Models name; ignored when `LLM_PROVIDER=gemini`) |
-| `FILL_MODEL` | No | `openai/gpt-4.1-mini` | Gap-fill and ticker-resolution model on GitHub Models (separate quota from main model) |
-| `COPILOT_FALLBACK_MODEL` | No | same as `COPILOT_MODEL` | Single fallback model if main model hits rate limit (GitHub Models only) |
-| `COPILOT_FALLBACK_MODELS` | No | built-in list | Comma-separated ordered fallback model list; overrides `DEFAULT_FALLBACK_MODELS` constant |
-| `AUTO_DOWNGRADE_GPT5` | No | `true` | When `true`, `gpt-5` requests on GitHub provider are downgraded to `gpt-4.1` (GPT-5 not available on GitHub Models) |
+| `FILL_MODEL` | No | _(chain start)_ | When set, prepends this model to `GITHUB_MODEL_CHAIN` as first choice for fill tasks (ticker resolution, moat, conclusions) |
+| `COPILOT_FALLBACK_MODEL` | No | same as `COPILOT_MODEL` | Single additional fallback appended after the built-in chain |
+| `COPILOT_FALLBACK_MODELS` | No | built-in chain | Comma-separated ordered fallback list; overrides `DEFAULT_FALLBACK_MODELS` constant |
+| `AUTO_DOWNGRADE_GPT5` | No | `false` | Set to `true` to force-downgrade gpt-5 requests to gpt-4.1 (system prompt now fits in GPT-5's 4k input limit, so downgrade is off by default) |
 | `USE_FULL_SYSTEM_PROMPT` | No | `false` | When `true`, sends full verbose `SYSTEM_PROMPT`; default uses shorter `COMPACT_SYSTEM_PROMPT` to conserve tokens |
 | `REPORTS_DIR` | No | `/tmp/reports` (Vercel) or `reports/` | Report output directory |
 | `STOCK_CACHE_TTL_MS` | No | `604800000` | Cache TTL ms (7 days) |
 | `NUM_COMPANIES` | No | `10` | Number of companies in comparison, sector, and deep-sector reports. Optimal: 10; raise to 15 for broader research, lower to 5 for faster/demo runs |
 | `DEEP_RESEARCH_DEPTH` | No | `2` | Recursive refinement passes in deep sector Phase 3. Each pass deepens analysis using prior results. Optimal: 2; set to 1 to disable recursion, 3 for most thorough analysis |
-| `DEBUG` | No | _(unset)_ | When `true`, reports include "Data Sources" and "Data Coverage (Chart Inputs)" debug sections. Omit or set to `false` in production |
+| `DEBUG` | No | _(unset)_ | Reserved for debug use. "Data Sources" and "Data Coverage" sections have been removed from all reports permanently. |
 | `ALPHA_VANTAGE_MIN_INTERVAL_MS` | No | `1200` | Min ms between AV requests (1200ms = 0.83 req/s, safely under the 1 req/s burst limit) |
 | `FINNHUB_MIN_INTERVAL_MS` | No | `500` | Min ms between Finnhub requests (500ms = 2 req/s theoretical; Finnhub free tier = 60 req/min) |
 | `HEALTH_CHECK_SYMBOL` | No | — | If set, health endpoint makes a live API call with this ticker |

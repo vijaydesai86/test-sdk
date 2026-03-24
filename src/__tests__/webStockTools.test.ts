@@ -181,8 +181,8 @@ describe('web executeTool', () => {
     );
 
     expect(result.success).toBe(true);
-    // llmFill is called once for sector company identification and once for batch moat analysis
-    expect(llmFill).toHaveBeenCalledTimes(2);
+    // llmFill is called: once for sector company identification, once for batch moat, once for conclusion
+    expect(llmFill).toHaveBeenCalledTimes(3);
     // Should have fetched data for both tickers
     expect(service.getStockPrice).toHaveBeenCalledWith('NVDA');
     expect(service.getStockPrice).toHaveBeenCalledWith('AMD');
