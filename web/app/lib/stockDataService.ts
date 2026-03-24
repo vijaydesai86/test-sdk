@@ -1480,8 +1480,11 @@ export class FinancialModelingPrepService implements StockDataService {
   }
 
   private async fetchStatement(symbol: string, path: string, period: 'annual' | 'quarter'): Promise<any[]> {
-    const periodParam = period === 'quarter' ? { period: 'quarter' } : {};
-    const data = await this.makeRequest(`${path}/${symbol.toUpperCase()}`, { limit: '5', ...periodParam }, 6 * 60 * 60 * 1000);
+    const params: Record<string, string> = { limit: '5' };
+    if (period === 'quarter') {
+      params.period = 'quarter';
+    }
+    const data = await this.makeRequest(`${path}/${symbol.toUpperCase()}`, params, 6 * 60 * 60 * 1000);
     return Array.isArray(data) ? data : [];
   }
 
