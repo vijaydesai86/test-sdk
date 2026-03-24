@@ -239,4 +239,82 @@ describe('FinnhubService', () => {
     expect(result.prices).toHaveLength(1);
     expect(mockedAxios.get).toHaveBeenCalledTimes(1);
   });
+
+  it('scales Finnhub revenueTTM from millions to raw dollars in getCompanyOverview', async () => {
+    // profile2: marketCapitalization in millions (will be scaled ×1e6)
+    mockedAxios.get.mockResolvedValueOnce({
+      data: { name: 'Test Corp', finnhubIndustry: 'TECHNOLOGY', marketCapitalization: 1000, shareOutstanding: 100 },
+    });
+    // metric: revenueTTM in millions, grossMarginTTM as ratio
+    mockedAxios.get.mockResolvedValueOnce({
+      data: { metric: { revenueTTM: 500, grossMarginTTM: 0.6, operatingMarginTTM: 0.3 } },
+    });
+
+    const service = new FinnhubService('test-fh');
+    const overview = await service.getCompanyOverview('TEST');
+
+    // revenueTTM must be raw dollars: 500M × 1e6 = 500,000,000
+    expect(overview.revenueTTM).toBe('500000000');
+    // grossProfitTTM: 0.6 × 500M × 1e6 = 300,000,000
+    expect(overview.grossProfitTTM).toBe('300000000');
+    // grossMarginTTM exposed as ratio
+    expect(overview.grossMarginTTM).toBe(0.6);
+    // marketCapitalization: 1000M × 1e6 = 1,000,000,000
+    expect(overview.marketCapitalization).toBe('1000000000');
+  });
+
+  it('getBalanceSheet falls back to per-share × sharesOutstanding when quarterly series empty', async () => {
+    // metric call: empty series, but has per-share fields
+    mockedAxios.get.mockResolvedValueOnce({
+      data: {
+        metric: { bookValuePerShareQuarterly: 20, cashPerShareAnnual: 5 },
+        series: { quarterly: { bs: {} } },
+      },
+    });
+    // profile2 call: 200 million shares outstanding
+    mockedAxios.get.mockResolvedValueOnce({
+      data: { shareOutstanding: 200 },
+    });
+
+    const service = new FinnhubService('test-fh');
+    const result = await service.getBalanceSheet('TEST');
+
+    expect(result.quarterlyReports).toHaveLength(1);
+    // equity = 20 $/share × 200M shares × 1e6 = 20 × 200,000,000 = 4,000,000,000
+    expect(result.quarterlyReports[0].totalShareholderEquity).toBe('4000000000');
+    // cash = 5 $/share × 200M shares × 1e6 = 1,000,000,000
+    expect(result.quarterlyReports[0].cashAndEquivalents).toBe('1000000000');
+  });
+
+  it('getIncomeStatement TTM fallback uses raw dollars (revenueTTM × 1e6)', async () => {
+    mockedAxios.get.mockResolvedValueOnce({
+      data: {
+        metric: { revenueTTM: 100, grossMarginTTM: 0.5, operatingMarginTTM: 0.3, netProfitMarginTTM: 0.2 },
+        series: { quarterly: { ic: {} } },
+      },
+    });
+
+    const service = new FinnhubService('test-fh');
+    const result = await service.getIncomeStatement('TEST');
+
+    // totalRevenue: 100M × 1e6 = 100,000,000
+    expect(result.quarterlyReports[0].totalRevenue).toBe('100000000');
+    // grossProfit: 0.5 × 100,000,000 = 50,000,000
+    expect(result.quarterlyReports[0].grossProfit).toBe('50000000');
+  });
+
+  it('getCashFlow TTM fallback scales freeCashFlowTTM from millions to raw dollars', async () => {
+    mockedAxios.get.mockResolvedValueOnce({
+      data: {
+        metric: { freeCashFlowTTM: 34.9 },
+        series: { quarterly: { cf: {} } },
+      },
+    });
+
+    const service = new FinnhubService('test-fh');
+    const result = await service.getCashFlow('TEST');
+
+    // freeCashFlow: 34.9M × 1e6 = 34,900,000
+    expect(result.quarterlyReports[0].freeCashFlow).toBe('34900000');
+  });
 });

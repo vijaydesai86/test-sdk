@@ -1324,7 +1324,9 @@ export async function executeTool(
           const grossProfit = Number(overview.grossProfitTTM);
           const grossMarginTTM = Number.isFinite(revenue) && revenue !== 0 && Number.isFinite(grossProfit)
             ? grossProfit / revenue
-            : Number(overview.profitMargin) || null;
+            : overview.grossMarginTTM != null
+              ? Number(overview.grossMarginTTM)
+              : Number(overview.profitMargin) || null;
           return {
             symbol: overview.symbol,
             metric: {
@@ -1536,7 +1538,9 @@ export async function executeTool(
           const grossProfit = Number(overview.grossProfitTTM);
           const grossMarginTTM = Number.isFinite(revenue) && revenue !== 0 && Number.isFinite(grossProfit)
             ? grossProfit / revenue
-            : Number(overview.profitMargin) || null;
+            : overview.grossMarginTTM != null
+              ? Number(overview.grossMarginTTM)
+              : Number(overview.profitMargin) || null;
           return {
             symbol: overview.symbol,
             metric: {
@@ -1743,7 +1747,9 @@ export async function executeTool(
           const grossMarginTTM =
             Number.isFinite(revenue) && revenue !== 0 && Number.isFinite(grossProfit)
               ? grossProfit / revenue
-              : Number(overview.profitMargin) || null;
+              : overview.grossMarginTTM != null
+                ? Number(overview.grossMarginTTM)
+                : Number(overview.profitMargin) || null;
           return {
             symbol: overview.symbol,
             metric: {
@@ -2045,7 +2051,9 @@ export async function executeTool(
           const grossMarginTTM =
             Number.isFinite(revenue) && revenue !== 0 && Number.isFinite(grossProfit)
               ? grossProfit / revenue
-              : Number(overview.profitMargin) || null;
+              : overview.grossMarginTTM != null
+                ? Number(overview.grossMarginTTM)
+                : Number(overview.profitMargin) || null;
           return {
             symbol: overview.symbol,
             metric: {

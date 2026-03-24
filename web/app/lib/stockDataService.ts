@@ -1136,8 +1136,13 @@ export class FinnhubService implements StockDataService {
       bookValue: m.bookValuePerShareQuarterly ?? null,
       dividendPerShare: m.dividendsPerShareAnnual ?? null,
       dividendYield: m.dividendYieldIndicatedAnnual ?? null,
-      revenueTTM: m.revenueTTM ?? null,
-      grossProfitTTM: m.grossMarginTTM && m.revenueTTM ? String(m.grossMarginTTM * m.revenueTTM) : null,
+      revenueTTM: m.revenueTTM != null ? String(Math.round(Number(m.revenueTTM) * 1e6)) : null,
+      grossProfitTTM: m.grossMarginTTM != null && m.revenueTTM != null
+        ? String(Math.round(m.grossMarginTTM * Number(m.revenueTTM) * 1e6))
+        : null,
+      // grossMarginTTM as a ratio (0–1) so buildBasicFinancialsFallback can use it
+      // directly when revenueTTM/grossProfitTTM are unavailable for this stock.
+      grossMarginTTM: m.grossMarginTTM ?? null,
       '52WeekHigh': m['52WeekHigh'] ?? null,
       '52WeekLow': m['52WeekLow'] ?? null,
       '50DayMovingAverage': m['50DayMovingAverage'] ?? null,
@@ -1299,7 +1304,7 @@ export class FinnhubService implements StockDataService {
       // Free-tier fallback: quarterly series may be absent; derive a single TTM entry from the
       // metric snapshot (which is always present on the free plan).
       const m = data.metric || {};
-      const rev = m.revenueTTM != null ? Number(m.revenueTTM) : null;
+      const rev = m.revenueTTM != null ? Number(m.revenueTTM) * 1e6 : null;
       if (rev != null && rev > 0) {
         const gross = m.grossMarginTTM != null ? Math.round(rev * Number(m.grossMarginTTM)) : null;
         const opInc = m.operatingMarginTTM != null ? Math.round(rev * Number(m.operatingMarginTTM)) : null;
@@ -1335,7 +1340,32 @@ export class FinnhubService implements StockDataService {
     const data = await this.makeRequest('/stock/metric', { symbol: symbol.toUpperCase(), metric: 'all' }, 60 * 60 * 1000);
     const bs = (data.series?.quarterly?.bs ?? {}) as Record<string, Array<{ period: string; v: number }>>;
     const rows = this.pivotSeries(bs, 4);
-    if (!rows.length) throw new Error('Unavailable via Finnhub: no balance sheet data');
+    if (!rows.length) {
+      // Free-tier fallback: quarterly series absent. Derive approximate balance sheet entries
+      // from per-share metric values × shares outstanding (profile2 is cached after getCompanyOverview).
+      const m = data.metric || {};
+      const profile = await this.makeRequest('/stock/profile2', { symbol: symbol.toUpperCase() }, 6 * 60 * 60 * 1000).catch(() => null);
+      const shares = profile?.shareOutstanding ?? 0; // Finnhub: millions of shares
+      // Per-share values are in raw dollars; multiply by shares(millions) × 1e6 for total raw dollars.
+      const bvps = m.bookValuePerShareQuarterly ?? m.bookValuePerShareAnnual ?? null;
+      const cpsa = m.cashPerShareAnnual ?? m.cashPerShareQuarterly ?? null;
+      const equity = bvps != null && shares > 0 ? Math.round(Number(bvps) * shares * 1e6) : null;
+      const cash = cpsa != null && shares > 0 ? Math.round(Number(cpsa) * shares * 1e6) : null;
+      if (equity !== null || cash !== null) {
+        return {
+          symbol: symbol.toUpperCase(),
+          quarterlyReports: [{
+            fiscalQuarter: 'Latest',
+            totalAssets: null,
+            totalLiabilities: null,
+            totalShareholderEquity: equity != null ? String(equity) : null,
+            cashAndEquivalents: cash != null ? String(cash) : null,
+            longTermDebt: null,
+          }],
+        };
+      }
+      throw new Error('Unavailable via Finnhub: no balance sheet data');
+    }
     return {
       symbol: symbol.toUpperCase(),
       quarterlyReports: rows.map((r) => ({
@@ -1363,7 +1393,7 @@ export class FinnhubService implements StockDataService {
             fiscalQuarter: 'TTM',
             operatingCashflow: null,
             capitalExpenditures: null,
-            freeCashFlow: m.freeCashFlowTTM != null ? String(m.freeCashFlowTTM) : null,
+            freeCashFlow: m.freeCashFlowTTM != null ? String(Math.round(Number(m.freeCashFlowTTM) * 1e6)) : null,
             dividendPayout: null,
           }],
         };
