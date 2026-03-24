@@ -377,31 +377,51 @@ function selectToolNames() {
   ];
   return { toolNames };
 }
+// Maximum wall-clock time for a single LLM HTTP request. Prevents any one call from
+// silently hanging and consuming the entire Vercel 300 s budget. On timeout the error
+// is mapped to statusCode 429 so the existing model-fallback chain retries with the
+// next provider automatically.
+const LLM_FETCH_TIMEOUT_MS = 55_000;
+
 async function callGitHubModelsAPI(
   messages: ChatMessage[],
   githubToken: string,
   model: string,
   tools: ReturnType<typeof getToolDefinitionsByName>
 ): Promise<any> {
-  const response = await fetch(GITHUB_MODELS_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${githubToken}`,
-      // GitHub API recommended headers — including User-Agent is important:
-      // Node.js fetch() does NOT add a User-Agent automatically (unlike browsers),
-      // so omitting it makes requests appear as anonymous bot/scraper traffic and
-      // can trigger GitHub's anti-abuse 429 "scraping" response.
-      'User-Agent': 'stock-report-app/1.0',
-      'Accept': 'application/vnd.github+json',
-      'X-GitHub-Api-Version': '2022-11-28',
-    },
-    body: JSON.stringify({
-      model,
-      messages,
-      tools,
-    }),
-  });
+  let response: Response;
+  try {
+    response = await fetch(GITHUB_MODELS_URL, {
+      method: 'POST',
+      signal: AbortSignal.timeout(LLM_FETCH_TIMEOUT_MS),
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${githubToken}`,
+        // GitHub API recommended headers — including User-Agent is important:
+        // Node.js fetch() does NOT add a User-Agent automatically (unlike browsers),
+        // so omitting it makes requests appear as anonymous bot/scraper traffic and
+        // can trigger GitHub's anti-abuse 429 "scraping" response.
+        'User-Agent': 'stock-report-app/1.0',
+        'Accept': 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+      },
+      body: JSON.stringify({
+        model,
+        messages,
+        tools,
+      }),
+    });
+  } catch (err: any) {
+    // AbortSignal.timeout() fires a TimeoutError; treat like a rate-limit so the
+    // model-fallback chain automatically tries the next model.
+    if (err?.name === 'TimeoutError' || err?.name === 'AbortError') {
+      console.warn(`[llm] GitHub Models '${model}' timed out after ${LLM_FETCH_TIMEOUT_MS / 1000}s — retrying with next model`);
+      const te = new Error(`GitHub Models request timed out after ${LLM_FETCH_TIMEOUT_MS / 1000}s`) as Error & { statusCode: number };
+      te.statusCode = 429;
+      throw te;
+    }
+    throw err;
+  }
 
   if (!response.ok) {
     const errorText = await response.text();
@@ -495,14 +515,26 @@ async function callGeminiAPI(
   if (tools && tools.length > 0) {
     body.tools = tools;
   }
-  const response = await fetch(GEMINI_API_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${geminiToken}`,
-    },
-    body: JSON.stringify(body),
-  });
+  let response: Response;
+  try {
+    response = await fetch(GEMINI_API_URL, {
+      method: 'POST',
+      signal: AbortSignal.timeout(LLM_FETCH_TIMEOUT_MS),
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${geminiToken}`,
+      },
+      body: JSON.stringify(body),
+    });
+  } catch (err: any) {
+    if (err?.name === 'TimeoutError' || err?.name === 'AbortError') {
+      console.warn(`[llm] Gemini '${model}' timed out after ${LLM_FETCH_TIMEOUT_MS / 1000}s — retrying with next model`);
+      const te = new Error(`Gemini request timed out after ${LLM_FETCH_TIMEOUT_MS / 1000}s`) as Error & { statusCode: number };
+      te.statusCode = 429;
+      throw te;
+    }
+    throw err;
+  }
 
   if (!response.ok) {
     const errorText = await response.text();

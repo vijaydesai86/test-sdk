@@ -2020,6 +2020,15 @@ export async function executeTool(
         if (!sector) {
           return { success: false, error: 'A sector or theme query is required.' };
         }
+        // Record wall-clock start time so we can enforce a Phase 3 budget and avoid
+        // hitting the Vercel 300 s hard limit. Phase 3 (LLM dependency passes) is the
+        // most variable phase; we stop early if the elapsed time would leave too little
+        // room for Phase 4 data fetching + moat/conclusion calls + outer LLM round.
+        const toolStartMs = Date.now();
+        // Phase 3 deadline: if elapsed > 160 s before a pass starts, skip the pass.
+        // This leaves ~140 s for Phase 4 (~72 s AV queue) + LLM moat/conclusion (~40 s)
+        // + outer chat round (~20 s) + overhead — comfortably under the 300 s limit.
+        const PHASE3_DEADLINE_MS = 160_000;
         const finalCount = Math.min(NUM_COMPANIES, Math.max(3, Number(args.count) || NUM_COMPANIES));
         // Fetch roughly 2x candidates for screening; cap at NUM_COMPANIES * 2 to avoid rate limits.
         const initialCount = Math.min(NUM_COMPANIES * 2, finalCount * 2);
