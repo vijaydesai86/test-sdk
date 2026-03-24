@@ -1681,7 +1681,8 @@ export async function executeTool(
           };
         };
 
-        // Phase 1: Fetch all API data for all companies
+        // Phase 1: Fetch all API data for all companies — run all companies in parallel so
+        // AV and Finnhub throttle queues (separate instances) drain concurrently.
         type RawCompanyData = {
           symbol: string;
           cache: SymbolCache;
@@ -1694,19 +1695,23 @@ export async function executeTool(
           analystRatings: any;
           priceTargets: any;
         };
-        const rawItems: RawCompanyData[] = [];
-        for (const symbol of universe) {
-          const cache = await loadSymbolCache(symbol);
-          const price = await safeFetch(symbol, cache, 'Price', 'price', stockService.getStockPrice(symbol));
-          const overview = await safeFetch(symbol, cache, 'Company overview', 'overview', stockService.getCompanyOverview(symbol));
-          const priceHistory = await safeFetch(symbol, cache, 'Price history', `priceHistory:${range}`, stockService.getPriceHistory(symbol, range));
-          const incomeStatement = await safeFetch(symbol, cache, 'Income statement', 'incomeStatement', stockService.getIncomeStatement(symbol));
-          const balanceSheet = await safeFetch(symbol, cache, 'Balance sheet', 'balanceSheet', stockService.getBalanceSheet(symbol));
-          const cashFlow = await safeFetch(symbol, cache, 'Cash flow', 'cashFlow', stockService.getCashFlow(symbol));
-          const analystRatings = await safeFetch(symbol, cache, 'Analyst ratings', 'analystRatings', stockService.getAnalystRatings(symbol));
-          const priceTargets = await safeFetch(symbol, cache, 'Price targets', 'priceTargets', stockService.getPriceTargets(symbol));
-          rawItems.push({ symbol, cache, price, overview, priceHistory, incomeStatement, balanceSheet, cashFlow, analystRatings, priceTargets });
-        }
+        const rawItems: RawCompanyData[] = await Promise.all(
+          universe.map(async (symbol) => {
+            const cache = await loadSymbolCache(symbol);
+            const [price, overview, priceHistory, incomeStatement, balanceSheet, cashFlow, analystRatings, priceTargets] =
+              await Promise.all([
+                safeFetch(symbol, cache, 'Price', 'price', stockService.getStockPrice(symbol)),
+                safeFetch(symbol, cache, 'Company overview', 'overview', stockService.getCompanyOverview(symbol)),
+                safeFetch(symbol, cache, 'Price history', `priceHistory:${range}`, stockService.getPriceHistory(symbol, range)),
+                safeFetch(symbol, cache, 'Income statement', 'incomeStatement', stockService.getIncomeStatement(symbol)),
+                safeFetch(symbol, cache, 'Balance sheet', 'balanceSheet', stockService.getBalanceSheet(symbol)),
+                safeFetch(symbol, cache, 'Cash flow', 'cashFlow', stockService.getCashFlow(symbol)),
+                safeFetch(symbol, cache, 'Analyst ratings', 'analystRatings', stockService.getAnalystRatings(symbol)),
+                safeFetch(symbol, cache, 'Price targets', 'priceTargets', stockService.getPriceTargets(symbol)),
+              ]);
+            return { symbol, cache, price, overview, priceHistory, incomeStatement, balanceSheet, cashFlow, analystRatings, priceTargets };
+          })
+        );
 
         // Phase 2: Build items from API data
         const items: any[] = [];
@@ -1916,19 +1921,24 @@ export async function executeTool(
           analystRatings: any;
           priceTargets: any;
         };
-        const rawItems: RawSectorItem[] = [];
-        for (const symbol of universe) {
-          const cache = await loadSymbolCache(symbol);
-          const price = await safeFetch(symbol, cache, 'Price', 'price', stockService.getStockPrice(symbol));
-          const overview = await safeFetch(symbol, cache, 'Company overview', 'overview', stockService.getCompanyOverview(symbol));
-          const priceHistory = await safeFetch(symbol, cache, 'Price history', `priceHistory:${range}`, stockService.getPriceHistory(symbol, range));
-          const incomeStatement = await safeFetch(symbol, cache, 'Income statement', 'incomeStatement', stockService.getIncomeStatement(symbol));
-          const balanceSheet = await safeFetch(symbol, cache, 'Balance sheet', 'balanceSheet', stockService.getBalanceSheet(symbol));
-          const cashFlow = await safeFetch(symbol, cache, 'Cash flow', 'cashFlow', stockService.getCashFlow(symbol));
-          const analystRatings = await safeFetch(symbol, cache, 'Analyst ratings', 'analystRatings', stockService.getAnalystRatings(symbol));
-          const priceTargets = await safeFetch(symbol, cache, 'Price targets', 'priceTargets', stockService.getPriceTargets(symbol));
-          rawItems.push({ symbol, cache, price, overview, priceHistory, incomeStatement, balanceSheet, cashFlow, analystRatings, priceTargets });
-        }
+        // Run all companies in parallel — AV and Finnhub throttle queues drain concurrently.
+        const rawItems: RawSectorItem[] = await Promise.all(
+          universe.map(async (symbol) => {
+            const cache = await loadSymbolCache(symbol);
+            const [price, overview, priceHistory, incomeStatement, balanceSheet, cashFlow, analystRatings, priceTargets] =
+              await Promise.all([
+                safeFetch(symbol, cache, 'Price', 'price', stockService.getStockPrice(symbol)),
+                safeFetch(symbol, cache, 'Company overview', 'overview', stockService.getCompanyOverview(symbol)),
+                safeFetch(symbol, cache, 'Price history', `priceHistory:${range}`, stockService.getPriceHistory(symbol, range)),
+                safeFetch(symbol, cache, 'Income statement', 'incomeStatement', stockService.getIncomeStatement(symbol)),
+                safeFetch(symbol, cache, 'Balance sheet', 'balanceSheet', stockService.getBalanceSheet(symbol)),
+                safeFetch(symbol, cache, 'Cash flow', 'cashFlow', stockService.getCashFlow(symbol)),
+                safeFetch(symbol, cache, 'Analyst ratings', 'analystRatings', stockService.getAnalystRatings(symbol)),
+                safeFetch(symbol, cache, 'Price targets', 'priceTargets', stockService.getPriceTargets(symbol)),
+              ]);
+            return { symbol, cache, price, overview, priceHistory, incomeStatement, balanceSheet, cashFlow, analystRatings, priceTargets };
+          })
+        );
 
         const items: any[] = [];
         for (const item of rawItems) {
@@ -2052,31 +2062,28 @@ export async function executeTool(
 
         // ── Phase 2: Fetch lightweight ecosystem data for each candidate ─────────
         // overview + news sentiment + peers — used by the LLM for dependency analysis.
-        // Uses cache where available; silently skips on error (rate limits, unknown tickers).
-        const ecosystemData: Array<{ symbol: string; overview: any; news: any; peers: any }> = [];
-        for (const sym of initialCandidates) {
-          try {
-            const cache = await loadSymbolCache(sym);
-            const overview =
-              getCachedValue(cache, 'overview') ??
-              await stockService.getCompanyOverview(sym).catch(() => null);
-            const news =
-              getCachedValue(cache, 'newsSentiment') ??
-              await stockService.getNewsSentiment(sym).catch(() => null);
-            const peers =
-              getCachedValue(cache, 'peers') ??
-              await stockService.getPeers(sym).catch(() => null);
-            // Persist anything freshly fetched back to cache (best-effort).
-            const updated = await loadSymbolCache(sym);
-            if (overview && !getCachedValue(updated, 'overview')) {
-              setCachedValue(updated, 'overview', overview);
-              await saveSymbolCache(sym, updated).catch(() => {});
+        // All candidates run in parallel so AV and Finnhub throttle queues drain concurrently.
+        const ecosystemData: Array<{ symbol: string; overview: any; news: any; peers: any }> = await Promise.all(
+          initialCandidates.map(async (sym) => {
+            try {
+              const cache = await loadSymbolCache(sym);
+              const [overview, news, peers] = await Promise.all([
+                getCachedValue(cache, 'overview') ?? stockService.getCompanyOverview(sym).catch(() => null),
+                getCachedValue(cache, 'newsSentiment') ?? stockService.getNewsSentiment(sym).catch(() => null),
+                getCachedValue(cache, 'peers') ?? stockService.getPeers(sym).catch(() => null),
+              ]);
+              // Persist anything freshly fetched back to cache (best-effort).
+              const updated = await loadSymbolCache(sym);
+              if (overview && !getCachedValue(updated, 'overview')) {
+                setCachedValue(updated, 'overview', overview);
+                await saveSymbolCache(sym, updated).catch(() => {});
+              }
+              return { symbol: sym, overview, news, peers };
+            } catch {
+              return { symbol: sym, overview: null, news: null, peers: null };
             }
-            ecosystemData.push({ symbol: sym, overview, news, peers });
-          } catch {
-            ecosystemData.push({ symbol: sym, overview: null, news: null, peers: null });
-          }
-        }
+          })
+        );
 
         // ── Phase 3: LLM builds dependency analysis and refines the list ─────────
         // Runs DEEP_RESEARCH_DEPTH times. Each pass feeds the prior analysis as context
@@ -2234,19 +2241,24 @@ export async function executeTool(
           analystRatings: any;
           priceTargets: any;
         };
-        const rawItems: RawDeepSectorItem[] = [];
-        for (const symbol of universe) {
-          const cache = await loadSymbolCache(symbol);
-          const price = await safeFetch(symbol, cache, 'Price', 'price', stockService.getStockPrice(symbol));
-          const overview = await safeFetch(symbol, cache, 'Company overview', 'overview', stockService.getCompanyOverview(symbol));
-          const priceHistory = await safeFetch(symbol, cache, 'Price history', `priceHistory:${range}`, stockService.getPriceHistory(symbol, range));
-          const incomeStatement = await safeFetch(symbol, cache, 'Income statement', 'incomeStatement', stockService.getIncomeStatement(symbol));
-          const balanceSheet = await safeFetch(symbol, cache, 'Balance sheet', 'balanceSheet', stockService.getBalanceSheet(symbol));
-          const cashFlow = await safeFetch(symbol, cache, 'Cash flow', 'cashFlow', stockService.getCashFlow(symbol));
-          const analystRatings = await safeFetch(symbol, cache, 'Analyst ratings', 'analystRatings', stockService.getAnalystRatings(symbol));
-          const priceTargets = await safeFetch(symbol, cache, 'Price targets', 'priceTargets', stockService.getPriceTargets(symbol));
-          rawItems.push({ symbol, cache, price, overview, priceHistory, incomeStatement, balanceSheet, cashFlow, analystRatings, priceTargets });
-        }
+        // Run all companies in parallel — AV and Finnhub throttle queues drain concurrently.
+        const rawItems: RawDeepSectorItem[] = await Promise.all(
+          universe.map(async (symbol) => {
+            const cache = await loadSymbolCache(symbol);
+            const [price, overview, priceHistory, incomeStatement, balanceSheet, cashFlow, analystRatings, priceTargets] =
+              await Promise.all([
+                safeFetch(symbol, cache, 'Price', 'price', stockService.getStockPrice(symbol)),
+                safeFetch(symbol, cache, 'Company overview', 'overview', stockService.getCompanyOverview(symbol)),
+                safeFetch(symbol, cache, 'Price history', `priceHistory:${range}`, stockService.getPriceHistory(symbol, range)),
+                safeFetch(symbol, cache, 'Income statement', 'incomeStatement', stockService.getIncomeStatement(symbol)),
+                safeFetch(symbol, cache, 'Balance sheet', 'balanceSheet', stockService.getBalanceSheet(symbol)),
+                safeFetch(symbol, cache, 'Cash flow', 'cashFlow', stockService.getCashFlow(symbol)),
+                safeFetch(symbol, cache, 'Analyst ratings', 'analystRatings', stockService.getAnalystRatings(symbol)),
+                safeFetch(symbol, cache, 'Price targets', 'priceTargets', stockService.getPriceTargets(symbol)),
+              ]);
+            return { symbol, cache, price, overview, priceHistory, incomeStatement, balanceSheet, cashFlow, analystRatings, priceTargets };
+          })
+        );
 
         const items: any[] = [];
         for (const item of rawItems) {
