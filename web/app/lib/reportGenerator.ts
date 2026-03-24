@@ -24,6 +24,8 @@ export interface StockReportData {
   companyNews?: { articles?: any[] };
   /** LLM-generated competitive moat assessment */
   moatAnalysis?: MoatAnalysis;
+  /** LLM-generated data-driven investment conclusion (based solely on fetched API data) */
+  conclusion?: string;
 }
 
 export interface ComparisonReportItem {
@@ -48,6 +50,8 @@ export interface ComparisonReportData {
   items: ComparisonReportItem[];
   notes?: string[];
   sources?: Record<string, Record<string, string>>;
+  /** LLM-generated data-driven investment conclusion (based solely on fetched API data) */
+  conclusion?: string;
 }
 
 export interface SectorReportData extends ComparisonReportData {
@@ -1434,6 +1438,10 @@ export function buildStockReport(data: StockReportData): string {
     );
   }
 
+  if (data.conclusion) {
+    sections.push(`## 🏁 Conclusion & Investment Outlook\n\n${data.conclusion}`);
+  }
+
   return sections.filter(Boolean).join('\n\n');
 }
 
@@ -1797,14 +1805,11 @@ export function buildComparisonReport(data: ComparisonReportData): string {
   const scatterChart = buildValuationGrowthScatter(items);
   const marginChart = buildMarginComparisonChart(items);
 
-  const debugMode = process.env.DEBUG === 'true';
   const sections = [
     header,
     `Generated: ${data.generatedAt}`,
     `Universe: ${data.universe.join(', ')}`,
     notes ? `## ⚠️ Data Gaps\n${notes}` : null,
-    debugMode && sourceTable ? '## 🧾 Data Sources' : null,
-    debugMode && sourceTable ? `${sourceLegend}\n\n${sourceTable}` : null,
     '## 📊 Snapshot',
     snapshotTable,
     '## 🧾 Scale & Profitability',
@@ -1821,8 +1826,6 @@ export function buildComparisonReport(data: ComparisonReportData): string {
     `- Highest target upside: ${topUpside ? `${topUpside.name} (${topUpside.upside.toFixed(1)}%)` : 'N/A'}`,
     `- Strongest consensus: ${topRating ? `${topRating.name} (${(topRating.score! * 100).toFixed(0)}% buy/strong buy)` : 'N/A'}`,
     moatSection || null,
-    debugMode ? '## 🧩 Data Coverage (Chart Inputs)' : null,
-    debugMode ? coverageTable : null,
     '## 📈 Price Performance (Indexed)',
     performanceChart || '_Price performance data unavailable._',
     '## 📊 Valuation vs Growth',
@@ -1834,6 +1837,7 @@ export function buildComparisonReport(data: ComparisonReportData): string {
     validScores.length < scored.length
       ? '_Some companies lack composite scores; weights are normalized across available scores._'
       : '_Indicative allocation is derived from normalized composite scores. It is not investment advice._',
+    data.conclusion ? `## 🏁 Conclusion & Investment Outlook\n\n${data.conclusion}` : null,
   ].filter(Boolean) as string[];
 
   return sections.join('\n\n');

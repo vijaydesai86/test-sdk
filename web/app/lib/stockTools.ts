@@ -1403,16 +1403,13 @@ export async function executeTool(
           ? reportBody.replace(
               '## 📊 Snapshot',
               `## ⚠️ Data Gaps\n${notes.map((item) => `- ${item}`).join('\n')}\n\n## 📊 Snapshot`
+          const finalContent = notes.length
+          ? reportBody.replace(
+              '## 📊 Snapshot',
+              `## ⚠️ Data Gaps\n${notes.map((item) => `- ${item}`).join('\n')}\n\n## 📊 Snapshot`
             )
           : reportBody;
 
-        const debugMode = process.env.DEBUG === 'true';
-        const sourceSection = debugMode && sources.size
-          ? `## 🧾 Data Sources\n${SOURCE_LEGEND}\n${Array.from(sources.entries()).map(([key, value]) => `- ${key}: ${value}`).join('\n')}`
-          : '';
-        const finalContent = sourceSection
-          ? content.replace('## 📊 Snapshot', `${sourceSection}\n\n## 📊 Snapshot`)
-          : content;
         const saved = await saveReport(finalContent, `${symbol}-stock-report`);
         await saveSymbolCache(symbol, cache);
         return {

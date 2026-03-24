@@ -8,10 +8,10 @@ import { createStockService, StockDataService } from '@/app/lib/stockDataService
 const GITHUB_MODELS_URL = 'https://models.github.ai/inference/chat/completions';
 const DEFAULT_MODEL = process.env.COPILOT_MODEL || 'openai/gpt-4.1';
 const FALLBACK_MODEL = process.env.COPILOT_FALLBACK_MODEL || DEFAULT_MODEL;
-// Gap-fill uses a lighter model so it doesn't burn the user's main model quota.
-// gpt-4.1-mini has a separate (much higher) rate limit on GitHub Models.
+// Gap-fill uses the lightest available model — gpt-4.1-nano has the highest GitHub Models
+// rate limits (qualitative-only tasks: ticker resolution, moat, sector dependencies).
 // Override with FILL_MODEL env var if needed.
-const FILL_MODEL = process.env.FILL_MODEL || 'openai/gpt-4.1-mini';
+const FILL_MODEL = process.env.FILL_MODEL || 'openai/gpt-4.1-nano';
 
 // Gemini API — OpenAI-compatible endpoint; same request/response format as GitHub Models.
 // Auth: GEMINI_TOKEN (Bearer). Get a key at: https://aistudio.google.com/api-keys
@@ -48,6 +48,7 @@ const AUTO_DOWNGRADE_GPT5 = process.env.AUTO_DOWNGRADE_GPT5 !== 'false';
 const DEFAULT_FALLBACK_MODELS = [
   DEFAULT_MODEL,
   'openai/gpt-4.1-mini',
+  'openai/gpt-4.1-nano',
   'google/gemini-3-flash',
 ];
 // Allow enough rounds for multi-stock research. With parallel batching, each round
