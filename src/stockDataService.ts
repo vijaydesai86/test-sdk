@@ -21,7 +21,7 @@ export interface StockDataService {
   searchNews(query: string, days?: number): Promise<any>;
 }
 
-type Provider = 'alphavantage' | 'finnhub' | 'hybrid';
+type Provider = 'alphavantage' | 'finnhub' | 'hybrid' | 'fmp' | 'twelvedata' | 'stooq' | 'multi';
 const PROVIDER_ENV = (process.env.STOCK_DATA_PROVIDER || 'alphavantage').toLowerCase() as Provider;
 
 /**
@@ -39,7 +39,7 @@ export class AlphaVantageService implements StockDataService {
   };
 
   constructor(apiKey?: string) {
-    this.apiKey = apiKey || process.env.ALPHA_VANTAGE_API_KEY || 'demo';
+    this.apiKey = apiKey || process.env.ALPHA_VANTAGE_API_KEY || '';
   }
 
   private buildCacheKey(prefix: string, params: Record<string, string>): string {
@@ -87,6 +87,9 @@ export class AlphaVantageService implements StockDataService {
     params: Record<string, string>,
     options: { ttlMs?: number; cacheKey?: string } = {}
   ): Promise<any> {
+    if (!this.apiKey) {
+      throw new Error('Unavailable via Alpha Vantage: API key not configured');
+    }
     const cacheKey = options.cacheKey || this.buildCacheKey('alphavantage', params);
     const ttlMs = options.ttlMs || 0;
 
@@ -1016,6 +1019,928 @@ export class FinnhubService implements StockDataService {
   }
 }
 
+export class TwelveDataService implements StockDataService {
+  private apiKey: string;
+  private baseUrl = 'https://api.twelvedata.com';
+  private cache = new Map<string, { expiresAt: number; data: any }>();
+  private lastRequestAt = 0;
+  private minIntervalMs = Number(process.env.TWELVE_DATA_MIN_INTERVAL_MS || 800);
+
+  constructor(apiKey?: string) {
+    this.apiKey = apiKey || process.env.TWELVE_DATA_API_KEY || '';
+  }
+
+  private async throttle(): Promise<void> {
+    if (this.minIntervalMs <= 0) return;
+    const now = Date.now();
+    const wait = this.minIntervalMs - (now - this.lastRequestAt);
+    if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+    this.lastRequestAt = Date.now();
+  }
+
+  private async makeRequest(path: string, params: Record<string, string> = {}, ttlMs = 0): Promise<any> {
+    if (!this.apiKey) {
+      throw new Error('Unavailable via Twelve Data: API key not configured');
+    }
+    const cacheKey = `twelvedata:${path}:${JSON.stringify(params)}`;
+    if (ttlMs > 0) {
+      const cached = this.cache.get(cacheKey);
+      if (cached && cached.expiresAt > Date.now()) return cached.data;
+    }
+    await this.throttle();
+    try {
+      const response = await axios.get(`${this.baseUrl}${path}`, {
+        params: { ...params, apikey: this.apiKey },
+        timeout: 10000,
+      });
+      const data = response.data;
+      if (data?.status === 'error') {
+        throw new Error(data?.message || 'Unknown Twelve Data error');
+      }
+      if (ttlMs > 0) this.cache.set(cacheKey, { expiresAt: Date.now() + ttlMs, data });
+      return data;
+    } catch (error: any) {
+      const statusCode = error?.response?.status;
+      if (statusCode === 401 || statusCode === 403) {
+        throw new Error(`Unavailable via Twelve Data (plan limitation: ${statusCode})`);
+      }
+      if (statusCode === 429) {
+        throw new Error('Twelve Data rate limit exceeded (429)');
+      }
+      throw new Error(`Twelve Data request failed: ${error.message}`);
+    }
+  }
+
+  async getStockPrice(symbol: string): Promise<any> {
+    const data = await this.makeRequest('/quote', { symbol: symbol.toUpperCase() }, 30000);
+    if (!data?.price) {
+      throw new Error('Unavailable via Twelve Data: no stock price data');
+    }
+    return {
+      symbol: data.symbol || symbol.toUpperCase(),
+      price: data.price,
+      change: data.change,
+      changePercent: data.percent_change ? `${data.percent_change}%` : 'N/A',
+      volume: data.volume,
+      latestTradingDay: data.datetime,
+    };
+  }
+
+  async getPriceHistory(symbol: string, range = '1y'): Promise<any> {
+    const lower = range.toLowerCase();
+    const days = (() => {
+      if (lower.includes('1w')) return 7;
+      if (lower.includes('1m')) return 30;
+      if (lower.includes('3m')) return 90;
+      if (lower.includes('6m')) return 180;
+      if (lower.includes('1y') || lower === 'daily') return 365;
+      if (lower.includes('3y')) return 365 * 3;
+      if (lower.includes('5y')) return 365 * 5;
+      if (lower.includes('max')) return 5000;
+      return 365;
+    })();
+    const outputsize = Math.min(Math.max(days, 30), 5000);
+    const data = await this.makeRequest(
+      '/time_series',
+      { symbol: symbol.toUpperCase(), interval: '1day', outputsize: outputsize.toString() },
+      60 * 60 * 1000
+    );
+    const values = Array.isArray(data?.values) ? data.values : [];
+    if (values.length === 0) {
+      throw new Error('Unavailable via Twelve Data: price history not available');
+    }
+    return {
+      symbol: symbol.toUpperCase(),
+      prices: values.map((item: any) => ({
+        date: item.datetime,
+        open: item.open,
+        high: item.high,
+        low: item.low,
+        close: item.close,
+        volume: item.volume,
+      })),
+    };
+  }
+
+  async getCompanyOverview(symbol: string): Promise<any> {
+    const data = await this.makeRequest('/profile', { symbol: symbol.toUpperCase() }, 6 * 60 * 60 * 1000);
+    if (!data?.name) {
+      throw new Error('Unavailable via Twelve Data: company profile not found');
+    }
+    return {
+      symbol: data.symbol || symbol.toUpperCase(),
+      name: data.name,
+      description: data.description,
+      sector: data.sector,
+      industry: data.industry,
+      marketCapitalization: data.market_cap,
+      eps: data.eps,
+      peRatio: data.pe,
+      beta: data.beta,
+      dividendYield: data.dividend_yield,
+      sharesOutstanding: data.shares_outstanding,
+    };
+  }
+
+  async getBasicFinancials(_symbol: string): Promise<any> {
+    throw new Error('Unavailable via Twelve Data: basic financials not supported');
+  }
+
+  async getInsiderTrading(_symbol: string): Promise<any> {
+    throw new Error('Unavailable via Twelve Data: insider trading not supported');
+  }
+
+  async getAnalystRatings(_symbol: string): Promise<any> {
+    throw new Error('Unavailable via Twelve Data: analyst ratings not supported');
+  }
+
+  async getAnalystRecommendations(_symbol: string): Promise<any> {
+    throw new Error('Unavailable via Twelve Data: analyst recommendations not supported');
+  }
+
+  async getPriceTargets(_symbol: string): Promise<any> {
+    throw new Error('Unavailable via Twelve Data: price targets not supported');
+  }
+
+  async getPeers(_symbol: string): Promise<any> {
+    throw new Error('Unavailable via Twelve Data: peer data not supported');
+  }
+
+  async searchStock(query: string): Promise<any> {
+    const data = await this.makeRequest('/symbol_search', { symbol: query }, 60 * 60 * 1000);
+    const matches = Array.isArray(data?.data) ? data.data : [];
+    if (!matches.length) {
+      throw new Error('Unavailable via Twelve Data: no matches found');
+    }
+    const results = matches.map((item: any) => ({
+      symbol: item.symbol,
+      name: item.instrument_name,
+      type: item.instrument_type,
+      region: item.country,
+      currency: item.currency,
+      exchange: item.exchange,
+      source: 'twelvedata',
+    }));
+    return { results };
+  }
+
+  async getEarningsHistory(_symbol: string): Promise<any> {
+    throw new Error('Unavailable via Twelve Data: earnings history not supported');
+  }
+
+  async getIncomeStatement(_symbol: string): Promise<any> {
+    throw new Error('Unavailable via Twelve Data: income statement not supported');
+  }
+
+  async getBalanceSheet(_symbol: string): Promise<any> {
+    throw new Error('Unavailable via Twelve Data: balance sheet not supported');
+  }
+
+  async getCashFlow(_symbol: string): Promise<any> {
+    throw new Error('Unavailable via Twelve Data: cash flow not supported');
+  }
+
+  async getSectorPerformance(): Promise<any> {
+    throw new Error('Unavailable via Twelve Data: sector performance not supported');
+  }
+
+  async getTopGainersLosers(): Promise<any> {
+    throw new Error('Unavailable via Twelve Data: market movers not supported');
+  }
+
+  async getNewsSentiment(_symbol: string): Promise<any> {
+    throw new Error('Unavailable via Twelve Data: news sentiment not supported');
+  }
+
+  async getCompanyNews(_symbol: string, _days = 30): Promise<any> {
+    throw new Error('Unavailable via Twelve Data: company news not supported');
+  }
+
+  async searchNews(_query: string, _days = 30): Promise<any> {
+    throw new Error('Unavailable via Twelve Data: news search not supported');
+  }
+}
+
+export class FinancialModelingPrepService implements StockDataService {
+  private apiKey: string;
+  private baseUrl = 'https://financialmodelingprep.com/api/v3';
+  private cache = new Map<string, { expiresAt: number; data: any }>();
+  private lastRequestAt = 0;
+  private minIntervalMs = Number(process.env.FMP_MIN_INTERVAL_MS || 800);
+
+  constructor(apiKey?: string) {
+    this.apiKey = apiKey || process.env.FINANCIAL_MODELING_PREP_API_KEY || '';
+  }
+
+  private async throttle(): Promise<void> {
+    if (this.minIntervalMs <= 0) return;
+    const now = Date.now();
+    const wait = this.minIntervalMs - (now - this.lastRequestAt);
+    if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+    this.lastRequestAt = Date.now();
+  }
+
+  private async makeRequest(path: string, params: Record<string, string> = {}, ttlMs = 0): Promise<any> {
+    if (!this.apiKey) {
+      throw new Error('Unavailable via Financial Modeling Prep: API key not configured');
+    }
+    const cacheKey = `fmp:${path}:${JSON.stringify(params)}`;
+    if (ttlMs > 0) {
+      const cached = this.cache.get(cacheKey);
+      if (cached && cached.expiresAt > Date.now()) return cached.data;
+    }
+    await this.throttle();
+    try {
+      const response = await axios.get(`${this.baseUrl}${path}`, {
+        params: { ...params, apikey: this.apiKey },
+        timeout: 10000,
+      });
+      const data = response.data;
+      const errorMessage = data?.['Error Message'] || data?.error || data?.message;
+      if (errorMessage) {
+        throw new Error(errorMessage);
+      }
+      if (ttlMs > 0) this.cache.set(cacheKey, { expiresAt: Date.now() + ttlMs, data });
+      return data;
+    } catch (error: any) {
+      const statusCode = error?.response?.status;
+      if (statusCode === 401 || statusCode === 403) {
+        throw new Error(`Unavailable via Financial Modeling Prep (plan limitation: ${statusCode})`);
+      }
+      if (statusCode === 429) {
+        throw new Error('Financial Modeling Prep rate limit exceeded (429)');
+      }
+      throw new Error(`Financial Modeling Prep request failed: ${error.message}`);
+    }
+  }
+
+  async getStockPrice(symbol: string): Promise<any> {
+    const data = await this.makeRequest(`/quote/${symbol.toUpperCase()}`, {}, 30000);
+    const quote = Array.isArray(data) ? data[0] : null;
+    if (!quote?.price) {
+      throw new Error('Unavailable via Financial Modeling Prep: no stock price data');
+    }
+    return {
+      symbol: quote.symbol || symbol.toUpperCase(),
+      price: quote.price?.toString(),
+      change: quote.change?.toString(),
+      changePercent: quote.changesPercentage ? `${Number(quote.changesPercentage).toFixed(2)}%` : 'N/A',
+      volume: quote.volume?.toString(),
+      latestTradingDay: quote.timestamp ? new Date(quote.timestamp * 1000).toISOString() : undefined,
+      high: quote.dayHigh?.toString(),
+      low: quote.dayLow?.toString(),
+      open: quote.open?.toString(),
+      previousClose: quote.previousClose?.toString(),
+    };
+  }
+
+  async getPriceHistory(symbol: string, range = '1y'): Promise<any> {
+    const lower = range.toLowerCase();
+    const days = (() => {
+      if (lower.includes('1w')) return 7;
+      if (lower.includes('1m')) return 30;
+      if (lower.includes('3m')) return 90;
+      if (lower.includes('6m')) return 180;
+      if (lower.includes('1y') || lower === 'daily') return 365;
+      if (lower.includes('3y')) return 365 * 3;
+      if (lower.includes('5y')) return 365 * 5;
+      if (lower.includes('max')) return 5000;
+      return 365;
+    })();
+    const timeseries = Math.min(Math.max(days, 30), 5000);
+    const data = await this.makeRequest(
+      `/historical-price-full/${symbol.toUpperCase()}`,
+      { timeseries: timeseries.toString() },
+      60 * 60 * 1000
+    );
+    const historical = Array.isArray(data?.historical) ? data.historical : [];
+    if (!historical.length) {
+      throw new Error('Unavailable via Financial Modeling Prep: price history not available');
+    }
+    return {
+      symbol: symbol.toUpperCase(),
+      prices: historical.map((item: any) => ({
+        date: item.date,
+        open: item.open?.toString(),
+        high: item.high?.toString(),
+        low: item.low?.toString(),
+        close: item.close?.toString(),
+        volume: item.volume?.toString(),
+      })),
+    };
+  }
+
+  async getCompanyOverview(symbol: string): Promise<any> {
+    const data = await this.makeRequest(`/profile/${symbol.toUpperCase()}`, {}, 6 * 60 * 60 * 1000);
+    const profile = Array.isArray(data) ? data[0] : null;
+    if (!profile?.companyName) {
+      throw new Error('Unavailable via Financial Modeling Prep: company profile not found');
+    }
+    return {
+      symbol: profile.symbol || symbol.toUpperCase(),
+      name: profile.companyName,
+      description: profile.description,
+      sector: profile.sector,
+      industry: profile.industry,
+      marketCapitalization: profile.mktCap?.toString(),
+      eps: profile.eps?.toString(),
+      peRatio: profile.pe?.toString(),
+      beta: profile.beta?.toString(),
+      dividendYield: profile.lastDiv?.toString(),
+      '52WeekHigh': profile.range ? profile.range.split('-')[1]?.trim() : undefined,
+      '52WeekLow': profile.range ? profile.range.split('-')[0]?.trim() : undefined,
+      sharesOutstanding: profile.sharesOutstanding?.toString(),
+      returnOnEquity: profile.roe?.toString(),
+    };
+  }
+
+  async getBasicFinancials(symbol: string): Promise<any> {
+    const data = await this.makeRequest(`/key-metrics-ttm/${symbol.toUpperCase()}`, {}, 6 * 60 * 60 * 1000);
+    const metrics = Array.isArray(data) ? data[0] : null;
+    if (!metrics) {
+      throw new Error('Unavailable via Financial Modeling Prep: key metrics not found');
+    }
+    return {
+      symbol: symbol.toUpperCase(),
+      metric: {
+        peBasicExclExtraTTM: metrics.peRatioTTM ?? metrics.peRatio,
+        epsTTM: metrics.epsTTM ?? metrics.eps,
+        revenueGrowthTTM: metrics.revenueGrowthTTM ?? metrics.revenueGrowth,
+        epsGrowthTTM: metrics.epsGrowthTTM ?? metrics.epsGrowth,
+        grossMarginTTM: metrics.grossMarginTTM ?? metrics.grossProfitMarginTTM,
+        operatingMarginTTM: metrics.operatingMarginTTM ?? metrics.operatingProfitMarginTTM,
+        roeTTM: metrics.roeTTM ?? metrics.returnOnEquityTTM,
+        revenuePerShareTTM: metrics.revenuePerShareTTM,
+      },
+      series: {},
+    };
+  }
+
+  async getInsiderTrading(_symbol: string): Promise<any> {
+    throw new Error('Unavailable via Financial Modeling Prep: insider trading not supported');
+  }
+
+  async getAnalystRatings(symbol: string): Promise<any> {
+    const data = await this.makeRequest(`/rating/${symbol.toUpperCase()}`, {}, 6 * 60 * 60 * 1000);
+    if (!data?.rating && !data?.ratingScore) {
+      throw new Error('Unavailable via Financial Modeling Prep: analyst rating not found');
+    }
+    return {
+      symbol: symbol.toUpperCase(),
+      rating: data.rating,
+      ratingScore: data.ratingScore,
+      ratingRecommendation: data.ratingRecommendation,
+    };
+  }
+
+  async getAnalystRecommendations(symbol: string): Promise<any> {
+    const data = await this.makeRequest(`/analyst-stock-recommendations/${symbol.toUpperCase()}`, {}, 6 * 60 * 60 * 1000);
+    if (!Array.isArray(data) || data.length === 0) {
+      throw new Error('Unavailable via Financial Modeling Prep: analyst recommendations not found');
+    }
+    return {
+      symbol: symbol.toUpperCase(),
+      recommendations: data.slice(0, 8).map((row: any) => ({
+        period: row.period,
+        buy: row.analystRatingsbuy ?? row.buy,
+        hold: row.analystRatingsHold ?? row.hold,
+        sell: row.analystRatingsSell ?? row.sell,
+        strongBuy: row.analystRatingsStrongBuy ?? row.strongBuy,
+        strongSell: row.analystRatingsStrongSell ?? row.strongSell,
+      })),
+    };
+  }
+
+  async getPriceTargets(symbol: string): Promise<any> {
+    const data = await this.makeRequest(`/price-target/${symbol.toUpperCase()}`, {}, 6 * 60 * 60 * 1000);
+    const target = Array.isArray(data) ? data[0] : null;
+    if (!target?.targetConsensus && !target?.targetMean) {
+      throw new Error('Unavailable via Financial Modeling Prep: price target data not found');
+    }
+    return {
+      symbol: symbol.toUpperCase(),
+      targetHigh: target.targetHigh,
+      targetLow: target.targetLow,
+      targetMedian: target.targetMedian,
+      targetMean: target.targetConsensus ?? target.targetMean,
+      updatedDate: target.updatedDate,
+    };
+  }
+
+  async getPeers(symbol: string): Promise<any> {
+    const data = await this.makeRequest('/stock_peers', { symbol: symbol.toUpperCase() }, 6 * 60 * 60 * 1000);
+    const peers = Array.isArray(data?.peersList) ? data.peersList : [];
+    if (!peers.length) {
+      throw new Error('Unavailable via Financial Modeling Prep: peer list not found');
+    }
+    return {
+      symbol: symbol.toUpperCase(),
+      peers,
+    };
+  }
+
+  async searchStock(query: string): Promise<any> {
+    const data = await this.makeRequest('/search', { query, limit: '10' }, 60 * 60 * 1000);
+    const results = Array.isArray(data)
+      ? data.map((item: any) => ({
+        symbol: item.symbol,
+        name: item.name,
+        exchange: item.exchangeShortName,
+        type: item.type,
+        source: 'fmp',
+      }))
+      : [];
+    if (!results.length) {
+      throw new Error('Unavailable via Financial Modeling Prep: no matches found');
+    }
+    return { results };
+  }
+
+  async getEarningsHistory(_symbol: string): Promise<any> {
+    throw new Error('Unavailable via Financial Modeling Prep: earnings history not supported');
+  }
+
+  private async fetchStatement(symbol: string, path: string, period: 'annual' | 'quarter'): Promise<any[]> {
+    const periodParam = period === 'quarter' ? { period: 'quarter' } : {};
+    const data = await this.makeRequest(`${path}/${symbol.toUpperCase()}`, { limit: '5', ...periodParam }, 6 * 60 * 60 * 1000);
+    return Array.isArray(data) ? data : [];
+  }
+
+  async getIncomeStatement(symbol: string): Promise<any> {
+    const annual = await this.fetchStatement(symbol, '/income-statement', 'annual');
+    const quarterly = await this.fetchStatement(symbol, '/income-statement', 'quarter');
+    if (!annual.length && !quarterly.length) {
+      throw new Error('Unavailable via Financial Modeling Prep: no income statement data');
+    }
+    return {
+      symbol: symbol.toUpperCase(),
+      annualReports: annual.slice(0, 5).map((r: any) => ({
+        fiscalYear: r.date,
+        totalRevenue: r.revenue?.toString(),
+        grossProfit: r.grossProfit?.toString(),
+        operatingIncome: r.operatingIncome?.toString(),
+        netIncome: r.netIncome?.toString(),
+        ebitda: r.ebitda?.toString(),
+      })),
+      quarterlyReports: quarterly.slice(0, 8).map((r: any) => ({
+        fiscalQuarter: r.date,
+        totalRevenue: r.revenue?.toString(),
+        grossProfit: r.grossProfit?.toString(),
+        operatingIncome: r.operatingIncome?.toString(),
+        netIncome: r.netIncome?.toString(),
+        ebitda: r.ebitda?.toString(),
+      })),
+    };
+  }
+
+  async getBalanceSheet(symbol: string): Promise<any> {
+    const annual = await this.fetchStatement(symbol, '/balance-sheet-statement', 'annual');
+    const quarterly = await this.fetchStatement(symbol, '/balance-sheet-statement', 'quarter');
+    if (!annual.length && !quarterly.length) {
+      throw new Error('Unavailable via Financial Modeling Prep: no balance sheet data');
+    }
+    return {
+      symbol: symbol.toUpperCase(),
+      annualReports: annual.slice(0, 5).map((r: any) => ({
+        fiscalYear: r.date,
+        totalAssets: r.totalAssets?.toString(),
+        totalLiabilities: r.totalLiabilities?.toString(),
+        totalShareholderEquity: r.totalStockholdersEquity?.toString(),
+        cashAndEquivalents: r.cashAndCashEquivalents?.toString(),
+        longTermDebt: r.longTermDebt?.toString(),
+      })),
+      quarterlyReports: quarterly.slice(0, 8).map((r: any) => ({
+        fiscalQuarter: r.date,
+        totalAssets: r.totalAssets?.toString(),
+        totalLiabilities: r.totalLiabilities?.toString(),
+        totalShareholderEquity: r.totalStockholdersEquity?.toString(),
+        cashAndEquivalents: r.cashAndCashEquivalents?.toString(),
+        longTermDebt: r.longTermDebt?.toString(),
+      })),
+    };
+  }
+
+  async getCashFlow(symbol: string): Promise<any> {
+    const annual = await this.fetchStatement(symbol, '/cash-flow-statement', 'annual');
+    const quarterly = await this.fetchStatement(symbol, '/cash-flow-statement', 'quarter');
+    if (!annual.length && !quarterly.length) {
+      throw new Error('Unavailable via Financial Modeling Prep: no cash flow data');
+    }
+    return {
+      symbol: symbol.toUpperCase(),
+      quarterlyReports: quarterly.slice(0, 4).map((r: any) => ({
+        fiscalQuarter: r.date,
+        operatingCashflow: r.netCashProvidedByOperatingActivities?.toString(),
+        capitalExpenditures: r.capitalExpenditure?.toString(),
+        freeCashFlow: r.freeCashFlow?.toString(),
+        dividendPayout: r.dividendsPaid?.toString(),
+      })),
+      annualReports: annual.slice(0, 5).map((r: any) => ({
+        fiscalYear: r.date,
+        operatingCashflow: r.netCashProvidedByOperatingActivities?.toString(),
+        capitalExpenditures: r.capitalExpenditure?.toString(),
+        freeCashFlow: r.freeCashFlow?.toString(),
+        dividendPayout: r.dividendsPaid?.toString(),
+      })),
+    };
+  }
+
+  async getSectorPerformance(): Promise<any> {
+    const data = await this.makeRequest('/sector-performance', {}, 15 * 60 * 1000);
+    if (!Array.isArray(data)) {
+      throw new Error('Unavailable via Financial Modeling Prep: sector performance not found');
+    }
+    const performance: Record<string, string> = {};
+    for (const row of data) {
+      if (row.sector && row.changesPercentage) {
+        performance[row.sector] = row.changesPercentage;
+      }
+    }
+    return {
+      realTimePerformance: performance,
+    };
+  }
+
+  async getTopGainersLosers(): Promise<any> {
+    const [gainers, losers, actives] = await Promise.all([
+      this.makeRequest('/stock_market/gainers', {}, 5 * 60 * 1000),
+      this.makeRequest('/stock_market/losers', {}, 5 * 60 * 1000),
+      this.makeRequest('/stock_market/actives', {}, 5 * 60 * 1000),
+    ]);
+    if (!Array.isArray(gainers) && !Array.isArray(losers) && !Array.isArray(actives)) {
+      throw new Error('Unavailable via Financial Modeling Prep: top movers not found');
+    }
+    const mapRows = (rows: any[]) => rows.slice(0, 10).map((row: any) => ({
+      ticker: row.ticker || row.symbol,
+      price: row.price?.toString(),
+      changeAmount: row.changes?.toString(),
+      changePercentage: row.changesPercentage?.toString(),
+      volume: row.volume?.toString(),
+    }));
+    return {
+      topGainers: Array.isArray(gainers) ? mapRows(gainers) : [],
+      topLosers: Array.isArray(losers) ? mapRows(losers) : [],
+      mostActive: Array.isArray(actives) ? mapRows(actives) : [],
+    };
+  }
+
+  async getNewsSentiment(_symbol: string): Promise<any> {
+    throw new Error('Unavailable via Financial Modeling Prep: news sentiment not supported');
+  }
+
+  async getCompanyNews(symbol: string, _days = 30): Promise<any> {
+    const data = await this.makeRequest('/stock_news', { tickers: symbol.toUpperCase(), limit: '20' }, 15 * 60 * 1000);
+    const articles = Array.isArray(data) ? data : [];
+    if (!articles.length) {
+      throw new Error('Unavailable via Financial Modeling Prep: company news not found');
+    }
+    return {
+      symbol: symbol.toUpperCase(),
+      articles: articles.map((item: any) => ({
+        datetime: item.publishedDate || item.date,
+        headline: item.title,
+        source: item.site,
+        url: item.url,
+        summary: item.text,
+      })),
+    };
+  }
+
+  async searchNews(query: string, _days = 30): Promise<any> {
+    const data = await this.makeRequest('/stock_news', { limit: '50' }, 15 * 60 * 1000);
+    const articles = Array.isArray(data) ? data : [];
+    const filtered = articles.filter((item: any) =>
+      String(item.title || '').toLowerCase().includes(query.toLowerCase()) ||
+      String(item.text || '').toLowerCase().includes(query.toLowerCase())
+    );
+    if (!filtered.length) {
+      throw new Error('Unavailable via Financial Modeling Prep: news search returned no results');
+    }
+    return {
+      query,
+      articles: filtered.slice(0, 20).map((item: any) => ({
+        datetime: item.publishedDate || item.date,
+        headline: item.title,
+        source: item.site,
+        url: item.url,
+        summary: item.text,
+      })),
+    };
+  }
+}
+
+export class StooqService implements StockDataService {
+  private baseUrl = 'https://stooq.com';
+  private cache = new Map<string, { expiresAt: number; data: any }>();
+  private lastRequestAt = 0;
+  private minIntervalMs = Number(process.env.STOOQ_MIN_INTERVAL_MS || 800);
+
+  private async throttle(): Promise<void> {
+    if (this.minIntervalMs <= 0) return;
+    const now = Date.now();
+    const wait = this.minIntervalMs - (now - this.lastRequestAt);
+    if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+    this.lastRequestAt = Date.now();
+  }
+
+  private async makeRequest(path: string, ttlMs = 0): Promise<string> {
+    const cacheKey = `stooq:${path}`;
+    if (ttlMs > 0) {
+      const cached = this.cache.get(cacheKey);
+      if (cached && cached.expiresAt > Date.now()) return cached.data;
+    }
+    await this.throttle();
+    try {
+      const response = await axios.get(`${this.baseUrl}${path}`, {
+        timeout: 10000,
+        responseType: 'text',
+      });
+      const data = response.data as string;
+      if (ttlMs > 0) this.cache.set(cacheKey, { expiresAt: Date.now() + ttlMs, data });
+      return data;
+    } catch (error: any) {
+      const statusCode = error?.response?.status;
+      if (statusCode === 429) {
+        throw new Error('Stooq rate limit exceeded (429)');
+      }
+      throw new Error(`Stooq request failed: ${error.message}`);
+    }
+  }
+
+  private parseCsvRows(csv: string): string[][] {
+    return csv
+      .trim()
+      .split('\n')
+      .map((line) => line.split(',').map((value) => value.trim()))
+      .filter((row) => row.length > 1);
+  }
+
+  async getStockPrice(symbol: string): Promise<any> {
+    const tick = symbol.toLowerCase();
+    const csv = await this.makeRequest(`/q/l/?s=${tick}.us&f=sd2t2ohlcv&h&e=csv`, 30000);
+    const rows = this.parseCsvRows(csv);
+    if (rows.length < 2) {
+      throw new Error('Unavailable via Stooq: stock price not found');
+    }
+    const [
+      rowSymbol,
+      date,
+      time,
+      open,
+      high,
+      low,
+      close,
+      volume,
+    ] = rows[1];
+    if (!rowSymbol || rowSymbol === 'N/A') {
+      throw new Error('Unavailable via Stooq: stock price not found');
+    }
+    const openVal = Number(open);
+    const closeVal = Number(close);
+    const change = Number.isFinite(openVal) && Number.isFinite(closeVal)
+      ? (closeVal - openVal).toFixed(2)
+      : undefined;
+    const changePercent = Number.isFinite(openVal) && openVal !== 0 && Number.isFinite(closeVal)
+      ? `${(((closeVal - openVal) / openVal) * 100).toFixed(2)}%`
+      : undefined;
+    return {
+      symbol: symbol.toUpperCase(),
+      price: close,
+      change,
+      changePercent,
+      volume,
+      latestTradingDay: date ? `${date} ${time || ''}`.trim() : undefined,
+      high,
+      low,
+      open,
+    };
+  }
+
+  async getPriceHistory(symbol: string, range = '1y'): Promise<any> {
+    const tick = symbol.toLowerCase();
+    const csv = await this.makeRequest(`/q/d/l/?s=${tick}.us&i=d`, 60 * 60 * 1000);
+    const rows = this.parseCsvRows(csv);
+    if (rows.length < 2) {
+      throw new Error('Unavailable via Stooq: price history not available');
+    }
+    const headers = rows[0];
+    const dataRows = rows.slice(1);
+    const lower = range.toLowerCase();
+    const days = (() => {
+      if (lower.includes('1w')) return 7;
+      if (lower.includes('1m')) return 30;
+      if (lower.includes('3m')) return 90;
+      if (lower.includes('6m')) return 180;
+      if (lower.includes('1y') || lower === 'daily') return 365;
+      if (lower.includes('3y')) return 365 * 3;
+      if (lower.includes('5y')) return 365 * 5;
+      if (lower.includes('max')) return null;
+      return 365;
+    })();
+    const cutoff = days ? new Date(Date.now() - days * 24 * 60 * 60 * 1000) : null;
+    const prices = dataRows
+      .filter((row) => row.length >= headers.length)
+      .map((row) => ({
+        date: row[0],
+        open: row[1],
+        high: row[2],
+        low: row[3],
+        close: row[4],
+        volume: row[5],
+      }))
+      .filter((row) => {
+        if (!cutoff) return true;
+        const parsed = new Date(row.date);
+        return !Number.isNaN(parsed.getTime()) && parsed >= cutoff;
+      });
+    if (!prices.length) {
+      throw new Error('Unavailable via Stooq: price history not available');
+    }
+    return { symbol: symbol.toUpperCase(), prices };
+  }
+
+  async getCompanyOverview(_symbol: string): Promise<any> {
+    throw new Error('Unavailable via Stooq: company overview not supported');
+  }
+
+  async getBasicFinancials(_symbol: string): Promise<any> {
+    throw new Error('Unavailable via Stooq: basic financials not supported');
+  }
+
+  async getInsiderTrading(_symbol: string): Promise<any> {
+    throw new Error('Unavailable via Stooq: insider trading not supported');
+  }
+
+  async getAnalystRatings(_symbol: string): Promise<any> {
+    throw new Error('Unavailable via Stooq: analyst ratings not supported');
+  }
+
+  async getAnalystRecommendations(_symbol: string): Promise<any> {
+    throw new Error('Unavailable via Stooq: analyst recommendations not supported');
+  }
+
+  async getPriceTargets(_symbol: string): Promise<any> {
+    throw new Error('Unavailable via Stooq: price targets not supported');
+  }
+
+  async getPeers(_symbol: string): Promise<any> {
+    throw new Error('Unavailable via Stooq: peers not supported');
+  }
+
+  async searchStock(_query: string): Promise<any> {
+    throw new Error('Unavailable via Stooq: symbol search not supported');
+  }
+
+  async getEarningsHistory(_symbol: string): Promise<any> {
+    throw new Error('Unavailable via Stooq: earnings history not supported');
+  }
+
+  async getIncomeStatement(_symbol: string): Promise<any> {
+    throw new Error('Unavailable via Stooq: income statement not supported');
+  }
+
+  async getBalanceSheet(_symbol: string): Promise<any> {
+    throw new Error('Unavailable via Stooq: balance sheet not supported');
+  }
+
+  async getCashFlow(_symbol: string): Promise<any> {
+    throw new Error('Unavailable via Stooq: cash flow not supported');
+  }
+
+  async getSectorPerformance(): Promise<any> {
+    throw new Error('Unavailable via Stooq: sector performance not supported');
+  }
+
+  async getTopGainersLosers(): Promise<any> {
+    throw new Error('Unavailable via Stooq: market movers not supported');
+  }
+
+  async getNewsSentiment(_symbol: string): Promise<any> {
+    throw new Error('Unavailable via Stooq: news sentiment not supported');
+  }
+
+  async getCompanyNews(_symbol: string, _days = 30): Promise<any> {
+    throw new Error('Unavailable via Stooq: company news not supported');
+  }
+
+  async searchNews(_query: string, _days = 30): Promise<any> {
+    throw new Error('Unavailable via Stooq: news search not supported');
+  }
+}
+
+type ProviderId = 'alphavantage' | 'finnhub' | 'fmp' | 'twelvedata' | 'stooq';
+const PROVIDER_LABELS: Record<ProviderId, string> = {
+  alphavantage: 'Alpha Vantage',
+  finnhub: 'Finnhub',
+  fmp: 'Financial Modeling Prep',
+  twelvedata: 'Twelve Data',
+  stooq: 'Stooq',
+};
+
+class MultiSourceStockDataService implements StockDataService {
+  private disabledProviders = new Map<ProviderId, { until: number; reason: string }>();
+  private cooldownMs = Number(process.env.STOCK_PROVIDER_COOLDOWN_MS || 5 * 60 * 1000);
+
+  constructor(private providers: Array<{ id: ProviderId; service: StockDataService }>) {}
+
+  private isDisabled(providerId: ProviderId): boolean {
+    const entry = this.disabledProviders.get(providerId);
+    if (!entry) return false;
+    if (entry.until <= Date.now()) {
+      this.disabledProviders.delete(providerId);
+      return false;
+    }
+    return true;
+  }
+
+  private markDisabled(providerId: ProviderId, reason: string) {
+    this.disabledProviders.set(providerId, { until: Date.now() + this.cooldownMs, reason });
+  }
+
+  private shouldDisable(message: string): boolean {
+    return /rate limit|429|too many requests|quota|forbidden|unauthorized|api key|plan limitation/i.test(message);
+  }
+
+  private async callProviders<T>(method: keyof StockDataService, args: any[]): Promise<T> {
+    let lastError: any;
+    for (const provider of this.providers) {
+      if (this.isDisabled(provider.id)) continue;
+      try {
+        const result = await (provider.service[method] as (...params: any[]) => Promise<T>)(...args);
+        if (result && typeof result === 'object' && !Array.isArray(result)) {
+          return { ...(result as object), __source: PROVIDER_LABELS[provider.id] } as T;
+        }
+        return result;
+      } catch (error: any) {
+        lastError = error;
+        const message = error?.message || 'Unavailable';
+        if (this.shouldDisable(message)) {
+          this.markDisabled(provider.id, message);
+        }
+      }
+    }
+    throw lastError || new Error('All providers unavailable');
+  }
+
+  getStockPrice(symbol: string) {
+    return this.callProviders('getStockPrice', [symbol]);
+  }
+  getPriceHistory(symbol: string, range?: string) {
+    return this.callProviders('getPriceHistory', [symbol, range]);
+  }
+  getCompanyOverview(symbol: string) {
+    return this.callProviders('getCompanyOverview', [symbol]);
+  }
+  getBasicFinancials(symbol: string) {
+    return this.callProviders('getBasicFinancials', [symbol]);
+  }
+  getInsiderTrading(symbol: string) {
+    return this.callProviders('getInsiderTrading', [symbol]);
+  }
+  getAnalystRatings(symbol: string) {
+    return this.callProviders('getAnalystRatings', [symbol]);
+  }
+  getAnalystRecommendations(symbol: string) {
+    return this.callProviders('getAnalystRecommendations', [symbol]);
+  }
+  getPriceTargets(symbol: string) {
+    return this.callProviders('getPriceTargets', [symbol]);
+  }
+  getPeers(symbol: string) {
+    return this.callProviders('getPeers', [symbol]);
+  }
+  searchStock(query: string) {
+    return this.callProviders('searchStock', [query]);
+  }
+  getEarningsHistory(symbol: string) {
+    return this.callProviders('getEarningsHistory', [symbol]);
+  }
+  getIncomeStatement(symbol: string) {
+    return this.callProviders('getIncomeStatement', [symbol]);
+  }
+  getBalanceSheet(symbol: string) {
+    return this.callProviders('getBalanceSheet', [symbol]);
+  }
+  getCashFlow(symbol: string) {
+    return this.callProviders('getCashFlow', [symbol]);
+  }
+  getSectorPerformance() {
+    return this.callProviders('getSectorPerformance', []);
+  }
+  getTopGainersLosers() {
+    return this.callProviders('getTopGainersLosers', []);
+  }
+  getNewsSentiment(symbol: string) {
+    return this.callProviders('getNewsSentiment', [symbol]);
+  }
+  getCompanyNews(symbol: string, days?: number) {
+    return this.callProviders('getCompanyNews', [symbol, days]);
+  }
+  searchNews(query: string, days?: number) {
+    return this.callProviders('searchNews', [query, days]);
+  }
+}
+
 class HybridStockDataService implements StockDataService {
   constructor(
     private primary: StockDataService,
@@ -1135,11 +2060,46 @@ class HybridStockDataService implements StockDataService {
 
 export function createStockService(apiKey?: string): StockDataService {
   const provider = PROVIDER_ENV;
+  const finnhubKey = process.env.FINNHUB_API_KEY;
+  const fmpKey = process.env.FINANCIAL_MODELING_PREP_API_KEY;
+  const twelveKey = process.env.TWELVE_DATA_API_KEY;
   if (provider === 'finnhub') {
-    return new FinnhubService();
+    return new FinnhubService(finnhubKey);
+  }
+  if (provider === 'fmp') {
+    return new FinancialModelingPrepService(fmpKey);
+  }
+  if (provider === 'twelvedata') {
+    return new TwelveDataService(twelveKey);
+  }
+  if (provider === 'stooq') {
+    return new StooqService();
   }
   if (provider === 'hybrid') {
-    return new HybridStockDataService(new AlphaVantageService(apiKey), new FinnhubService());
+    if (finnhubKey) {
+      return new HybridStockDataService(new AlphaVantageService(apiKey), new FinnhubService(finnhubKey));
+    }
+    return new AlphaVantageService(apiKey);
+  }
+  if (provider === 'multi') {
+    const providers: Array<{ id: ProviderId; service: StockDataService }> = [];
+    if (apiKey || process.env.ALPHA_VANTAGE_API_KEY) {
+      providers.push({ id: 'alphavantage', service: new AlphaVantageService(apiKey) });
+    }
+    if (finnhubKey) {
+      providers.push({ id: 'finnhub', service: new FinnhubService(finnhubKey) });
+    }
+    if (fmpKey) {
+      providers.push({ id: 'fmp', service: new FinancialModelingPrepService(fmpKey) });
+    }
+    if (twelveKey) {
+      providers.push({ id: 'twelvedata', service: new TwelveDataService(twelveKey) });
+    }
+    providers.push({ id: 'stooq', service: new StooqService() });
+    if (providers.length === 0) {
+      throw new Error('No stock data providers configured. Set API keys for Alpha Vantage, Finnhub, FMP, or Twelve Data.');
+    }
+    return new MultiSourceStockDataService(providers);
   }
   return new AlphaVantageService(apiKey);
 }

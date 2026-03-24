@@ -27,14 +27,36 @@ const CACHE_TTL_MS = Number(process.env.STOCK_CACHE_TTL_MS || 1000 * 60 * 60 * 2
 const DEFAULT_SOURCE = (() => {
   const provider = (process.env.STOCK_DATA_PROVIDER || 'alphavantage').toLowerCase();
   if (provider === 'finnhub') return 'Finnhub';
+  if (provider === 'fmp') return 'Financial Modeling Prep';
+  if (provider === 'twelvedata') return 'Twelve Data';
+  if (provider === 'stooq') return 'Stooq';
+  if (provider === 'multi') return 'Multi-source';
   return 'Alpha Vantage';
 })();
 const SOURCE_LEGEND = (() => {
   const provider = (process.env.STOCK_DATA_PROVIDER || 'alphavantage').toLowerCase();
   if (provider === 'hybrid') return '_Legend: Alpha Vantage is primary; Finnhub fills gaps._';
   if (provider === 'finnhub') return '_Legend: Finnhub provider._';
+  if (provider === 'fmp') return '_Legend: Financial Modeling Prep provider._';
+  if (provider === 'twelvedata') return '_Legend: Twelve Data provider._';
+  if (provider === 'stooq') return '_Legend: Stooq provider._';
+  if (provider === 'multi') {
+    return '_Legend: Multi-source chain: Alpha Vantage → Finnhub → Financial Modeling Prep → Twelve Data → Stooq._';
+  }
   return '_Legend: Alpha Vantage provider._';
 })();
+
+const RATE_LIMIT_PROVIDERS = [
+  { pattern: /finnhub/i, label: 'Finnhub' },
+  { pattern: /twelve data|twelvedata/i, label: 'Twelve Data' },
+  { pattern: /financial modeling prep|fmp/i, label: 'Financial Modeling Prep' },
+  { pattern: /stooq/i, label: 'Stooq' },
+  { pattern: /alpha/i, label: 'Alpha Vantage' },
+];
+const isRateLimitError = (message: string) =>
+  /rate limit|too many requests|quota|frequency|thank you for using alpha vantage/i.test(message);
+const detectRateLimitProvider = (message: string) =>
+  RATE_LIMIT_PROVIDERS.find((entry) => entry.pattern.test(message))?.label || 'Data provider';
 
 type CacheEntry = { updatedAt: string; data: any };
 type SymbolCache = Record<string, CacheEntry>;
@@ -581,8 +603,7 @@ const resolveSymbolFromQuery = async (query: string) => {
         const sources = new Map<string, string>();
         const cache = await loadSymbolCache(symbol);
         let rateLimitHit = false;
-        const isRateLimit = (message: string) =>
-          message.includes('frequency') || message.includes('Thank you for using Alpha Vantage');
+        const isRateLimit = (message: string) => isRateLimitError(message);
         const safeFetch = async <T>(label: string, key: string, request: Promise<T>) => {
           const cachedValue = getCachedValue(cache, key);
           if (cachedValue !== null) {
@@ -601,7 +622,8 @@ const resolveSymbolFromQuery = async (query: string) => {
             const message = error?.message || 'Unavailable';
             if (isRateLimit(message)) {
               rateLimitHit = true;
-              notes.push('Alpha Vantage rate limit reached; remaining sections skipped.');
+              const providerLabel = detectRateLimitProvider(message);
+              notes.push(`${providerLabel} rate limit reached; remaining sections skipped.`);
               return cachedValue !== null ? (cachedValue as T) : (undefined as T);
             }
             notes.push(`${label}: ${message}`);
@@ -805,8 +827,7 @@ const resolveSymbolFromQuery = async (query: string) => {
       const notes: string[] = [];
       const sourceMap: Record<string, Record<string, string>> = {};
       let rateLimitHit = false;
-      const isRateLimit = (message: string) =>
-        message.includes('frequency') || message.includes('Thank you for using Alpha Vantage');
+      const isRateLimit = (message: string) => isRateLimitError(message);
       const safeFetch = async <T>(
         symbol: string,
         cache: SymbolCache,
@@ -839,7 +860,8 @@ const resolveSymbolFromQuery = async (query: string) => {
           const message = error?.message || 'Unavailable';
           if (isRateLimit(message)) {
             rateLimitHit = true;
-            notes.push('Alpha Vantage rate limit reached; remaining sections skipped.');
+            const providerLabel = detectRateLimitProvider(message);
+            notes.push(`${providerLabel} rate limit reached; remaining sections skipped.`);
             return cachedValue !== null ? (cachedValue as T) : (undefined as T);
           }
           notes.push(`${label}: ${message}`);

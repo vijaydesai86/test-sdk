@@ -32,17 +32,64 @@ const NUM_COMPANIES = Math.max(2, Number(process.env.NUM_COMPANIES || 10));
 // Override via DEEP_RESEARCH_DEPTH env var (1 = single pass, 3 = very thorough but slower).
 // Optimal value: 2 gives meaningfully richer analysis with only one extra LLM call.
 const DEEP_RESEARCH_DEPTH = Math.max(1, Number(process.env.DEEP_RESEARCH_DEPTH || 2));
+const DEEP_RESEARCH_MAX_MS = Math.max(60000, Number(process.env.DEEP_RESEARCH_MAX_MS || 240000));
+const DATA_FETCH_CONCURRENCY = Math.max(1, Number(process.env.DATA_FETCH_CONCURRENCY || 3));
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  handler: (item: T) => Promise<R>
+): Promise<R[]> {
+  const results: R[] = [];
+  let index = 0;
+
+  const runners = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (index < items.length) {
+      const currentIndex = index;
+      index += 1;
+      results[currentIndex] = await handler(items[currentIndex]);
+    }
+  });
+
+  await Promise.all(runners);
+  return results;
+}
 const DEFAULT_SOURCE = (() => {
   const provider = (process.env.STOCK_DATA_PROVIDER || 'alphavantage').toLowerCase();
   if (provider === 'finnhub') return 'Finnhub';
+  if (provider === 'fmp') return 'Financial Modeling Prep';
+  if (provider === 'twelvedata') return 'Twelve Data';
+  if (provider === 'stooq') return 'Stooq';
+  if (provider === 'multi') return 'Multi-source';
   return 'Alpha Vantage';
 })();
 const SOURCE_LEGEND = (() => {
   const provider = (process.env.STOCK_DATA_PROVIDER || 'alphavantage').toLowerCase();
   if (provider === 'hybrid') return '_Legend: Alpha Vantage is primary; Finnhub fills gaps._';
   if (provider === 'finnhub') return '_Legend: Finnhub provider._';
+  if (provider === 'fmp') return '_Legend: Financial Modeling Prep provider._';
+  if (provider === 'twelvedata') return '_Legend: Twelve Data provider._';
+  if (provider === 'stooq') return '_Legend: Stooq provider._';
+  if (provider === 'multi') {
+    return '_Legend: Multi-source chain: Alpha Vantage → Finnhub → Financial Modeling Prep → Twelve Data → Stooq._';
+  }
   return '_Legend: Alpha Vantage provider._';
 })();
+
+const RATE_LIMIT_PROVIDERS = [
+  { pattern: /finnhub/i, label: 'Finnhub' },
+  { pattern: /twelve data|twelvedata/i, label: 'Twelve Data' },
+  { pattern: /financial modeling prep|fmp/i, label: 'Financial Modeling Prep' },
+  { pattern: /stooq/i, label: 'Stooq' },
+  { pattern: /alpha/i, label: 'Alpha Vantage' },
+];
+const isRateLimitError = (message: string) =>
+  /rate limit|too many requests|quota|frequency|thank you for using alpha vantage/i.test(message);
+const detectRateLimitProvider = (message: string) =>
+  RATE_LIMIT_PROVIDERS.find((entry) => entry.pattern.test(message))?.label || 'Data provider';
+const isSuppressedProviderError = (message: string) =>
+  /unavailable (in|via) (alpha|finnhub|financial modeling prep|fmp|twelve data|twelvedata|stooq)/i.test(message)
+  || /alpha-only mode/i.test(message);
 
 /**
  * Callback that makes a targeted LLM call and returns the raw response string.
@@ -972,10 +1019,7 @@ export async function executeTool(
         const sources = new Map<string, string>();
         const cache = await loadSymbolCache(symbol);
         let rateLimitHit = false;
-        const isRateLimit = (message: string) =>
-          message.includes('frequency') ||
-          message.includes('Thank you for using Alpha Vantage') ||
-          /rate limit|too many requests/i.test(message);
+        const isRateLimit = (message: string) => isRateLimitError(message);
         const safeFetch = async <T>(label: string, key: string, request: Promise<T>) => {
           const cachedValue = getCachedValue(cache, key);
           if (cachedValue !== null) {
@@ -1000,14 +1044,11 @@ export async function executeTool(
             const message = error?.message || 'Unavailable';
             if (isRateLimit(message)) {
               rateLimitHit = true;
-              notes.push(
-                /finnhub|rate limit reached/i.test(message)
-                  ? 'Finnhub rate limit reached; remaining sections skipped.'
-                  : 'Alpha Vantage rate limit reached; remaining sections skipped.'
-              );
+              const providerLabel = detectRateLimitProvider(message);
+              notes.push(`${providerLabel} rate limit reached; remaining sections skipped.`);
               return cachedValue !== null ? (cachedValue as T) : (undefined as T);
             }
-            if (!/unavailable (in|via) (Alpha|Finnhub)/i.test(message) && !message.includes('Alpha-only mode')) {
+            if (!isSuppressedProviderError(message)) {
               notes.push(`${label}: ${message}`);
             }
             if (cachedValue && typeof cachedValue === 'object' && '__source' in cachedValue) {
@@ -1174,10 +1215,7 @@ export async function executeTool(
         const notes: string[] = [];
         const sourceMap: Record<string, Record<string, string>> = {};
         let rateLimitHit = false;
-        const isRateLimit = (message: string) =>
-          message.includes('frequency') ||
-          message.includes('Thank you for using Alpha Vantage') ||
-          /rate limit|too many requests/i.test(message);
+        const isRateLimit = (message: string) => isRateLimitError(message);
         const safeFetch = async <T>(
           symbol: string,
           cache: SymbolCache,
@@ -1210,14 +1248,11 @@ export async function executeTool(
             const message = error?.message || 'Unavailable';
             if (isRateLimit(message)) {
               rateLimitHit = true;
-              notes.push(
-                /finnhub|rate limit reached/i.test(message)
-                  ? 'Finnhub rate limit reached; remaining sections skipped.'
-                  : 'Alpha Vantage rate limit reached; remaining sections skipped.'
-              );
+              const providerLabel = detectRateLimitProvider(message);
+              notes.push(`${providerLabel} rate limit reached; remaining sections skipped.`);
               return cachedValue !== null ? (cachedValue as T) : (undefined as T);
             }
-            if (!/unavailable (in|via) (Alpha|Finnhub)/i.test(message) && !message.includes('Alpha-only mode')) {
+            if (!isSuppressedProviderError(message)) {
               notes.push(`${label}: ${message}`);
             }
           if (cachedValue && typeof cachedValue === 'object') {
@@ -1266,19 +1301,22 @@ export async function executeTool(
           analystRatings: any;
           priceTargets: any;
         };
-        const rawItems: RawCompanyData[] = [];
-        for (const symbol of universe) {
-          const cache = await loadSymbolCache(symbol);
-          const price = await safeFetch(symbol, cache, 'Price', 'price', stockService.getStockPrice(symbol));
-          const overview = await safeFetch(symbol, cache, 'Company overview', 'overview', stockService.getCompanyOverview(symbol));
-          const priceHistory = await safeFetch(symbol, cache, 'Price history', `priceHistory:${range}`, stockService.getPriceHistory(symbol, range));
-          const incomeStatement = await safeFetch(symbol, cache, 'Income statement', 'incomeStatement', stockService.getIncomeStatement(symbol));
-          const balanceSheet = await safeFetch(symbol, cache, 'Balance sheet', 'balanceSheet', stockService.getBalanceSheet(symbol));
-          const cashFlow = await safeFetch(symbol, cache, 'Cash flow', 'cashFlow', stockService.getCashFlow(symbol));
-          const analystRatings = await safeFetch(symbol, cache, 'Analyst ratings', 'analystRatings', stockService.getAnalystRatings(symbol));
-          const priceTargets = await safeFetch(symbol, cache, 'Price targets', 'priceTargets', stockService.getPriceTargets(symbol));
-          rawItems.push({ symbol, cache, price, overview, priceHistory, incomeStatement, balanceSheet, cashFlow, analystRatings, priceTargets });
-        }
+        const rawItems = await mapWithConcurrency<string, RawCompanyData>(
+          universe,
+          DATA_FETCH_CONCURRENCY,
+          async (symbol) => {
+            const cache = await loadSymbolCache(symbol);
+            const price = await safeFetch(symbol, cache, 'Price', 'price', stockService.getStockPrice(symbol));
+            const overview = await safeFetch(symbol, cache, 'Company overview', 'overview', stockService.getCompanyOverview(symbol));
+            const priceHistory = await safeFetch(symbol, cache, 'Price history', `priceHistory:${range}`, stockService.getPriceHistory(symbol, range));
+            const incomeStatement = await safeFetch(symbol, cache, 'Income statement', 'incomeStatement', stockService.getIncomeStatement(symbol));
+            const balanceSheet = await safeFetch(symbol, cache, 'Balance sheet', 'balanceSheet', stockService.getBalanceSheet(symbol));
+            const cashFlow = await safeFetch(symbol, cache, 'Cash flow', 'cashFlow', stockService.getCashFlow(symbol));
+            const analystRatings = await safeFetch(symbol, cache, 'Analyst ratings', 'analystRatings', stockService.getAnalystRatings(symbol));
+            const priceTargets = await safeFetch(symbol, cache, 'Price targets', 'priceTargets', stockService.getPriceTargets(symbol));
+            return { symbol, cache, price, overview, priceHistory, incomeStatement, balanceSheet, cashFlow, analystRatings, priceTargets };
+          }
+        );
 
         // Phase 2: Build items from API data
         const items: any[] = [];
@@ -1380,10 +1418,7 @@ export async function executeTool(
         const notes: string[] = [`Universe identified by AI for sector: "${sector}"`];
         const sourceMap: Record<string, Record<string, string>> = {};
         let rateLimitHit = false;
-        const isRateLimit = (message: string) =>
-          message.includes('frequency') ||
-          message.includes('Thank you for using Alpha Vantage') ||
-          /rate limit|too many requests/i.test(message);
+        const isRateLimit = (message: string) => isRateLimitError(message);
         const safeFetch = async <T>(
           symbol: string,
           cache: SymbolCache,
@@ -1416,14 +1451,11 @@ export async function executeTool(
             const message = error?.message || 'Unavailable';
             if (isRateLimit(message)) {
               rateLimitHit = true;
-              notes.push(
-                /finnhub|rate limit reached/i.test(message)
-                  ? 'Finnhub rate limit reached; remaining sections skipped.'
-                  : 'Alpha Vantage rate limit reached; remaining sections skipped.'
-              );
+              const providerLabel = detectRateLimitProvider(message);
+              notes.push(`${providerLabel} rate limit reached; remaining sections skipped.`);
               return cachedValue !== null ? (cachedValue as T) : (undefined as T);
             }
-            if (!/unavailable (in|via) (Alpha|Finnhub)/i.test(message) && !message.includes('Alpha-only mode')) {
+            if (!isSuppressedProviderError(message)) {
               notes.push(`${label}: ${message}`);
             }
             if (cachedValue && typeof cachedValue === 'object') {
@@ -1472,19 +1504,22 @@ export async function executeTool(
           analystRatings: any;
           priceTargets: any;
         };
-        const rawItems: RawSectorItem[] = [];
-        for (const symbol of universe) {
-          const cache = await loadSymbolCache(symbol);
-          const price = await safeFetch(symbol, cache, 'Price', 'price', stockService.getStockPrice(symbol));
-          const overview = await safeFetch(symbol, cache, 'Company overview', 'overview', stockService.getCompanyOverview(symbol));
-          const priceHistory = await safeFetch(symbol, cache, 'Price history', `priceHistory:${range}`, stockService.getPriceHistory(symbol, range));
-          const incomeStatement = await safeFetch(symbol, cache, 'Income statement', 'incomeStatement', stockService.getIncomeStatement(symbol));
-          const balanceSheet = await safeFetch(symbol, cache, 'Balance sheet', 'balanceSheet', stockService.getBalanceSheet(symbol));
-          const cashFlow = await safeFetch(symbol, cache, 'Cash flow', 'cashFlow', stockService.getCashFlow(symbol));
-          const analystRatings = await safeFetch(symbol, cache, 'Analyst ratings', 'analystRatings', stockService.getAnalystRatings(symbol));
-          const priceTargets = await safeFetch(symbol, cache, 'Price targets', 'priceTargets', stockService.getPriceTargets(symbol));
-          rawItems.push({ symbol, cache, price, overview, priceHistory, incomeStatement, balanceSheet, cashFlow, analystRatings, priceTargets });
-        }
+        const rawItems = await mapWithConcurrency<string, RawSectorItem>(
+          universe,
+          DATA_FETCH_CONCURRENCY,
+          async (symbol) => {
+            const cache = await loadSymbolCache(symbol);
+            const price = await safeFetch(symbol, cache, 'Price', 'price', stockService.getStockPrice(symbol));
+            const overview = await safeFetch(symbol, cache, 'Company overview', 'overview', stockService.getCompanyOverview(symbol));
+            const priceHistory = await safeFetch(symbol, cache, 'Price history', `priceHistory:${range}`, stockService.getPriceHistory(symbol, range));
+            const incomeStatement = await safeFetch(symbol, cache, 'Income statement', 'incomeStatement', stockService.getIncomeStatement(symbol));
+            const balanceSheet = await safeFetch(symbol, cache, 'Balance sheet', 'balanceSheet', stockService.getBalanceSheet(symbol));
+            const cashFlow = await safeFetch(symbol, cache, 'Cash flow', 'cashFlow', stockService.getCashFlow(symbol));
+            const analystRatings = await safeFetch(symbol, cache, 'Analyst ratings', 'analystRatings', stockService.getAnalystRatings(symbol));
+            const priceTargets = await safeFetch(symbol, cache, 'Price targets', 'priceTargets', stockService.getPriceTargets(symbol));
+            return { symbol, cache, price, overview, priceHistory, incomeStatement, balanceSheet, cashFlow, analystRatings, priceTargets };
+          }
+        );
 
         const items: any[] = [];
         for (const item of rawItems) {
@@ -1552,6 +1587,14 @@ export async function executeTool(
         if (!sector) {
           return { success: false, error: 'A sector or theme query is required.' };
         }
+        const startTime = Date.now();
+        const timeNotes: string[] = [];
+        const timeBudgetExceeded = () => Date.now() - startTime > DEEP_RESEARCH_MAX_MS;
+        const noteTimeBudget = () => {
+          if (timeNotes.length === 0) {
+            timeNotes.push('Time budget reached; remaining deep-research steps truncated to fit runtime limits.');
+          }
+        };
         const finalCount = Math.min(NUM_COMPANIES, Math.max(3, Number(args.count) || NUM_COMPANIES));
         // Fetch roughly 2x candidates for screening; cap at NUM_COMPANIES * 2 to avoid rate limits.
         const initialCount = Math.min(NUM_COMPANIES * 2, finalCount * 2);
@@ -1597,6 +1640,10 @@ export async function executeTool(
         // Uses cache where available; silently skips on error (rate limits, unknown tickers).
         const ecosystemData: Array<{ symbol: string; overview: any; news: any; peers: any }> = [];
         for (const sym of initialCandidates) {
+          if (timeBudgetExceeded()) {
+            noteTimeBudget();
+            break;
+          }
           try {
             const cache = await loadSymbolCache(sym);
             const overview =
@@ -1631,6 +1678,10 @@ export async function executeTool(
         let previousPass: DeepSectorPassContext | undefined;
 
         for (let passIndex = 0; passIndex < DEEP_RESEARCH_DEPTH; passIndex++) {
+          if (timeBudgetExceeded()) {
+            noteTimeBudget();
+            break;
+          }
           const depPrompt = buildDeepSectorDependencyPrompt(sector, finalCount, ecosystemData, previousPass);
           try {
             const raw = await options.llmFill(depPrompt);
@@ -1679,13 +1730,11 @@ export async function executeTool(
           `Universe refined through deep sector analysis (${DEEP_RESEARCH_DEPTH} pass${DEEP_RESEARCH_DEPTH > 1 ? 'es' : ''}) for: "${sector}"`,
           `Initial candidates: ${initialCandidates.join(', ')}`,
           `Refined universe: ${universe.join(', ')}`,
+          ...timeNotes,
         ];
         const sourceMap: Record<string, Record<string, string>> = {};
         let rateLimitHit = false;
-        const isRateLimit = (message: string) =>
-          message.includes('frequency') ||
-          message.includes('Thank you for using Alpha Vantage') ||
-          /rate limit|too many requests/i.test(message);
+        const isRateLimit = (message: string) => isRateLimitError(message);
         const safeFetch = async <T>(
           symbol: string,
           cache: SymbolCache,
@@ -1718,14 +1767,11 @@ export async function executeTool(
             const message = error?.message || 'Unavailable';
             if (isRateLimit(message)) {
               rateLimitHit = true;
-              notes.push(
-                /finnhub|rate limit reached/i.test(message)
-                  ? 'Finnhub rate limit reached; remaining sections skipped.'
-                  : 'Alpha Vantage rate limit reached; remaining sections skipped.'
-              );
+              const providerLabel = detectRateLimitProvider(message);
+              notes.push(`${providerLabel} rate limit reached; remaining sections skipped.`);
               return cachedValue !== null ? (cachedValue as T) : (undefined as T);
             }
-            if (!/unavailable (in|via) (Alpha|Finnhub)/i.test(message) && !message.includes('Alpha-only mode')) {
+            if (!isSuppressedProviderError(message)) {
               notes.push(`${label}: ${message}`);
             }
             if (cachedValue && typeof cachedValue === 'object') {
@@ -1774,19 +1820,37 @@ export async function executeTool(
           analystRatings: any;
           priceTargets: any;
         };
-        const rawItems: RawDeepSectorItem[] = [];
-        for (const symbol of universe) {
-          const cache = await loadSymbolCache(symbol);
-          const price = await safeFetch(symbol, cache, 'Price', 'price', stockService.getStockPrice(symbol));
-          const overview = await safeFetch(symbol, cache, 'Company overview', 'overview', stockService.getCompanyOverview(symbol));
-          const priceHistory = await safeFetch(symbol, cache, 'Price history', `priceHistory:${range}`, stockService.getPriceHistory(symbol, range));
-          const incomeStatement = await safeFetch(symbol, cache, 'Income statement', 'incomeStatement', stockService.getIncomeStatement(symbol));
-          const balanceSheet = await safeFetch(symbol, cache, 'Balance sheet', 'balanceSheet', stockService.getBalanceSheet(symbol));
-          const cashFlow = await safeFetch(symbol, cache, 'Cash flow', 'cashFlow', stockService.getCashFlow(symbol));
-          const analystRatings = await safeFetch(symbol, cache, 'Analyst ratings', 'analystRatings', stockService.getAnalystRatings(symbol));
-          const priceTargets = await safeFetch(symbol, cache, 'Price targets', 'priceTargets', stockService.getPriceTargets(symbol));
-          rawItems.push({ symbol, cache, price, overview, priceHistory, incomeStatement, balanceSheet, cashFlow, analystRatings, priceTargets });
-        }
+        const rawItems = await mapWithConcurrency<string, RawDeepSectorItem>(
+          universe,
+          DATA_FETCH_CONCURRENCY,
+          async (symbol) => {
+            if (timeBudgetExceeded()) {
+              noteTimeBudget();
+              return {
+                symbol,
+                cache: {},
+                price: undefined,
+                overview: undefined,
+                priceHistory: undefined,
+                incomeStatement: undefined,
+                balanceSheet: undefined,
+                cashFlow: undefined,
+                analystRatings: undefined,
+                priceTargets: undefined,
+              };
+            }
+            const cache = await loadSymbolCache(symbol);
+            const price = await safeFetch(symbol, cache, 'Price', 'price', stockService.getStockPrice(symbol));
+            const overview = await safeFetch(symbol, cache, 'Company overview', 'overview', stockService.getCompanyOverview(symbol));
+            const priceHistory = await safeFetch(symbol, cache, 'Price history', `priceHistory:${range}`, stockService.getPriceHistory(symbol, range));
+            const incomeStatement = await safeFetch(symbol, cache, 'Income statement', 'incomeStatement', stockService.getIncomeStatement(symbol));
+            const balanceSheet = await safeFetch(symbol, cache, 'Balance sheet', 'balanceSheet', stockService.getBalanceSheet(symbol));
+            const cashFlow = await safeFetch(symbol, cache, 'Cash flow', 'cashFlow', stockService.getCashFlow(symbol));
+            const analystRatings = await safeFetch(symbol, cache, 'Analyst ratings', 'analystRatings', stockService.getAnalystRatings(symbol));
+            const priceTargets = await safeFetch(symbol, cache, 'Price targets', 'priceTargets', stockService.getPriceTargets(symbol));
+            return { symbol, cache, price, overview, priceHistory, incomeStatement, balanceSheet, cashFlow, analystRatings, priceTargets };
+          }
+        );
 
         const items: any[] = [];
         for (const item of rawItems) {

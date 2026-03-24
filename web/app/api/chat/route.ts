@@ -47,6 +47,9 @@ const LLM_PROVIDER = (process.env.LLM_PROVIDER || 'github').toLowerCase() as LLM
 const AUTO_DOWNGRADE_GPT5 = process.env.AUTO_DOWNGRADE_GPT5 !== 'false';
 const DEFAULT_FALLBACK_MODELS = [
   DEFAULT_MODEL,
+  'openai/gpt-4.1',
+  'anthropic/claude-3.7-sonnet',
+  'anthropic/claude-3.5-sonnet',
   'openai/gpt-4.1-mini',
   'google/gemini-3-flash',
 ];
@@ -63,6 +66,24 @@ const TOOL_RESULT_MAX_STRING = 500;
 const RATE_LIMIT_GUIDANCE =
   'This model allows 50 requests per day. ' +
   'Try switching to a different model from the dropdown, or try again tomorrow.';
+
+const MODEL_COOLDOWN_MS = Number(process.env.LLM_MODEL_COOLDOWN_MS || 120000);
+const modelCooldowns = new Map<string, number>();
+
+function isModelCoolingDown(modelId: string): boolean {
+  const until = modelCooldowns.get(modelId);
+  if (!until) return false;
+  if (until <= Date.now()) {
+    modelCooldowns.delete(modelId);
+    return false;
+  }
+  return true;
+}
+
+function markModelCooldown(modelId: string, retryAfterMs?: number) {
+  const cooldown = retryAfterMs && retryAfterMs > 0 ? retryAfterMs : MODEL_COOLDOWN_MS;
+  modelCooldowns.set(modelId, Date.now() + cooldown);
+}
 
 // Vercel: allow up to 5 minutes for deep research requests
 export const maxDuration = 300;
@@ -83,6 +104,8 @@ const SYSTEM_PROMPT = `You are an elite buy-side equity research analyst. Produc
 **NON-NEGOTIABLE RULES:**
 
 **1. Fetch before you write.** Never state a fact about a stock without first calling the relevant tool. No estimates, no speculation, no filler.
+
+**1b. No training-data facts.** Never use model memory/training data for numeric or time-sensitive market facts. If tools return nothing, state that the data is unavailable.
 
 **2. Batch all parallel calls in ONE round.** Researching N stocks? Issue ALL tool calls simultaneously in a single response — never one at a time. This is critical for multi-stock reports.
 
@@ -112,6 +135,7 @@ const COMPACT_SYSTEM_PROMPT = `You are a buy-side equity research analyst.
 
 Rules:
 - Fetch data via tools before stating facts.
+- Never use training data for numeric market facts; say "data unavailable" if tools fail.
 - Batch tool calls in a single round.
 - If given company names instead of tickers (e.g. "Google", "Microsoft"), call search_stock for each name first to get the correct ticker symbol, then use those tickers in report/comparison tools.
 - Use tables for comparisons and show calculations.
@@ -291,7 +315,9 @@ function buildFallbackModels(requestedModel: string): string[] {
     .filter(Boolean);
   const base = fromEnv.length > 0 ? fromEnv : DEFAULT_FALLBACK_MODELS;
   const combined = [requestedModel, ...base, FALLBACK_MODEL];
-  return Array.from(new Set(combined.filter(Boolean)));
+  const unique = Array.from(new Set(combined.filter(Boolean)));
+  const available = unique.filter((model) => !isModelCoolingDown(model));
+  return available.length > 0 ? available : unique;
 }
 
 function selectToolNames() {
@@ -569,9 +595,10 @@ async function callLLMForDataFill(
     {
       role: 'system',
       content:
-        'You are a financial data assistant with knowledge of publicly traded companies. ' +
-        'Provide factual financial data from your training. ' +
-        'Return null for any value you are uncertain about. ' +
+        'You are a financial data assistant. ' +
+        'Use ONLY the facts explicitly provided in the prompt. Do not use training data for numeric values. ' +
+        'For ticker-resolution prompts you may rely on publicly listed tickers, but return null if unsure. ' +
+        'Return null for any value you cannot confirm. ' +
         'Respond ONLY with valid JSON — no markdown, no explanation.',
     },
     { role: 'user', content: prompt },
@@ -773,6 +800,10 @@ export async function POST(request: NextRequest) {
     if (AUTO_DOWNGRADE_GPT5 && /gpt-5/i.test(activeModel)) {
       activeModel = DEFAULT_MODEL;
     }
+    if (isModelCoolingDown(activeModel)) {
+      const fallbackModels = buildFallbackModels(activeModel);
+      activeModel = fallbackModels[0] || activeModel;
+    }
     let toolDefinitionsUsed = toolDefinitions;
     const fallbackModels = buildFallbackModels(activeModel);
     let fallbackIndex = Math.max(0, fallbackModels.findIndex((item) => item === activeModel));
@@ -862,6 +893,7 @@ export async function POST(request: NextRequest) {
             throw error;
           }
           if (attempt === 0 && isRateLimit) {
+            markModelCooldown(activeModel, error?.retryAfterMs);
             if (fallbackIndex < fallbackModels.length - 1) {
               fallbackIndex += 1;
               activeModel = fallbackModels[fallbackIndex];

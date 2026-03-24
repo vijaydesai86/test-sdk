@@ -1,6 +1,6 @@
 # 📊 Stock Research Assistant
 
-An AI-powered equity research platform. Ask questions in plain English — the LLM acts as the **final decision-maker**, orchestrating real-time data from multiple APIs, filling any gaps with verified knowledge, and delivering polished research reports.
+An AI-powered equity research platform. Ask questions in plain English — the LLM acts as the **final decision-maker**, orchestrating real-time data from multiple APIs, preserving data provenance, and delivering polished research reports without fabricating missing values.
 
 [![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/vijaydesai86/test-sdk&root-directory=web&env=GITHUB_TOKEN&envDescription=GitHub%20token%20for%20Copilot&envLink=https://github.com/settings/tokens)
 
@@ -63,7 +63,7 @@ Any question that doesn't fit the above — macro trends, industry news, "explai
 │  • Decides which tools to call and in what order                        │
 │  • Handles rate limits, retries, and model fallback transparently       │
 │  • Stitches data from multiple sources into a coherent report           │
-│  • Fills any remaining gaps using its own verified knowledge            │
+│  • Leaves missing fields as null when tools provide no data             │
 └──────┬───────────────────────────────────────────────┬──────────────────┘
        │ Tool calls                                    │ Gap-fill prompts
        │                                               │
@@ -138,10 +138,10 @@ Fields still null/undefined?
        │
        ├─ No ──► Build report
        │
-       └─ Yes ──► LLM gap-fill (FILL_MODEL)
-                  • Returns only values LLM can verify from training
-                  • Returns null for anything uncertain — never fabricates
-                  • Merged into data (never overwrites real API values)
+       └─ Yes ──► LLM format pass (FILL_MODEL)
+                  • Uses only tool-provided context
+                  • Returns null for anything missing
+                  • Never injects training data or guesses
                   │
                   ▼
                 Build report (N/A only for truly unresolvable fields)
@@ -190,8 +190,10 @@ npm run dev
 | `LLM_PROVIDER` | No | `github` | LLM API provider: `github` (GitHub Models), `gemini` (Gemini API), or `hybrid` (GitHub primary, auto-falls back to Gemini on HTTP 429) |
 | `GEMINI_MODEL` | No | `gemini-2.5-flash` | Gemini model name. Default `gemini-2.5-flash` has free-tier quota on AI Studio keys. `gemini-2.0-flash` has **zero** free quota and will always fail. |
 | `ALPHA_VANTAGE_API_KEY` | **Yes** | — | Free API key from [alphavantage.co](https://www.alphavantage.co/support/#api-key) — real-time market data |
-| `FINNHUB_API_KEY` | Recommended | — | Free key from [finnhub.io](https://finnhub.io) — enables hybrid fallback for higher data completeness |
-| `STOCK_DATA_PROVIDER` | No | `alphavantage` | `alphavantage`, `finnhub`, or `hybrid` (use `hybrid` for best data coverage) |
+| `FINNHUB_API_KEY` | Recommended | — | Free key from [finnhub.io](https://finnhub.io) — enables hybrid/multi fallback for higher data completeness |
+| `FINANCIAL_MODELING_PREP_API_KEY` | Optional | — | Free key from [financialmodelingprep.com](https://financialmodelingprep.com/developer/docs) — fundamentals, statements, news |
+| `TWELVE_DATA_API_KEY` | Optional | — | Free key from [twelvedata.com](https://twelvedata.com/pricing) — price quotes and history |
+| `STOCK_DATA_PROVIDER` | No | `alphavantage` | `alphavantage`, `finnhub`, `fmp`, `twelvedata`, `stooq`, `hybrid`, or `multi` (`multi` = Alpha Vantage → Finnhub → FMP → Twelve Data → Stooq) |
 | `COPILOT_MODEL` | No | `openai/gpt-4.1` | Main reasoning model (GitHub Models name; ignored when `LLM_PROVIDER=gemini`) |
 | `FILL_MODEL` | No | `openai/gpt-4.1-mini` | Lighter model for ticker resolution and gap-fill on GitHub Models (preserves main model quota) |
 | `COPILOT_FALLBACK_MODEL` | No | same as main | Fallback model if main hits rate limit (GitHub Models only) |
@@ -199,8 +201,15 @@ npm run dev
 | `STOCK_CACHE_TTL_MS` | No | `604800000` | Cache TTL in milliseconds (default: 7 days) |
 | `NUM_COMPANIES` | No | `10` | Companies per comparison/sector/deep-sector report. Optimal: 10; raise to 15 for broader research, lower to 5 for faster runs |
 | `DEEP_RESEARCH_DEPTH` | No | `2` | Recursive refinement passes in deep sector research. Each pass deepens analysis using prior results. Optimal: 2; set 1 to disable recursion |
+| `DEEP_RESEARCH_MAX_MS` | No | `240000` | Max runtime budget for deep sector research to stay under Vercel timeouts |
+| `DATA_FETCH_CONCURRENCY` | No | `3` | Parallelism for per-ticker API calls (tune to balance speed vs rate limits) |
 | `ALPHA_VANTAGE_MIN_INTERVAL_MS` | No | `1200` | Minimum ms between Alpha Vantage requests |
 | `FINNHUB_MIN_INTERVAL_MS` | No | `500` | Minimum ms between Finnhub requests |
+| `FMP_MIN_INTERVAL_MS` | No | `800` | Minimum ms between Financial Modeling Prep requests |
+| `TWELVE_DATA_MIN_INTERVAL_MS` | No | `800` | Minimum ms between Twelve Data requests |
+| `STOOQ_MIN_INTERVAL_MS` | No | `800` | Minimum ms between Stooq requests |
+| `STOCK_PROVIDER_COOLDOWN_MS` | No | `300000` | Pause a provider after rate-limit/auth errors |
+| `LLM_MODEL_COOLDOWN_MS` | No | `120000` | Cooldown per LLM model after a rate-limit error |
 | `HEALTH_CHECK_SYMBOL` | No | — | If set, `/api/health` makes a live API call with this ticker |
 
 ---
