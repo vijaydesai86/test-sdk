@@ -127,7 +127,8 @@ function buildTickerResolutionPrompt(queries: string[]): string {
     `RULES:\n` +
     `- Return the primary US-listed ticker (e.g. "GOOGL" for Google/Alphabet, "MSFT" for Microsoft)\n` +
     `- For share-class ambiguity, prefer the more liquid class (e.g. GOOGL over GOOG)\n` +
-    `- Return null for any input you cannot identify with certainty\n\n` +
+    `- Return null for any input you cannot identify with certainty\n` +
+    `- CRITICAL: You are ONLY identifying ticker symbols here, not providing any financial data.\n\n` +
     `Respond ONLY with valid JSON:\n` +
     JSON.stringify(shape, null, 2)
   );
@@ -136,6 +137,8 @@ function buildTickerResolutionPrompt(queries: string[]): string {
 /**
  * Builds a prompt asking the LLM to identify the top N publicly-traded US companies
  * for a given sector or investment theme.
+ * NOTE: This call returns ONLY ticker symbols — all financial data is fetched from
+ * real market-data APIs immediately after. The LLM must NEVER supply financial values.
  */
 function buildSectorCompaniesPrompt(sector: string, count: number): string {
   return (
@@ -144,7 +147,8 @@ function buildSectorCompaniesPrompt(sector: string, count: number): string {
     `- Return ONLY official US stock exchange ticker symbols (NYSE/NASDAQ)\n` +
     `- Select companies that are pure-play or significantly exposed to "${sector}"\n` +
     `- Prefer large-cap, highly liquid stocks — avoid micro-caps and OTC stocks\n` +
-    `- For broad themes, include the most representative market leaders\n\n` +
+    `- For broad themes, include the most representative market leaders\n` +
+    `- CRITICAL: Return ticker symbols ONLY. Do NOT include any prices, revenues, or financial metrics — those will be fetched from live APIs.\n\n` +
     `Respond ONLY with a valid JSON array of exactly ${count} ticker symbols (no markdown, no explanation):\n` +
     `["TICK1", "TICK2", "TICK3"]`
   );
@@ -225,6 +229,8 @@ function buildDeepSectorDependencyPrompt(
 
   return (
     `You are a senior equity research analyst. Your task is to perform a deep sector ecosystem analysis for the "${sector}" sector.\n\n` +
+    `CRITICAL: All your analysis MUST be grounded in the company data provided below (from live APIs). ` +
+    `Do NOT inject financial figures (prices, revenues, margins, etc.) from training memory — use ONLY the data given.\n\n` +
     `CANDIDATE COMPANIES: ${symbolList}\n\n` +
     `COMPANY DATA:\n${summaries}\n` +
     previousPassSection +
@@ -282,6 +288,9 @@ function buildMoatAnalysisPrompt(
 
   return (
     `You are a senior equity research analyst specialising in Warren Buffett-style economic moat analysis.\n\n` +
+    `CRITICAL: Base your entire analysis ONLY on the real API data provided below. ` +
+    `Do NOT use training-memory values for prices, margins, revenue, or any financial metric — ` +
+    `all financial inputs come from live market-data APIs and are provided here.\n\n` +
     `Assess the competitive moat for the following company and return a JSON object.\n\n` +
     `Company: ${name} (${symbol})\n` +
     `Sector: ${sector}\n` +
@@ -343,6 +352,8 @@ function buildBatchMoatAnalysisPrompt(
 
   return (
     `You are a senior equity research analyst specialising in Warren Buffett-style economic moat analysis.\n\n` +
+    `CRITICAL: Base your entire analysis ONLY on the real API data provided below for each company. ` +
+    `Do NOT use training-memory values for prices, margins, revenue, or any financial metric.\n\n` +
     `Assess the competitive moat for EACH of the following companies.\n\n` +
     `COMPANY DATA:\n${summaries}\n\n` +
     `MOAT FRAMEWORK: Network Effects | Cost Advantage | Switching Costs | Intangible Assets | Efficient Scale | Mixed | None\n` +

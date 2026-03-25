@@ -1836,9 +1836,44 @@ export function buildComparisonReport(data: ComparisonReportData): string {
     validScores.length < scored.length
       ? '_Some companies lack composite scores; weights are normalized across available scores._'
       : '_Indicative allocation is derived from normalized composite scores. It is not investment advice._',
+    buildComparisonConclusion(items, scored, 'comparison'),
   ].filter(Boolean) as string[];
 
   return sections.join('\n\n');
+}
+
+/**
+ * Computes composite scores for a set of ComparisonReportItems.
+ * Extracted as a shared helper so sector/deep-sector reports can produce
+ * a theme-aware conclusion without re-running the full comparison pipeline.
+ */
+function scoreComparisonItems(
+  items: ComparisonReportItem[],
+  generatedAt: string
+): Array<{ item: ComparisonReportItem; score: number | null }> {
+  return items.map((item) => {
+    const scorecard = computeScorecard({
+      symbol: item.symbol,
+      generatedAt,
+      price: item.price || {},
+      companyOverview: item.overview,
+      basicFinancials: item.basicFinancials,
+      incomeStatement: item.incomeStatement,
+      balanceSheet: item.balanceSheet,
+      cashFlow: item.cashFlow,
+      analystRatings: item.analystRatings,
+      priceTargets: item.priceTargets,
+    });
+    return { item, score: scorecard.composite };
+  });
+}
+
+/**
+ * Strips the generic "## 🎯 Investment Conclusion" block from a comparison-report
+ * body so that sector / deep-sector reports can substitute their own version.
+ */
+function stripComparisonConclusion(body: string): string {
+  return body.replace(/\n\n## 🎯 Investment Conclusion[\s\S]*$/, '');
 }
 
 /**
@@ -1865,14 +1900,19 @@ export function buildSectorReport(data: SectorReportData): string {
   ].join('\n\n');
 
   // Re-use the full comparison report body (strip its own header/generated line
-  // so they are not duplicated).
-  const comparisonBody = buildComparisonReport(data)
-    .replace(/^# Company Comparison Report\n\nGenerated:[^\n]*\n\nUniverse:[^\n]*\n\n/, '')
-    .replace(/^# Company Comparison Report\n\nGenerated:[^\n]*\n\n/, '')
-    .replace(/^# Company Comparison Report\n\n/, '')
-    .trimStart();
+  // and generic conclusion so they are not duplicated).
+  const comparisonBody = stripComparisonConclusion(
+    buildComparisonReport(data)
+      .replace(/^# Company Comparison Report\n\nGenerated:[^\n]*\n\nUniverse:[^\n]*\n\n/, '')
+      .replace(/^# Company Comparison Report\n\nGenerated:[^\n]*\n\n/, '')
+      .replace(/^# Company Comparison Report\n\n/, '')
+      .trimStart()
+  );
 
-  return `${sectorHeader}\n\n${comparisonBody}`;
+  const scored = scoreComparisonItems(data.items, data.generatedAt);
+  const conclusion = buildComparisonConclusion(data.items, scored, 'sector', data.sectorQuery);
+
+  return `${sectorHeader}\n\n${comparisonBody}\n\n${conclusion}`;
 }
 
 /**
@@ -1943,14 +1983,20 @@ export function buildDeepSectorReport(data: DeepSectorReportData): string {
   // grasp why each company made the final list.
   const snapshotsSection = buildCompanySnapshotsSection(data.universe, data.companySnapshots);
 
-  // Re-use comparison report body — strip the comparison header so it is not duplicated.
-  const comparisonBody = buildComparisonReport(data)
-    .replace(/^# Company Comparison Report\n\nGenerated:[^\n]*\n\nUniverse:[^\n]*\n\n/, '')
-    .replace(/^# Company Comparison Report\n\nGenerated:[^\n]*\n\n/, '')
-    .replace(/^# Company Comparison Report\n\n/, '')
-    .trimStart();
+  // Re-use comparison report body — strip the comparison header and generic
+  // conclusion so they are not duplicated (deep-sector adds its own conclusion).
+  const comparisonBody = stripComparisonConclusion(
+    buildComparisonReport(data)
+      .replace(/^# Company Comparison Report\n\nGenerated:[^\n]*\n\nUniverse:[^\n]*\n\n/, '')
+      .replace(/^# Company Comparison Report\n\nGenerated:[^\n]*\n\n/, '')
+      .replace(/^# Company Comparison Report\n\n/, '')
+      .trimStart()
+  );
 
-  return [header, dependencySection, diagramSection, refinementSection, snapshotsSection, comparisonBody]
+  const scored = scoreComparisonItems(data.items, data.generatedAt);
+  const conclusion = buildComparisonConclusion(data.items, scored, 'deep-sector', data.sectorQuery);
+
+  return [header, dependencySection, diagramSection, refinementSection, snapshotsSection, comparisonBody, conclusion]
     .filter(Boolean)
     .join('\n\n');
 }
@@ -2185,7 +2231,7 @@ function buildComparisonConclusion(
     : null;
 
   const moatLine = moatLeader
-    ? `- Strongest moat: **${moatLeader.overview?.name || moatLeader.symbol} (${moatLeader.symbol})** — ${moatLeader.moatAnalysis!.moatType} (score ${moatLeader.moatAnalysis!.moatScore}/100)`
+    ? `- Strongest moat: **${moatLeader.overview?.name || moatLeader.symbol} (${moatLeader.symbol})** — ${moatLeader.moatAnalysis?.moatType ?? 'N/A'} (score ${moatLeader.moatAnalysis?.moatScore ?? 'N/A'}/100)`
     : null;
 
   const outlookLabel =
