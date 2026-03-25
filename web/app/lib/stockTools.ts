@@ -127,8 +127,7 @@ function buildTickerResolutionPrompt(queries: string[]): string {
     `RULES:\n` +
     `- Return the primary US-listed ticker (e.g. "GOOGL" for Google/Alphabet, "MSFT" for Microsoft)\n` +
     `- For share-class ambiguity, prefer the more liquid class (e.g. GOOGL over GOOG)\n` +
-    `- Return null for any input you cannot identify with certainty\n` +
-    `- CRITICAL: You are ONLY identifying ticker symbols here, not providing any financial data.\n\n` +
+    `- Return null for any input you cannot identify with certainty (do NOT provide financial values)\n` +
     `Respond ONLY with valid JSON:\n` +
     JSON.stringify(shape, null, 2)
   );
@@ -146,9 +145,7 @@ function buildSectorCompaniesPrompt(sector: string, count: number): string {
     `RULES:\n` +
     `- Return ONLY official US stock exchange ticker symbols (NYSE/NASDAQ)\n` +
     `- Select companies that are pure-play or significantly exposed to "${sector}"\n` +
-    `- Prefer large-cap, highly liquid stocks — avoid micro-caps and OTC stocks\n` +
-    `- For broad themes, include the most representative market leaders\n` +
-    `- CRITICAL: Return ticker symbols ONLY. Do NOT include any prices, revenues, or financial metrics — those will be fetched from live APIs.\n\n` +
+    `- Prefer large-cap, highly liquid stocks — avoid micro-caps and OTC stocks. Return ticker symbols ONLY (no prices, revenues, or financial metrics — those come from live APIs)\n\n` +
     `Respond ONLY with a valid JSON array of exactly ${count} ticker symbols (no markdown, no explanation):\n` +
     `["TICK1", "TICK2", "TICK3"]`
   );
@@ -385,6 +382,251 @@ function parseMoatEntry(m: any): MoatAnalysis | null {
     narrative: String(m.narrative || ''),
     bestFor: String(m.bestFor || ''),
   };
+}
+
+/**
+ * Builds a rich LLM prompt for a state-of-the-art investment conclusion for a
+ * single stock. The LLM receives ALL real API data collected and must produce a
+ * 5-7 paragraph research-quality narrative covering:
+ *   1. Business overview & competitive position
+ *   2. Financial health & growth trajectory
+ *   3. Valuation analysis
+ *   4. Key risks and catalysts
+ *   5. Final recommendation with portfolio role
+ *
+ * CRITICAL: The LLM must base every statement on the data provided — no training memory.
+ */
+function buildStockConclusionPrompt(
+  symbol: string,
+  price: any,
+  companyOverview: any,
+  basicFinancials: any,
+  earningsHistory: any,
+  incomeStatement: any,
+  balanceSheet: any,
+  cashFlow: any,
+  analystRatings: any,
+  priceTargets: any,
+  priceHistory: any,
+  newsSentiment: any,
+  companyNews: any,
+  moatAnalysis: any
+): string {
+  const name = companyOverview?.name || symbol;
+  const fmt = (v: any): string => {
+    if (v === null || v === undefined || v === 'N/A' || v === '') return 'N/A';
+    const n = Number(v);
+    if (Number.isFinite(n)) {
+      // Heuristic: if abs(n) <= 2, treat as a ratio (e.g. 0.25 → 25%)
+      const pct = Math.abs(n) <= 2 ? (n * 100).toFixed(1) + '%' : n.toFixed(2);
+      return pct;
+    }
+    return String(v);
+  };
+
+  const currentPrice = price?.price ?? 'N/A';
+  const changePercent = price?.changePercent ?? 'N/A';
+  const marketCap = companyOverview?.marketCapitalization ?? 'N/A';
+  const pe = companyOverview?.peRatio ?? basicFinancials?.metric?.peBasicExclExtraTTM ?? 'N/A';
+  const pb = companyOverview?.priceToBookRatio ?? basicFinancials?.metric?.pbAnnual ?? 'N/A';
+  const ps = companyOverview?.priceToSalesRatioTTM ?? basicFinancials?.metric?.psTTM ?? 'N/A';
+  const ev = companyOverview?.evToEbitda ?? basicFinancials?.metric?.evToEbitda ?? 'N/A';
+  const beta = companyOverview?.beta ?? 'N/A';
+  const revTTM = companyOverview?.revenueTTM ?? 'N/A';
+  const grossMargin = fmt(basicFinancials?.metric?.grossMarginTTM ?? companyOverview?.profitMargin);
+  const opMargin = fmt(basicFinancials?.metric?.operatingMarginTTM ?? companyOverview?.operatingMargin);
+  const netMargin = fmt(companyOverview?.profitMargin);
+  const roe = fmt(basicFinancials?.metric?.roeTTM ?? companyOverview?.returnOnEquity);
+  const roa = fmt(basicFinancials?.metric?.roaTTM ?? companyOverview?.returnOnAssets);
+  const revenueGrowth = fmt(basicFinancials?.metric?.revenueGrowthTTM ?? companyOverview?.quarterlyRevenueGrowth);
+  const epsGrowth = fmt(basicFinancials?.metric?.epsGrowthTTM ?? basicFinancials?.metric?.epsGrowth5Y);
+  const debtToEquity = fmt(basicFinancials?.metric?.totalDebt_totalEquityAnnual);
+  const currentRatio = fmt(basicFinancials?.metric?.currentRatioAnnual);
+  const fcfPerShare = fmt(basicFinancials?.metric?.fcfPerShareTTM);
+
+  // Latest quarterly earnings
+  const latestQ = earningsHistory?.quarterlyEarnings?.[0];
+  const eps1 = latestQ ? `${latestQ.fiscalQuarter}: EPS ${latestQ.reportedEPS}` : 'N/A';
+
+  // Latest quarterly income
+  const latestIncome = incomeStatement?.quarterlyReports?.[0];
+  const revenue1 = latestIncome ? `${latestIncome.fiscalDateEnding}: Revenue $${Number(latestIncome.totalRevenue).toLocaleString()}` : 'N/A';
+  const opIncome1 = latestIncome ? `Op. Income $${Number(latestIncome.operatingIncome).toLocaleString()}` : 'N/A';
+
+  // Balance sheet
+  const latestBS = balanceSheet?.quarterlyReports?.[0];
+  const totalDebt = latestBS?.shortLongTermDebtTotal ?? latestBS?.longTermDebt ?? 'N/A';
+  const cash = latestBS?.cashAndCashEquivalentsAtCarryingValue ?? latestBS?.cash ?? 'N/A';
+
+  // Cash flow
+  const latestCF = cashFlow?.quarterlyReports?.[0];
+  const ocf = latestCF?.operatingCashflow ?? 'N/A';
+  const fcf = latestCF?.capitalExpenditures
+    ? String(Number(latestCF.operatingCashflow ?? 0) - Math.abs(Number(latestCF.capitalExpenditures)))
+    : 'N/A';
+
+  // Analyst data
+  const targetMean = priceTargets?.targetMean ?? analystRatings?.analystTargetPrice ?? companyOverview?.analystTargetPrice ?? 'N/A';
+  const targetHigh = priceTargets?.targetHigh ?? 'N/A';
+  const targetLow = priceTargets?.targetLow ?? 'N/A';
+  const strongBuy = analystRatings?.strongBuy ?? 'N/A';
+  const buyCount = analystRatings?.buy ?? 'N/A';
+  const holdCount = analystRatings?.hold ?? 'N/A';
+  const sellCount = analystRatings?.sell ?? 'N/A';
+  const strongSell = analystRatings?.strongSell ?? 'N/A';
+
+  // Price history context
+  const prices = priceHistory?.prices;
+  const priceHigh = prices?.length
+    ? Math.max(...prices.map((p: any) => Number(p.close) || 0)).toFixed(2)
+    : 'N/A';
+  const priceLow = prices?.length
+    ? Math.min(...prices.filter((p: any) => Number(p.close) > 0).map((p: any) => Number(p.close))).toFixed(2)
+    : 'N/A';
+  const priceStart = prices?.length ? prices[prices.length - 1].close : 'N/A';
+  const priceReturn = prices?.length && Number(priceStart) && currentPrice !== 'N/A'
+    ? (((Number(currentPrice) - Number(priceStart)) / Number(priceStart)) * 100).toFixed(1) + '%'
+    : 'N/A';
+
+  // News / sentiment
+  const sentiment = newsSentiment?.sentiment?.sentiment || newsSentiment?.sentiment?.buzz || 'N/A';
+  const recentHeadlines = (companyNews?.articles || [])
+    .slice(0, 5)
+    .map((a: any) => a.headline || a.title)
+    .filter(Boolean)
+    .join('; ');
+
+  // Moat
+  const moatSummary = moatAnalysis
+    ? `Type: ${moatAnalysis.moatType}, Strength: ${moatAnalysis.moatStrength}, Score: ${moatAnalysis.moatScore}/100. ${moatAnalysis.narrative}`
+    : 'Not assessed';
+
+  return (
+    `You are a top-tier equity research analyst writing a definitive investment conclusion for a professional investment report.\n\n` +
+    `CRITICAL RULES:\n` +
+    `1. Base EVERY factual claim strictly on the real market data provided below — cite actual numbers.\n` +
+    `2. Do NOT use your training knowledge for any financial figures (prices, revenues, margins, multiples).\n` +
+    `3. Write a COMPREHENSIVE, well-structured narrative of 5-7 paragraphs — NOT bullet points.\n` +
+    `4. Each paragraph should build on the previous to form a coherent investment thesis.\n` +
+    `5. Be specific: reference actual numbers from the data. Vague statements like "revenue is growing" are unacceptable.\n` +
+    `6. Conclude with a clear investment recommendation: BUY / HOLD / WATCH / SELL with specific rationale.\n` +
+    `7. Output ONLY the narrative paragraphs in plain markdown — no JSON, no section headers, no preamble.\n\n` +
+    `═══ COMPANY DATA ═══\n` +
+    `Company: ${name} (${symbol})\n` +
+    `Sector: ${companyOverview?.sector || 'N/A'} | Industry: ${companyOverview?.industry || 'N/A'}\n` +
+    `Description: ${companyOverview?.description ? String(companyOverview.description).slice(0, 500) : 'N/A'}\n\n` +
+    `── Price & Valuation ──\n` +
+    `Current Price: $${currentPrice} (${changePercent} day change)\n` +
+    `52-week Range (period data): Low $${priceLow} | High $${priceHigh} | Period Return: ${priceReturn}\n` +
+    `Market Cap: ${marketCap}\n` +
+    `P/E: ${pe} | P/B: ${pb} | P/S: ${ps} | EV/EBITDA: ${ev} | Beta: ${beta}\n\n` +
+    `── Profitability & Growth ──\n` +
+    `Revenue TTM: ${revTTM}\n` +
+    `Gross Margin: ${grossMargin} | Operating Margin: ${opMargin} | Net Margin: ${netMargin}\n` +
+    `ROE: ${roe} | ROA: ${roa}\n` +
+    `Revenue Growth: ${revenueGrowth} | EPS Growth: ${epsGrowth}\n` +
+    `Latest Quarter: ${revenue1}, ${opIncome1}, ${eps1}\n\n` +
+    `── Balance Sheet ──\n` +
+    `Cash: ${cash} | Total Debt: ${totalDebt} | D/E: ${debtToEquity} | Current Ratio: ${currentRatio}\n` +
+    `Operating Cash Flow: ${ocf} | Free Cash Flow (est): ${fcf} | FCF/Share: ${fcfPerShare}\n\n` +
+    `── Analyst Consensus ──\n` +
+    `Target: Mean $${targetMean} | High $${targetHigh} | Low $${targetLow}\n` +
+    `Ratings: Strong Buy ${strongBuy} | Buy ${buyCount} | Hold ${holdCount} | Sell ${sellCount} | Strong Sell ${strongSell}\n\n` +
+    `── Competitive Moat ──\n` +
+    `${moatSummary}\n\n` +
+    `── News & Sentiment ──\n` +
+    `Overall Sentiment: ${sentiment}\n` +
+    `Recent Headlines: ${recentHeadlines || 'No recent headlines'}\n\n` +
+    `═══ END OF DATA ═══\n\n` +
+    `Write the comprehensive investment conclusion now (5-7 paragraphs, specific numbers throughout, ends with clear BUY/HOLD/WATCH/SELL recommendation):`
+  );
+}
+
+/**
+ * Builds a rich LLM prompt for a multi-company investment conclusion
+ * (comparison, sector, or deep-sector report).
+ *
+ * The LLM receives the full financial snapshot for each company and must produce
+ * a 5-7 paragraph narrative covering:
+ *   1. Group/sector theme and macro context
+ *   2. Comparative financial analysis (growth, margins, moats)
+ *   3. Valuation landscape and relative attractiveness
+ *   4. Top pick rationale with specific data points
+ *   5. Risk factors and portfolio strategy
+ *
+ * CRITICAL: Every claim must reference numbers from the provided data.
+ */
+function buildComparisonConclusionPrompt(
+  items: Array<{
+    symbol: string;
+    price?: any;
+    overview?: any;
+    basicFinancials?: any;
+    priceTargets?: any;
+    analystRatings?: any;
+    incomeStatement?: any;
+    moatAnalysis?: any;
+  }>,
+  reportType: 'comparison' | 'sector' | 'deep-sector',
+  sectorQuery?: string,
+  scored?: Array<{ symbol: string; score: number | null }>
+): string {
+  const theme =
+    reportType === 'comparison' ? 'Peer Comparison'
+    : reportType === 'sector' ? `Sector: ${sectorQuery || 'Unknown'}`
+    : `Deep Sector Research: ${sectorQuery || 'Unknown'}`;
+
+  const companySummaries = items.map((item) => {
+    const sym = item.symbol;
+    const name = item.overview?.name || sym;
+    const price = item.price?.price ?? 'N/A';
+    const pe = item.overview?.peRatio ?? item.basicFinancials?.metric?.peBasicExclExtraTTM ?? 'N/A';
+    const mc = item.overview?.marketCapitalization ?? 'N/A';
+    const rev = item.overview?.revenueTTM ?? 'N/A';
+    const opMargin = item.overview?.operatingMargin ?? item.basicFinancials?.metric?.operatingMarginTTM ?? 'N/A';
+    const grossMargin = item.overview?.profitMargin ?? item.basicFinancials?.metric?.grossMarginTTM ?? 'N/A';
+    const roe = item.overview?.returnOnEquity ?? item.basicFinancials?.metric?.roeTTM ?? 'N/A';
+    const revGrowth = item.basicFinancials?.metric?.revenueGrowthTTM ?? item.overview?.quarterlyRevenueGrowth ?? 'N/A';
+    const targetMean = item.priceTargets?.targetMean
+      ?? (item.analystRatings?.analystTargetPrice !== 'N/A' ? item.analystRatings?.analystTargetPrice : null)
+      ?? item.overview?.analystTargetPrice ?? 'N/A';
+    const upside = Number(price) && Number(targetMean)
+      ? `${(((Number(targetMean) - Number(price)) / Number(price)) * 100).toFixed(1)}%`
+      : 'N/A';
+    const compositeScore = scored?.find((s) => s.symbol === sym)?.score;
+    const moat = item.moatAnalysis
+      ? `${item.moatAnalysis.moatType} (${item.moatAnalysis.moatStrength}, ${item.moatAnalysis.moatScore}/100)`
+      : 'Not assessed';
+    const latestRevLine = item.incomeStatement?.quarterlyReports?.[0]
+      ? `Latest Q Revenue: $${Number(item.incomeStatement.quarterlyReports[0].totalRevenue).toLocaleString()}`
+      : '';
+
+    return (
+      `▸ ${name} (${sym})\n` +
+      `  Price: $${price} | Market Cap: ${mc} | P/E: ${pe}\n` +
+      `  Revenue TTM: ${rev} | Rev Growth: ${revGrowth} | ${latestRevLine}\n` +
+      `  Gross Margin: ${grossMargin} | Op Margin: ${opMargin} | ROE: ${roe}\n` +
+      `  Analyst Target: $${targetMean} | Upside: ${upside}\n` +
+      `  Composite Score: ${compositeScore !== null && compositeScore !== undefined ? compositeScore.toFixed(1) + '/100' : 'N/A'}\n` +
+      `  Moat: ${moat}`
+    );
+  }).join('\n\n');
+
+  return (
+    `You are a top-tier equity research analyst writing the Investment Conclusion for a professional ${theme} report.\n\n` +
+    `CRITICAL RULES:\n` +
+    `1. Base EVERY factual claim strictly on the real market data provided below — cite actual numbers.\n` +
+    `2. Do NOT use training knowledge for any financial figures.\n` +
+    `3. Write a COMPREHENSIVE narrative of 5-7 paragraphs — NOT bullet points.\n` +
+    `4. Cover: (a) sector/group context, (b) comparative financial performance, (c) valuation, (d) moats and competitive dynamics, (e) top pick(s) with clear evidence-based rationale, (f) risks, (g) portfolio strategy.\n` +
+    `5. Reference specific numbers from each company. Be precise — avoid vague generalisations.\n` +
+    `6. End with a clear recommendation: which company(ies) to buy, hold, or avoid, and why.\n` +
+    `7. Output ONLY the narrative paragraphs in plain markdown — no JSON, no headers, no preamble.\n\n` +
+    `═══ COMPANY DATA ═══\n\n` +
+    companySummaries + '\n\n' +
+    `═══ END OF DATA ═══\n\n` +
+    `Write the comprehensive ${theme} investment conclusion now (5-7 paragraphs, specific numbers throughout):`
+  );
 }
 
 const loadSymbolCache = async (symbol: string): Promise<SymbolCache> => {
@@ -1129,6 +1371,32 @@ export async function executeTool(
           }
         }
 
+        // LLM investment conclusion — rich narrative, best-effort
+        let llmConclusion: string | undefined;
+        if (options?.llmFill) {
+          try {
+            const conclusionPrompt = buildStockConclusionPrompt(
+              symbol,
+              price,
+              companyOverview,
+              finalBasicFinancials,
+              earningsHistory,
+              incomeStatement,
+              balanceSheet,
+              cashFlow,
+              analystRatings,
+              priceTargets,
+              priceHistory,
+              newsSentiment,
+              companyNews,
+              moatAnalysis
+            );
+            llmConclusion = (await options.llmFill(conclusionPrompt)).trim();
+          } catch {
+            // LLM unavailable — use structured fallback
+          }
+        }
+
         const reportBody = buildStockReport({
           symbol: symbol.toUpperCase(),
           generatedAt: new Date().toISOString(),
@@ -1147,6 +1415,7 @@ export async function executeTool(
           newsSentiment,
           companyNews,
           moatAnalysis,
+          llmConclusion,
         });
 
         const content = notes.length
@@ -1373,6 +1642,17 @@ export async function executeTool(
           }
         }
 
+        // Phase 4: LLM investment conclusion — rich narrative, best-effort
+        let llmConclusionComparison: string | undefined;
+        if (options?.llmFill && items.length > 0) {
+          try {
+            const conclusionPrompt = buildComparisonConclusionPrompt(items, 'comparison');
+            llmConclusionComparison = (await options.llmFill(conclusionPrompt)).trim();
+          } catch {
+            // LLM unavailable — use structured fallback
+          }
+        }
+
         const content = buildComparisonReport({
           generatedAt: new Date().toISOString(),
           range,
@@ -1380,6 +1660,7 @@ export async function executeTool(
           items,
           notes,
           sources: sourceMap,
+          llmConclusion: llmConclusionComparison,
         });
         const saved = await saveReport(content, `${universe.join('-')}-comparison-report`);
         return {
@@ -1575,6 +1856,17 @@ export async function executeTool(
           }
         }
 
+        // LLM investment conclusion — rich narrative, best-effort
+        let llmConclusionSector: string | undefined;
+        if (options?.llmFill && items.length > 0) {
+          try {
+            const conclusionPrompt = buildComparisonConclusionPrompt(items, 'sector', sector);
+            llmConclusionSector = (await options.llmFill(conclusionPrompt)).trim();
+          } catch {
+            // LLM unavailable — use structured fallback
+          }
+        }
+
         const content = buildSectorReport({
           sectorQuery: sector,
           selectedBy: 'llm',
@@ -1584,6 +1876,7 @@ export async function executeTool(
           items,
           notes,
           sources: sourceMap,
+          llmConclusion: llmConclusionSector,
         });
         const safeTitle = sector.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
         const saved = await saveReport(content, `${safeTitle}-sector-report`);
@@ -1906,6 +2199,17 @@ export async function executeTool(
           }
         }
 
+        // LLM investment conclusion — rich narrative, best-effort
+        let llmConclusionDeep: string | undefined;
+        if (options?.llmFill && items.length > 0) {
+          try {
+            const conclusionPrompt = buildComparisonConclusionPrompt(items, 'deep-sector', sector);
+            llmConclusionDeep = (await options.llmFill(conclusionPrompt)).trim();
+          } catch {
+            // LLM unavailable — use structured fallback
+          }
+        }
+
         const content = buildDeepSectorReport({
           sectorQuery: sector,
           selectedBy: 'llm',
@@ -1920,6 +2224,7 @@ export async function executeTool(
           ecosystemDiagram,
           refinementNotes,
           companySnapshots,
+          llmConclusion: llmConclusionDeep,
         });
         const safeTitle = sector.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
         const saved = await saveReport(content, `${safeTitle}-deep-sector-report`);

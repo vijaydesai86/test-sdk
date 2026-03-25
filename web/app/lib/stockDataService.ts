@@ -368,16 +368,16 @@ export class AlphaVantageService implements StockDataService {
 
     return {
       symbol: symbol.toUpperCase(),
-      analystTargetPrice: data.AnalystTargetPrice || 'N/A',
-      strongBuy: data.AnalystRatingStrongBuy || 'N/A',
-      buy: data.AnalystRatingBuy || 'N/A',
-      hold: data.AnalystRatingHold || 'N/A',
-      sell: data.AnalystRatingSell || 'N/A',
-      strongSell: data.AnalystRatingStrongSell || 'N/A',
-      movingAverage50Day: data['50DayMovingAverage'] || 'N/A',
+      analystTargetPrice: data.AnalystTargetPrice || null,
+      strongBuy: data.AnalystRatingStrongBuy || null,
+      buy: data.AnalystRatingBuy || null,
+      hold: data.AnalystRatingHold || null,
+      sell: data.AnalystRatingSell || null,
+      strongSell: data.AnalystRatingStrongSell || null,
+      movingAverage50Day: data['50DayMovingAverage'] || null,
       upside: data.AnalystTargetPrice && data['50DayMovingAverage']
         ? `${(((Number(data.AnalystTargetPrice) / Number(data['50DayMovingAverage'])) - 1) * 100).toFixed(1)}% (vs 50-day MA)`
-        : 'N/A',
+        : null,
     };
   }
 
@@ -853,7 +853,7 @@ export class FinnhubService implements StockDataService {
     const latest = Array.isArray(recs) ? (recs[0] || {}) : {};
     return {
       symbol: symbol.toUpperCase(),
-      analystTargetPrice: target.targetMean ?? 'N/A',
+      analystTargetPrice: target.targetMean ?? null,
       strongBuy: latest.strongBuy ?? 'N/A',
       buy: latest.buy ?? 'N/A',
       hold: latest.hold ?? 'N/A',

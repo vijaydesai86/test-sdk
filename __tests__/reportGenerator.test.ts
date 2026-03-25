@@ -671,3 +671,233 @@ describe('investment conclusion derivation', () => {
     expect(report).toContain('## 🎯 Investment Conclusion');
   });
 });
+
+// ─── LLM conclusion integration ───────────────────────────────────────────────
+
+describe('LLM conclusion integration', () => {
+  it('stock report uses llmConclusion narrative when provided', () => {
+    const llmText = 'After thorough analysis of the real API data, Apple demonstrates exceptional financial strength. Revenue grew strongly. BUY recommendation with a core portfolio allocation.';
+    const report = buildStockReport({ ...richStock(), llmConclusion: llmText });
+    expect(report).toContain('## 🎯 Investment Conclusion');
+    expect(report).toContain(llmText);
+    expect(report).toContain('### 📋 Quick Reference');
+  });
+
+  it('stock report without llmConclusion uses structured fallback', () => {
+    const report = buildStockReport(richStock());
+    expect(report).toContain('## 🎯 Investment Conclusion');
+    // Structured fallback contains data-derived lines
+    expect(report).toMatch(/Suggested Portfolio Role:/);
+    expect(report).not.toContain('### 📋 Quick Reference');
+  });
+
+  it('stock report quick reference section shows real metrics when llmConclusion present', () => {
+    const llmText = 'Strong financials observed from API data. BUY.';
+    const report = buildStockReport({ ...richStock(), llmConclusion: llmText });
+    // Rating and composite score should appear in quick reference
+    expect(report).toContain('**Rating:**');
+    expect(report).toContain('**Composite Score:**');
+  });
+
+  it('comparison report uses llmConclusion narrative when provided', () => {
+    const llmText = 'Based on the real API data collected, NVDA leads the AI chip sector with superior margins. BUY NVDA as a core position.';
+    const data: ComparisonReportData = {
+      generatedAt: '2025-01-01T00:00:00Z',
+      range: '1y',
+      universe: ['NVDA', 'AMD'],
+      items: twoCompanyItems(),
+      notes: [],
+      llmConclusion: llmText,
+    };
+    const report = buildComparisonReport(data);
+    expect(report).toContain('## 🎯 Investment Conclusion');
+    expect(report).toContain(llmText);
+    expect(report).toContain('### 📊 Company Quick Reference');
+  });
+
+  it('comparison report without llmConclusion uses structured fallback', () => {
+    const data: ComparisonReportData = {
+      generatedAt: '2025-01-01T00:00:00Z',
+      range: '1y',
+      universe: ['NVDA', 'AMD'],
+      items: twoCompanyItems(),
+      notes: [],
+    };
+    const report = buildComparisonReport(data);
+    expect(report).toContain('## 🎯 Investment Conclusion');
+    // Structured fallback also renders company quick reference section
+    expect(report).toContain('### 📊 Company Quick Reference');
+    // But it should not contain any LLM-sourced text
+    expect(report).not.toContain('After thorough analysis');
+  });
+
+  it('sector report uses llmConclusion narrative when provided', () => {
+    const llmText = 'The AI chip sector shows robust growth driven by data center demand. NVDA remains the top pick at 85% gross margin.';
+    const data: SectorReportData = {
+      sectorQuery: 'AI chips',
+      selectedBy: 'llm',
+      generatedAt: '2025-01-01T00:00:00Z',
+      range: '1y',
+      universe: ['NVDA', 'AMD'],
+      items: twoCompanyItems(),
+      notes: [],
+      llmConclusion: llmText,
+    };
+    const report = buildSectorReport(data);
+    expect(report).toContain(llmText);
+    expect(report).toContain('### 📊 Company Quick Reference');
+  });
+});
+
+// ─── Indicative allocation sorting ────────────────────────────────────────────
+
+describe('indicative allocation sorting', () => {
+  it('allocation rows are sorted highest weight to lowest', () => {
+    // Create items with very different fundamentals so weights differ
+    const strongItem: ComparisonReportItem = {
+      symbol: 'STRONG',
+      price: { price: '100' },
+      overview: { name: 'Strong Co', peRatio: '15', operatingMargin: '0.35', profitMargin: '0.30', revenueTTM: '10000000000', quarterlyRevenueGrowth: '0.30', returnOnEquity: '0.60', analystTargetPrice: '130' },
+      basicFinancials: { metric: { grossMarginTTM: 0.5, operatingMarginTTM: 0.35, roeTTM: 0.6, revenueGrowthTTM: 0.30 } },
+    };
+    const weakItem: ComparisonReportItem = {
+      symbol: 'WEAK',
+      price: { price: '50' },
+      overview: { name: 'Weak Co' },
+    };
+    const data: ComparisonReportData = {
+      generatedAt: '2025-01-01T00:00:00Z',
+      range: '1y',
+      universe: ['STRONG', 'WEAK'],
+      items: [weakItem, strongItem], // WEAK first intentionally
+      notes: [],
+    };
+    const report = buildComparisonReport(data);
+    const allocSection = report.split('## 🧭 Indicative Allocation')[1] ?? '';
+    const strongPos = allocSection.indexOf('STRONG');
+    const weakPos = allocSection.indexOf('WEAK');
+    // STRONG should appear before WEAK (higher weight comes first)
+    expect(strongPos).toBeLessThan(weakPos);
+  });
+
+  it('allocation with uniform weights keeps all companies present', () => {
+    const items = twoCompanyItems();
+    // Remove all financial data so weights will be equal
+    items.forEach((it) => { delete it.basicFinancials; delete it.overview; });
+    const data: ComparisonReportData = {
+      generatedAt: '2025-01-01T00:00:00Z',
+      range: '1y',
+      universe: ['NVDA', 'AMD'],
+      items,
+      notes: [],
+    };
+    const report = buildComparisonReport(data);
+    expect(report).toContain('NVDA');
+    expect(report).toContain('AMD');
+  });
+});
+
+// ─── Analyst target price fallback ────────────────────────────────────────────
+
+describe('analyst target price resolution', () => {
+  it('shows target mean from priceTargets.targetMean', () => {
+    const item: ComparisonReportItem = {
+      symbol: 'AAPL',
+      price: { price: '150' },
+      priceTargets: { targetMean: 180 },
+    };
+    const data: ComparisonReportData = {
+      generatedAt: '2025-01-01T00:00:00Z',
+      range: '1y',
+      universe: ['AAPL'],
+      items: [item],
+    };
+    const report = buildComparisonReport(data);
+    expect(report).toContain('180.00');
+  });
+
+  it('falls back to analystRatings.analystTargetPrice when priceTargets.targetMean is absent', () => {
+    const item: ComparisonReportItem = {
+      symbol: 'AAPL',
+      price: { price: '150' },
+      priceTargets: { targetMean: null },
+      analystRatings: { analystTargetPrice: '175.50' },
+    };
+    const data: ComparisonReportData = {
+      generatedAt: '2025-01-01T00:00:00Z',
+      range: '1y',
+      universe: ['AAPL'],
+      items: [item],
+    };
+    const report = buildComparisonReport(data);
+    expect(report).toContain('175.50');
+  });
+
+  it('falls back to overview.analystTargetPrice as final fallback', () => {
+    const item: ComparisonReportItem = {
+      symbol: 'AAPL',
+      price: { price: '150' },
+      priceTargets: { targetMean: null },
+      analystRatings: { analystTargetPrice: null },
+      overview: { analystTargetPrice: '195.00' },
+    };
+    const data: ComparisonReportData = {
+      generatedAt: '2025-01-01T00:00:00Z',
+      range: '1y',
+      universe: ['AAPL'],
+      items: [item],
+    };
+    const report = buildComparisonReport(data);
+    expect(report).toContain('195.00');
+  });
+
+  it('shows N/A for target and upside when all target sources are absent', () => {
+    const item: ComparisonReportItem = {
+      symbol: 'AAPL',
+      price: { price: '150' },
+      priceTargets: { targetMean: null },
+      analystRatings: { analystTargetPrice: null },
+    };
+    const data: ComparisonReportData = {
+      generatedAt: '2025-01-01T00:00:00Z',
+      range: '1y',
+      universe: ['AAPL'],
+      items: [item],
+    };
+    const report = buildComparisonReport(data);
+    // Both target mean and upside should show N/A
+    const analystSection = report.split('## 🧠 Analyst View')[1] ?? '';
+    // The two consecutive N/A values appear in the analyst table row
+    const rowMatch = analystSection.match(/N\/A.*N\/A/s);
+    expect(rowMatch).not.toBeNull();
+  });
+
+  it('ignores string "N/A" in analystRatings.analystTargetPrice (falls back to overview)', () => {
+    const item: ComparisonReportItem = {
+      symbol: 'AAPL',
+      price: { price: '150' },
+      priceTargets: {},
+      analystRatings: { analystTargetPrice: 'N/A' },
+      overview: { analystTargetPrice: '200.00' },
+    };
+    const data: ComparisonReportData = {
+      generatedAt: '2025-01-01T00:00:00Z',
+      range: '1y',
+      universe: ['AAPL'],
+      items: [item],
+    };
+    const report = buildComparisonReport(data);
+    expect(report).toContain('200.00');
+  });
+
+  it('single stock report uses overview.analystTargetPrice when priceTargets absent', () => {
+    const data: StockReportData = {
+      ...richStock(),
+      priceTargets: { targetMean: null },
+      analystRatings: { analystTargetPrice: null },
+      companyOverview: { ...richStock().companyOverview, analystTargetPrice: '220.00' },
+    };
+    const report = buildStockReport(data);
+    expect(report).toContain('220.00');
+  });
+});

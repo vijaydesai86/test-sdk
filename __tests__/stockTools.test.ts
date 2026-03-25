@@ -308,10 +308,11 @@ describe('generate_sector_report via executeTool', () => {
     expect(result.data?.content).not.toContain('Peer Group Outlook');
   });
 
-  it('llmFill called twice: once for tickers, once for batch moat analysis', async () => {
+  it('llmFill called three times: tickers, batch moat analysis, and conclusion', async () => {
     const llmFill = vi.fn().mockResolvedValue('["NVDA","AMD"]');
     await executeTool('generate_sector_report', { sector: 'AI chips', count: 2 }, service, { llmFill });
-    expect(llmFill).toHaveBeenCalledTimes(2);
+    // Calls: (1) sector company tickers, (2) batch moat analysis, (3) investment conclusion
+    expect(llmFill).toHaveBeenCalledTimes(3);
   });
 
   it('conclusion appears exactly once in sector report', async () => {
@@ -357,6 +358,99 @@ describe('generate_comparison_report via executeTool', () => {
       service,
       { llmFill }
     );
+    expect(result.success).toBe(true);
+    expect(result.data?.content).toContain('## 🎯 Investment Conclusion');
+  });
+});
+
+// ─── LLM conclusion prompt generation ────────────────────────────────────────
+
+describe('LLM conclusion integration in executeTool', () => {
+  let service: StockDataService;
+  beforeEach(() => { service = stubService(); });
+  it('stock report: llmFill called three times — ticker resolution, moat, then conclusion', async () => {
+    const moatResponse = JSON.stringify({
+      moatType: 'Network Effect',
+      moatStrength: 'Wide',
+      moatScore: 75,
+      barriers: ['Network effects'],
+      narrative: 'Strong network moat.',
+      bestFor: 'Growth investors',
+    });
+    const conclusionResponse = 'Apple demonstrates strong financials with 30% operating margin from API data. BUY recommendation based on real data.';
+    const llmFill = vi.fn()
+      .mockResolvedValueOnce('{"AAPL":"AAPL"}')  // Call 1: ticker resolution
+      .mockResolvedValueOnce(moatResponse)        // Call 2: moat analysis
+      .mockResolvedValueOnce(conclusionResponse); // Call 3: conclusion
+    const result = await executeTool('generate_stock_report', { symbol: 'AAPL', range: '1y' }, service, { llmFill });
+    expect(result.success).toBe(true);
+    expect(llmFill).toHaveBeenCalledTimes(3);
+    // Conclusion narrative injected into report
+    expect(result.data?.content).toContain(conclusionResponse);
+  });
+
+  it('stock report: conclusion uses structured fallback when LLM is unavailable', async () => {
+    const result = await executeTool('generate_stock_report', { symbol: 'AAPL', range: '1y' }, service);
+    expect(result.success).toBe(true);
+    // No LLM — structured fallback used
+    expect(result.data?.content).toContain('## 🎯 Investment Conclusion');
+  });
+
+  it('comparison report: llmFill called three times — tickers, moat, conclusion', async () => {
+    const llmFill = vi.fn()
+      .mockResolvedValueOnce('{"AAPL":"AAPL","MSFT":"MSFT"}')  // Call 1: ticker resolution
+      .mockResolvedValueOnce('{}')                              // Call 2: batch moat
+      .mockResolvedValueOnce('AAPL leads with 25% margins from real API data. BUY AAPL. MSFT is a solid HOLD.'); // Call 3: conclusion
+    const result = await executeTool(
+      'generate_comparison_report',
+      { companies: ['AAPL', 'MSFT'], range: '1y' },
+      service,
+      { llmFill }
+    );
+    expect(result.success).toBe(true);
+    expect(llmFill).toHaveBeenCalledTimes(3);
+    expect(result.data?.content).toContain('AAPL leads');
+  });
+
+  it('sector report: llmFill conclusion prompt contains sector theme', async () => {
+    let conclusionPromptReceived = '';
+    const llmFill = vi.fn().mockImplementation((prompt: string) => {
+      if (prompt.includes('Deep Sector') || prompt.includes('Sector:')) {
+        conclusionPromptReceived = prompt;
+        return Promise.resolve('Semiconductors are experiencing strong AI-driven demand from real API data. BUY NVDA.');
+      }
+      return Promise.resolve('["NVDA","AMD"]');
+    });
+    const result = await executeTool('generate_sector_report', { sector: 'Semiconductors', count: 2 }, service, { llmFill });
+    expect(result.success).toBe(true);
+    // The conclusion prompt sent to the LLM should reference the sector
+    expect(conclusionPromptReceived).toContain('Semiconductors');
+    expect(result.data?.content).toContain('## 🎯 Investment Conclusion');
+  });
+
+  it('deep sector report: LLM conclusion narrative appears in report', async () => {
+    const conclusionText = 'Deep sector AI analysis based on real API data shows NVDA dominates with 85% market share. Strong BUY.';
+    let callCount = 0;
+    const llmFill = vi.fn().mockImplementation((prompt: string) => {
+      callCount++;
+      // Call 1: initial candidates, Call 2: dependency/refinement, Call 3: batch moat, Call 4: conclusion
+      if (prompt.includes('Deep Sector') || (callCount >= 4 && !prompt.includes('moatType'))) {
+        return Promise.resolve(conclusionText);
+      }
+      if (prompt.includes('moatType')) {
+        return Promise.resolve('{}');
+      }
+      if (prompt.includes('dependencyAnalysis') || prompt.includes('refinedList')) {
+        return Promise.resolve(JSON.stringify({
+          refinedList: ['NVDA', 'AMD'],
+          dependencyAnalysis: 'NVDA dominates',
+          ecosystemDiagram: 'graph LR\n  NVDA --> AMD',
+          refinementNotes: '✅ NVDA (NVIDIA) — market leader',
+        }));
+      }
+      return Promise.resolve('["NVDA","AMD"]');
+    });
+    const result = await executeTool('generate_deep_sector_report', { sector: 'AI chips', count: 2 }, service, { llmFill });
     expect(result.success).toBe(true);
     expect(result.data?.content).toContain('## 🎯 Investment Conclusion');
   });
