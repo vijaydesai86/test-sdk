@@ -1335,6 +1335,89 @@ export async function executeTool(
           };
         };
 
+        /**
+         * Synthesizes a single TTM income statement row from company overview data.
+         * Used as a fallback when the income-statement API call fails (rate limit,
+         * free-tier restriction, etc.).  All values are derived from real API data
+         * already in the overview — no training-data values are injected.
+         */
+        const buildIncomeStatementFallback = (overview: any): any | undefined => {
+          if (!overview) return undefined;
+          const revTTM = Number(overview.revenueTTM);
+          if (!Number.isFinite(revTTM) || revTTM === 0) return undefined;
+          const grossTTM = Number(overview.grossProfitTTM);
+          // Margins from AV come as fractions (0–1); Finnhub also uses fractions.
+          const toFrac = (m: unknown): number | null => {
+            const n = Number(m);
+            if (!Number.isFinite(n) || n === 0) return null;
+            return Math.abs(n) <= 1 ? n : n / 100;
+          };
+          const opFrac = toFrac(overview.operatingMargin);
+          const netFrac = toFrac(overview.profitMargin);
+          return {
+            symbol: overview.symbol,
+            quarterlyReports: [{
+              fiscalQuarter: 'TTM (est.)',
+              totalRevenue: String(Math.round(revTTM)),
+              grossProfit: Number.isFinite(grossTTM) && grossTTM !== 0 ? String(Math.round(grossTTM)) : null,
+              operatingIncome: opFrac !== null ? String(Math.round(revTTM * opFrac)) : null,
+              netIncome: netFrac !== null ? String(Math.round(revTTM * netFrac)) : null,
+              ebitda: null,
+            }],
+          };
+        };
+
+        /**
+         * Synthesizes a balance-sheet row from company overview data.
+         * Shareholder equity is derived from bookValue-per-share × shares-outstanding.
+         */
+        const buildBalanceSheetFallback = (overview: any): any | undefined => {
+          if (!overview) return undefined;
+          const bookValue = Number(overview.bookValue);
+          const shares = Number(overview.sharesOutstanding);
+          if (!Number.isFinite(bookValue) || bookValue === 0) return undefined;
+          if (!Number.isFinite(shares) || shares === 0) return undefined;
+          return {
+            symbol: overview.symbol,
+            quarterlyReports: [{
+              fiscalQuarter: 'Latest (est.)',
+              totalAssets: null,
+              totalLiabilities: null,
+              totalShareholderEquity: String(Math.round(bookValue * shares)),
+              cashAndEquivalents: null,
+              longTermDebt: null,
+            }],
+          };
+        };
+
+        /**
+         * Synthesizes a single earnings point from overview TTM EPS.
+         * Provides at minimum a single-bar EPS chart when quarterly history is unavailable.
+         */
+        const buildEarningsHistoryFallback = (overview: any): any | undefined => {
+          if (!overview) return undefined;
+          const eps = Number(overview.eps);
+          if (!Number.isFinite(eps)) return undefined;
+          return {
+            symbol: overview.symbol,
+            quarterlyEarnings: [{
+              fiscalQuarter: 'TTM',
+              reportedEPS: eps,
+              estimatedEPS: null,
+              surprise: null,
+              surprisePercentage: null,
+            }],
+          };
+        };
+
+        /** Returns true when a fetched financial statement has at least one report row. */
+        const hasReports = (stmt: any): boolean =>
+          stmt != null &&
+          (
+            (Array.isArray(stmt.quarterlyReports) && stmt.quarterlyReports.length > 0) ||
+            (Array.isArray(stmt.annualReports) && stmt.annualReports.length > 0)
+          );
+
         const price = await safeFetch('Price', 'price', stockService.getStockPrice(symbol));
         const companyOverview = await safeFetch('Company overview', 'overview', stockService.getCompanyOverview(symbol));
         const priceHistory = await safeFetch('Price history', `priceHistory:${range}`, stockService.getPriceHistory(symbol, range));
@@ -1356,6 +1439,24 @@ export async function executeTool(
 
         // Build basic financials from the overview
         const finalBasicFinancials = companyOverview ? buildBasicFinancialsFallback(companyOverview) : undefined;
+
+        // Apply overview-derived fallbacks for data that depends on separate provider calls
+        // (income/balance/cashflow may all fail on the free tier once AV's daily quota is hit,
+        //  since Finnhub's metric series is also sparse on free tier).
+        const finalIncomeStatement = hasReports(incomeStatement)
+          ? incomeStatement
+          : buildIncomeStatementFallback(companyOverview);
+        const finalBalanceSheet = hasReports(balanceSheet)
+          ? balanceSheet
+          : buildBalanceSheetFallback(companyOverview);
+        // Cash flow has no reliable overview fallback — use real data only.
+        const finalCashFlow = hasReports(cashFlow) ? cashFlow : undefined;
+        // EPS history: if no quarterly data, provide a single TTM EPS point from the overview
+        // so the EPS chart can render at minimum one data point.
+        const hasEarningsData = earningsHistory?.quarterlyEarnings?.length > 0;
+        const finalEarningsHistory = hasEarningsData
+          ? earningsHistory
+          : buildEarningsHistoryFallback(companyOverview);
 
         // LLM moat analysis — best-effort; report still builds without it
         let moatAnalysis: MoatAnalysis | undefined;
@@ -1380,10 +1481,10 @@ export async function executeTool(
               price,
               companyOverview,
               finalBasicFinancials,
-              earningsHistory,
-              incomeStatement,
-              balanceSheet,
-              cashFlow,
+              finalEarningsHistory,
+              finalIncomeStatement,
+              finalBalanceSheet,
+              finalCashFlow,
               analystRatings,
               priceTargets,
               priceHistory,
@@ -1404,10 +1505,10 @@ export async function executeTool(
           priceHistory,
           companyOverview,
           basicFinancials: finalBasicFinancials,
-          earningsHistory,
-          incomeStatement,
-          balanceSheet,
-          cashFlow,
+          earningsHistory: finalEarningsHistory,
+          incomeStatement: finalIncomeStatement,
+          balanceSheet: finalBalanceSheet,
+          cashFlow: finalCashFlow,
           analystRatings,
           analystRecommendations,
           priceTargets,

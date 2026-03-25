@@ -1,4 +1,6 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, beforeAll } from 'vitest';
+import { promises as fsp } from 'fs';
+import path from 'path';
 import { executeTool } from '../web/app/lib/stockTools';
 import type { StockDataService } from '../web/app/lib/stockDataService';
 
@@ -510,5 +512,182 @@ describe('getToolDefinitions', () => {
     const defs = getToolDefinitions();
     const found = defs.find((d) => d.function.name === 'generate_comparison_report');
     expect(found).toBeDefined();
+  });
+});
+
+// ─── Financial fallback paths ─────────────────────────────────────────────────
+
+describe('generate_stock_report financial-data fallback', () => {
+  let service: StockDataService;
+
+  // Use a synthetic symbol that will never have a real on-disk cache file so
+  // the vi.fn() mocks are always consulted (not skipped by the cache layer).
+  const SYM = 'ZTEST';
+  const LLM_TICKER = `{"${SYM}":"${SYM}"}`;
+
+  beforeAll(async () => {
+    // Ensure no stale cache file from a previous run
+    try { await fsp.unlink(path.resolve('reports', 'cache', `${SYM}.json`)); } catch {}
+  });
+
+  beforeEach(() => { service = stubService(); });
+
+  const richOverview = {
+    name: 'Test Corp',
+    symbol: SYM,
+    eps: '6.43',
+    revenueTTM: '400000000000',
+    grossProfitTTM: '180000000000',
+    operatingMargin: '0.30',
+    profitMargin: '0.25',
+    bookValue: '4.50',
+    sharesOutstanding: '15400000000',
+    peRatio: '28',
+    returnOnEquity: '1.50',
+    quarterlyRevenueGrowth: '0.06',
+    quarterlyEarningsGrowth: '0.10',
+  };
+
+  it('income statement table shows TTM estimated row when provider returns no data', async () => {
+    (service.getCompanyOverview as ReturnType<typeof vi.fn>).mockResolvedValue(richOverview);
+    (service.getIncomeStatement as ReturnType<typeof vi.fn>).mockResolvedValue({});
+    (service.getBalanceSheet as ReturnType<typeof vi.fn>).mockResolvedValue({});
+    (service.getCashFlow as ReturnType<typeof vi.fn>).mockResolvedValue({});
+
+    const llmFill = vi.fn()
+      .mockResolvedValueOnce(LLM_TICKER)
+      .mockResolvedValueOnce('{}')
+      .mockResolvedValueOnce('Strong financials. BUY.');
+
+    const result = await executeTool('generate_stock_report', { symbol: SYM, range: '1y' }, service, { llmFill });
+    expect(result.success).toBe(true);
+    const content = result.data?.content as string;
+
+    expect(content).not.toContain('Income statement data unavailable');
+    expect(content).toContain('TTM (est.)');
+    expect(content).toContain('$');
+  });
+
+  it('income statement shows "unavailable" when even overview has no revenue data', async () => {
+    (service.getCompanyOverview as ReturnType<typeof vi.fn>).mockResolvedValue({ name: 'Unknown Co' });
+    (service.getIncomeStatement as ReturnType<typeof vi.fn>).mockResolvedValue({});
+
+    const llmFill = vi.fn()
+      .mockResolvedValueOnce(LLM_TICKER)
+      .mockResolvedValueOnce('{}')
+      .mockResolvedValueOnce('Minimal data. WATCH.');
+
+    const result = await executeTool('generate_stock_report', { symbol: SYM, range: '1y' }, service, { llmFill });
+    expect(result.success).toBe(true);
+    expect(result.data?.content).toContain('Income statement data unavailable');
+  });
+
+  it('balance sheet table shows equity row when provider returns no data', async () => {
+    (service.getCompanyOverview as ReturnType<typeof vi.fn>).mockResolvedValue(richOverview);
+    (service.getBalanceSheet as ReturnType<typeof vi.fn>).mockResolvedValue({});
+
+    const llmFill = vi.fn()
+      .mockResolvedValueOnce(LLM_TICKER)
+      .mockResolvedValueOnce('{}')
+      .mockResolvedValueOnce('Strong balance sheet. BUY.');
+
+    const result = await executeTool('generate_stock_report', { symbol: SYM, range: '1y' }, service, { llmFill });
+    expect(result.success).toBe(true);
+    const content = result.data?.content as string;
+
+    expect(content).not.toContain('Balance sheet data unavailable');
+    expect(content).toContain('Latest (est.)');
+  });
+
+  it('cash flow section shows unavailable when no data and no reliable fallback', async () => {
+    (service.getCompanyOverview as ReturnType<typeof vi.fn>).mockResolvedValue(richOverview);
+    (service.getCashFlow as ReturnType<typeof vi.fn>).mockResolvedValue({});
+
+    const llmFill = vi.fn()
+      .mockResolvedValueOnce(LLM_TICKER)
+      .mockResolvedValueOnce('{}')
+      .mockResolvedValueOnce('Cash flow data limited. HOLD.');
+
+    const result = await executeTool('generate_stock_report', { symbol: SYM, range: '1y' }, service, { llmFill });
+    expect(result.success).toBe(true);
+    expect(result.data?.content).toContain('Cash flow data unavailable');
+  });
+
+  it('EPS chart appears when provider returns no earnings but overview has eps', async () => {
+    (service.getCompanyOverview as ReturnType<typeof vi.fn>).mockResolvedValue(richOverview);
+    (service.getEarningsHistory as ReturnType<typeof vi.fn>).mockResolvedValue({ quarterlyEarnings: [] });
+
+    const llmFill = vi.fn()
+      .mockResolvedValueOnce(LLM_TICKER)
+      .mockResolvedValueOnce('{}')
+      .mockResolvedValueOnce('Earnings data from overview. BUY.');
+
+    const result = await executeTool('generate_stock_report', { symbol: SYM, range: '1y' }, service, { llmFill });
+    expect(result.success).toBe(true);
+    const content = result.data?.content as string;
+
+    expect(content).toContain('## 📈 Price & EPS Trends');
+    expect(content).toContain('Quarterly EPS');
+  });
+
+  it('EPS chart absent when both earnings and overview eps are missing', async () => {
+    (service.getCompanyOverview as ReturnType<typeof vi.fn>).mockResolvedValue({ name: 'No EPS Co' });
+    (service.getEarningsHistory as ReturnType<typeof vi.fn>).mockResolvedValue({ quarterlyEarnings: [] });
+
+    const llmFill = vi.fn()
+      .mockResolvedValueOnce(LLM_TICKER)
+      .mockResolvedValueOnce('{}')
+      .mockResolvedValueOnce('No EPS data. WATCH.');
+
+    const result = await executeTool('generate_stock_report', { symbol: SYM, range: '1y' }, service, { llmFill });
+    expect(result.success).toBe(true);
+    expect(result.data?.content).not.toContain('Quarterly EPS');
+  });
+
+  it('real income statement data takes priority over fallback when both are available', async () => {
+    (service.getCompanyOverview as ReturnType<typeof vi.fn>).mockResolvedValue(richOverview);
+    (service.getIncomeStatement as ReturnType<typeof vi.fn>).mockResolvedValue({
+      quarterlyReports: [{
+        fiscalQuarter: '2024-09-30',
+        totalRevenue: '94930000000',
+        grossProfit: '42270000000',
+        operatingIncome: '29600000000',
+        netIncome: '21400000000',
+        ebitda: null,
+      }],
+    });
+
+    const llmFill = vi.fn()
+      .mockResolvedValueOnce(LLM_TICKER)
+      .mockResolvedValueOnce('{}')
+      .mockResolvedValueOnce('Real data available. BUY.');
+
+    const result = await executeTool('generate_stock_report', { symbol: SYM, range: '1y' }, service, { llmFill });
+    expect(result.success).toBe(true);
+    const content = result.data?.content as string;
+
+    expect(content).not.toContain('TTM (est.)');
+    expect(content).toContain('2024-09-30');
+  });
+
+  it('real earnings history takes priority over fallback when available', async () => {
+    (service.getCompanyOverview as ReturnType<typeof vi.fn>).mockResolvedValue(richOverview);
+    (service.getEarningsHistory as ReturnType<typeof vi.fn>).mockResolvedValue({
+      quarterlyEarnings: [
+        { fiscalQuarter: '2024-09-30', reportedEPS: '1.64', estimatedEPS: '1.60' },
+        { fiscalQuarter: '2024-06-30', reportedEPS: '1.40', estimatedEPS: '1.35' },
+        { fiscalQuarter: '2024-03-31', reportedEPS: '1.53', estimatedEPS: '1.50' },
+        { fiscalQuarter: '2023-12-31', reportedEPS: '2.18', estimatedEPS: '2.10' },
+      ],
+    });
+
+    const llmFill = vi.fn()
+      .mockResolvedValueOnce(LLM_TICKER)
+      .mockResolvedValueOnce('{}')
+      .mockResolvedValueOnce('Quarterly EPS data available. BUY.');
+
+    const result = await executeTool('generate_stock_report', { symbol: SYM, range: '1y' }, service, { llmFill });
+    expect(result.success).toBe(true);
+    expect(result.data?.content).toContain('Quarterly EPS');
   });
 });
