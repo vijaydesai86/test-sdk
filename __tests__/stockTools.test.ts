@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, beforeAll } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { promises as fsp } from 'fs';
 import path from 'path';
 import { executeTool } from '../web/app/lib/stockTools';
@@ -525,12 +525,11 @@ describe('generate_stock_report financial-data fallback', () => {
   const SYM = 'ZTEST';
   const LLM_TICKER = `{"${SYM}":"${SYM}"}`;
 
-  beforeAll(async () => {
-    // Ensure no stale cache file from a previous run
+  beforeEach(async () => {
+    // Delete any cache file written by a previous test so that mocks are always consulted
     try { await fsp.unlink(path.resolve('reports', 'cache', `${SYM}.json`)); } catch {}
+    service = stubService();
   });
-
-  beforeEach(() => { service = stubService(); });
 
   const richOverview = {
     name: 'Test Corp',
