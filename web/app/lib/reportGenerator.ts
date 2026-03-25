@@ -1434,6 +1434,8 @@ export function buildStockReport(data: StockReportData): string {
     );
   }
 
+  sections.push(buildStockConclusion(data, scorecard));
+
   return sections.filter(Boolean).join('\n\n');
 }
 
@@ -2003,4 +2005,207 @@ function buildCompanySnapshotsSection(
 
   const tableHeader = '| Company | Investment Thesis |\n|---------|-------------------|';
   return `## 📋 Selected Companies at a Glance\n\n${tableHeader}\n${rows.join('\n')}`;
+}
+
+/**
+ * Derives a plain-English investment rating from a 0-100 composite score,
+ * optionally adjusted by analyst consensus.
+ *
+ * @param compositeScore  Normalized composite score (0-100) or null if unavailable
+ * @param analystBuyPct   Fraction of analyst ratings that are Buy/Strong-Buy (0-1), or null
+ */
+function deriveRating(
+  compositeScore: number | null,
+  analystBuyPct: number | null
+): { label: string; emoji: string } {
+  if (compositeScore === null && analystBuyPct === null) {
+    return { label: 'WATCH', emoji: '👀' };
+  }
+
+  // Start from composite score; fall back to analyst consensus if score unavailable
+  let base = compositeScore ?? (analystBuyPct !== null ? analystBuyPct * 100 : 50);
+
+  // Blend analyst consensus: shift base ±10 points toward analyst view
+  if (analystBuyPct !== null && compositeScore !== null) {
+    const analystSignal = (analystBuyPct - 0.5) * 20; // [-10, +10]
+    base = base + analystSignal * 0.3;
+  }
+
+  if (base >= 65) return { label: 'BUY', emoji: '✅' };
+  if (base >= 45) return { label: 'HOLD', emoji: '⚖️' };
+  if (base >= 30) return { label: 'WATCH', emoji: '👀' };
+  return { label: 'SELL / AVOID', emoji: '🔴' };
+}
+
+/**
+ * Builds the Investment Conclusion section for a single-stock report.
+ * All inputs are derived from real API data already present in the report —
+ * no training-data values are injected.
+ */
+function buildStockConclusion(data: StockReportData, scorecard: ReturnType<typeof computeScorecard>): string {
+  const overview = data.companyOverview || {};
+  const symbol = data.symbol;
+  const name = overview.name || symbol;
+
+  // Analyst buy fraction from real data
+  const strongBuy = toNumber(data.analystRatings?.strongBuy);
+  const buy = toNumber(data.analystRatings?.buy);
+  const hold = toNumber(data.analystRatings?.hold);
+  const sell = toNumber(data.analystRatings?.sell);
+  const strongSell = toNumber(data.analystRatings?.strongSell);
+  const totalAnalyst = [strongBuy, buy, hold, sell, strongSell].reduce<number>((s, v) => s + (v ?? 0), 0);
+  const analystBuyPct = totalAnalyst > 0 && strongBuy !== null && buy !== null
+    ? ((strongBuy + buy) / totalAnalyst)
+    : null;
+
+  const rating = deriveRating(scorecard.composite, analystBuyPct);
+
+  // Target upside
+  const price = toNumber(data.price?.price);
+  const targetMean = toNumber(data.priceTargets?.targetMean ?? overview.analystTargetPrice);
+  const upside = price && targetMean ? ((targetMean - price) / price) * 100 : null;
+
+  // Key bullish evidence (derived from real API values)
+  const bullish: string[] = [];
+  const bearish: string[] = [];
+
+  const composite = scorecard.composite;
+  if (composite !== null) {
+    if (composite >= 60) bullish.push(`Strong composite score (${composite.toFixed(1)}/100)`);
+    else if (composite < 40) bearish.push(`Below-average composite score (${composite.toFixed(1)}/100)`);
+  }
+
+  if (upside !== null) {
+    if (upside > 10) bullish.push(`Analyst consensus implies ${upside.toFixed(1)}% upside to mean target`);
+    else if (upside < -10) bearish.push(`Price exceeds analyst mean target by ${Math.abs(upside).toFixed(1)}%`);
+  }
+
+  const moat = data.moatAnalysis;
+  if (moat) {
+    if (moat.moatScore >= 61) bullish.push(`Wide competitive moat: ${moat.moatType} (score ${moat.moatScore}/100)`);
+    else if (moat.moatScore < 31) bearish.push(`No significant competitive moat identified (score ${moat.moatScore}/100)`);
+  }
+
+  const revenueGrowth = getStockRevenueGrowth(data);
+  if (revenueGrowth !== null) {
+    if (revenueGrowth > 10) bullish.push(`Revenue growing at ${revenueGrowth.toFixed(1)}% TTM`);
+    else if (revenueGrowth < 0) bearish.push(`Revenue declining ${Math.abs(revenueGrowth).toFixed(1)}% TTM`);
+  }
+
+  const opMargin = normalizePercent(data.basicFinancials?.metric?.operatingMarginTTM ?? overview.operatingMargin);
+  if (opMargin !== null) {
+    if (opMargin > 20) bullish.push(`High operating margin (${opMargin.toFixed(1)}%)`);
+    else if (opMargin < 0) bearish.push(`Negative operating margin (${opMargin.toFixed(1)}%)`);
+  }
+
+  // Suggested portfolio role
+  let portfolioRole = 'General equity exposure';
+  const moatScore = moat?.moatScore ?? 0;
+  if (composite !== null && composite >= 65 && moatScore >= 61) {
+    portfolioRole = 'Core holding — quality compounder with durable advantage';
+  } else if (composite !== null && composite >= 65) {
+    portfolioRole = 'Growth tilt — strong fundamentals, monitor valuation';
+  } else if (composite !== null && composite >= 45 && moatScore >= 31) {
+    portfolioRole = 'Hold — stable business, revisit on any meaningful pullback';
+  } else if (composite !== null && composite < 40) {
+    portfolioRole = 'Speculative / avoid — fundamentals under pressure';
+  }
+
+  const bullLines = bullish.length
+    ? `**Bullish Signals:**\n${bullish.map((b) => `- ${b}`).join('\n')}`
+    : '';
+  const bearLines = bearish.length
+    ? `**Bearish Signals / Risks:**\n${bearish.map((b) => `- ${b}`).join('\n')}`
+    : '';
+
+  return [
+    '## 🎯 Investment Conclusion',
+    `> _All values are sourced from live market-data APIs. This section summarises what the data shows — it is not financial advice._`,
+    `**${name} (${symbol}) — ${rating.emoji} ${rating.label}**`,
+    `- Suggested Portfolio Role: ${portfolioRole}`,
+    upside !== null ? `- Analyst Mean Target Upside: ${upside.toFixed(1)}%` : null,
+    bullLines || null,
+    bearLines || null,
+    '_This conclusion is derived entirely from real API data. Always conduct your own due diligence before investing._',
+  ].filter(Boolean).join('\n\n');
+}
+
+/**
+ * Builds the Investment Conclusion section for a multi-stock comparison report
+ * (used by both buildComparisonReport and buildSectorReport).
+ *
+ * @param items       The comparison items with financial data
+ * @param scored      Each item paired with its composite score
+ * @param reportType  'comparison' | 'sector' | 'deep-sector' — adjusts the header text
+ * @param sectorQuery Optional sector/theme label for sector-type reports
+ */
+function buildComparisonConclusion(
+  items: ComparisonReportItem[],
+  scored: Array<{ item: ComparisonReportItem; score: number | null }>,
+  reportType: 'comparison' | 'sector' | 'deep-sector',
+  sectorQuery?: string
+): string {
+  if (items.length === 0) return '';
+
+  // Rank by composite score (real data only)
+  const ranked = scored
+    .filter((r) => r.score !== null)
+    .sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+
+  const top = ranked[0];
+  const runnerUp = ranked[1];
+
+  const topName = top?.item.overview?.name || top?.item.symbol || 'N/A';
+  const topSymbol = top?.item.symbol || 'N/A';
+  const topScore = top?.score;
+
+  // Average composite score → sector/group outlook
+  const validScores = ranked.map((r) => r.score as number);
+  const avgScore = validScores.length
+    ? validScores.reduce((s, v) => s + v, 0) / validScores.length
+    : null;
+
+  const outlook =
+    avgScore === null ? 'Mixed'
+    : avgScore >= 65 ? 'Constructive — most companies show strong fundamentals'
+    : avgScore >= 45 ? 'Neutral — quality varies; selective exposure recommended'
+    : 'Cautious — fundamentals broadly under pressure';
+
+  // Moat leader
+  const moatLeader = items
+    .filter((it) => it.moatAnalysis && it.moatAnalysis.moatScore >= 61)
+    .sort((a, b) => (b.moatAnalysis?.moatScore ?? 0) - (a.moatAnalysis?.moatScore ?? 0))[0];
+
+  const topPickLine = top
+    ? `**Top Pick: ${topName} (${topSymbol})** — Composite score ${topScore?.toFixed(1)}/100`
+    : '_Insufficient data for ranking._';
+
+  const runnerUpLine = runnerUp
+    ? `- Runner-up: ${runnerUp.item.overview?.name || runnerUp.item.symbol} (${runnerUp.item.symbol}) — score ${runnerUp.score?.toFixed(1)}/100`
+    : null;
+
+  const moatLine = moatLeader
+    ? `- Strongest moat: **${moatLeader.overview?.name || moatLeader.symbol} (${moatLeader.symbol})** — ${moatLeader.moatAnalysis!.moatType} (score ${moatLeader.moatAnalysis!.moatScore}/100)`
+    : null;
+
+  const outlookLabel =
+    reportType === 'sector' ? `**${sectorQuery || 'Sector'} Outlook:** ${outlook}`
+    : reportType === 'deep-sector' ? `**Deep Sector Outlook (${sectorQuery || 'sector'}):** ${outlook}`
+    : `**Peer Group Outlook:** ${outlook}`;
+
+  const strategyAdvice =
+    topScore !== null && topScore >= 65
+      ? `Focused allocation to the top-ranked name(s) is supported by the data.`
+      : `A diversified basket approach reduces single-name risk given mixed signals.`;
+
+  return [
+    '## 🎯 Investment Conclusion',
+    `> _All values are derived from live market-data APIs. This conclusion is not financial advice._`,
+    topPickLine,
+    runnerUpLine,
+    moatLine,
+    outlookLabel,
+    `- Strategy: ${strategyAdvice}`,
+    '_Always conduct your own due diligence before making investment decisions._',
+  ].filter(Boolean).join('\n\n');
 }
