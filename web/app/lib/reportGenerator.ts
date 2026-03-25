@@ -24,6 +24,8 @@ export interface StockReportData {
   companyNews?: { articles?: any[] };
   /** LLM-generated competitive moat assessment */
   moatAnalysis?: MoatAnalysis;
+  /** LLM-generated rich investment conclusion narrative (full markdown text) */
+  llmConclusion?: string;
 }
 
 export interface ComparisonReportItem {
@@ -48,6 +50,8 @@ export interface ComparisonReportData {
   items: ComparisonReportItem[];
   notes?: string[];
   sources?: Record<string, Record<string, string>>;
+  /** LLM-generated rich investment conclusion narrative (full markdown text) */
+  llmConclusion?: string;
 }
 
 export interface SectorReportData extends ComparisonReportData {
@@ -632,7 +636,11 @@ function getStockEpsGrowth(data: StockReportData): number | null {
 
 function getTargetUpsideStock(data: StockReportData): number | null {
   const price = toNumber(data.price?.price);
-  const target = toNumber(data.priceTargets?.targetMean || data.analystRatings?.analystTargetPrice);
+  const target = toNumber(
+    data.priceTargets?.targetMean
+    ?? (data.analystRatings?.analystTargetPrice !== 'N/A' ? data.analystRatings?.analystTargetPrice : null)
+    ?? data.companyOverview?.analystTargetPrice
+  );
   if (!price || !target) return null;
   return ((target - price) / price) * 100;
 }
@@ -841,7 +849,11 @@ function computeAnalystConviction(data: StockReportData): number | null {
   const strongBuyPct = total ? ((strongBuy || 0) / total) * 100 : null;
 
   const price = toNumber(data.price?.price);
-  const targetMean = toNumber(data.priceTargets?.targetMean || data.analystRatings?.analystTargetPrice);
+  const targetMean = toNumber(
+    data.priceTargets?.targetMean
+    ?? (data.analystRatings?.analystTargetPrice !== 'N/A' ? data.analystRatings?.analystTargetPrice : null)
+    ?? data.companyOverview?.analystTargetPrice
+  );
   const upsidePct = price && targetMean ? ((targetMean - price) / price) * 100 : null;
   const upsideScore = upsidePct === null ? null : clampScore(50 + upsidePct);
 
@@ -1289,7 +1301,11 @@ export function buildStockReport(data: StockReportData): string {
     `- Analyst Ratings: ${formatRatingSummary(data)}`,
   ].filter(Boolean) as string[];
 
-  const analystTarget = toNumber(data.priceTargets?.targetMean || data.analystRatings?.analystTargetPrice);
+  const analystTarget = toNumber(
+    data.priceTargets?.targetMean
+    ?? (data.analystRatings?.analystTargetPrice !== 'N/A' ? data.analystRatings?.analystTargetPrice : null)
+    ?? data.companyOverview?.analystTargetPrice
+  );
   const targetLow = toNumber(data.priceTargets?.targetLow);
   const targetHigh = toNumber(data.priceTargets?.targetHigh);
   const targetMedian = toNumber(data.priceTargets?.targetMedian);
@@ -1433,6 +1449,8 @@ export function buildStockReport(data: StockReportData): string {
       `- Composite Score: ${scorecard.composite?.toFixed(1) ?? 'Unavailable'}`,
     );
   }
+
+  sections.push(buildStockConclusion(data, scorecard));
 
   return sections.filter(Boolean).join('\n\n');
 }
@@ -1667,7 +1685,15 @@ export function buildComparisonReport(data: ComparisonReportData): string {
 
   const analystRows = items.map((item) => {
     const price = toNumber(item.price?.price);
-    const target = toNumber(item.priceTargets?.targetMean || item.analystRatings?.analystTargetPrice);
+    // Cascade through three sources for the analyst price target:
+    // 1. priceTargets.targetMean  (Finnhub /stock/price-target or FMP)
+    // 2. analystRatings.analystTargetPrice  (AV/Finnhub getAnalystRatings fallback)
+    // 3. overview.analystTargetPrice  (AV company overview — most reliable for AV provider)
+    const target = toNumber(
+      item.priceTargets?.targetMean
+      ?? (item.analystRatings?.analystTargetPrice !== 'N/A' ? item.analystRatings?.analystTargetPrice : null)
+      ?? item.overview?.analystTargetPrice
+    );
     const upside = price && target ? ((target - price) / price) * 100 : null;
     return [
       `${item.overview?.name || item.symbol} (${item.symbol})`,
@@ -1768,7 +1794,8 @@ export function buildComparisonReport(data: ComparisonReportData): string {
   });
   const topMargin = marginLeaders[0]?.item.symbol;
 
-  const allocationRows = scored.map((row, index) => {
+  // Build allocation entries with weights and reasons, then sort highest → lowest
+  const allocationEntries = scored.map((row, index) => {
     const moatScore = row.item.moatAnalysis?.moatScore ?? null;
     const reasons = [
       row.item.symbol === topGrowth ? 'Top revenue growth' : null,
@@ -1776,13 +1803,24 @@ export function buildComparisonReport(data: ComparisonReportData): string {
       row.score !== null && row.score > 60 ? 'Strong composite score' : null,
       moatScore !== null && moatScore >= 61 ? `Wide moat (${row.item.moatAnalysis!.moatType})` : null,
     ].filter(Boolean);
-    return [
-      `${row.item.overview?.name || row.item.symbol} (${row.item.symbol})`,
-      row.score === null ? 'N/A' : row.score.toFixed(1),
-      weights[index] === null ? 'N/A' : `${weights[index]!.toFixed(1)}%`,
-      weights[index] === null ? 'Insufficient data' : (reasons.length ? reasons.join('; ') : 'Balanced exposure'),
-    ];
+    return {
+      weight: weights[index],
+      row: [
+        `${row.item.overview?.name || row.item.symbol} (${row.item.symbol})`,
+        row.score === null ? 'N/A' : row.score.toFixed(1),
+        weights[index] === null ? 'N/A' : `${weights[index]!.toFixed(1)}%`,
+        weights[index] === null ? 'Insufficient data' : (reasons.length ? reasons.join('; ') : 'Balanced exposure'),
+      ],
+    };
   });
+  // Sort descending by weight (null weights go last)
+  allocationEntries.sort((a, b) => {
+    if (a.weight === null && b.weight === null) return 0;
+    if (a.weight === null) return 1;
+    if (b.weight === null) return -1;
+    return b.weight - a.weight;
+  });
+  const allocationRows = allocationEntries.map((e) => e.row);
   const allocationTable = buildTable(
     ['Company', 'Composite Score', 'Indicative Weight', 'Rationale'],
     allocationRows,
@@ -1834,9 +1872,44 @@ export function buildComparisonReport(data: ComparisonReportData): string {
     validScores.length < scored.length
       ? '_Some companies lack composite scores; weights are normalized across available scores._'
       : '_Indicative allocation is derived from normalized composite scores. It is not investment advice._',
+    buildComparisonConclusion(items, scored, 'comparison', undefined, data.llmConclusion),
   ].filter(Boolean) as string[];
 
   return sections.join('\n\n');
+}
+
+/**
+ * Computes composite scores for a set of ComparisonReportItems.
+ * Extracted as a shared helper so sector/deep-sector reports can produce
+ * a theme-aware conclusion without re-running the full comparison pipeline.
+ */
+function scoreComparisonItems(
+  items: ComparisonReportItem[],
+  generatedAt: string
+): Array<{ item: ComparisonReportItem; score: number | null }> {
+  return items.map((item) => {
+    const scorecard = computeScorecard({
+      symbol: item.symbol,
+      generatedAt,
+      price: item.price || {},
+      companyOverview: item.overview,
+      basicFinancials: item.basicFinancials,
+      incomeStatement: item.incomeStatement,
+      balanceSheet: item.balanceSheet,
+      cashFlow: item.cashFlow,
+      analystRatings: item.analystRatings,
+      priceTargets: item.priceTargets,
+    });
+    return { item, score: scorecard.composite };
+  });
+}
+
+/**
+ * Strips the generic "## 🎯 Investment Conclusion" block from a comparison-report
+ * body so that sector / deep-sector reports can substitute their own version.
+ */
+function stripComparisonConclusion(body: string): string {
+  return body.replace(/\n\n## 🎯 Investment Conclusion[\s\S]*$/, '');
 }
 
 /**
@@ -1863,14 +1936,19 @@ export function buildSectorReport(data: SectorReportData): string {
   ].join('\n\n');
 
   // Re-use the full comparison report body (strip its own header/generated line
-  // so they are not duplicated).
-  const comparisonBody = buildComparisonReport(data)
-    .replace(/^# Company Comparison Report\n\nGenerated:[^\n]*\n\nUniverse:[^\n]*\n\n/, '')
-    .replace(/^# Company Comparison Report\n\nGenerated:[^\n]*\n\n/, '')
-    .replace(/^# Company Comparison Report\n\n/, '')
-    .trimStart();
+  // and generic conclusion so they are not duplicated).
+  const comparisonBody = stripComparisonConclusion(
+    buildComparisonReport(data)
+      .replace(/^# Company Comparison Report\n\nGenerated:[^\n]*\n\nUniverse:[^\n]*\n\n/, '')
+      .replace(/^# Company Comparison Report\n\nGenerated:[^\n]*\n\n/, '')
+      .replace(/^# Company Comparison Report\n\n/, '')
+      .trimStart()
+  );
 
-  return `${sectorHeader}\n\n${comparisonBody}`;
+  const scored = scoreComparisonItems(data.items, data.generatedAt);
+  const conclusion = buildComparisonConclusion(data.items, scored, 'sector', data.sectorQuery, data.llmConclusion);
+
+  return `${sectorHeader}\n\n${comparisonBody}\n\n${conclusion}`;
 }
 
 /**
@@ -1941,14 +2019,20 @@ export function buildDeepSectorReport(data: DeepSectorReportData): string {
   // grasp why each company made the final list.
   const snapshotsSection = buildCompanySnapshotsSection(data.universe, data.companySnapshots);
 
-  // Re-use comparison report body — strip the comparison header so it is not duplicated.
-  const comparisonBody = buildComparisonReport(data)
-    .replace(/^# Company Comparison Report\n\nGenerated:[^\n]*\n\nUniverse:[^\n]*\n\n/, '')
-    .replace(/^# Company Comparison Report\n\nGenerated:[^\n]*\n\n/, '')
-    .replace(/^# Company Comparison Report\n\n/, '')
-    .trimStart();
+  // Re-use comparison report body — strip the comparison header and generic
+  // conclusion so they are not duplicated (deep-sector adds its own conclusion).
+  const comparisonBody = stripComparisonConclusion(
+    buildComparisonReport(data)
+      .replace(/^# Company Comparison Report\n\nGenerated:[^\n]*\n\nUniverse:[^\n]*\n\n/, '')
+      .replace(/^# Company Comparison Report\n\nGenerated:[^\n]*\n\n/, '')
+      .replace(/^# Company Comparison Report\n\n/, '')
+      .trimStart()
+  );
 
-  return [header, dependencySection, diagramSection, refinementSection, snapshotsSection, comparisonBody]
+  const scored = scoreComparisonItems(data.items, data.generatedAt);
+  const conclusion = buildComparisonConclusion(data.items, scored, 'deep-sector', data.sectorQuery, data.llmConclusion);
+
+  return [header, dependencySection, diagramSection, refinementSection, snapshotsSection, comparisonBody, conclusion]
     .filter(Boolean)
     .join('\n\n');
 }
@@ -2003,4 +2087,290 @@ function buildCompanySnapshotsSection(
 
   const tableHeader = '| Company | Investment Thesis |\n|---------|-------------------|';
   return `## 📋 Selected Companies at a Glance\n\n${tableHeader}\n${rows.join('\n')}`;
+}
+
+/**
+ * Derives a plain-English investment rating from a 0-100 composite score,
+ * optionally adjusted by analyst consensus.
+ *
+ * @param compositeScore  Normalized composite score (0-100) or null if unavailable
+ * @param analystBuyPct   Fraction of analyst ratings that are Buy/Strong-Buy (0-1), or null
+ */
+function deriveRating(
+  compositeScore: number | null,
+  analystBuyPct: number | null
+): { label: string; emoji: string } {
+  if (compositeScore === null && analystBuyPct === null) {
+    return { label: 'WATCH', emoji: '👀' };
+  }
+
+  // Start from composite score; fall back to analyst consensus if score unavailable
+  let base = compositeScore ?? (analystBuyPct !== null ? analystBuyPct * 100 : 50);
+
+  // Blend analyst consensus: shift base ±10 points toward analyst view
+  if (analystBuyPct !== null && compositeScore !== null) {
+    const analystSignal = (analystBuyPct - 0.5) * 20; // [-10, +10]
+    base = base + analystSignal * 0.3;
+  }
+
+  if (base >= 65) return { label: 'BUY', emoji: '✅' };
+  if (base >= 45) return { label: 'HOLD', emoji: '⚖️' };
+  if (base >= 30) return { label: 'WATCH', emoji: '👀' };
+  return { label: 'SELL / AVOID', emoji: '🔴' };
+}
+
+/**
+ * Builds the Investment Conclusion section for a single-stock report.
+ *
+ * When `data.llmConclusion` is provided (generated by the LLM from all collected
+ * API data before building the report), it is used as the primary narrative and
+ * the structured data is appended as a quick-reference scorecard.
+ * When the LLM narrative is absent, a rich data-driven fallback is used.
+ */
+function buildStockConclusion(data: StockReportData, scorecard: ReturnType<typeof computeScorecard>): string {
+  const overview = data.companyOverview || {};
+  const symbol = data.symbol;
+  const name = overview.name || symbol;
+
+  // Analyst buy fraction from real data
+  const strongBuy = toNumber(data.analystRatings?.strongBuy);
+  const buy = toNumber(data.analystRatings?.buy);
+  const hold = toNumber(data.analystRatings?.hold);
+  const sell = toNumber(data.analystRatings?.sell);
+  const strongSell = toNumber(data.analystRatings?.strongSell);
+  const totalAnalyst = [strongBuy, buy, hold, sell, strongSell].reduce<number>((s, v) => s + (v ?? 0), 0);
+  const analystBuyPct = totalAnalyst > 0 && strongBuy !== null && buy !== null
+    ? ((strongBuy + buy) / totalAnalyst)
+    : null;
+
+  const rating = deriveRating(scorecard.composite, analystBuyPct);
+
+  // Target upside — cascade: priceTargets → analystRatings → overview
+  const price = toNumber(data.price?.price);
+  const targetMean = toNumber(
+    data.priceTargets?.targetMean
+    ?? (data.analystRatings?.analystTargetPrice !== 'N/A' ? data.analystRatings?.analystTargetPrice : null)
+    ?? overview.analystTargetPrice
+  );
+  const targetLow = toNumber(data.priceTargets?.targetLow);
+  const targetHigh = toNumber(data.priceTargets?.targetHigh);
+  const upside = price && targetMean ? ((targetMean - price) / price) * 100 : null;
+
+  // ── Suggested portfolio role ──────────────────────────────────────────────
+  const composite = scorecard.composite;
+  const moat = data.moatAnalysis;
+  const moatScore = moat?.moatScore ?? 0;
+  let portfolioRole = 'General equity exposure';
+  if (composite !== null && composite >= 65 && moatScore >= 61) {
+    portfolioRole = 'Core holding — quality compounder with durable competitive advantage';
+  } else if (composite !== null && composite >= 65) {
+    portfolioRole = 'Growth tilt — strong fundamentals; monitor entry valuation';
+  } else if (composite !== null && composite >= 45 && moatScore >= 31) {
+    portfolioRole = 'Hold — stable business with narrow moat; revisit on meaningful pullback';
+  } else if (composite !== null && composite < 40) {
+    portfolioRole = 'Speculative / avoid — fundamentals under pressure';
+  }
+
+  // ── Data-derived quick-reference metrics ─────────────────────────────────
+  const revenueGrowth = getStockRevenueGrowth(data);
+  const opMargin = normalizePercent(
+    data.basicFinancials?.metric?.operatingMarginTTM ?? overview.operatingMargin
+  );
+  const grossMargin = normalizePercent(
+    data.basicFinancials?.metric?.grossMarginTTM ?? overview.profitMargin
+  );
+  const roe = normalizePercent(data.basicFinancials?.metric?.roeTTM ?? overview.returnOnEquity);
+  const pe = toNumber(overview.peRatio ?? data.basicFinancials?.metric?.peBasicExclExtraTTM);
+  const beta = toNumber(overview.beta);
+
+  const dataLines: string[] = [
+    `- **Rating:** ${rating.emoji} ${rating.label}`,
+    `- **Suggested Portfolio Role:** ${portfolioRole}`,
+    composite !== null ? `- **Composite Score:** ${composite.toFixed(1)}/100` : null,
+    upside !== null ? `- **Analyst Target Upside:** ${upside.toFixed(1)}% (mean ${targetMean?.toFixed(2)}${targetLow !== null && targetHigh !== null ? `, range ${targetLow.toFixed(2)}–${targetHigh.toFixed(2)}` : ''})` : null,
+    revenueGrowth !== null ? `- **Revenue Growth (TTM):** ${revenueGrowth.toFixed(1)}%` : null,
+    opMargin !== null ? `- **Operating Margin:** ${opMargin.toFixed(1)}%` : null,
+    grossMargin !== null ? `- **Gross Margin:** ${grossMargin.toFixed(1)}%` : null,
+    roe !== null ? `- **Return on Equity:** ${roe.toFixed(1)}%` : null,
+    pe !== null ? `- **P/E Ratio:** ${pe.toFixed(1)}x` : null,
+    beta !== null ? `- **Beta:** ${beta.toFixed(2)}` : null,
+    moat ? `- **Moat:** ${moat.moatType} · ${moat.moatStrength} (${moat.moatScore}/100)` : null,
+    totalAnalyst > 0 ? `- **Analyst Consensus:** ${strongBuy ?? 0} Strong Buy · ${buy ?? 0} Buy · ${hold ?? 0} Hold · ${sell ?? 0} Sell · ${strongSell ?? 0} Strong Sell` : null,
+  ].filter(Boolean) as string[];
+
+  // ── LLM-generated narrative (if available) ───────────────────────────────
+  if (data.llmConclusion) {
+    return [
+      '## 🎯 Investment Conclusion',
+      `> _Analysis grounded in real market-data API responses. Not financial advice._`,
+      data.llmConclusion,
+      '### 📋 Quick Reference',
+      ...dataLines,
+    ].join('\n\n');
+  }
+
+  // ── Structured fallback (no LLM available) ───────────────────────────────
+  const bullish: string[] = [];
+  const bearish: string[] = [];
+
+  if (composite !== null) {
+    if (composite >= 60) bullish.push(`Strong composite score (${composite.toFixed(1)}/100)`);
+    else if (composite < 40) bearish.push(`Below-average composite score (${composite.toFixed(1)}/100)`);
+  }
+  if (upside !== null) {
+    if (upside > 10) bullish.push(`Analyst consensus implies ${upside.toFixed(1)}% upside to mean target ($${targetMean?.toFixed(2)})`);
+    else if (upside < -10) bearish.push(`Price exceeds analyst mean target by ${Math.abs(upside).toFixed(1)}%`);
+  }
+  if (moat) {
+    if (moat.moatScore >= 61) bullish.push(`Wide competitive moat: ${moat.moatType} (${moat.moatScore}/100) — ${moat.narrative}`);
+    else if (moat.moatScore < 31) bearish.push(`No significant competitive moat identified (score ${moat.moatScore}/100)`);
+  }
+  if (revenueGrowth !== null) {
+    if (revenueGrowth > 10) bullish.push(`Revenue growing at ${revenueGrowth.toFixed(1)}% TTM`);
+    else if (revenueGrowth < 0) bearish.push(`Revenue declining ${Math.abs(revenueGrowth).toFixed(1)}% TTM`);
+  }
+  if (opMargin !== null) {
+    if (opMargin > 20) bullish.push(`High operating margin (${opMargin.toFixed(1)}%) indicates pricing power`);
+    else if (opMargin < 0) bearish.push(`Negative operating margin (${opMargin.toFixed(1)}%) — profitability under pressure`);
+  }
+  if (roe !== null) {
+    if (roe > 20) bullish.push(`Exceptional return on equity (${roe.toFixed(1)}%)`);
+    else if (roe < 0) bearish.push(`Negative ROE (${roe.toFixed(1)}%)`);
+  }
+  if (beta !== null) {
+    if (beta > 1.5) bearish.push(`High market sensitivity (beta ${beta.toFixed(2)}) — expect above-average volatility`);
+    else if (beta < 0.7) bullish.push(`Low volatility (beta ${beta.toFixed(2)}) — defensive characteristics`);
+  }
+  if (totalAnalyst > 0 && analystBuyPct !== null) {
+    const pct = (analystBuyPct * 100).toFixed(0);
+    if (analystBuyPct >= 0.7) bullish.push(`${pct}% of analysts rate the stock Buy or Strong Buy`);
+    else if (analystBuyPct < 0.3) bearish.push(`Only ${pct}% of analysts rate the stock Buy or Strong Buy`);
+  }
+
+  const bullLines = bullish.length
+    ? `**Bullish Signals:**\n${bullish.map((b) => `- ${b}`).join('\n')}`
+    : '';
+  const bearLines = bearish.length
+    ? `**Bearish Signals / Risks:**\n${bearish.map((b) => `- ${b}`).join('\n')}`
+    : '';
+
+  return [
+    '## 🎯 Investment Conclusion',
+    `> _All values are sourced from live market-data APIs. This section summarises what the data shows — it is not financial advice._`,
+    `### ${rating.emoji} ${name} (${symbol}) — ${rating.label}`,
+    ...dataLines,
+    bullLines || null,
+    bearLines || null,
+    '_This conclusion is derived entirely from real API data. Always conduct your own due diligence before investing._',
+  ].filter(Boolean).join('\n\n');
+}
+
+/**
+ * Builds the Investment Conclusion section for a multi-stock comparison report
+ * (used by both buildComparisonReport and buildSectorReport).
+ *
+ * When `llmConclusion` is provided it forms the main narrative; data-derived
+ * rankings and metrics are appended as a quick-reference section.
+ *
+ * @param items        The comparison items with financial data
+ * @param scored       Each item paired with its composite score
+ * @param reportType   'comparison' | 'sector' | 'deep-sector'
+ * @param sectorQuery  Optional sector/theme label for sector-type reports
+ * @param llmConclusion Optional LLM-generated narrative
+ */
+function buildComparisonConclusion(
+  items: ComparisonReportItem[],
+  scored: Array<{ item: ComparisonReportItem; score: number | null }>,
+  reportType: 'comparison' | 'sector' | 'deep-sector',
+  sectorQuery?: string,
+  llmConclusion?: string
+): string {
+  if (items.length === 0) return '';
+
+  // Rank by composite score (real data only)
+  const ranked = scored
+    .filter((r) => r.score !== null)
+    .sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+
+  const top = ranked[0];
+  const runnerUp = ranked[1];
+  const topName = top?.item.overview?.name || top?.item.symbol || 'N/A';
+  const topSymbol = top?.item.symbol || 'N/A';
+  const topScore = top?.score;
+
+  // Average composite score → group outlook
+  const validScores = ranked.map((r) => r.score as number);
+  const avgScore = validScores.length
+    ? validScores.reduce((s, v) => s + v, 0) / validScores.length
+    : null;
+
+  const outlook =
+    avgScore === null ? 'Mixed'
+    : avgScore >= 65 ? 'Constructive — most companies show strong fundamentals'
+    : avgScore >= 45 ? 'Neutral — quality varies; selective exposure recommended'
+    : 'Cautious — fundamentals broadly under pressure';
+
+  // Moat leader (wide moat only)
+  const moatLeader = items
+    .filter((it) => it.moatAnalysis && it.moatAnalysis.moatScore >= 61)
+    .sort((a, b) => (b.moatAnalysis?.moatScore ?? 0) - (a.moatAnalysis?.moatScore ?? 0))[0];
+
+  const outlookLabel =
+    reportType === 'sector' ? `**${sectorQuery || 'Sector'} Outlook:** ${outlook}`
+    : reportType === 'deep-sector' ? `**Deep Sector Outlook (${sectorQuery || 'sector'}):** ${outlook}`
+    : `**Peer Group Outlook:** ${outlook}`;
+
+  const strategyAdvice =
+    topScore !== null && topScore >= 65
+      ? `Focused allocation to the top-ranked name(s) is supported by the data.`
+      : `A diversified basket approach reduces single-name risk given mixed fundamentals.`;
+
+  // Build data-derived quick reference lines for every company
+  const companyRefLines = ranked.map((r) => {
+    const n = r.item.overview?.name || r.item.symbol;
+    const sym = r.item.symbol;
+    const price = toNumber(r.item.price?.price);
+    const target = toNumber(
+      r.item.priceTargets?.targetMean
+      ?? (r.item.analystRatings?.analystTargetPrice !== 'N/A' ? r.item.analystRatings?.analystTargetPrice : null)
+      ?? r.item.overview?.analystTargetPrice
+    );
+    const upside = price && target ? ((target - price) / price) * 100 : null;
+    const moat = r.item.moatAnalysis;
+    const parts = [
+      r.score !== null ? `Score ${r.score.toFixed(1)}` : null,
+      upside !== null ? `${upside >= 0 ? '+' : ''}${upside.toFixed(1)}% upside` : null,
+      moat ? `${moat.moatStrength} moat` : null,
+    ].filter(Boolean).join(' · ');
+    return `- **${n} (${sym}):** ${parts || 'Insufficient data'}`;
+  });
+
+  // Summary block always shown
+  const summaryLines = [
+    top ? `**Top Pick: ${topName} (${topSymbol})** — Composite ${topScore?.toFixed(1)}/100` : '_Insufficient data for ranking._',
+    runnerUp ? `- Runner-up: ${runnerUp.item.overview?.name || runnerUp.item.symbol} (${runnerUp.item.symbol}) — ${runnerUp.score?.toFixed(1)}/100` : null,
+    moatLeader ? `- Strongest moat: **${moatLeader.overview?.name || moatLeader.symbol} (${moatLeader.symbol})** — ${moatLeader.moatAnalysis?.moatType ?? 'N/A'} (${moatLeader.moatAnalysis?.moatScore ?? 'N/A'}/100)` : null,
+    outlookLabel,
+    `- Strategy: ${strategyAdvice}`,
+  ].filter(Boolean).join('\n\n');
+
+  if (llmConclusion) {
+    return [
+      '## 🎯 Investment Conclusion',
+      `> _Analysis grounded in real market-data API responses. Not financial advice._`,
+      llmConclusion,
+      '### 📊 Company Quick Reference',
+      ...companyRefLines,
+      summaryLines,
+    ].join('\n\n');
+  }
+
+  return [
+    '## 🎯 Investment Conclusion',
+    `> _All values are derived from live market-data APIs. This conclusion is not financial advice._`,
+    summaryLines,
+    '### 📊 Company Quick Reference',
+    ...companyRefLines,
+    '_Always conduct your own due diligence before making investment decisions._',
+  ].filter(Boolean).join('\n\n');
 }
