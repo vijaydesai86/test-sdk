@@ -362,7 +362,7 @@ function buildLLMExecutionStrategies(
     ? DEFAULT_MODEL
     : githubRequestedModel;
   const geminiRequestedModel = isGitHubModelId(requestedModel)
-    ? undefined
+    ? GEMINI_MODEL
     : requestedModel || GEMINI_MODEL;
 
   if ((provider === 'github' || provider === 'hybrid') && githubToken) {
