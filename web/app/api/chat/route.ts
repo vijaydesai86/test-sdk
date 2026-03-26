@@ -112,15 +112,14 @@ const SYSTEM_PROMPT = `You are an elite buy-side equity research analyst. Produc
 **3. Match depth to the question.**
 - Individual stock report: call generate_stock_report with the ticker symbol.
 - Company comparison report: call generate_comparison_report with the list of ticker symbols.
-- Sector / thematic analysis: call generate_sector_report with the sector query (e.g. "AI data center"). It identifies the top companies and builds a full comparison report.
-- Deep sector research: call generate_deep_sector_report when the user asks for deep, thorough, or comprehensive sector analysis — it identifies a broad candidate list, maps supply-chain/customer/market/news dependencies, refines the list, and builds a full comparison report.
+- Deep research: call generate_deep_sector_report when the user asks for thematic, sector, industry, or broad deep research (e.g. "AI infrastructure", "semiconductors"). It identifies a broad candidate list, maps supply-chain/customer/market/news dependencies, refines the company list, and builds a full comparison report.
 - Data-only query: call the relevant data tool (get_stock_price, get_company_overview, etc.) and answer directly.
 
 **4. Resolve company names to tickers first.** If the user mentions company names (e.g. "Google", "Microsoft", "Apple") instead of tickers, call search_stock for each name to find the correct ticker symbol, then use those tickers in generate_stock_report or generate_comparison_report. Never guess a ticker — always confirm it with search_stock.
 
 **5. Never skip a tool** when that data would strengthen the analysis. If a tool fails due to missing API keys, say so explicitly and continue with available data only.
 
-**6. Report requests.** When a user asks for a report on one stock, call generate_stock_report. When asked to compare companies, call generate_comparison_report. Always return the saved artifact path.
+**6. Report requests.** When a user asks for a report on one stock, call generate_stock_report. When asked to compare companies, call generate_comparison_report. When asked for thematic, sector, industry, or broad deep research, call generate_deep_sector_report. Always return the saved artifact path.
 
 **OUTPUT STANDARDS:**
 - Tables for all comparisons of 2+ stocks or metrics — no empty cells.
@@ -140,8 +139,7 @@ Rules:
 - If given company names instead of tickers (e.g. "Google", "Microsoft"), call search_stock for each name first to get the correct ticker symbol, then use those tickers in report/comparison tools.
 - Use tables for comparisons and show calculations.
 - Return report paths when asked for reports.
-- For sector/thematic queries (e.g. "top 5 AI data center companies"), call generate_sector_report with the sector query — it identifies the top companies automatically.
-- For deep/thorough/comprehensive sector research, call generate_deep_sector_report — it maps sector dependencies and refines the company list before building the comparison.
+- For thematic, sector, or industry research queries (e.g. "AI infrastructure", "semiconductors", "deep research on AI data center companies"), call generate_deep_sector_report — it maps dependencies and refines the company list before building the comparison.
 
 Keep answers concise unless the user requests depth.`;
 
@@ -282,13 +280,13 @@ function parseReportRequest(message: string) {
 
   const sectorMatch = text.match(/(sector|theme)\s+report\s+for\s+(.+)$/i);
   if (sectorMatch) {
-    return { type: 'sector' as const, query: sectorMatch[2].trim() };
+    return { type: 'deep-sector' as const, query: sectorMatch[2].trim() };
   }
 
   if (lower.includes('sector report') || lower.includes('theme report')) {
     const queryMatch = text.match(/report\s+for\s+(.+)$/i);
     if (queryMatch) {
-      return { type: 'sector' as const, query: queryMatch[1].trim() };
+      return { type: 'deep-sector' as const, query: queryMatch[1].trim() };
     }
   }
 
@@ -296,7 +294,7 @@ function parseReportRequest(message: string) {
   if (genericMatch) {
     const query = genericMatch[1].trim();
     if (query.includes(' ') || /sector|theme|stocks?/i.test(query)) {
-      return { type: 'sector' as const, query };
+      return { type: 'deep-sector' as const, query };
     }
   }
 
@@ -345,7 +343,6 @@ function selectToolNames() {
     'get_insider_trading',
     'generate_stock_report',
     'generate_comparison_report',
-    'generate_sector_report',
     'generate_deep_sector_report',
     'get_sector_performance',
     'get_top_gainers_losers',
@@ -727,19 +724,12 @@ export async function POST(request: NextRequest) {
               stockService,
               { llmFill }
             )
-          : reportRequest.type === 'sector'
-            ? await executeTool(
-                'generate_sector_report',
-                { sector: reportRequest.query, range: timeframe || '1y' },
-                stockService,
-                { llmFill }
-              )
-            : await executeTool(
-                'generate_stock_report',
-                { symbol: (reportRequest as any).symbol, range: timeframe || '5y' },
-                stockService,
-                { llmFill }
-              );
+          : await executeTool(
+              'generate_stock_report',
+              { symbol: (reportRequest as any).symbol, range: timeframe || '5y' },
+              stockService,
+              { llmFill }
+            );
 
       if (!toolResult.success) {
         return NextResponse.json(
