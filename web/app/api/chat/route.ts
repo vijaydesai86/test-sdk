@@ -270,6 +270,11 @@ function parseReportRequest(message: string) {
   const text = message.trim();
   const lower = text.toLowerCase();
 
+  const deepSectorMatch = text.match(/deep(?:\s+sector)?(?:\s+(?:research|analysis))?(?:\s+report)?\s+(?:for|on)\s+(.+)$/i);
+  if (deepSectorMatch) {
+    return { type: 'deep-sector' as const, query: deepSectorMatch[1].trim() };
+  }
+
   const compareCompanies = parseCompareRequest(text);
   if (compareCompanies) {
     return { type: 'compare' as const, companies: compareCompanies };
@@ -715,19 +720,26 @@ export async function POST(request: NextRequest) {
             stockService,
             { llmFill }
           )
-        : reportRequest.type === 'sector'
+        : reportRequest.type === 'deep-sector'
           ? await executeTool(
-              'generate_sector_report',
+              'generate_deep_sector_report',
               { sector: reportRequest.query, range: timeframe || '1y' },
               stockService,
               { llmFill }
             )
-          : await executeTool(
-              'generate_stock_report',
-              { symbol: (reportRequest as any).symbol, range: timeframe || '5y' },
-              stockService,
-              { llmFill }
-            );
+          : reportRequest.type === 'sector'
+            ? await executeTool(
+                'generate_sector_report',
+                { sector: reportRequest.query, range: timeframe || '1y' },
+                stockService,
+                { llmFill }
+              )
+            : await executeTool(
+                'generate_stock_report',
+                { symbol: (reportRequest as any).symbol, range: timeframe || '5y' },
+                stockService,
+                { llmFill }
+              );
 
       if (!toolResult.success) {
         return NextResponse.json(
