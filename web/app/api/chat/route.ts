@@ -43,7 +43,14 @@ const GEMINI_FALLBACK_MODELS = [
 // - 'gemini':           Gemini API only (GEMINI_TOKEN required)
 // - 'hybrid':           GitHub Models primary; Gemini auto-fallback on HTTP 429 rate limit
 type LLMProviderType = 'github' | 'gemini' | 'hybrid';
-const LLM_PROVIDER = (process.env.LLM_PROVIDER || 'github').toLowerCase() as LLMProviderType;
+
+function normalizeLLMProvider(provider: string | null | undefined): LLMProviderType {
+  return provider === 'github' || provider === 'gemini' || provider === 'hybrid'
+    ? provider
+    : 'github';
+}
+
+const DEFAULT_LLM_PROVIDER = normalizeLLMProvider(process.env.LLM_PROVIDER);
 const AUTO_DOWNGRADE_GPT5 = process.env.AUTO_DOWNGRADE_GPT5 !== 'false';
 const DEFAULT_FALLBACK_MODELS = [
   DEFAULT_MODEL,
@@ -323,6 +330,58 @@ function buildFallbackModels(requestedModel: string): string[] {
   return available.length > 0 ? available : unique;
 }
 
+function buildGeminiFallbackModels(requestedModel?: string | null): string[] {
+  const combined = [requestedModel || '', ...GEMINI_FALLBACK_MODELS];
+  const unique = Array.from(new Set(combined.filter(Boolean)));
+  const available = unique.filter((model) => !isModelCoolingDown(model));
+  return available.length > 0 ? available : unique;
+}
+
+type RuntimeLLMProvider = 'github' | 'gemini';
+
+type LLMExecutionStrategy = {
+  provider: RuntimeLLMProvider;
+  models: string[];
+};
+
+function isGitHubModelId(model?: string | null): boolean {
+  return Boolean(model && model.includes('/'));
+}
+
+function buildLLMExecutionStrategies(
+  provider: LLMProviderType,
+  requestedModel: string,
+  githubToken: string | undefined,
+  geminiToken: string | undefined,
+): LLMExecutionStrategy[] {
+  const strategies: LLMExecutionStrategy[] = [];
+  const githubRequestedModel = isGitHubModelId(requestedModel)
+    ? requestedModel
+    : DEFAULT_MODEL;
+  const normalizedGithubModel = AUTO_DOWNGRADE_GPT5 && /gpt-5/i.test(githubRequestedModel)
+    ? DEFAULT_MODEL
+    : githubRequestedModel;
+  const geminiRequestedModel = isGitHubModelId(requestedModel)
+    ? undefined
+    : requestedModel || GEMINI_MODEL;
+
+  if ((provider === 'github' || provider === 'hybrid') && githubToken) {
+    strategies.push({
+      provider: 'github',
+      models: buildFallbackModels(normalizedGithubModel),
+    });
+  }
+
+  if ((provider === 'gemini' || provider === 'hybrid') && geminiToken) {
+    strategies.push({
+      provider: 'gemini',
+      models: [geminiRequestedModel],
+    });
+  }
+
+  return strategies;
+}
+
 function selectToolNames() {
   const toolNames = [
     'search_stock',
@@ -553,18 +612,24 @@ async function callGeminiAPI(
 async function callGeminiWithFallback(
   messages: ChatMessage[],
   geminiToken: string,
-  tools: ReturnType<typeof getToolDefinitionsByName>
+  tools: ReturnType<typeof getToolDefinitionsByName>,
+  requestedModel?: string | null
 ): Promise<any> {
   // Status codes that mean "this model can't serve right now — try the next one"
   const RETRIABLE = new Set([429, 503, 400]);
+  const candidateModels = buildGeminiFallbackModels(requestedModel);
   let lastErr: any;
-  for (const model of GEMINI_FALLBACK_MODELS) {
+  for (const model of candidateModels) {
     try {
-      return await callGeminiAPI(messages, geminiToken, model, tools);
+      const response = await callGeminiAPI(messages, geminiToken, model, tools);
+      if (response && typeof response === 'object') {
+        (response as any).__model = model;
+      }
+      return response;
     } catch (err: any) {
       lastErr = err;
       if (!RETRIABLE.has(err?.statusCode)) throw err;
-      const isLast = model === GEMINI_FALLBACK_MODELS[GEMINI_FALLBACK_MODELS.length - 1];
+      const isLast = model === candidateModels[candidateModels.length - 1];
       if (!isLast) {
         console.info(`Gemini model '${model}' unavailable (${err?.statusCode}) — trying next model`);
         // Honor the provider's requested retry delay before moving on (capped at 10 s).
@@ -592,6 +657,7 @@ async function callLLMForDataFill(
   prompt: string,
   githubToken: string | undefined,
   geminiToken: string | undefined,
+  provider: LLMProviderType,
 ): Promise<string> {
   const fillMessages: ChatMessage[] = [
     {
@@ -608,10 +674,10 @@ async function callLLMForDataFill(
 
   const attempt = async (): Promise<string> => {
     let result: any;
-    if (LLM_PROVIDER === 'gemini') {
+    if (provider === 'gemini') {
       if (!geminiToken) return '{}';
       result = await callGeminiWithFallback(fillMessages, geminiToken, []);
-    } else if (LLM_PROVIDER === 'hybrid') {
+    } else if (provider === 'hybrid') {
       if (githubToken) {
         try {
           result = await callGitHubModelsAPI(fillMessages, githubToken, FILL_MODEL, []);
@@ -658,9 +724,10 @@ async function callLLMForDataFill(
 function createLLMFiller(
   githubToken: string | undefined,
   geminiToken: string | undefined,
+  provider: LLMProviderType,
 ): LLMFiller | undefined {
   if (!githubToken && !geminiToken) return undefined;
-  return (prompt: string) => callLLMForDataFill(prompt, githubToken, geminiToken);
+  return (prompt: string) => callLLMForDataFill(prompt, githubToken, geminiToken, provider);
 }
 
 function getStockProviderConfigError(provider: string): { error: string; details: string } | null {
@@ -725,9 +792,11 @@ function getStockProviderConfigError(provider: string): { error: string; details
 }
 
 export async function POST(request: NextRequest) {
+  let activeProvider: LLMProviderType = DEFAULT_LLM_PROVIDER;
+
   try {
     const body = await request.json();
-    const { message, sessionId, model } = body;
+    const { message, sessionId, model, provider } = body;
 
     if (!message) {
       return NextResponse.json(
@@ -740,6 +809,13 @@ export async function POST(request: NextRequest) {
     const githubToken = process.env.GITHUB_TOKEN || process.env.GH_TOKEN || process.env.COPILOT_GITHUB_TOKEN;
     // Check if Gemini token is available (never exposed client-side — server env only)
     const geminiToken = process.env.GEMINI_TOKEN;
+    activeProvider = normalizeLLMProvider(typeof provider === 'string' ? provider : DEFAULT_LLM_PROVIDER);
+    const usesGeminiPrimary = activeProvider === 'gemini' || (activeProvider === 'hybrid' && !githubToken && Boolean(geminiToken));
+    const requestedModel = typeof model === 'string' && model.trim()
+      ? model
+      : usesGeminiPrimary
+        ? GEMINI_MODEL
+        : DEFAULT_MODEL;
 
     // Initialize the configured stock data provider.
     const dataProvider = (process.env.STOCK_DATA_PROVIDER || 'alphavantage').toLowerCase();
@@ -767,7 +843,7 @@ export async function POST(request: NextRequest) {
 
       conversationMessages.push({ role: 'user', content: message });
 
-      const llmFill = createLLMFiller(githubToken, geminiToken);
+      const llmFill = createLLMFiller(githubToken, geminiToken, activeProvider);
 
       const toolResult = reportRequest.type === 'compare'
         ? await executeTool(
@@ -806,8 +882,8 @@ export async function POST(request: NextRequest) {
       sessions.set(currentSessionId, conversationMessages);
 
       console.info('Chat request stats', {
-        provider: LLM_PROVIDER,
-        model: model || DEFAULT_MODEL,
+        provider: activeProvider,
+        model: requestedModel,
         rounds: 0,
         toolCalls: 1,
         toolsProvided: 0,
@@ -817,8 +893,8 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({
         response: responseText,
         sessionId: currentSessionId,
-        model: model || DEFAULT_MODEL,
-        provider: LLM_PROVIDER,
+        model: requestedModel,
+        provider: activeProvider,
         report: filename && content ? { filename, content, downloadUrl } : null,
         stats: {
           rounds: 0,
@@ -832,7 +908,6 @@ export async function POST(request: NextRequest) {
     let conversationMessages: ChatMessage[] = sessionId ? sessions.get(sessionId) || [] : [];
     const currentSessionId = sessionId || Math.random().toString(36).substring(7);
 
-    const requestedModel = model || DEFAULT_MODEL;
     const preferCompactPrompt = isSmallContextModel(requestedModel);
     const systemPrompt = process.env.USE_FULL_SYSTEM_PROMPT === 'true' && !preferCompactPrompt
       ? SYSTEM_PROMPT
@@ -843,7 +918,7 @@ export async function POST(request: NextRequest) {
       // Trim accumulated tool messages from previous turns to stay within
       // the model's input token limit (8,000 tokens for high/low tier models,
       // minus ~5,500 tokens of fixed overhead = only ~2,500 tokens for history).
-      const maxExchanges = isSmallContextModel(model) ? 1 : 2;
+      const maxExchanges = isSmallContextModel(requestedModel) ? 1 : 2;
       conversationMessages = trimHistory(conversationMessages, maxExchanges);
     }
 
@@ -853,33 +928,58 @@ export async function POST(request: NextRequest) {
     const { toolNames } = selectToolNames();
     const toolDefinitions = getToolDefinitionsByName(toolNames);
 
-    // Call the Copilot API with tool-calling loop
+    // Call the LLM with a provider/model strategy chain.
     let rounds = 0;
     let totalToolCalls = 0;
     let assistantContent: string | null = null;
-    let activeModel = requestedModel;
-    if (AUTO_DOWNGRADE_GPT5 && /gpt-5/i.test(activeModel)) {
-      activeModel = DEFAULT_MODEL;
-    }
-    if (isModelCoolingDown(activeModel)) {
-      const fallbackModels = buildFallbackModels(activeModel);
-      activeModel = fallbackModels[0] || activeModel;
-    }
     let toolDefinitionsUsed = toolDefinitions;
-    const fallbackModels = buildFallbackModels(activeModel);
-    let fallbackIndex = Math.max(0, fallbackModels.findIndex((item) => item === activeModel));
-    // Collect report artifacts generated by the model during the tool loop
     const reportArtifacts: Array<{ filename: string; content: string; downloadUrl: string }> = [];
+    const executionStrategies = buildLLMExecutionStrategies(
+      activeProvider,
+      requestedModel,
+      githubToken,
+      geminiToken,
+    );
 
-    // LLM provider selection — mirrors STOCK_DATA_PROVIDER pattern.
-    // Closes over githubToken and geminiToken from the request scope (never client-side).
+    if (executionStrategies.length === 0) {
+      const err = new Error(
+        activeProvider === 'gemini'
+          ? 'Gemini token not configured. Set GEMINI_TOKEN environment variable.'
+          : activeProvider === 'github'
+            ? 'GitHub token not configured'
+            : 'No LLM provider tokens configured. Set GITHUB_TOKEN and/or GEMINI_TOKEN.'
+      ) as Error & { statusCode: number };
+      err.statusCode = 503;
+      throw err;
+    }
+
+    let strategyIndex = 0;
+    let modelIndex = 0;
+    let activeRuntimeProvider = executionStrategies[strategyIndex].provider;
+    let activeModel = executionStrategies[strategyIndex].models[modelIndex];
+
+    const advanceModel = (): boolean => {
+      if (modelIndex < executionStrategies[strategyIndex].models.length - 1) {
+        modelIndex += 1;
+      } else if (strategyIndex < executionStrategies.length - 1) {
+        strategyIndex += 1;
+        modelIndex = 0;
+      } else {
+        return false;
+      }
+
+      activeRuntimeProvider = executionStrategies[strategyIndex].provider;
+      activeModel = executionStrategies[strategyIndex].models[modelIndex];
+      return true;
+    };
+
     const callProvider = async (
+      runtimeProvider: RuntimeLLMProvider,
       messages: ChatMessage[],
       modelId: string,
       tools: ReturnType<typeof getToolDefinitionsByName>
     ) => {
-      if (LLM_PROVIDER === 'gemini') {
-        // Gemini-only mode: all LLM calls go to Gemini API with automatic model fallback
+      if (runtimeProvider === 'gemini') {
         if (!geminiToken) {
           const err = new Error(
             'Gemini token not configured. Set GEMINI_TOKEN environment variable.'
@@ -887,39 +987,9 @@ export async function POST(request: NextRequest) {
           err.statusCode = 503;
           throw err;
         }
-        return callGeminiWithFallback(messages, geminiToken, tools);
+        return callGeminiWithFallback(messages, geminiToken, tools, modelId);
       }
 
-      if (LLM_PROVIDER === 'hybrid') {
-        // Hybrid mode: GitHub Models primary, Gemini auto-fallback on HTTP 429.
-        // Uses callGeminiWithFallback so gemini-2.0-flash → gemini-1.5-flash if needed.
-        // The model-switching fallback chain (fallbackModels) still applies to non-429 errors.
-        if (githubToken) {
-          try {
-            return await callGitHubModelsAPI(messages, githubToken, modelId, tools);
-          } catch (err: any) {
-            // Automatically fall back to Gemini when GitHub Models is rate-limited
-            if (err?.statusCode === 429 && geminiToken) {
-              console.info('GitHub Models rate limit hit — falling back to Gemini API');
-              // callGeminiWithFallback steps through GEMINI_FALLBACK_MODELS internally.
-              // Any remaining error propagates with retryAfterMs for the outer loop to honor.
-              return await callGeminiWithFallback(messages, geminiToken, tools);
-            }
-            throw err;
-          }
-        }
-        // No GitHub token; use Gemini directly if available
-        if (geminiToken) {
-          return callGeminiWithFallback(messages, geminiToken, tools);
-        }
-        const err = new Error(
-          'No LLM provider tokens configured. Set GITHUB_TOKEN and/or GEMINI_TOKEN.'
-        ) as Error & { statusCode: number };
-        err.statusCode = 503;
-        throw err;
-      }
-
-      // Default: github mode — GitHub Models only
       if (!githubToken) {
         const err = new Error('GitHub token not configured') as Error & { statusCode: number };
         err.statusCode = 503;
@@ -936,8 +1006,11 @@ export async function POST(request: NextRequest) {
       let retryTools = toolDefinitions;
       while (attempt < 2) {
         try {
-          result = await callProvider(retryMessages, activeModel, retryTools);
+          result = await callProvider(activeRuntimeProvider, retryMessages, activeModel, retryTools);
           toolDefinitionsUsed = retryTools;
+          if (typeof result?.__model === 'string') {
+            activeModel = result.__model;
+          }
           break;
         } catch (error: any) {
           const isRateLimit = error?.statusCode === 429 || error?.statusCode === 503;
@@ -946,18 +1019,14 @@ export async function POST(request: NextRequest) {
           // Unknown model: skip to the next fallback without counting as an attempt —
           // retrying with the same invalid model ID would always fail.
           if (isUnknownModel) {
-            if (fallbackIndex < fallbackModels.length - 1) {
-              fallbackIndex += 1;
-              activeModel = fallbackModels[fallbackIndex];
+            if (advanceModel()) {
               continue;
             }
             throw error;
           }
           if (attempt === 0 && isRateLimit) {
             markModelCooldown(activeModel, error?.retryAfterMs);
-            if (fallbackIndex < fallbackModels.length - 1) {
-              fallbackIndex += 1;
-              activeModel = fallbackModels[fallbackIndex];
+            if (advanceModel()) {
               // Honor the provider's requested retry delay (e.g. Gemini RetryInfo), capped at 10 s.
               const delayMs = Math.min(error?.retryAfterMs ?? 0, 10000);
               if (delayMs > 0) {
@@ -993,7 +1062,7 @@ export async function POST(request: NextRequest) {
       // If the model wants to call tools, execute all of them in parallel
       if (assistantMessage.tool_calls && assistantMessage.tool_calls.length > 0) {
         totalToolCalls += assistantMessage.tool_calls.length;
-        const loopLLMFill = createLLMFiller(githubToken, geminiToken);
+        const loopLLMFill = createLLMFiller(githubToken, geminiToken, activeProvider);
         const toolResults = await Promise.all(
           assistantMessage.tool_calls.map(async (toolCall: { id: string; function: { name: string; arguments: string } }) => {
             const toolName = toolCall.function.name;
@@ -1046,7 +1115,7 @@ export async function POST(request: NextRequest) {
     sessions.set(currentSessionId, conversationMessages);
 
     console.info('Chat request stats', {
-      provider: LLM_PROVIDER,
+      provider: activeProvider,
       model: activeModel,
       rounds,
       toolCalls: totalToolCalls,
@@ -1057,7 +1126,7 @@ export async function POST(request: NextRequest) {
       response: assistantContent || "I apologize, but I couldn't generate a response. Please try again.",
       sessionId: currentSessionId,
       model: activeModel,
-      provider: LLM_PROVIDER,
+      provider: activeProvider,
       reports: reportArtifacts.length > 0 ? reportArtifacts : undefined,
       stats: {
         rounds,
@@ -1091,16 +1160,16 @@ export async function POST(request: NextRequest) {
     } else if (isToolCallText) {
       details = 'This model returned tool calls as plain text. Switch to a tool-calling model from the dropdown (for example, GPT-4.1 or Claude Sonnet).';
     } else if (isMissingKey) {
-      if (LLM_PROVIDER === 'gemini') {
+      if (activeProvider === 'gemini') {
         details = 'Please set GEMINI_TOKEN in your Vercel environment variables. Get a key at: https://aistudio.google.com/api-keys';
-      } else if (LLM_PROVIDER === 'hybrid') {
+      } else if (activeProvider === 'hybrid') {
         details = 'Please set GITHUB_TOKEN and/or GEMINI_TOKEN in your Vercel environment variables.';
       } else {
         details =
           'Please set GITHUB_TOKEN in your Vercel environment variables. Get a personal access token at: https://github.com/settings/personal-access-tokens — this uses your existing GitHub Copilot subscription.';
       }
     } else {
-      details = 'Make sure your LLM provider tokens (GITHUB_TOKEN and/or GEMINI_TOKEN) and ALPHA_VANTAGE_API_KEY are set in your Vercel environment variables.';
+      details = 'Make sure your LLM provider tokens and stock data provider keys are set in your Vercel environment variables.';
     }
     return NextResponse.json(
       {
