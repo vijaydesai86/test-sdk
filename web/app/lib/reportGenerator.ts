@@ -78,6 +78,19 @@ export interface DeepSectorReportData extends SectorReportData {
   /** Per-company 1-2 sentence investment thesis for each company in the final refined list */
   companySnapshots?: Record<string, string>;
 }
+export interface WatchlistDailyReportItem {
+  symbol: string;
+  companyName?: string;
+  stock: StockReportData;
+  action?: 'Buy' | 'Hold' | 'Wait' | 'Sell';
+  reason?: string;
+}
+
+export interface WatchlistDailyReportData {
+  generatedAt: string;
+  watchlistName: string;
+  items: WatchlistDailyReportItem[];
+}
 
 /**
  * LLM-generated competitive moat assessment for a single company.
@@ -2526,6 +2539,83 @@ function stripStockReportHeader(body: string): string {
     .trimStart();
 }
 
+function shiftMarkdownHeadings(body: string, levels = 1): string {
+  return body.replace(/^(#{1,6})\s+/gm, (_line, hashes) => '#'.repeat(Math.min(6, hashes.length + levels)) + ' ');
+}
+
+function buildWatchlistDecision(item: WatchlistDailyReportItem): { action: 'Buy' | 'Hold' | 'Wait' | 'Sell'; reason: string; score: number | null } {
+  if (item.action && item.reason) {
+    const scorecard = computeScorecard(item.stock);
+    return { action: item.action, reason: item.reason, score: scorecard.composite };
+  }
+
+  const scorecard = computeScorecard(item.stock);
+  const overview = item.stock.companyOverview || {};
+  const price = toNumber(item.stock.price?.price);
+  const targetMean = toNumber(
+    item.stock.priceTargets?.targetMean
+    ?? (item.stock.analystRatings?.analystTargetPrice !== 'N/A' ? item.stock.analystRatings?.analystTargetPrice : null)
+    ?? overview.analystTargetPrice
+  );
+  const upside = price && targetMean ? ((targetMean - price) / price) * 100 : null;
+  const revenueGrowth = getStockRevenueGrowth(item.stock);
+  const operatingMargin = normalizePercent(
+    item.stock.basicFinancials?.metric?.operatingMarginTTM ?? overview.operatingMargin
+  );
+  const technical = getTechnicalSnapshot(price, item.stock.priceHistory?.prices || [], overview);
+  const action = deriveActionStance({
+    score: scorecard.composite,
+    targetUpside: upside,
+    technical,
+    revenueGrowth,
+    operatingMargin,
+  });
+
+  return { action: action.label, reason: action.rationale, score: scorecard.composite };
+}
+
+function buildWatchlistSummaryTable(items: WatchlistDailyReportItem[]): string {
+  const rows = items.map((item) => {
+    const decision = buildWatchlistDecision(item);
+    const name = item.companyName || item.stock.companyOverview?.name || item.symbol;
+    return `| ${name} (${item.symbol}) | **${decision.action}** | ${decision.reason} |`;
+  });
+
+  return [
+    '## Daily Summary',
+    '| Company | Action | Reason |',
+    '|---------|--------|--------|',
+    ...rows,
+  ].join('\n');
+}
+
+function buildWatchlistOverview(items: WatchlistDailyReportItem[]): string {
+  const decisions = items.map((item) => ({ item, decision: buildWatchlistDecision(item) }));
+  const counts = decisions.reduce<Record<'Buy' | 'Hold' | 'Wait' | 'Sell', number>>((acc, entry) => {
+    acc[entry.decision.action] += 1;
+    return acc;
+  }, { Buy: 0, Hold: 0, Wait: 0, Sell: 0 });
+
+  const scored = decisions
+    .filter((entry) => entry.decision.score !== null)
+    .sort((a, b) => (b.decision.score as number) - (a.decision.score as number));
+  const strongest = scored[0];
+  const weakest = scored[scored.length - 1];
+
+  const lines = [
+    `- **Buy:** ${counts.Buy} | **Hold:** ${counts.Hold} | **Wait:** ${counts.Wait} | **Sell:** ${counts.Sell}`
+  ];
+
+  if (strongest) {
+    lines.push(`- **Strongest setup:** ${(strongest.item.companyName || strongest.item.stock.companyOverview?.name || strongest.item.symbol)} (${strongest.item.symbol}) - ${strongest.decision.reason}`);
+  }
+  if (weakest && weakest !== strongest) {
+    lines.push(`- **Name needing the most caution:** ${(weakest.item.companyName || weakest.item.stock.companyOverview?.name || weakest.item.symbol)} (${weakest.item.symbol}) - ${weakest.decision.reason}`);
+  }
+
+  return ['## Watchlist Overview', ...lines].join('\n');
+}
+
 function stripComparisonReportHeader(body: string): string {
   return body
     .replace(/^# Company Comparison Report\n\nGenerated:[^\n]*\n\nUniverse:[^\n]*\n\n/, '')
@@ -2579,6 +2669,34 @@ export function buildDeepComparisonReport(data: {
   const insiderSections = data.items?.length ? buildDeepInsiderSections(data.items) : '';
 
   return [header, splitBase.body, insiderSections, splitBase.conclusion]
+    .filter(Boolean)
+    .join('\n\n');
+}
+export function buildWatchlistDailyReport(data: WatchlistDailyReportData): string {
+  const header = [
+    `# Watchlist Daily Report: ${data.watchlistName}`,
+    `Generated: ${data.generatedAt}`,
+    `**Companies covered:** ${data.items.length}`,
+  ].join('\n\n');
+
+  const summaryTable = buildWatchlistSummaryTable(data.items);
+  const overview = buildWatchlistOverview(data.items);
+  const companySections = data.items.map((item, index) => {
+    const decision = buildWatchlistDecision(item);
+    const title = item.companyName || item.stock.companyOverview?.name || item.symbol;
+    const body = shiftMarkdownHeadings(
+      stripStockReportHeader(buildStockReport(item.stock)),
+      1
+    );
+    return [
+      `## ${index + 1}. ${title} (${item.symbol})`,
+      `- **Daily Action:** ${decision.action}`,
+      `- **Reason:** ${decision.reason}`,
+      body,
+    ].join('\n\n');
+  });
+
+  return [header, summaryTable, overview, '## Full Company Research', ...companySections]
     .filter(Boolean)
     .join('\n\n');
 }

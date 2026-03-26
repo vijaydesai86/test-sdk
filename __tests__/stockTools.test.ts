@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { promises as fsp } from 'fs';
 import path from 'path';
 import { executeTool } from '../web/app/lib/stockTools';
@@ -688,5 +688,63 @@ describe('generate_stock_report financial-data fallback', () => {
     const result = await executeTool('generate_stock_report', { symbol: SYM, range: '1y' }, service, { llmFill });
     expect(result.success).toBe(true);
     expect(result.data?.content).toContain('Quarterly EPS');
+  });
+});
+
+describe('generate_watchlist_daily_report via executeTool', () => {
+  let service: StockDataService;
+  const watchlistsFile = path.resolve('reports', 'watchlists.json');
+
+  beforeEach(async () => {
+    service = stubService();
+    await fsp.mkdir(path.dirname(watchlistsFile), { recursive: true });
+    await fsp.writeFile(
+      watchlistsFile,
+      JSON.stringify({
+        watchlists: [
+          {
+            id: 'watch-1',
+            name: 'Core Watchlist',
+            slug: 'default',
+            isDefault: true,
+            createdAt: '2025-01-01T00:00:00Z',
+            updatedAt: '2025-01-01T00:00:00Z',
+            items: [
+              {
+                id: 'item-1',
+                symbol: 'NVDA',
+                companyName: 'NVIDIA',
+                displayOrder: 0,
+                createdAt: '2025-01-01T00:00:00Z',
+              },
+              {
+                id: 'item-2',
+                symbol: 'AMD',
+                companyName: 'AMD',
+                displayOrder: 1,
+                createdAt: '2025-01-01T00:00:00Z',
+              },
+            ],
+          },
+        ],
+      }),
+      'utf8'
+    );
+  });
+
+  afterEach(async () => {
+    try { await fsp.unlink(watchlistsFile); } catch {}
+  });
+
+  it('builds one combined report for all watchlist companies', async () => {
+    const result = await executeTool('generate_watchlist_daily_report', { range: '1y', skipSave: true }, service);
+
+    expect(result.success).toBe(true);
+    expect(result.data?.content).toContain('# Watchlist Daily Report: Core Watchlist');
+    expect(result.data?.content).toContain('| Company | Action | Reason |');
+    expect(result.data?.content).toContain('## 1. NVIDIA (NVDA)');
+    expect(result.data?.content).toContain('## 2. AMD (AMD)');
+    expect(service.getStockPrice).toHaveBeenCalledWith('NVDA');
+    expect(service.getStockPrice).toHaveBeenCalledWith('AMD');
   });
 });

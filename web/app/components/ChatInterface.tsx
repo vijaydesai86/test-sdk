@@ -34,6 +34,21 @@ interface SavedReportMeta {
   created_at: string;
 }
 
+interface WatchlistItemMeta {
+  id: string;
+  symbol: string;
+  companyName: string;
+  displayOrder: number;
+  createdAt: string;
+}
+
+interface WatchlistMeta {
+  id: string;
+  name: string;
+  slug: string;
+  items: WatchlistItemMeta[];
+}
+
 interface ModelOption {
   value: string;
   label: string;
@@ -115,6 +130,7 @@ const QUICK_PROMPTS = [
   { label: '⚖️ Compare NVDA, AMD, INTC', prompt: 'Compare companies NVDA, AMD, INTC' },
   { label: '🔬 Deep research on semiconductors', prompt: 'Deep research on semiconductors' },
   { label: '🧠 Deep research on Visa vs Mastercard', prompt: 'Deep research on Visa vs Mastercard' },
+  { label: '🗓️ Daily watchlist report', prompt: 'Generate daily report for my watchlist' },
 ];
 
 function formatProviderLabel(provider?: string) {
@@ -182,6 +198,11 @@ export default function ChatInterface() {
   const [supabaseReports, setSupabaseReports] = useState<SavedReportMeta[]>([]);
   const [supabaseReportsLoading, setSupabaseReportsLoading] = useState(false);
   const [supabaseSetupRequired, setSupabaseSetupRequired] = useState(false);
+  const [watchlist, setWatchlist] = useState<WatchlistMeta | null>(null);
+  const [watchlistLoading, setWatchlistLoading] = useState(false);
+  const [watchlistBusy, setWatchlistBusy] = useState(false);
+  const [watchlistError, setWatchlistError] = useState<string | null>(null);
+  const [watchlistInput, setWatchlistInput] = useState('');
 
   const selectedProvider = availableProviders.find((item) => item.id === provider) ?? null;
   const selectedModel = availableModels.find((item) => item.value === model) ?? null;
@@ -225,8 +246,24 @@ export default function ChatInterface() {
       .finally(() => setSupabaseReportsLoading(false));
   };
 
+  const fetchWatchlist = () => {
+    setWatchlistLoading(true);
+    setWatchlistError(null);
+    fetch('/api/watchlist')
+      .then(async (res) => {
+        const payload = await res.json() as { watchlist?: WatchlistMeta; error?: string };
+        if (!res.ok) throw new Error(payload.error || 'Failed to load watchlist');
+        setWatchlist(payload.watchlist ?? null);
+      })
+      .catch((err: unknown) => {
+        setWatchlistError(err instanceof Error ? err.message : 'Failed to load watchlist');
+      })
+      .finally(() => setWatchlistLoading(false));
+  };
+
   useEffect(() => {
     fetchSupabaseReports();
+    fetchWatchlist();
   }, []);
 
   useEffect(() => {
@@ -458,6 +495,49 @@ export default function ChatInterface() {
     }
   };
 
+  const handleWatchlistAdd = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!watchlistInput.trim() || watchlistBusy) return;
+    setWatchlistBusy(true);
+    setWatchlistError(null);
+    try {
+      const res = await fetch('/api/watchlist/items', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: watchlistInput.trim() }),
+      });
+      const payload = await res.json() as { watchlist?: WatchlistMeta; error?: string };
+      if (!res.ok) throw new Error(payload.error || 'Failed to add watchlist item');
+      setWatchlist(payload.watchlist ?? null);
+      setWatchlistInput('');
+    } catch (err: unknown) {
+      setWatchlistError(err instanceof Error ? err.message : 'Failed to add watchlist item');
+    } finally {
+      setWatchlistBusy(false);
+    }
+  };
+
+  const handleWatchlistRemove = async (symbol: string) => {
+    if (watchlistBusy) return;
+    setWatchlistBusy(true);
+    setWatchlistError(null);
+    try {
+      const res = await fetch(`/api/watchlist/items/${encodeURIComponent(symbol)}`, { method: 'DELETE' });
+      const payload = await res.json() as { watchlist?: WatchlistMeta; error?: string };
+      if (!res.ok) throw new Error(payload.error || 'Failed to remove watchlist item');
+      setWatchlist(payload.watchlist ?? null);
+    } catch (err: unknown) {
+      setWatchlistError(err instanceof Error ? err.message : 'Failed to remove watchlist item');
+    } finally {
+      setWatchlistBusy(false);
+    }
+  };
+
+  const handleGenerateDailyReport = () => {
+    setSidebarOpen(false);
+    void sendPrompt('Generate daily report for my watchlist');
+  };
+
   return (
     <>
       {sidebarOpen && (
@@ -603,6 +683,73 @@ export default function ChatInterface() {
                 ))}
               </div>
             </section>
+            <section>
+              <div className="flex items-center justify-between mb-2 gap-2">
+                <div>
+                  <h2 className="text-xs font-semibold text-slate-400 dark:text-gray-500 uppercase tracking-widest">
+                    Watchlist
+                  </h2>
+                  <p className="text-[11px] text-slate-400 dark:text-gray-500 mt-1">
+                    {watchlist?.name || "Default watchlist"} {watchlist ? `(${watchlist.items.length})` : ""}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleGenerateDailyReport}
+                  disabled={isLoading || watchlistLoading || !watchlist?.items.length}
+                  className="text-xs px-2.5 py-1.5 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:bg-slate-200 dark:disabled:bg-gray-700 disabled:text-slate-400 transition-colors"
+                >
+                  Daily report
+                </button>
+              </div>
+              <form onSubmit={handleWatchlistAdd} className="flex gap-2 mb-2">
+                <input
+                  value={watchlistInput}
+                  onChange={(e) => setWatchlistInput(e.target.value)}
+                  placeholder="Add ticker or company"
+                  disabled={watchlistBusy}
+                  className="flex-1 min-w-0 text-xs px-3 py-2 rounded-lg border border-slate-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-slate-700 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-60"
+                />
+                <button
+                  type="submit"
+                  disabled={watchlistBusy || !watchlistInput.trim()}
+                  className="text-xs px-3 py-2 rounded-lg border border-slate-200 dark:border-gray-700 text-slate-700 dark:text-white hover:bg-slate-50 dark:hover:bg-gray-800 disabled:opacity-50 transition-colors"
+                >
+                  Add
+                </button>
+              </form>
+              {watchlistError && (
+                <p className="text-xs text-red-500 dark:text-red-400 mb-2">{watchlistError}</p>
+              )}
+              {watchlistLoading ? (
+                <p className="text-xs text-slate-400 dark:text-gray-500">Loading watchlist...</p>
+              ) : !watchlist?.items.length ? (
+                <p className="text-xs text-slate-400 dark:text-gray-500">No companies in the watchlist yet.</p>
+              ) : (
+                <ul className="space-y-1.5">
+                  {watchlist.items.map((item) => (
+                    <li
+                      key={item.id}
+                      className="flex items-center gap-2 rounded-lg border border-slate-200 dark:border-gray-700 px-2 py-1.5 text-xs"
+                    >
+                      <div className="flex-1 min-w-0">
+                        <p className="font-medium text-slate-700 dark:text-white truncate">{item.symbol}</p>
+                        <p className="text-slate-400 dark:text-gray-500 truncate">{item.companyName}</p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => void handleWatchlistRemove(item.symbol)}
+                        disabled={watchlistBusy}
+                        title="Remove"
+                        className="text-slate-300 hover:text-red-500 disabled:opacity-40 shrink-0 px-1"
+                      >
+                        &#x2715;
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
 
             <section className="flex-1">
               <h2 className="text-xs font-semibold text-slate-400 dark:text-gray-500 uppercase tracking-widest mb-2">
@@ -611,7 +758,7 @@ export default function ChatInterface() {
               {reportItems.length === 0 ? (
                 <div className="space-y-2">
                   <p className="text-xs text-slate-400 dark:text-gray-500">
-                    No reports yet. Ask for a stock, comparison, or deep research report.
+                    No reports yet. Ask for a stock, comparison, deep research, or watchlist daily report.
                   </p>
                   <button
                     type="button"
@@ -767,6 +914,7 @@ create policy "service role full access"
                 <li>&#x2022; Individual stock deep-dive reports</li>
                 <li>&#x2022; Side-by-side comparison reports</li>
                 <li>&#x2022; Deep research on companies, comparisons, themes &amp; industries</li>
+                <li>&#x2022; Combined daily reports for the saved watchlist</li>
                 <li>&#x2022; Price, EPS, revenue &amp; margin charts</li>
                 <li>&#x2022; Analyst targets &amp; scorecard</li>
               </ul>
@@ -783,7 +931,7 @@ create policy "service role full access"
                       Start a research session
                     </h2>
                     <p className="text-sm text-slate-500 dark:text-gray-400 max-w-xs mx-auto">
-                      Ask for a stock report (e.g. <em>NVDA report</em>), compare companies (e.g. <em>compare NVDA AMD INTC</em>), or run deep research (e.g. <em>deep research on semiconductors</em>).
+                      Ask for a stock report (e.g. <em>NVDA report</em>), compare companies (e.g. <em>compare NVDA AMD INTC</em>), run deep research (e.g. <em>deep research on semiconductors</em>), or generate your watchlist daily report.
                     </p>
                   </div>
                   <div className="flex flex-wrap justify-center gap-2">
@@ -876,7 +1024,7 @@ create policy "service role full access"
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={handleKeyDown}
-                  placeholder="Ask for a stock report, comparison, or deep research&#8230; (Enter to send, Shift+Enter for newline)"
+                  placeholder="Ask for a stock report, comparison, deep research, or watchlist daily report&#8230; (Enter to send, Shift+Enter for newline)"
                   disabled={isLoading}
                   className="flex-1 resize-none px-4 py-2.5 rounded-xl border border-slate-200 dark:border-gray-700 bg-slate-50 dark:bg-gray-800 text-slate-900 dark:text-white text-sm placeholder-slate-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-60 min-h-[44px] max-h-40"
                 />

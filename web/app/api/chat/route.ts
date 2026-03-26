@@ -98,13 +98,14 @@ const SYSTEM_PROMPT = `You are an elite buy-side equity research analyst. Produc
 - Individual stock report: call generate_stock_report with the ticker symbol.
 - Company comparison report: call generate_comparison_report with the list of ticker symbols.
 - Deep research: call generate_deep_sector_report when the user asks for deep research on a single company, an explicit company comparison, or a theme/sector/industry (e.g. "Tesla", "Visa vs Mastercard", "semiconductors"). It preserves explicit company scope when provided; otherwise it identifies a broader candidate list, maps dependencies, refines the universe, and builds the final report.
+- Watchlist daily report: call generate_watchlist_daily_report when the user asks for the daily report or a watchlist report covering the saved watchlist.
 - Data-only query: call the relevant data tool (get_stock_price, get_company_overview, etc.) and answer directly.
 
 **4. Resolve company names to tickers first.** If the user mentions company names (e.g. "Google", "Microsoft", "Apple") instead of tickers, call search_stock for each name to find the correct ticker symbol, then use those tickers in generate_stock_report or generate_comparison_report. Never guess a ticker — always confirm it with search_stock.
 
 **5. Never skip a tool** when that data would strengthen the analysis. If a tool fails due to missing API keys, say so explicitly and continue with available data only.
 
-**6. Report requests.** When a user asks for a report on one stock, call generate_stock_report. When asked to compare companies, call generate_comparison_report. When asked for deep research on a company, comparison, theme, sector, or industry, call generate_deep_sector_report. Always return the saved artifact path.
+**6. Report requests.** When a user asks for a report on one stock, call generate_stock_report. When asked to compare companies, call generate_comparison_report. When asked for deep research on a company, comparison, theme, sector, or industry, call generate_deep_sector_report. When asked for a daily report on the watchlist, call generate_watchlist_daily_report. Always return the saved artifact path.
 
 **OUTPUT STANDARDS:**
 - Tables for all comparisons of 2+ stocks or metrics — no empty cells.
@@ -123,7 +124,7 @@ Rules:
 - Batch tool calls in a single round.
 - If given company names instead of tickers (e.g. "Google", "Microsoft"), call search_stock for each name first to get the correct ticker symbol, then use those tickers in report/comparison tools.
 - Use tables for comparisons and show calculations.
-- Return report paths when asked for reports.
+- Return report paths when asked for reports, including watchlist daily reports.
 - For deep research queries on a company, explicit comparison, theme, sector, or industry (e.g. "Tesla", "Visa vs Mastercard", "semiconductors"), call generate_deep_sector_report — it preserves explicit company scope when present and otherwise performs dependency mapping and universe refinement.
 
 Keep answers concise unless the user requests depth.`;
@@ -253,6 +254,17 @@ function parseReportRequest(message: string) {
   const text = message.trim();
   const lower = text.toLowerCase();
 
+  const watchlistDailyMatch = /^(?:generate|create|build|show|give)(?:\s+me)?\s+(?:my\s+)?(?:watchlist\s+)?daily report(?:\s+for\s+(?:my\s+watchlist))?\s*$/i.test(text)
+    || /^(?:my\s+)?(?:watchlist\s+)?daily report$/i.test(text)
+    || (lower.includes('daily report') && lower.includes('watchlist'))
+    || lower === 'daily report'
+    || lower === 'watchlist report'
+    || /^(?:my\s+)?watchlist report$/i.test(text)
+    || /^report for my watchlist$/i.test(text);
+  if (watchlistDailyMatch) {
+    return { type: 'watchlist-daily' as const };
+  }
+
   const deepSectorMatch = text.match(/deep(?:\s+sector)?(?:\s+(?:research|analysis))?(?:\s+report)?\s+(?:for|on)\s+(.+)$/i);
   if (deepSectorMatch) {
     return { type: 'deep-sector' as const, query: deepSectorMatch[1].trim() };
@@ -379,6 +391,7 @@ function selectToolNames() {
     'generate_stock_report',
     'generate_comparison_report',
     'generate_deep_sector_report',
+    'generate_watchlist_daily_report',
     'get_sector_performance',
     'get_top_gainers_losers',
   ];
@@ -836,12 +849,19 @@ export async function POST(request: NextRequest) {
               stockService,
               { llmFill }
             )
-          : await executeTool(
-              'generate_stock_report',
-              { symbol: (reportRequest as any).symbol, range: timeframe || '5y' },
-              stockService,
-              { llmFill }
-            );
+          : reportRequest.type === 'watchlist-daily'
+            ? await executeTool(
+                'generate_watchlist_daily_report',
+                { range: timeframe || '1y' },
+                stockService,
+                { llmFill }
+              )
+            : await executeTool(
+                'generate_stock_report',
+                { symbol: (reportRequest as any).symbol, range: timeframe || '5y' },
+                stockService,
+                { llmFill }
+              );
 
       if (!toolResult.success) {
         return NextResponse.json(
@@ -1055,7 +1075,7 @@ export async function POST(request: NextRequest) {
             const toolResult = await executeTool(toolName, toolArgs, stockService, { llmFill: loopLLMFill });
             // Collect report artifacts; strip full content from model response to avoid echoing
             if (
-              (toolName === 'generate_stock_report' || toolName === 'generate_comparison_report' || toolName === 'generate_sector_report' || toolName === 'generate_deep_sector_report') &&
+              (toolName === 'generate_stock_report' || toolName === 'generate_comparison_report' || toolName === 'generate_sector_report' || toolName === 'generate_deep_sector_report' || toolName === 'generate_watchlist_daily_report') &&
               toolResult.success && toolResult.data?.filename && toolResult.data?.content
             ) {
               reportArtifacts.push({

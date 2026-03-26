@@ -4,6 +4,7 @@ import {
   buildComparisonReport,
   buildSectorReport,
   buildDeepSectorReport,
+  buildWatchlistDailyReport,
   saveReport,
   type StockReportData,
   type ComparisonReportData,
@@ -899,5 +900,41 @@ describe('analyst target price resolution', () => {
     };
     const report = buildStockReport(data);
     expect(report).toContain('220.00');
+  });
+});
+
+describe('buildWatchlistDailyReport', () => {
+  it('renders one combined report with a top summary table and company sections', () => {
+    const report = buildWatchlistDailyReport({
+      generatedAt: '2025-01-02T00:00:00Z',
+      watchlistName: 'Core Watchlist',
+      items: [
+        {
+          symbol: 'AAPL',
+          companyName: 'Apple Inc.',
+          stock: richStock(),
+          action: 'Buy',
+          reason: 'Strong profitability and supportive target upside.',
+        },
+        {
+          symbol: 'NVDA',
+          companyName: 'NVIDIA',
+          stock: {
+            ...minimalStock(),
+            symbol: 'NVDA',
+            companyOverview: { name: 'NVIDIA' },
+          },
+          action: 'Hold',
+          reason: 'Signals are constructive, but the fresh entry is less compelling.',
+        },
+      ],
+    });
+
+    expect(report).toContain('# Watchlist Daily Report: Core Watchlist');
+    expect(report).toContain('| Company | Action | Reason |');
+    expect(report).toContain('| Apple Inc. (AAPL) | **Buy** | Strong profitability and supportive target upside. |');
+    expect(report).toContain('## 1. Apple Inc. (AAPL)');
+    expect(report).toContain('## 2. NVIDIA (NVDA)');
+    expect(report).toContain('### 🏢 Business Overview');
   });
 });

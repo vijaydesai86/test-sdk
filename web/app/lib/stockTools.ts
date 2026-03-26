@@ -2,7 +2,8 @@
 import { promises as fs } from 'fs';
 import path from 'path';
 import { StockDataService } from './stockDataService';
-import { buildStockReport, buildComparisonReport, buildSectorReport, buildDeepSectorReport, buildDeepStockReport, buildDeepComparisonReport, saveReport, MoatAnalysis } from './reportGenerator';
+import { buildStockReport, buildComparisonReport, buildSectorReport, buildDeepSectorReport, buildDeepStockReport, buildDeepComparisonReport, buildWatchlistDailyReport, saveReport, MoatAnalysis } from './reportGenerator';
+import { getDefaultWatchlist } from './watchlistStore';
 
 /**
  * OpenAI-compatible tool definitions for stock information
@@ -698,7 +699,7 @@ const baseCompanyName = (name: string) =>
     .trim()
     .toLowerCase();
 
-const resolveSymbolFromQuery = async (stockService: StockDataService, query: string) => {
+export const resolveSymbolFromQuery = async (stockService: StockDataService, query: string) => {
   const trimmed = query.trim();
   if (!trimmed) {
     return { ok: false, reason: 'Empty query', candidates: [] as any[] };
@@ -1067,6 +1068,22 @@ function buildToolDefinitions() {
             },
           },
           required: ['sector'],
+        },
+      },
+    },
+    {
+      type: 'function' as const,
+      function: {
+        name: 'generate_watchlist_daily_report',
+        description: 'Generate one combined daily report for the default watchlist, with a summary table at the top and a full detailed section for every company in the watchlist.',
+        parameters: {
+          type: 'object',
+          properties: {
+            range: {
+              type: 'string',
+              description: 'Price history range for charts inside each company section (e.g. "1y", "3y", "5y"). Default: "1y"',
+            },
+          },
         },
       },
     },
@@ -1486,7 +1503,32 @@ export async function executeTool(
         if (args.skipSave) {
           return {
             success: true,
-            data: { content: finalContent, symbol: symbol.toUpperCase(), range },
+            data: {
+              content: finalContent,
+              symbol: symbol.toUpperCase(),
+              range,
+              rawData: args.includeRawData ? {
+                symbol: symbol.toUpperCase(),
+                generatedAt: new Date().toISOString(),
+                price,
+                priceHistory,
+                companyOverview,
+                basicFinancials: finalBasicFinancials,
+                earningsHistory: finalEarningsHistory,
+                incomeStatement: finalIncomeStatement,
+                balanceSheet: finalBalanceSheet,
+                cashFlow: finalCashFlow,
+                analystRatings,
+                analystRecommendations,
+                insiderTrading,
+                priceTargets,
+                peers,
+                newsSentiment,
+                companyNews,
+                moatAnalysis,
+                llmConclusion,
+              } : undefined,
+            },
             message: `Built stock report content for ${symbol}`,
           };
         }
@@ -1736,7 +1778,105 @@ export async function executeTool(
           message: `Saved comparison report to ${saved.filePath}`,
         };
       }
-      case 'generate_sector_report': {
+      case 'generate_watchlist_daily_report': {
+        const range = args.range || '1y';
+        const watchlist = await getDefaultWatchlist();
+        if (!watchlist.items.length) {
+          return { success: false, error: 'The watchlist is empty. Add companies before requesting a daily report.' };
+        }
+
+        const companyResults = await mapWithConcurrency(
+          watchlist.items,
+          DATA_FETCH_CONCURRENCY,
+          async (item) => {
+            const result = await executeTool(
+              'generate_stock_report',
+              { symbol: item.symbol, range, skipSave: true, includeRawData: true },
+              stockService
+            );
+            return { item, result };
+          }
+        );
+
+        const successfulItems: Array<{ symbol: string; companyName: string; stock: any }> = [];
+        const failures: string[] = [];
+
+        for (const entry of companyResults) {
+          const rawData = entry.result.data?.rawData;
+          if (entry.result.success && rawData) {
+            successfulItems.push({
+              symbol: entry.item.symbol,
+              companyName: entry.item.companyName,
+              stock: rawData,
+            });
+          } else {
+            failures.push(`${entry.item.symbol}: ${entry.result.error || entry.result.message || "Unavailable"}`);
+          }
+        }
+
+        if (successfulItems.length === 0) {
+          return { success: false, error: 'Could not build any company sections for the watchlist daily report.' };
+        }
+
+        if (options?.llmFill && successfulItems.length > 0) {
+          try {
+            const moatPrompt = buildBatchMoatAnalysisPrompt(
+              successfulItems.map((item) => ({
+                symbol: item.symbol,
+                overview: item.stock.companyOverview,
+                basicFinancials: item.stock.basicFinancials,
+              }))
+            );
+            const raw = await options.llmFill(moatPrompt);
+            const cleaned = raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+            const parsed = JSON.parse(cleaned);
+            if (parsed && typeof parsed === "object") {
+              for (const sym of Object.keys(parsed)) {
+                const entry = parseMoatEntry(parsed[sym]);
+                if (!entry) continue;
+                const target = successfulItems.find((item) => item.symbol === cleanTicker(sym));
+                if (target) target.stock.moatAnalysis = entry;
+              }
+            }
+          } catch {
+            // Proceed without moat analysis if the batch call fails
+          }
+        }
+
+        const reportData = {
+          generatedAt: new Date().toISOString(),
+          watchlistName: watchlist.name,
+          items: successfulItems.map((item) => ({
+            symbol: item.symbol,
+            companyName: item.companyName,
+            stock: item.stock,
+          })),
+        };
+
+        const reportBody = buildWatchlistDailyReport(reportData);
+        const content = failures.length
+          ? reportBody.replace(
+              '## Daily Summary',
+              `## Partial Coverage\n${failures.map((item) => `- ${item}`).join("\n")}\n\n## Daily Summary`
+            )
+          : reportBody;
+
+        if (args.skipSave) {
+          return {
+            success: true,
+            data: { content, watchlist, range },
+            message: `Built daily watchlist report for ${watchlist.name}`
+          };
+        }
+
+        const saved = await saveReport(content, `${watchlist.slug}-daily-report`);
+        return {
+          success: true,
+          data: { content, watchlist, range, ...saved, downloadUrl: `/api/reports/${saved.filename}` },
+          message: `Saved daily watchlist report to ${saved.filePath}`
+        };
+      }
+      case "generate_sector_report": {
         const sector = String(args.sector || '').trim();
         if (!sector) {
           return { success: false, error: 'A sector or theme query is required.' };
