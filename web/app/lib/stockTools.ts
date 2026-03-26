@@ -23,17 +23,25 @@ export function getToolDefinitionsByName(toolNames?: string[]) {
 const REPORTS_DIR = process.env.REPORTS_DIR || (process.env.VERCEL ? '/tmp/reports' : 'reports');
 const CACHE_DIR = path.join(REPORTS_DIR, 'cache');
 const CACHE_TTL_MS = Number(process.env.STOCK_CACHE_TTL_MS || 1000 * 60 * 60 * 24 * 7);
+
+function parseBoundedEnvInt(name: string, fallback: number, min: number, max: number): number {
+  const raw = process.env[name];
+  const parsed = raw ? Number(raw) : fallback;
+  if (!Number.isFinite(parsed)) return fallback;
+  const normalized = Math.trunc(parsed);
+  return Math.min(max, Math.max(min, normalized));
+}
+
 // Number of companies to include in comparison/sector/deep-sector reports.
-// Override via NUM_COMPANIES env var (e.g. set to 5 for faster reports, 15 for broader coverage).
-// Optimal value: 10 gives a good balance between breadth and API rate limits.
-const NUM_COMPANIES = Math.max(2, Number(process.env.NUM_COMPANIES || 10));
+// Clamp to a free-tier-safe ceiling so a bad env value cannot fan out into dozens of API calls.
+const NUM_COMPANIES = parseBoundedEnvInt('NUM_COMPANIES', 10, 2, 15);
 // Number of recursive refinement passes in deep sector research.
-// Each pass feeds the previous analysis as context, progressively deepening insights.
-// Override via DEEP_RESEARCH_DEPTH env var (1 = single pass, 3 = very thorough but slower).
-// Optimal value: 2 gives meaningfully richer analysis with only one extra LLM call.
-const DEEP_RESEARCH_DEPTH = Math.max(1, Number(process.env.DEEP_RESEARCH_DEPTH || 2));
-const DEEP_RESEARCH_MAX_MS = Math.max(60000, Number(process.env.DEEP_RESEARCH_MAX_MS || 240000));
-const DATA_FETCH_CONCURRENCY = Math.max(1, Number(process.env.DATA_FETCH_CONCURRENCY || 3));
+// Deepening beyond 3 passes sharply increases latency without proportional insight on free tier.
+const DEEP_RESEARCH_DEPTH = parseBoundedEnvInt('DEEP_RESEARCH_DEPTH', 2, 1, 3);
+// Keep enough headroom under Vercel's overall runtime limit for rendering and persistence work.
+const DEEP_RESEARCH_MAX_MS = parseBoundedEnvInt('DEEP_RESEARCH_MAX_MS', 240000, 60000, 270000);
+// Bound parallel fetch fan-out so one request cannot overwhelm free-tier provider quotas.
+const DATA_FETCH_CONCURRENCY = parseBoundedEnvInt('DATA_FETCH_CONCURRENCY', 3, 1, 4);
 
 async function mapWithConcurrency<T, R>(
   items: T[],
