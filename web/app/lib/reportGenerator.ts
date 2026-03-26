@@ -18,6 +18,7 @@ export interface StockReportData {
   cashFlow?: any;
   analystRatings?: any;
   analystRecommendations?: any;
+  insiderTrading?: any;
   priceTargets?: any;
   peers?: any;
   newsSentiment?: any;
@@ -39,6 +40,9 @@ export interface ComparisonReportItem {
   balanceSheet?: any;
   cashFlow?: any;
   analystRatings?: any;
+  peers?: any;
+  newsSentiment?: any;
+  companyNews?: { articles?: any[] };
   /** LLM-generated competitive moat assessment */
   moatAnalysis?: MoatAnalysis;
 }
@@ -524,10 +528,64 @@ function extractThemes(text?: string): string[] {
   return themes.filter((theme) => theme.pattern.test(lower)).map((theme) => theme.label);
 }
 
+function getReportCollection(reportSet?: any): any[] {
+  const quarterly = Array.isArray(reportSet?.quarterlyReports) ? reportSet.quarterlyReports : [];
+  const annual = Array.isArray(reportSet?.annualReports) ? reportSet.annualReports : [];
+  return quarterly.length ? quarterly : annual;
+}
+
+function hasMeaningfulValue(value: any): boolean {
+  if (value === null || value === undefined) return false;
+  if (typeof value === "number") return Number.isFinite(value);
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed || trimmed.toUpperCase() === "N/A" || trimmed === "--") return false;
+    const numeric = Number(trimmed.replace(/,/g, ""));
+    return Number.isFinite(numeric) || trimmed.length > 0;
+  }
+  return true;
+}
+
+function countReportFields(report: any, fields: string[]): number {
+  return fields.reduce((count, field) => count + (hasMeaningfulValue(report?.[field]) ? 1 : 0), 0);
+}
+
 function getLatestReport(reportSet?: any): any | null {
-  const reports = reportSet?.quarterlyReports || reportSet?.annualReports || [];
-  if (!Array.isArray(reports) || reports.length === 0) return null;
+  const reports = getReportCollection(reportSet);
+  if (!reports.length) return null;
   return reports[0];
+}
+
+function getMostCompleteReport(reportSet: any, fields: string[]): any | null {
+  const reports = getReportCollection(reportSet);
+  if (!reports.length) return null;
+  let best = reports[0];
+  let bestScore = countReportFields(best, fields);
+  for (const report of reports.slice(1)) {
+    const score = countReportFields(report, fields);
+    if (score > bestScore) {
+      best = report;
+      bestScore = score;
+      if (bestScore >= fields.length) break;
+    }
+  }
+  return best;
+}
+
+function getRecentReports(reportSet: any, fields: string[], limit: number): any[] {
+  const reports = getReportCollection(reportSet);
+  return reports
+    .filter((report) => countReportFields(report, fields) > 0)
+    .slice(0, limit);
+}
+
+function deriveFreeCashFlow(report: any): number | null {
+  const direct = toNumber(report?.freeCashFlow);
+  if (direct !== null) return direct;
+  const operating = toNumber(report?.operatingCashflow);
+  const capex = toNumber(report?.capitalExpenditures);
+  if (operating === null || capex === null) return null;
+  return operating - Math.abs(capex);
 }
 
 function formatPeriodLabel(report: any): string {
@@ -691,6 +749,154 @@ function computePriceChange(prices: PricePoint[] = []): number | null {
   const last = toNumber(sorted[sorted.length - 1].close);
   if (!first || !last) return null;
   return ((last - first) / first) * 100;
+}
+
+function computeSimpleMovingAverage(prices: PricePoint[] = [], window: number): number | null {
+  if (prices.length < window) return null;
+  const sorted = [...prices].sort((a, b) => a.date.localeCompare(b.date));
+  const closes = sorted
+    .map((point) => toNumber(point.close))
+    .filter((value): value is number => value !== null);
+  if (closes.length < window) return null;
+  const slice = closes.slice(-window);
+  const total = slice.reduce((sum, value) => sum + value, 0);
+  return total / slice.length;
+}
+
+function computeRsi(prices: PricePoint[] = [], period = 14): number | null {
+  const sorted = [...prices].sort((a, b) => a.date.localeCompare(b.date));
+  const closes = sorted
+    .map((point) => toNumber(point.close))
+    .filter((value): value is number => value !== null);
+  if (closes.length <= period) return null;
+  let gains = 0;
+  let losses = 0;
+  for (let index = closes.length - period; index < closes.length; index += 1) {
+    const change = closes[index] - closes[index - 1];
+    if (change > 0) gains += change;
+    else losses += Math.abs(change);
+  }
+  if (losses === 0) return 100;
+  const averageGain = gains / period;
+  const averageLoss = losses / period;
+  if (averageLoss === 0) return 100;
+  const rs = averageGain / averageLoss;
+  return 100 - (100 / (1 + rs));
+}
+
+type TechnicalSnapshot = {
+  rsi14: number | null;
+  rsiState: "Overbought" | "Oversold" | "Bullish" | "Bearish" | "Neutral" | "Unavailable";
+  moving50: number | null;
+  moving200: number | null;
+  vs50: number | null;
+  vs200: number | null;
+  trend: string;
+  rangePosition: number | null;
+};
+
+function getTechnicalSnapshot(price: number | null, prices: PricePoint[] = [], overview: any = {}): TechnicalSnapshot {
+  const moving50 = toNumber(overview["50DayMovingAverage"]) ?? computeSimpleMovingAverage(prices, 50);
+  const moving200 = toNumber(overview["200DayMovingAverage"]) ?? computeSimpleMovingAverage(prices, 200);
+  const vs50 = price !== null && moving50 ? ((price - moving50) / moving50) * 100 : null;
+  const vs200 = price !== null && moving200 ? ((price - moving200) / moving200) * 100 : null;
+  const rsi14 = computeRsi(prices, 14);
+  const rsiState = rsi14 === null
+    ? "Unavailable"
+    : rsi14 >= 70
+      ? "Overbought"
+      : rsi14 <= 30
+        ? "Oversold"
+        : rsi14 >= 60
+          ? "Bullish"
+          : rsi14 <= 40
+            ? "Bearish"
+            : "Neutral";
+  const weekHigh = toNumber(overview["52WeekHigh"]);
+  const weekLow = toNumber(overview["52WeekLow"]);
+  const rangePosition = price !== null && weekHigh !== null && weekLow !== null && weekHigh !== weekLow
+    ? ((price - weekLow) / (weekHigh - weekLow)) * 100
+    : null;
+
+  let trend = "Trend unavailable";
+  if (vs50 !== null && vs200 !== null) {
+    if (vs50 >= 0 && vs200 >= 0) trend = "Above 50D and 200D averages";
+    else if (vs50 < 0 && vs200 < 0) trend = "Below 50D and 200D averages";
+    else if (vs50 >= 0 && vs200 < 0) trend = "Short-term recovery, long-term trend still weak";
+    else trend = "Near-term pullback inside longer-term uptrend";
+  } else if (vs50 !== null) {
+    trend = vs50 >= 0 ? "Above 50D average" : "Below 50D average";
+  } else if (vs200 !== null) {
+    trend = vs200 >= 0 ? "Above 200D average" : "Below 200D average";
+  }
+
+  return { rsi14, rsiState, moving50, moving200, vs50, vs200, trend, rangePosition };
+}
+
+type ActionStance = {
+  label: "Buy" | "Hold" | "Wait" | "Sell";
+  rationale: string;
+};
+
+function deriveActionStance(args: {
+  score: number | null;
+  targetUpside: number | null;
+  technical: TechnicalSnapshot;
+  revenueGrowth: number | null;
+  operatingMargin: number | null;
+}): ActionStance {
+  const { score, targetUpside, technical, revenueGrowth, operatingMargin } = args;
+  const strongFundamentals = score !== null && score >= 65;
+  const weakFundamentals = score !== null && score < 40;
+  const positiveUpside = targetUpside !== null && targetUpside >= 10;
+  const negativeUpside = targetUpside !== null && targetUpside <= -10;
+  const uptrend = (technical.vs50 !== null && technical.vs50 >= 0) && (technical.vs200 === null || technical.vs200 >= 0);
+  const downtrend = (technical.vs50 !== null && technical.vs50 < 0) && (technical.vs200 === null || technical.vs200 < 0);
+  const overbought = technical.rsi14 !== null && technical.rsi14 >= 70;
+  const oversold = technical.rsi14 !== null && technical.rsi14 <= 30;
+  const healthyOps = operatingMargin !== null && operatingMargin >= 15;
+  const growthPositive = revenueGrowth !== null && revenueGrowth > 0;
+
+  if (weakFundamentals && negativeUpside && downtrend) {
+    return { label: "Sell", rationale: "Composite score, target spread, and price trend all point to a weak setup." };
+  }
+  if (strongFundamentals && positiveUpside && !overbought && (uptrend || oversold)) {
+    return { label: "Buy", rationale: "Fundamentals and upside are supportive, and the technical setup is not stretched." };
+  }
+  if (strongFundamentals && overbought) {
+    return { label: "Wait", rationale: "Fundamentals are strong, but RSI suggests the stock may be extended near term." };
+  }
+  if ((score !== null && score >= 45) && (growthPositive || healthyOps) && !negativeUpside) {
+    return { label: "Hold", rationale: "The business quality still supports staying involved, but the setup is not an obvious fresh entry." };
+  }
+  if (downtrend || negativeUpside) {
+    return { label: "Wait", rationale: "Momentum or analyst target support is weak, so patience is warranted." };
+  }
+  return { label: "Hold", rationale: "Signals are mixed rather than decisively bullish or bearish." };
+}
+
+function summarizeInsiderActivity(insiderTrading: any): { summary: string | null; table: string | null } {
+  const transactions = Array.isArray(insiderTrading?.recentTransactions)
+    ? insiderTrading.recentTransactions.filter((item: any) => item && item.transactionDate)
+    : [];
+  if (!transactions.length) {
+    return { summary: null, table: null };
+  }
+  const buys = transactions.filter((item: any) => String(item.transactionType).toLowerCase().includes("purchase"));
+  const sells = transactions.filter((item: any) => String(item.transactionType).toLowerCase().includes("sale"));
+  const buyValue = buys.reduce((sum: number, item: any) => sum + (toNumber(item.totalValue) ?? 0), 0);
+  const sellValue = sells.reduce((sum: number, item: any) => sum + (toNumber(item.totalValue) ?? 0), 0);
+  const latest = transactions.slice(0, 5).map((item: any) => [
+    formatDateLabel(String(item.transactionDate)),
+    item.insider || "N/A",
+    item.transactionType || "N/A",
+    formatCompactNumber(item.shares),
+    formatCurrency(item.totalValue),
+  ]);
+  return {
+    summary: `${buys.length} purchase(s) vs ${sells.length} sale(s) in the recent provider feed; disclosed value ${formatCurrency(buyValue)} bought vs ${formatCurrency(sellValue)} sold.`,
+    table: buildTable(["Date", "Insider", "Type", "Shares", "Value"], latest, ["left", "left", "left", "right", "right"]),
+  };
 }
 
 function buildValuationGrowthScatter(items: ComparisonReportItem[]): string {
@@ -1163,10 +1369,20 @@ export function buildStockReport(data: StockReportData): string {
   const grossMargin = normalizePercent(data.basicFinancials?.metric?.grossMarginTTM ?? overview.profitMargin);
   const operatingMargin = normalizePercent(data.basicFinancials?.metric?.operatingMarginTTM ?? overview.operatingMargin);
   const targetUpside = getTargetUpsideStock(data);
-  const moving50 = toNumber(overview['50DayMovingAverage'] ?? data.analystRatings?.movingAverage50Day);
-  const moving200 = toNumber(overview['200DayMovingAverage']);
-  const trend50 = price && moving50 ? ((price - moving50) / moving50) * 100 : null;
-  const trend200 = price && moving200 ? ((price - moving200) / moving200) * 100 : null;
+  const technical = getTechnicalSnapshot(price, data.priceHistory?.prices || [], {
+    ...overview,
+    ['50DayMovingAverage']: overview['50DayMovingAverage'] ?? data.analystRatings?.movingAverage50Day,
+  });
+  const trend50 = technical.vs50;
+  const trend200 = technical.vs200;
+  const actionStance = deriveActionStance({
+    score: scorecard.composite,
+    targetUpside,
+    technical,
+    revenueGrowth,
+    operatingMargin,
+  });
+  const insiderSummary = summarizeInsiderActivity(data.insiderTrading);
   const themes = extractThemes([overview.description, overview.industry, overview.sector].filter(Boolean).join(' '));
   const growthLines = [
     revenueGrowth !== null ? `- Revenue growth (TTM): ${formatPercent(revenueGrowth)}` : null,
@@ -1178,6 +1394,37 @@ export function buildStockReport(data: StockReportData): string {
     targetUpside !== null ? `- Analyst target upside: ${targetUpside.toFixed(1)}%` : null,
     themes.length ? `- Theme exposure: ${themes.join(', ')}` : null,
   ].filter(Boolean) as string[];
+
+  const timingLines = [
+    technical.rsi14 !== null ? `- RSI (14): ${technical.rsi14.toFixed(1)} (${technical.rsiState})` : null,
+    trend50 !== null ? `- Price vs 50D average: ${trend50.toFixed(1)}%` : null,
+    trend200 !== null ? `- Price vs 200D average: ${trend200.toFixed(1)}%` : null,
+    technical.rangePosition !== null ? `- 52W range position: ${technical.rangePosition.toFixed(1)}%` : null,
+    `- Technical trend: ${technical.trend}`,
+    `- Data-driven stance: ${actionStance.label}`,
+    `- Stance rationale: ${actionStance.rationale}`,
+  ].filter(Boolean) as string[];
+
+  const recommendationRows = Array.isArray(data.analystRecommendations?.recommendations)
+    ? data.analystRecommendations.recommendations.slice(0, 4).map((row: any) => [
+        row.period || "N/A",
+        String(row.strongBuy ?? "N/A"),
+        String(row.buy ?? "N/A"),
+        String(row.hold ?? "N/A"),
+        String(row.sell ?? "N/A"),
+        String(row.strongSell ?? "N/A"),
+      ])
+    : [];
+  const recommendationTable = recommendationRows.length
+    ? buildTable(['Period', 'Strong Buy', 'Buy', 'Hold', 'Sell', 'Strong Sell'], recommendationRows, ['left', 'right', 'right', 'right', 'right', 'right'])
+    : "";
+
+  const alternativeLines = peers.length
+    ? [
+        `- Provider-identified peers to review: ${peers.slice(0, 5).join(', ')}`,
+        "- These alternatives come from provider peer data; use a comparison report for ranked side-by-side analysis.",
+      ]
+    : [];
 
   const riskLines: string[] = [];
   const peRatio = toNumber(overview.peRatio ?? data.basicFinancials?.metric?.peBasicExclExtraTTM);
@@ -1201,7 +1448,10 @@ export function buildStockReport(data: StockReportData): string {
   if (shortFloat !== null && shortFloat > 5) {
     riskLines.push(`- Elevated short interest (${formatPercent(shortFloat)})`);
   }
-  const balanceReport = getLatestReport(data.balanceSheet);
+  const balanceReport = getMostCompleteReport(data.balanceSheet, ['cashAndEquivalents', 'longTermDebt', 'totalAssets', 'totalLiabilities', 'totalShareholderEquity']);
+  const incomeReports = getRecentReports(data.incomeStatement, ['totalRevenue', 'grossProfit', 'operatingIncome', 'netIncome'], 3);
+  const balanceReports = getRecentReports(data.balanceSheet, ['cashAndEquivalents', 'longTermDebt', 'totalAssets', 'totalLiabilities', 'totalShareholderEquity'], 3);
+  const cashReports = getRecentReports(data.cashFlow, ['operatingCashflow', 'capitalExpenditures', 'freeCashFlow', 'dividendPayout'], 3);
   const cash = toNumber(balanceReport?.cashAndEquivalents);
   const longDebt = toNumber(balanceReport?.longTermDebt);
   const netDebt = cash !== null && longDebt !== null ? longDebt - cash : null;
@@ -1209,47 +1459,46 @@ export function buildStockReport(data: StockReportData): string {
     riskLines.push(`- Net debt of ${formatCurrency(netDebt)}`);
   }
 
-  const incomeReport = getLatestReport(data.incomeStatement);
-  const incomeTable = incomeReport
+  const incomeTable = incomeReports.length
     ? buildTable(
         ['Period', 'Revenue', 'Gross Profit', 'Operating Income', 'Net Income'],
-        [[
-          formatPeriodLabel(incomeReport),
-          formatCurrency(incomeReport.totalRevenue),
-          formatCurrency(incomeReport.grossProfit),
-          formatCurrency(incomeReport.operatingIncome),
-          formatCurrency(incomeReport.netIncome),
-        ]],
+        incomeReports.map((report) => [
+          formatPeriodLabel(report),
+          formatCurrency(report.totalRevenue),
+          formatCurrency(report.grossProfit),
+          formatCurrency(report.operatingIncome),
+          formatCurrency(report.netIncome),
+        ]),
         ['left', 'right', 'right', 'right', 'right']
       )
     : '_Income statement data unavailable (provider or rate limit; no estimated fallback shown)._';
 
-  const balanceTable = balanceReport
+  const balanceTable = balanceReports.length
     ? buildTable(
-        ['Period', 'Cash', 'Total Debt', 'Net Debt', 'Total Assets', 'Equity'],
-        [[
-          formatPeriodLabel(balanceReport),
-          formatCurrency(balanceReport.cashAndEquivalents),
-          formatCurrency(balanceReport.longTermDebt),
-          netDebt === null ? 'N/A' : formatCurrency(netDebt),
-          formatCurrency(balanceReport.totalAssets),
-          formatCurrency(balanceReport.totalShareholderEquity),
-        ]],
+        ['Period', 'Cash', 'LT Debt', 'Total Liabilities', 'Total Assets', 'Equity'],
+        balanceReports.map((report) => [
+          formatPeriodLabel(report),
+          formatCurrency(report.cashAndEquivalents),
+          formatCurrency(report.longTermDebt),
+          formatCurrency(report.totalLiabilities),
+          formatCurrency(report.totalAssets),
+          formatCurrency(report.totalShareholderEquity),
+        ]),
         ['left', 'right', 'right', 'right', 'right', 'right']
       )
     : '_Balance sheet data unavailable (provider or rate limit; no estimated fallback shown)._';
 
-  const cashReport = getLatestReport(data.cashFlow);
-  const cashTable = cashReport
+  const cashTable = cashReports.length
     ? buildTable(
-        ['Period', 'Operating Cash Flow', 'Capex', 'Free Cash Flow'],
-        [[
-          formatPeriodLabel(cashReport),
-          formatCurrency(cashReport.operatingCashflow),
-          formatCurrency(cashReport.capitalExpenditures),
-          formatCurrency(cashReport.freeCashFlow),
-        ]],
-        ['left', 'right', 'right', 'right']
+        ['Period', 'Operating Cash Flow', 'Capex', 'Free Cash Flow', 'Dividend Payout'],
+        cashReports.map((report) => [
+          formatPeriodLabel(report),
+          formatCurrency(report.operatingCashflow),
+          formatCurrency(report.capitalExpenditures),
+          formatCurrency(deriveFreeCashFlow(report)),
+          formatCurrency(report.dividendPayout),
+        ]),
+        ['left', 'right', 'right', 'right', 'right']
       )
     : '_Cash flow data unavailable (provider or rate limit)._';
 
@@ -1293,11 +1542,22 @@ export function buildStockReport(data: StockReportData): string {
   );
 
   const ownershipLines = [
-    overview.percentInstitutions ? `- Institutional Ownership: ${formatPercent(overview.percentInstitutions)}` : null,
-    overview.percentInsiders ? `- Insider Ownership: ${formatPercent(overview.percentInsiders)}` : null,
-    overview.sharesFloat ? `- Shares Float: ${formatCompactNumber(overview.sharesFloat)}` : null,
-    overview.shortRatio ? `- Short Ratio: ${formatNumber(overview.shortRatio, 2)}` : null,
-    overview.shortPercentFloat ? `- Short Interest (float): ${formatPercent(overview.shortPercentFloat)}` : null,
+    data.insiderTrading?.institutionalOwnership && data.insiderTrading.institutionalOwnership !== "N/A"
+      ? `- Institutional Ownership: ${formatPercent(data.insiderTrading.institutionalOwnership)}`
+      : (overview.percentInstitutions ? `- Institutional Ownership: ${formatPercent(overview.percentInstitutions)}` : null),
+    data.insiderTrading?.insiderOwnership && data.insiderTrading.insiderOwnership !== "N/A"
+      ? `- Insider Ownership: ${formatPercent(data.insiderTrading.insiderOwnership)}`
+      : (overview.percentInsiders ? `- Insider Ownership: ${formatPercent(overview.percentInsiders)}` : null),
+    data.insiderTrading?.sharesFloat && data.insiderTrading.sharesFloat !== "N/A"
+      ? `- Shares Float: ${formatCompactNumber(data.insiderTrading.sharesFloat)}`
+      : (overview.sharesFloat ? `- Shares Float: ${formatCompactNumber(overview.sharesFloat)}` : null),
+    data.insiderTrading?.shortRatio && data.insiderTrading.shortRatio !== "N/A"
+      ? `- Short Ratio: ${formatNumber(data.insiderTrading.shortRatio, 2)}`
+      : (overview.shortRatio ? `- Short Ratio: ${formatNumber(overview.shortRatio, 2)}` : null),
+    data.insiderTrading?.shortPercentFloat && data.insiderTrading.shortPercentFloat !== "N/A"
+      ? `- Short Interest (float): ${formatPercent(data.insiderTrading.shortPercentFloat)}`
+      : (overview.shortPercentFloat ? `- Short Interest (float): ${formatPercent(overview.shortPercentFloat)}` : null),
+    insiderSummary.summary ? `- Recent insider activity: ${insiderSummary.summary}` : null,
     `- Analyst Ratings: ${formatRatingSummary(data)}`,
   ].filter(Boolean) as string[];
 
@@ -1346,6 +1606,8 @@ export function buildStockReport(data: StockReportData): string {
   const watchSignals: string[] = [];
   if (trend50 !== null && trend50 < 0) watchSignals.push('Price below 50D moving average');
   if (trend200 !== null && trend200 < 0) watchSignals.push('Price below 200D moving average');
+  if (technical.rsiState === "Overbought") watchSignals.push('RSI indicates overbought conditions');
+  if (technical.rsiState === "Oversold") watchSignals.push('RSI indicates oversold conditions');
   if (beta !== null && beta > 1.2) watchSignals.push('Volatility above market average');
   if (netDebt !== null && netDebt > 0) watchSignals.push('Net debt position');
 
@@ -1395,11 +1657,11 @@ export function buildStockReport(data: StockReportData): string {
 
   sections.push(
     '## 🧾 Financial Deep Dive',
-    '### Income Statement (latest)',
+    '### Income Statement (recent reported periods)',
     incomeTable,
-    '### Balance Sheet (latest)',
+    '### Balance Sheet (recent reported periods)',
     balanceTable,
-    '### Cash Flow (latest)',
+    '### Cash Flow (recent reported periods)',
     cashTable,
   );
 
@@ -1417,23 +1679,35 @@ export function buildStockReport(data: StockReportData): string {
   }
 
   sections.push('## 🚀 Growth Drivers', '- Period: trailing twelve months unless noted', ...(growthLines.length ? growthLines : ['- Growth drivers unavailable']));
+  sections.push('## ⏱️ Timing & Trade Setup', ...(timingLines.length ? timingLines : ['- Timing data unavailable']));
   sections.push('## ⚠️ Risks & Headwinds', ...(riskLines.length ? riskLines : ['- No major risk flags surfaced from available data']));
   sections.push('## 🧭 Investment Highlights', ...highlightsLines);
 
   const hasRatings = [data.analystRatings?.strongBuy, data.analystRatings?.buy, data.analystRatings?.hold]
     .map((value) => toNumber(value))
     .some((value) => value !== null);
-  if (analystTarget !== null || hasRatings || targetChart) {
+  if (analystTarget !== null || hasRatings || targetChart || recommendationTable) {
     sections.push('## 🧠 Analyst View');
     if (analystTarget !== null) sections.push(`- Target Mean: ${analystTarget.toFixed(2)}`);
     if (hasRatings) {
       sections.push(`- Ratings: Strong Buy ${data.analystRatings?.strongBuy || 'Unavailable'} / Buy ${data.analystRatings?.buy || 'Unavailable'} / Hold ${data.analystRatings?.hold || 'Unavailable'}`);
     }
     if (targetChart) sections.push(targetChart);
+    if (recommendationTable) {
+      sections.push('### Recommendation Trend');
+      sections.push(recommendationTable);
+    }
   }
 
-  sections.push('## 🧑‍💼 Ownership & Sentiment', ...(ownershipLines.length ? ownershipLines : ['- Ownership data unavailable']));
+  sections.push('## 🧑‍💼 Ownership, Insider Activity & Sentiment', ...(ownershipLines.length ? ownershipLines : ['- Ownership data unavailable']));
+  if (insiderSummary.table) {
+    sections.push('### Recent Insider Transactions');
+    sections.push(insiderSummary.table);
+  }
   sections.push('## 🗓️ Guidance & Catalysts', ...(catalystLines.length ? catalystLines : ['- Guidance data unavailable']));
+  if (alternativeLines.length) {
+    sections.push('## 🔄 Alternative Stocks To Research', ...alternativeLines);
+  }
 
   if (scorecard.composite !== null) {
     const scorecardRadar = buildScorecardRadar(scorecard);
@@ -1638,8 +1912,8 @@ export function buildComparisonReport(data: ComparisonReportData): string {
   );
 
   const balanceRows = items.map((item) => {
-    const balance = getLatestReport(item.balanceSheet);
-    const cashFlow = getLatestReport(item.cashFlow);
+    const balance = getMostCompleteReport(item.balanceSheet, ['cashAndEquivalents', 'longTermDebt', 'totalAssets', 'totalLiabilities', 'totalShareholderEquity']);
+    const cashFlow = getMostCompleteReport(item.cashFlow, ['operatingCashflow', 'capitalExpenditures', 'freeCashFlow', 'dividendPayout']);
     const cash = toNumber(balance?.cashAndEquivalents);
     const debt = toNumber(balance?.longTermDebt);
     const netDebt = cash !== null && debt !== null ? debt - cash : null;
@@ -1647,14 +1921,31 @@ export function buildComparisonReport(data: ComparisonReportData): string {
       `${item.overview?.name || item.symbol} (${item.symbol})`,
       formatCurrency(cash),
       formatCurrency(debt),
-      netDebt === null ? 'N/A' : formatCurrency(netDebt),
-      formatCurrency(cashFlow?.freeCashFlow),
+      netDebt === null ? "N/A" : formatCurrency(netDebt),
+      formatCurrency(balance?.totalShareholderEquity),
+      formatCurrency(deriveFreeCashFlow(cashFlow)),
     ];
   });
   const balanceTable = buildTable(
-    ['Company', 'Cash', 'Total Debt', 'Net Debt', 'Free Cash Flow'],
+    ['Company', 'Cash', 'LT Debt', 'Net Debt', 'Equity', 'Free Cash Flow'],
     balanceRows,
-    ['left', 'right', 'right', 'right', 'right']
+    ['left', 'right', 'right', 'right', 'right', 'right']
+  );
+
+  const ownershipRows = items.map((item) => {
+    const overview = item.overview || {};
+    return [
+      `${overview.name || item.symbol} (${item.symbol})`,
+      formatPercent(overview.percentInsiders),
+      formatPercent(overview.percentInstitutions),
+      formatPercent(overview.shortPercentFloat),
+      formatRatingSummary(item),
+    ];
+  });
+  const ownershipTable = buildTable(
+    ['Company', 'Insider Own', 'Institutional Own', 'Short Float', 'Ratings'],
+    ownershipRows,
+    ['left', 'right', 'right', 'right', 'left']
   );
 
   const coverageRows = items.map((item) => {
@@ -1750,13 +2041,50 @@ export function buildComparisonReport(data: ComparisonReportData): string {
       analystRatings: item.analystRatings,
       analystRecommendations: undefined,
       priceTargets: item.priceTargets,
-      peers: undefined,
-      newsSentiment: undefined,
-      companyNews: undefined,
+      peers: item.peers,
+      newsSentiment: item.newsSentiment,
+      companyNews: item.companyNews,
     };
     const scorecard = computeScorecard(scoreData);
     return { item, score: scorecard.composite };
   });
+
+  const timingRows = scored.map((row) => {
+    const item = row.item;
+    const overview = item.overview || {};
+    const price = toNumber(item.price?.price);
+    const technical = getTechnicalSnapshot(price, item.priceHistory?.prices || [], overview);
+    const upside = price && toNumber(item.priceTargets?.targetMean ?? item.analystRatings?.analystTargetPrice ?? overview.analystTargetPrice)
+      ? ((toNumber(item.priceTargets?.targetMean ?? item.analystRatings?.analystTargetPrice ?? overview.analystTargetPrice) as number) - price) / price * 100
+      : null;
+    const revenueGrowth = getStockRevenueGrowth({
+      symbol: item.symbol,
+      generatedAt: data.generatedAt,
+      price: item.price || {},
+      companyOverview: item.overview,
+      basicFinancials: item.basicFinancials,
+    } as StockReportData);
+    const operatingMargin = normalizePercent(item.basicFinancials?.metric?.operatingMarginTTM ?? overview.operatingMargin);
+    const stance = deriveActionStance({
+      score: row.score,
+      targetUpside: upside,
+      technical,
+      revenueGrowth,
+      operatingMargin,
+    });
+    return [
+      `${overview.name || item.symbol} (${item.symbol})`,
+      technical.rsi14 === null ? "N/A" : `${technical.rsi14.toFixed(1)} (${technical.rsiState})`,
+      technical.trend,
+      upside === null ? "N/A" : `${upside.toFixed(1)}%`,
+      stance.label,
+    ];
+  });
+  const timingTable = buildTable(
+    ['Company', 'RSI (14)', 'Trend', 'Target Upside', 'Action Stance'],
+    timingRows,
+    ['left', 'right', 'left', 'right', 'left']
+  );
 
   const validScores = scored.filter((row) => row.score !== null) as Array<{ item: ComparisonReportItem; score: number }>;
   const totalScore = validScores.reduce((sum, row) => sum + (row.score ?? 0), 0);
@@ -1853,6 +2181,10 @@ export function buildComparisonReport(data: ComparisonReportData): string {
     valuationTable,
     '## 🏦 Balance Sheet & Cash',
     balanceTable,
+    '## ⏱️ Timing & Action Setup',
+    timingTable,
+    '## 🧑‍💼 Ownership & Positioning',
+    ownershipTable,
     '## 🧠 Analyst View',
     analystTable,
     '## ⭐ Analyst Picks',
@@ -2238,11 +2570,23 @@ function buildStockConclusion(data: StockReportData, scorecard: ReturnType<typeo
   );
   const roe = normalizePercent(data.basicFinancials?.metric?.roeTTM ?? overview.returnOnEquity);
   const pe = toNumber(overview.peRatio ?? data.basicFinancials?.metric?.peBasicExclExtraTTM);
+  const technical = getTechnicalSnapshot(price, data.priceHistory?.prices || [], {
+    ...overview,
+    ['50DayMovingAverage']: overview['50DayMovingAverage'] ?? data.analystRatings?.movingAverage50Day,
+  });
+  const actionStance = deriveActionStance({
+    score: scorecard.composite,
+    targetUpside: upside,
+    technical,
+    revenueGrowth,
+    operatingMargin: opMargin,
+  });
   const beta = toNumber(overview.beta);
 
   const dataLines: string[] = [
     `- **Rating:** ${rating.emoji} ${rating.label}`,
     `- **Suggested Portfolio Role:** ${portfolioRole}`,
+    `- **Data-Driven Action Stance:** ${actionStance.label} — ${actionStance.rationale}`,
     composite !== null ? `- **Composite Score:** ${composite.toFixed(1)}/100` : null,
     upside !== null ? `- **Analyst Target Upside:** ${upside.toFixed(1)}% (mean ${targetMean?.toFixed(2)}${targetLow !== null && targetHigh !== null ? `, range ${targetLow.toFixed(2)}–${targetHigh.toFixed(2)}` : ''})` : null,
     revenueGrowth !== null ? `- **Revenue Growth (TTM):** ${revenueGrowth.toFixed(1)}%` : null,
@@ -2251,6 +2595,8 @@ function buildStockConclusion(data: StockReportData, scorecard: ReturnType<typeo
     roe !== null ? `- **Return on Equity:** ${roe.toFixed(1)}%` : null,
     pe !== null ? `- **P/E Ratio:** ${pe.toFixed(1)}x` : null,
     beta !== null ? `- **Beta:** ${beta.toFixed(2)}` : null,
+    technical.rsi14 !== null ? `- **RSI (14):** ${technical.rsi14.toFixed(1)} (${technical.rsiState})` : null,
+    `- **Trend:** ${technical.trend}`,
     moat ? `- **Moat:** ${moat.moatType} · ${moat.moatStrength} (${moat.moatScore}/100)` : null,
     totalAnalyst > 0 ? `- **Analyst Consensus:** ${strongBuy ?? 0} Strong Buy · ${buy ?? 0} Buy · ${hold ?? 0} Hold · ${sell ?? 0} Sell · ${strongSell ?? 0} Strong Sell` : null,
   ].filter(Boolean) as string[];

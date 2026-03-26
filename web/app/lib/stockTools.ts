@@ -1371,6 +1371,7 @@ export async function executeTool(
           'analystRecommendations',
           stockService.getAnalystRecommendations(symbol)
         );
+        const insiderTrading = await safeFetch('Insider trading', 'insiderTrading', stockService.getInsiderTrading(symbol));
         const priceTargets = await safeFetch('Price targets', 'priceTargets', stockService.getPriceTargets(symbol));
         const peers = await safeFetch('Peers', 'peers', stockService.getPeers(symbol));
         const newsSentiment = await safeFetch('News sentiment', 'newsSentiment', stockService.getNewsSentiment(symbol));
@@ -1458,6 +1459,7 @@ export async function executeTool(
           cashFlow: finalCashFlow,
           analystRatings,
           analystRecommendations,
+          insiderTrading,
           priceTargets,
           peers,
           newsSentiment,
