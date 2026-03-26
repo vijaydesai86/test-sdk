@@ -315,8 +315,6 @@ function buildGeminiFallbackModels(requestedModel?: string | null): string[] {
   return available.length > 0 ? available : unique;
 }
 
-type RuntimeLLMProvider = 'github' | 'gemini';
-
 type LLMExecutionStrategy = {
   provider: RuntimeLLMProvider;
   models: string[];
