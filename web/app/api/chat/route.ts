@@ -2,6 +2,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getToolDefinitionsByName, executeTool, type LLMFiller } from '@/app/lib/stockTools';
 import { createStockService, StockDataService } from '@/app/lib/stockDataService';
+import {
+  getConfiguredGeminiModel,
+  getGeminiFallbackModels,
+  getGitHubToken,
+  normalizeLLMProvider,
+  type LLMProviderType,
+  type RuntimeLLMProvider,
+} from '@/app/lib/llmProviderConfig';
 
 // GitHub Models API — new endpoint (azure endpoint deprecated Oct 2025)
 // Works with PATs from github.com/settings/personal-access-tokens (models:read scope)
@@ -18,38 +26,8 @@ const FILL_MODEL = process.env.FILL_MODEL || 'openai/gpt-4.1-mini';
 // IMPORTANT: use a key created at aistudio.google.com, NOT Google Cloud Console —
 // AI Studio keys come with free-tier quotas automatically allocated.
 const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions';
-// Default Gemini model. Override with GEMINI_MODEL env var.
-// gemini-2.5-flash is the recommended default — it has free-tier quota on AI Studio keys
-// (5 RPM / 250K TPM / 20 RPD as of 2026-03).
-// gemini-2.0-flash has 0 free-tier quota on most projects and will always 429.
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
-// Automatic Gemini model fallback list — tried in order when a model is rate-limited (429),
-// temporarily unavailable (503), or returns an invalid-model error (400).
-// Order: start with best reasoning quality, fall through to higher-RPM / higher-RPD models.
-// All entries below have confirmed free-tier quota on AI Studio keys (as of 2026-03):
-//   gemini-2.5-flash       5 RPM / 250K TPM / 20 RPD
-//   gemini-2.5-flash-lite 10 RPM / 250K TPM / 20 RPD
-//   gemini-3.0-flash       5 RPM / 250K TPM / 20 RPD
-//   gemini-3.1-flash-lite 15 RPM / 250K TPM / 500 RPD  ← highest RPD
-const GEMINI_FALLBACK_MODELS = [
-  GEMINI_MODEL,              // env override or gemini-2.5-flash (default)
-  'gemini-2.5-flash-lite',   // 10 RPM — handles per-minute bursts
-  'gemini-3.0-flash',        // separate quota pool from 2.x models
-  'gemini-3.1-flash-lite',   // 15 RPM / 500 RPD — best free-tier daily allowance
-];
-
-// LLM provider selection — mirrors the STOCK_DATA_PROVIDER pattern for data services.
-// - 'github' (default): GitHub Models API only (GITHUB_TOKEN required)
-// - 'gemini':           Gemini API only (GEMINI_TOKEN required)
-// - 'hybrid':           GitHub Models primary; Gemini auto-fallback on HTTP 429 rate limit
-type LLMProviderType = 'github' | 'gemini' | 'hybrid';
-
-function normalizeLLMProvider(provider: string | null | undefined): LLMProviderType {
-  return provider === 'github' || provider === 'gemini' || provider === 'hybrid'
-    ? provider
-    : 'github';
-}
-
+const GEMINI_MODEL = getConfiguredGeminiModel();
+const GEMINI_FALLBACK_MODELS = getGeminiFallbackModels();
 const DEFAULT_LLM_PROVIDER = normalizeLLMProvider(process.env.LLM_PROVIDER);
 const AUTO_DOWNGRADE_GPT5 = process.env.AUTO_DOWNGRADE_GPT5 !== 'false';
 const DEFAULT_FALLBACK_MODELS = [
@@ -336,8 +314,6 @@ function buildGeminiFallbackModels(requestedModel?: string | null): string[] {
   const available = unique.filter((model) => !isModelCoolingDown(model));
   return available.length > 0 ? available : unique;
 }
-
-type RuntimeLLMProvider = 'github' | 'gemini';
 
 type LLMExecutionStrategy = {
   provider: RuntimeLLMProvider;
@@ -807,7 +783,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Check if GitHub token is available
-    const githubToken = process.env.GITHUB_TOKEN || process.env.GH_TOKEN || process.env.COPILOT_GITHUB_TOKEN;
+    const githubToken = getGitHubToken();
     // Check if Gemini token is available (never exposed client-side — server env only)
     const geminiToken = process.env.GEMINI_TOKEN;
     activeProvider = normalizeLLMProvider(typeof provider === 'string' ? provider : DEFAULT_LLM_PROVIDER);
