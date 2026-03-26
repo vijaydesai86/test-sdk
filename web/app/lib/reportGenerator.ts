@@ -2045,6 +2045,63 @@ export function buildDeepSectorReport(data: DeepSectorReportData): string {
  *   ✅ TICKER (Company Name) — reason
  *   ❌ TICKER (Company Name) — reason
  */
+function stripStockReportHeader(body: string): string {
+  return body
+    .replace(/^# .+ Comprehensive Equity Research Report\n\nGenerated:[^\n]*\n\n/, '')
+    .trimStart();
+}
+
+function stripComparisonReportHeader(body: string): string {
+  return body
+    .replace(/^# Company Comparison Report\n\nGenerated:[^\n]*\n\nUniverse:[^\n]*\n\n/, '')
+    .replace(/^# Company Comparison Report\n\nGenerated:[^\n]*\n\n/, '')
+    .replace(/^# Company Comparison Report\n\n/, '')
+    .trimStart();
+}
+
+export function buildDeepStockReport(data: {
+  query: string;
+  symbol: string;
+  generatedAt: string;
+  baseContent: string;
+}): string {
+  const header = [
+    '# Deep Research: ' + data.query,
+    'Generated: ' + data.generatedAt,
+    '## 🔬 Research Scope',
+    '- Request: ' + data.query,
+    '- Resolved ticker: ' + data.symbol,
+    '- Mode: single-company deep research',
+    '- Method: entity resolution -> full stock report generation',
+    '- The request was kept as a single-company analysis; no thematic company expansion was applied.',
+  ].join('\n\n');
+
+  return [header, stripStockReportHeader(data.baseContent)]
+    .filter(Boolean)
+    .join('\n\n');
+}
+
+export function buildDeepComparisonReport(data: {
+  query: string;
+  symbols: string[];
+  generatedAt: string;
+  baseContent: string;
+}): string {
+  const header = [
+    '# Deep Research: ' + data.query,
+    'Generated: ' + data.generatedAt,
+    '## 🔬 Research Scope',
+    '- Request: ' + data.query,
+    '- Companies: ' + data.symbols.join(', '),
+    '- Mode: explicit-company deep comparison',
+    '- Method: company resolution -> full comparison report generation',
+    '- The request was kept as an explicit company set; no thematic company expansion was applied.',
+  ].join('\n\n');
+
+  return [header, stripComparisonReportHeader(data.baseContent)]
+    .filter(Boolean)
+    .join('\n\n');
+}
 function formatRationaleAsTable(notes: string): string {
   const lines = notes.split('\n').map(l => l.trim()).filter(Boolean);
   // Match: ✅ or ❌, then ticker (optionally followed by name in parens), then — or - separator, then reason

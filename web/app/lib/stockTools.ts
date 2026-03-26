@@ -2,7 +2,7 @@
 import { promises as fs } from 'fs';
 import path from 'path';
 import { StockDataService } from './stockDataService';
-import { buildStockReport, buildComparisonReport, buildSectorReport, buildDeepSectorReport, saveReport, MoatAnalysis } from './reportGenerator';
+import { buildStockReport, buildComparisonReport, buildSectorReport, buildDeepSectorReport, buildDeepStockReport, buildDeepComparisonReport, saveReport, MoatAnalysis } from './reportGenerator';
 
 /**
  * OpenAI-compatible tool definitions for stock information
@@ -738,6 +738,13 @@ const resolveSymbolFromQuery = async (stockService: StockDataService, query: str
   }
 };
 
+const parseExplicitComparisonCompanies = (query: string): string[] => {
+  if (!/(?:\bvs\.?\b|\bversus\b|,)/i.test(query)) return [];
+  return query
+    .split(/\s*(?:,|\bvs\.?\b|\bversus\b)\s*/i)
+    .map((item) => item.trim())
+    .filter(Boolean);
+};
 function buildToolDefinitions() {
   return [
     {
@@ -1029,19 +1036,18 @@ function buildToolDefinitions() {
       function: {
         name: 'generate_deep_sector_report',
         description:
-          'Generate a deep sector research report with full ecosystem analysis. ' +
-          'Phase 1: AI identifies a broad candidate list of top companies in the sector. ' +
+          'Generate a deep research report. For theme/sector/industry queries it performs ecosystem analysis and company-list refinement. ' +
+          'For a single company or an explicit company comparison, it preserves that scope and builds a deep-research wrapper around the correct underlying report. ' +
+          'Phase 1: when needed, AI identifies a broad candidate list of top companies in the theme. ' +
           'Phase 2: Real data (company overviews, news sentiment, peers) is fetched for all candidates. ' +
-          `Phase 3: AI maps supply-chain, customer, market and news dependencies, draws a sector dependency diagram, and refines the company list — repeated ${DEEP_RESEARCH_DEPTH} time(s) for progressively deeper analysis. ` +
-          'Phase 4: Full financial comparison report is built for the refined universe. ' +
-          'Use this when the user asks for DEEP, THOROUGH or COMPREHENSIVE sector research. ' +
-          'Prefer generate_sector_report for quick sector overviews.',
+          `Phase 3: AI maps supply-chain, customer, market and news dependencies, draws a dependency diagram, and refines the company list — repeated ${DEEP_RESEARCH_DEPTH} time(s) for progressively deeper analysis. ` +
+          'Phase 4: Full stock or comparison analysis is built for the final scope.',
         parameters: {
           type: 'object',
           properties: {
             sector: {
               type: 'string',
-              description: 'Sector or thematic query, e.g. "semiconductors", "AI infrastructure", "renewable energy"',
+              description: 'Deep research query, e.g. "semiconductors", "Visa vs Mastercard", "Tesla"',
             },
             count: {
               type: 'number',
@@ -1466,11 +1472,18 @@ export async function executeTool(
         const finalContent = sourceSection
           ? content.replace('## 📊 Snapshot', `${sourceSection}\n\n## 📊 Snapshot`)
           : content;
-        const saved = await saveReport(finalContent, `${symbol}-stock-report`);
         await saveSymbolCache(symbol, cache);
+        if (args.skipSave) {
+          return {
+            success: true,
+            data: { content: finalContent, symbol: symbol.toUpperCase(), range },
+            message: `Built stock report content for ${symbol}`,
+          };
+        }
+        const saved = await saveReport(finalContent, `${symbol}-stock-report`);
         return {
           success: true,
-          data: { content: finalContent, ...saved, downloadUrl: `/api/reports/${saved.filename}` },
+          data: { content: finalContent, symbol: symbol.toUpperCase(), range, ...saved, downloadUrl: `/api/reports/${saved.filename}` },
           message: `Saved stock report to ${saved.filePath}`,
         };
       }
@@ -1696,10 +1709,17 @@ export async function executeTool(
           sources: sourceMap,
           llmConclusion: llmConclusionComparison,
         });
+        if (args.skipSave) {
+          return {
+            success: true,
+            data: { content, universe, range },
+            message: `Built comparison report content for ${universe.join(', ')}`,
+          };
+        }
         const saved = await saveReport(content, `${universe.join('-')}-comparison-report`);
         return {
           success: true,
-          data: { content, ...saved, downloadUrl: `/api/reports/${saved.filename}` },
+          data: { content, universe, range, ...saved, downloadUrl: `/api/reports/${saved.filename}` },
           message: `Saved comparison report to ${saved.filePath}`,
         };
       }
@@ -1941,7 +1961,68 @@ export async function executeTool(
         if (!options?.llmFill) {
           return {
             success: false,
-            error: 'Deep sector research requires an LLM connection. Please ensure a valid API token is configured.',
+            error: 'Deep research requires an LLM connection. Please ensure a valid API token is configured.',
+          };
+        }
+
+        const explicitCompanies = parseExplicitComparisonCompanies(sector);
+        if (explicitCompanies.length >= 2) {
+          const comparisonResult = await executeTool(
+            'generate_comparison_report',
+            { companies: explicitCompanies, range, skipSave: true },
+            stockService,
+            options
+          );
+          if (!comparisonResult.success || !comparisonResult.data?.content) {
+            return comparisonResult.success
+              ? { success: false, error: 'Deep comparison report could not be constructed.' }
+              : comparisonResult;
+          }
+          const generatedAt = new Date().toISOString();
+          const comparisonUniverse = Array.isArray(comparisonResult.data?.universe)
+            ? (comparisonResult.data.universe as string[])
+            : explicitCompanies;
+          const content = buildDeepComparisonReport({
+            query: sector,
+            symbols: comparisonUniverse,
+            generatedAt,
+            baseContent: String(comparisonResult.data.content),
+          });
+          const safeTitle = sector.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+          const saved = await saveReport(content, `${safeTitle}-deep-research-report`);
+          return {
+            success: true,
+            data: { content, ...saved, downloadUrl: `/api/reports/${saved.filename}` },
+            message: `Saved deep research comparison report for "${sector}" to ${saved.filePath}`,
+          };
+        }
+
+        const companyProbe = await resolveSymbolFromQuery(stockService, sector);
+        if (companyProbe.ok && companyProbe.symbol) {
+          const stockResult = await executeTool(
+            'generate_stock_report',
+            { symbol: sector, range: args.range || "5y", skipSave: true },
+            stockService,
+            options
+          );
+          if (!stockResult.success || !stockResult.data?.content || !stockResult.data?.symbol) {
+            return stockResult.success
+              ? { success: false, error: 'Deep company report could not be constructed.' }
+              : stockResult;
+          }
+          const generatedAt = new Date().toISOString();
+          const content = buildDeepStockReport({
+            query: sector,
+            symbol: String(stockResult.data.symbol),
+            generatedAt,
+            baseContent: String(stockResult.data.content),
+          });
+          const safeTitle = sector.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+          const saved = await saveReport(content, `${safeTitle}-deep-research-report`);
+          return {
+            success: true,
+            data: { content, ...saved, downloadUrl: `/api/reports/${saved.filename}` },
+            message: `Saved deep research company report for "${sector}" to ${saved.filePath}`,
           };
         }
 
