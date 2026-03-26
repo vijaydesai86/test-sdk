@@ -168,6 +168,17 @@ export default function ChatInterface() {
   const [supabaseReportsLoading, setSupabaseReportsLoading] = useState(false);
   const [supabaseSetupRequired, setSupabaseSetupRequired] = useState(false);
 
+  const selectedProvider = availableProviders.find((item) => item.id === provider) ?? null;
+  const selectedModel = availableModels.find((item) => item.value === model) ?? null;
+  const providerHelpText = selectedProvider?.details || 'Choose how the app spends model quota for this chat.';
+  const modelHelpText = modelsLoading
+    ? 'Loading available models.'
+    : provider === 'hybrid'
+      ? 'Hybrid starts from this model, then walks down the GitHub fallback chain before moving to Gemini if needed.'
+      : provider === 'gemini'
+        ? 'Starts from this Gemini model, then falls through the Gemini fallback ladder automatically.'
+        : 'Starts from this GitHub model, then falls through the GitHub fallback ladder automatically.';
+
   useEffect(() => {
     fetch('/api/providers')
       .then((res) => res.json())
@@ -455,43 +466,86 @@ export default function ChatInterface() {
             </span>
           </div>
 
-          <div className="flex items-center gap-2 shrink-0">
-            {availableProviders.length > 1 && (
-              <select
-                value={provider}
-                onChange={(e) => {
-                  const next = e.target.value;
-                  setProvider(next);
-                  setSessionId(null);
-                  const sel = availableProviders.find((p) => p.id === next);
-                  const models = sel?.models ?? [];
-                  setAvailableModels(models);
-                  if (models.length > 0) setModel(models[0].value);
-                }}
-                disabled={modelsLoading}
-                className="text-xs px-2 py-1.5 rounded-lg border border-slate-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-slate-700 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-50 hidden sm:block"
-              >
-                {availableProviders.map((p) => (
-                  <option key={p.id} value={p.id} disabled={!p.available}>
-                    {p.label}{p.available ? '' : ' (unavailable)'}
-                  </option>
-                ))}
-              </select>
-            )}
-            <select
-              value={model}
-              onChange={(e) => { setModel(e.target.value); setSessionId(null); }}
-              disabled={modelsLoading}
-              className="text-xs px-2 py-1.5 rounded-lg border border-slate-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-slate-700 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-50 max-w-[130px] sm:max-w-none"
-            >
-              {modelsLoading
-                ? <option>Loading&#8230;</option>
-                : availableModels.map((m) => (
-                    <option key={m.value} value={m.value}>{m.label}</option>
-                  ))}
-            </select>
-          </div>
         </header>
+
+        <section className="shrink-0 border-b border-slate-200 dark:border-gray-800 bg-white/95 dark:bg-gray-900/95 px-4 py-3 backdrop-blur">
+          <div className="grid gap-3 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)]">
+            <div className="rounded-xl border border-slate-200 dark:border-gray-700 bg-slate-50 dark:bg-gray-800/70 p-3">
+              <div className="flex items-center justify-between gap-3 mb-1.5">
+                <div>
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500 dark:text-gray-400">
+                    Execution Strategy
+                  </p>
+                  <p className="text-xs text-slate-500 dark:text-gray-400">
+                    Pick which provider path to spend first.
+                  </p>
+                </div>
+                {availableProviders.length > 1 ? (
+                  <select
+                    value={provider}
+                    onChange={(e) => {
+                      const next = e.target.value;
+                      setProvider(next);
+                      setSessionId(null);
+                      const sel = availableProviders.find((p) => p.id === next);
+                      const models = sel?.models ?? [];
+                      setAvailableModels(models);
+                      if (models.length > 0) setModel(models[0].value);
+                    }}
+                    disabled={modelsLoading}
+                    className="min-w-[150px] text-xs px-3 py-2 rounded-lg border border-slate-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-slate-700 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-50"
+                  >
+                    {availableProviders.map((p) => (
+                      <option key={p.id} value={p.id} disabled={!p.available}>
+                        {p.label}{p.available ? '' : ' (unavailable)'}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <div className="text-xs font-medium text-slate-700 dark:text-gray-200">
+                    {selectedProvider?.label ?? 'Default'}
+                  </div>
+                )}
+              </div>
+              <p className="text-xs leading-5 text-slate-600 dark:text-gray-300">
+                {providerHelpText}
+              </p>
+            </div>
+
+            <div className="rounded-xl border border-slate-200 dark:border-gray-700 bg-slate-50 dark:bg-gray-800/70 p-3">
+              <div className="flex items-center justify-between gap-3 mb-1.5">
+                <div>
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500 dark:text-gray-400">
+                    Starting Model
+                  </p>
+                  <p className="text-xs text-slate-500 dark:text-gray-400">
+                    The first model tried inside the selected strategy.
+                  </p>
+                </div>
+                <select
+                  value={model}
+                  onChange={(e) => { setModel(e.target.value); setSessionId(null); }}
+                  disabled={modelsLoading}
+                  className="min-w-[170px] text-xs px-3 py-2 rounded-lg border border-slate-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-slate-700 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-50"
+                >
+                  {modelsLoading
+                    ? <option>Loading&#8230;</option>
+                    : availableModels.map((m) => (
+                        <option key={m.value} value={m.value}>{m.label}</option>
+                      ))}
+                </select>
+              </div>
+              <p className="text-xs leading-5 text-slate-600 dark:text-gray-300">
+                {modelHelpText}
+              </p>
+              {selectedModel?.rateLimitTier && (
+                <p className="mt-1.5 text-[11px] uppercase tracking-[0.16em] text-slate-400 dark:text-gray-500">
+                  Current tier: {selectedModel.rateLimitTier}
+                </p>
+              )}
+            </div>
+          </div>
+        </section>
 
         <div className="flex flex-1 overflow-hidden">
           <aside
