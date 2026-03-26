@@ -1636,6 +1636,7 @@ export async function executeTool(
           balanceSheet: any;
           cashFlow: any;
           analystRatings: any;
+          insiderTrading: any;
           priceTargets: any;
         };
         const rawItems = await mapWithConcurrency<string, RawCompanyData>(
@@ -1650,8 +1651,9 @@ export async function executeTool(
             const balanceSheet = await safeFetch(symbol, cache, 'Balance sheet', 'balanceSheet', stockService.getBalanceSheet(symbol));
             const cashFlow = await safeFetch(symbol, cache, 'Cash flow', 'cashFlow', stockService.getCashFlow(symbol));
             const analystRatings = await safeFetch(symbol, cache, 'Analyst ratings', 'analystRatings', stockService.getAnalystRatings(symbol));
+            const insiderTrading = await safeFetch(symbol, cache, 'Insider trading', 'insiderTrading', stockService.getInsiderTrading(symbol));
             const priceTargets = await safeFetch(symbol, cache, 'Price targets', 'priceTargets', stockService.getPriceTargets(symbol));
-            return { symbol, cache, price, overview, priceHistory, incomeStatement, balanceSheet, cashFlow, analystRatings, priceTargets };
+            return { symbol, cache, price, overview, priceHistory, incomeStatement, balanceSheet, cashFlow, analystRatings, insiderTrading, priceTargets };
           }
         );
 
@@ -1670,6 +1672,7 @@ export async function executeTool(
             balanceSheet: item.balanceSheet,
             cashFlow: item.cashFlow,
             analystRatings: item.analystRatings,
+            insiderTrading: item.insiderTrading,
             priceTargets: item.priceTargets,
           });
           await saveSymbolCache(symbol, item.cache);
@@ -1722,7 +1725,7 @@ export async function executeTool(
         if (args.skipSave) {
           return {
             success: true,
-            data: { content, universe, range },
+            data: { content, universe, range, items },
             message: `Built comparison report content for ${universe.join(', ')}`,
           };
         }
@@ -1858,6 +1861,7 @@ export async function executeTool(
           balanceSheet: any;
           cashFlow: any;
           analystRatings: any;
+          insiderTrading: any;
           priceTargets: any;
         };
         const rawItems = await mapWithConcurrency<string, RawSectorItem>(
@@ -1872,8 +1876,9 @@ export async function executeTool(
             const balanceSheet = await safeFetch(symbol, cache, 'Balance sheet', 'balanceSheet', stockService.getBalanceSheet(symbol));
             const cashFlow = await safeFetch(symbol, cache, 'Cash flow', 'cashFlow', stockService.getCashFlow(symbol));
             const analystRatings = await safeFetch(symbol, cache, 'Analyst ratings', 'analystRatings', stockService.getAnalystRatings(symbol));
+            const insiderTrading = await safeFetch(symbol, cache, 'Insider trading', 'insiderTrading', stockService.getInsiderTrading(symbol));
             const priceTargets = await safeFetch(symbol, cache, 'Price targets', 'priceTargets', stockService.getPriceTargets(symbol));
-            return { symbol, cache, price, overview, priceHistory, incomeStatement, balanceSheet, cashFlow, analystRatings, priceTargets };
+            return { symbol, cache, price, overview, priceHistory, incomeStatement, balanceSheet, cashFlow, analystRatings, insiderTrading, priceTargets };
           }
         );
 
@@ -1891,6 +1896,7 @@ export async function executeTool(
             balanceSheet: item.balanceSheet,
             cashFlow: item.cashFlow,
             analystRatings: item.analystRatings,
+            insiderTrading: item.insiderTrading,
             priceTargets: item.priceTargets,
           });
           await saveSymbolCache(symbol, item.cache);
@@ -1997,6 +2003,7 @@ export async function executeTool(
             symbols: comparisonUniverse,
             generatedAt,
             baseContent: String(comparisonResult.data.content),
+            items: Array.isArray(comparisonResult.data?.items) ? comparisonResult.data.items : undefined,
           });
           const safeTitle = sector.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
           const saved = await saveReport(content, `${safeTitle}-deep-research-report`);
@@ -2247,6 +2254,7 @@ export async function executeTool(
           balanceSheet: any;
           cashFlow: any;
           analystRatings: any;
+          insiderTrading: any;
           priceTargets: any;
         };
         const rawItems = await mapWithConcurrency<string, RawDeepSectorItem>(
@@ -2265,6 +2273,7 @@ export async function executeTool(
                 balanceSheet: undefined,
                 cashFlow: undefined,
                 analystRatings: undefined,
+                insiderTrading: undefined,
                 priceTargets: undefined,
               };
             }
@@ -2276,8 +2285,9 @@ export async function executeTool(
             const balanceSheet = await safeFetch(symbol, cache, 'Balance sheet', 'balanceSheet', stockService.getBalanceSheet(symbol));
             const cashFlow = await safeFetch(symbol, cache, 'Cash flow', 'cashFlow', stockService.getCashFlow(symbol));
             const analystRatings = await safeFetch(symbol, cache, 'Analyst ratings', 'analystRatings', stockService.getAnalystRatings(symbol));
+            const insiderTrading = await safeFetch(symbol, cache, 'Insider trading', 'insiderTrading', stockService.getInsiderTrading(symbol));
             const priceTargets = await safeFetch(symbol, cache, 'Price targets', 'priceTargets', stockService.getPriceTargets(symbol));
-            return { symbol, cache, price, overview, priceHistory, incomeStatement, balanceSheet, cashFlow, analystRatings, priceTargets };
+            return { symbol, cache, price, overview, priceHistory, incomeStatement, balanceSheet, cashFlow, analystRatings, insiderTrading, priceTargets };
           }
         );
 
@@ -2295,6 +2305,7 @@ export async function executeTool(
             balanceSheet: item.balanceSheet,
             cashFlow: item.cashFlow,
             analystRatings: item.analystRatings,
+            insiderTrading: item.insiderTrading,
             priceTargets: item.priceTargets,
           });
           await saveSymbolCache(symbol, item.cache);

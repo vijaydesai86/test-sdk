@@ -34,6 +34,7 @@ export interface ComparisonReportItem {
   price?: any;
   overview?: any;
   basicFinancials?: any;
+  insiderTrading?: any;
   priceTargets?: any;
   priceHistory?: { prices?: PricePoint[] };
   incomeStatement?: any;
@@ -426,6 +427,19 @@ function filterSeries(labels: string[], values: number[]) {
 
 function toNumber(value: unknown): number | null {
   if (value === null || value === undefined) return null;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed || /^n\/a$/i.test(trimmed) || trimmed === '-' || trimmed === '—') {
+      return null;
+    }
+    const cleaned = trimmed
+      .replace(/[$£€,]/g, '')
+      .replace(/%$/g, '')
+      .replace(/^\((.+)\)$/, '-$1');
+    const num = Number(cleaned);
+    if (Number.isNaN(num)) return null;
+    return num;
+  }
   const num = Number(value);
   if (Number.isNaN(num)) return null;
   return num;
@@ -876,17 +890,11 @@ function deriveActionStance(args: {
 }
 
 function summarizeInsiderActivity(insiderTrading: any): { summary: string | null; table: string | null } {
-  const transactions = Array.isArray(insiderTrading?.recentTransactions)
-    ? insiderTrading.recentTransactions.filter((item: any) => item && item.transactionDate)
-    : [];
-  if (!transactions.length) {
+  const metrics = summarizeInsiderMetrics(insiderTrading);
+  if (!metrics.transactions.length) {
     return { summary: null, table: null };
   }
-  const buys = transactions.filter((item: any) => String(item.transactionType).toLowerCase().includes("purchase"));
-  const sells = transactions.filter((item: any) => String(item.transactionType).toLowerCase().includes("sale"));
-  const buyValue = buys.reduce((sum: number, item: any) => sum + (toNumber(item.totalValue) ?? 0), 0);
-  const sellValue = sells.reduce((sum: number, item: any) => sum + (toNumber(item.totalValue) ?? 0), 0);
-  const latest = transactions.slice(0, 5).map((item: any) => [
+  const latest = metrics.transactions.slice(0, 5).map((item: any) => [
     formatDateLabel(String(item.transactionDate)),
     item.insider || "N/A",
     item.transactionType || "N/A",
@@ -894,9 +902,128 @@ function summarizeInsiderActivity(insiderTrading: any): { summary: string | null
     formatCurrency(item.totalValue),
   ]);
   return {
-    summary: `${buys.length} purchase(s) vs ${sells.length} sale(s) in the recent provider feed; disclosed value ${formatCurrency(buyValue)} bought vs ${formatCurrency(sellValue)} sold.`,
+    summary: `${metrics.buyCount} purchase(s) vs ${metrics.sellCount} sale(s) in the recent provider feed; disclosed value ${formatCurrency(metrics.buyValue)} bought vs ${formatCurrency(metrics.sellValue)} sold.`,
     table: buildTable(["Date", "Insider", "Type", "Shares", "Value"], latest, ["left", "left", "left", "right", "right"]),
   };
+}
+
+function getRecentInsiderTransactions(insiderTrading: any): any[] {
+  const transactions = Array.isArray(insiderTrading?.recentTransactions)
+    ? insiderTrading.recentTransactions.filter((item: any) => item && item.transactionDate)
+    : [];
+  return transactions
+    .slice()
+    .sort((a: any, b: any) => String(b.transactionDate).localeCompare(String(a.transactionDate)));
+}
+
+function summarizeInsiderMetrics(insiderTrading: any): {
+  transactions: any[];
+  buyCount: number;
+  sellCount: number;
+  buyValue: number;
+  sellValue: number;
+  latestDate: string | null;
+} {
+  const transactions = getRecentInsiderTransactions(insiderTrading);
+  const buys = transactions.filter((item: any) => String(item.transactionType).toLowerCase().includes("purchase"));
+  const sells = transactions.filter((item: any) => String(item.transactionType).toLowerCase().includes("sale"));
+  return {
+    transactions,
+    buyCount: buys.length,
+    sellCount: sells.length,
+    buyValue: buys.reduce((sum: number, item: any) => sum + (toNumber(item.totalValue) ?? 0), 0),
+    sellValue: sells.reduce((sum: number, item: any) => sum + (toNumber(item.totalValue) ?? 0), 0),
+    latestDate: transactions[0]?.transactionDate ? String(transactions[0].transactionDate) : null,
+  };
+}
+
+function pickPresentValue(...values: unknown[]): unknown {
+  for (const value of values) {
+    if (value !== null && value !== undefined && value !== '' && value !== 'N/A') {
+      return value;
+    }
+  }
+  return null;
+}
+
+function getOwnershipDisplayValue(
+  item: ComparisonReportItem,
+  field: 'insider' | 'institutional' | 'shortFloat'
+): string {
+  const overview = item.overview || {};
+  const raw = field === 'insider'
+    ? pickPresentValue(item.insiderTrading?.insiderOwnership, overview.percentInsiders)
+    : field === 'institutional'
+      ? pickPresentValue(item.insiderTrading?.institutionalOwnership, overview.percentInstitutions)
+      : pickPresentValue(item.insiderTrading?.shortPercentFloat, overview.shortPercentFloat);
+  return raw === null ? 'N/A' : formatPercent(raw);
+}
+
+function buildComparisonInsiderSummaryTable(items: ComparisonReportItem[]): string {
+  const rows = items.map((item) => {
+    const metrics = summarizeInsiderMetrics(item.insiderTrading);
+    return [
+      `${item.overview?.name || item.symbol} (${item.symbol})`,
+      getOwnershipDisplayValue(item, 'insider'),
+      getOwnershipDisplayValue(item, 'institutional'),
+      metrics.transactions.length ? String(metrics.buyCount) : '—',
+      metrics.transactions.length ? String(metrics.sellCount) : '—',
+      metrics.transactions.length ? formatCurrency(metrics.buyValue) : '—',
+      metrics.transactions.length ? formatCurrency(metrics.sellValue) : '—',
+      metrics.latestDate ? formatDateLabel(metrics.latestDate) : '—',
+    ];
+  });
+
+  return buildTable(
+    ['Company', 'Insider Own', 'Institutional Own', 'Recent Buys', 'Recent Sells', 'Buy Value', 'Sell Value', 'Latest Filing'],
+    rows,
+    ['left', 'right', 'right', 'right', 'right', 'right', 'right', 'right']
+  );
+}
+
+function buildDeepInsiderSections(items: ComparisonReportItem[]): string {
+  const sections = items.map((item) => {
+    const metrics = summarizeInsiderMetrics(item.insiderTrading);
+    const overview = item.overview || {};
+    const ownershipLines = [
+      `- Insider ownership: ${getOwnershipDisplayValue(item, 'insider')}`,
+      `- Institutional ownership: ${getOwnershipDisplayValue(item, 'institutional')}`,
+      `- Short float: ${getOwnershipDisplayValue(item, 'shortFloat')}`,
+      metrics.transactions.length
+        ? `- Recent transaction summary: ${metrics.buyCount} purchase(s), ${metrics.sellCount} sale(s), ${formatCurrency(metrics.buyValue)} bought, ${formatCurrency(metrics.sellValue)} sold.`
+        : '- Recent transaction summary: provider transaction feed unavailable.',
+    ];
+
+    const transactionTable = metrics.transactions.length
+      ? buildTable(
+          ['Date', 'Insider', 'Title', 'Type', 'Shares', 'Share Price', 'Value'],
+          metrics.transactions.slice(0, 10).map((txn: any) => [
+            formatDateLabel(String(txn.transactionDate)),
+            txn.insider || 'N/A',
+            txn.title || 'N/A',
+            txn.transactionType || 'N/A',
+            formatCompactNumber(txn.shares),
+            formatPrice(txn.sharePrice),
+            formatCurrency(txn.totalValue),
+          ]),
+          ['left', 'left', 'left', 'left', 'right', 'right', 'right']
+        )
+      : '_No recent insider transactions were returned by the active data providers._';
+
+    return [
+      `### ${overview.name || item.symbol} (${item.symbol})`,
+      ownershipLines.join('\n'),
+      transactionTable,
+    ].join('\n\n');
+  });
+
+  if (!sections.length) return '';
+
+  return [
+    '## 🧾 Insider Transaction Detail',
+    '_Recent transaction counts and values only reflect what the active providers exposed for the current feed window._',
+    ...sections,
+  ].join('\n\n');
 }
 
 function buildValuationGrowthScatter(items: ComparisonReportItem[]): string {
@@ -1809,15 +1936,16 @@ export function buildComparisonReport(data: ComparisonReportData): string {
       pick('Income statement'),
       pick('Balance sheet'),
       pick('Cash flow'),
+      pick('Insider trading'),
       pick('Analyst ratings'),
       pick('Price targets'),
     ];
   });
   const sourceTable = sourceRows.length
     ? buildTable(
-        ['Company', 'Price', 'Overview', 'Price History', 'Income', 'Balance', 'Cash Flow', 'Analyst', 'Targets'],
+        ['Company', 'Price', 'Overview', 'Price History', 'Income', 'Balance', 'Cash Flow', 'Insider', 'Analyst', 'Targets'],
         sourceRows,
-        ['left', 'center', 'center', 'center', 'center', 'center', 'center', 'center', 'center']
+        ['left', 'center', 'center', 'center', 'center', 'center', 'center', 'center', 'center', 'center']
       )
     : '';
 
@@ -1936,9 +2064,9 @@ export function buildComparisonReport(data: ComparisonReportData): string {
     const overview = item.overview || {};
     return [
       `${overview.name || item.symbol} (${item.symbol})`,
-      formatPercent(overview.percentInsiders),
-      formatPercent(overview.percentInstitutions),
-      formatPercent(overview.shortPercentFloat),
+      getOwnershipDisplayValue(item, 'insider'),
+      getOwnershipDisplayValue(item, 'institutional'),
+      getOwnershipDisplayValue(item, 'shortFloat'),
       formatRatingSummary(item),
     ];
   });
@@ -1947,6 +2075,7 @@ export function buildComparisonReport(data: ComparisonReportData): string {
     ownershipRows,
     ['left', 'right', 'right', 'right', 'left']
   );
+  const insiderSummaryTable = buildComparisonInsiderSummaryTable(items);
 
   const coverageRows = items.map((item) => {
     const overview = item.overview || {};
@@ -2185,6 +2314,9 @@ export function buildComparisonReport(data: ComparisonReportData): string {
     timingTable,
     '## 🧑‍💼 Ownership & Positioning',
     ownershipTable,
+    '## 🧾 Insider Activity Summary',
+    insiderSummaryTable,
+    '_Counts and disclosed values reflect only the recent insider transaction feed returned by the active providers._',
     '## 🧠 Analyst View',
     analystTable,
     '## ⭐ Analyst Picks',
@@ -2240,8 +2372,19 @@ function scoreComparisonItems(
  * Strips the generic "## 🎯 Investment Conclusion" block from a comparison-report
  * body so that sector / deep-sector reports can substitute their own version.
  */
+function splitComparisonConclusion(body: string): { body: string; conclusion: string } {
+  const match = body.match(/\n\n## 🎯 Investment Conclusion[\s\S]*$/);
+  if (!match || match.index === undefined) {
+    return { body, conclusion: '' };
+  }
+  return {
+    body: body.slice(0, match.index),
+    conclusion: match[0].trim(),
+  };
+}
+
 function stripComparisonConclusion(body: string): string {
-  return body.replace(/\n\n## 🎯 Investment Conclusion[\s\S]*$/, '');
+  return splitComparisonConclusion(body).body;
 }
 
 /**
@@ -2276,7 +2419,6 @@ export function buildSectorReport(data: SectorReportData): string {
       .replace(/^# Company Comparison Report\n\n/, '')
       .trimStart()
   );
-
   const scored = scoreComparisonItems(data.items, data.generatedAt);
   const conclusion = buildComparisonConclusion(data.items, scored, 'sector', data.sectorQuery, data.llmConclusion);
 
@@ -2360,11 +2502,12 @@ export function buildDeepSectorReport(data: DeepSectorReportData): string {
       .replace(/^# Company Comparison Report\n\n/, '')
       .trimStart()
   );
+  const insiderSections = buildDeepInsiderSections(data.items);
 
   const scored = scoreComparisonItems(data.items, data.generatedAt);
   const conclusion = buildComparisonConclusion(data.items, scored, 'deep-sector', data.sectorQuery, data.llmConclusion);
 
-  return [header, dependencySection, diagramSection, refinementSection, snapshotsSection, comparisonBody, conclusion]
+  return [header, dependencySection, diagramSection, refinementSection, snapshotsSection, comparisonBody, insiderSections, conclusion]
     .filter(Boolean)
     .join('\n\n');
 }
@@ -2418,6 +2561,7 @@ export function buildDeepComparisonReport(data: {
   symbols: string[];
   generatedAt: string;
   baseContent: string;
+  items?: ComparisonReportItem[];
 }): string {
   const header = [
     '# Deep Research: ' + data.query,
@@ -2430,7 +2574,11 @@ export function buildDeepComparisonReport(data: {
     '- The request was kept as an explicit company set; no thematic company expansion was applied.',
   ].join('\n\n');
 
-  return [header, stripComparisonReportHeader(data.baseContent)]
+  const strippedBase = stripComparisonReportHeader(data.baseContent);
+  const splitBase = splitComparisonConclusion(strippedBase);
+  const insiderSections = data.items?.length ? buildDeepInsiderSections(data.items) : '';
+
+  return [header, splitBase.body, insiderSections, splitBase.conclusion]
     .filter(Boolean)
     .join('\n\n');
 }
