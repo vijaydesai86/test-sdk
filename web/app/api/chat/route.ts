@@ -663,6 +663,67 @@ function createLLMFiller(
   return (prompt: string) => callLLMForDataFill(prompt, githubToken, geminiToken);
 }
 
+function getStockProviderConfigError(provider: string): { error: string; details: string } | null {
+  const normalizedProvider = [
+    'alphavantage',
+    'finnhub',
+    'hybrid',
+    'fmp',
+    'twelvedata',
+    'stooq',
+    'multi',
+  ].includes(provider)
+    ? provider
+    : 'alphavantage';
+
+  const hasAlphaVantage = Boolean(process.env.ALPHA_VANTAGE_API_KEY);
+  const hasFinnhub = Boolean(process.env.FINNHUB_API_KEY);
+  const hasFmp = Boolean(process.env.FINANCIAL_MODELING_PREP_API_KEY);
+  const hasTwelveData = Boolean(process.env.TWELVE_DATA_API_KEY);
+
+  switch (normalizedProvider) {
+    case 'alphavantage':
+      return hasAlphaVantage
+        ? null
+        : {
+            error: 'Alpha Vantage API key not configured',
+            details: 'Please set ALPHA_VANTAGE_API_KEY environment variable.',
+          };
+    case 'finnhub':
+      return hasFinnhub
+        ? null
+        : {
+            error: 'Finnhub API key not configured',
+            details: 'Please set FINNHUB_API_KEY environment variable.',
+          };
+    case 'fmp':
+      return hasFmp
+        ? null
+        : {
+            error: 'Financial Modeling Prep API key not configured',
+            details: 'Please set FINANCIAL_MODELING_PREP_API_KEY environment variable.',
+          };
+    case 'twelvedata':
+      return hasTwelveData
+        ? null
+        : {
+            error: 'Twelve Data API key not configured',
+            details: 'Please set TWELVE_DATA_API_KEY environment variable.',
+          };
+    case 'hybrid':
+      return hasAlphaVantage || hasFinnhub
+        ? null
+        : {
+            error: 'No stock data provider keys configured for hybrid mode',
+            details: 'Please set ALPHA_VANTAGE_API_KEY or FINNHUB_API_KEY environment variable.',
+          };
+    case 'stooq':
+    case 'multi':
+    default:
+      return null;
+  }
+}
+
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
@@ -680,15 +741,13 @@ export async function POST(request: NextRequest) {
     // Check if Gemini token is available (never exposed client-side — server env only)
     const geminiToken = process.env.GEMINI_TOKEN;
 
-    // Initialize stock service (always uses real Alpha Vantage API)
+    // Initialize the configured stock data provider.
     const dataProvider = (process.env.STOCK_DATA_PROVIDER || 'alphavantage').toLowerCase();
     const alphaVantageKey = process.env.ALPHA_VANTAGE_API_KEY;
-    if (dataProvider !== 'finnhub' && !alphaVantageKey) {
+    const providerConfigError = getStockProviderConfigError(dataProvider);
+    if (providerConfigError) {
       return NextResponse.json(
-        {
-          error: 'Alpha Vantage API key not configured',
-          details: 'Please set ALPHA_VANTAGE_API_KEY environment variable for Alpha Vantage or hybrid mode.',
-        },
+        providerConfigError,
         { status: 503 }
       );
     }

@@ -2038,7 +2038,10 @@ class HybridStockDataService implements StockDataService {
     );
   }
   searchStock(query: string) {
-    return this.primary.searchStock(query);
+    return this.withFallback(
+      () => this.primary.searchStock(query),
+      () => this.fallback.searchStock(query)
+    );
   }
   getEarningsHistory(symbol: string) {
     return this.withFallback(
@@ -2065,19 +2068,34 @@ class HybridStockDataService implements StockDataService {
     );
   }
   getSectorPerformance() {
-    return this.primary.getSectorPerformance();
+    return this.withFallback(
+      () => this.primary.getSectorPerformance(),
+      () => this.fallback.getSectorPerformance()
+    );
   }
   getTopGainersLosers() {
-    return this.primary.getTopGainersLosers();
+    return this.withFallback(
+      () => this.primary.getTopGainersLosers(),
+      () => this.fallback.getTopGainersLosers()
+    );
   }
   getNewsSentiment(symbol: string) {
-    return this.primary.getNewsSentiment(symbol);
+    return this.withFallback(
+      () => this.primary.getNewsSentiment(symbol),
+      () => this.fallback.getNewsSentiment(symbol)
+    );
   }
   getCompanyNews(symbol: string, days?: number) {
-    return this.primary.getCompanyNews(symbol, days);
+    return this.withFallback(
+      () => this.primary.getCompanyNews(symbol, days),
+      () => this.fallback.getCompanyNews(symbol, days)
+    );
   }
   searchNews(query: string, days?: number) {
-    return this.primary.searchNews(query, days);
+    return this.withFallback(
+      () => this.primary.searchNews(query, days),
+      () => this.fallback.searchNews(query, days)
+    );
   }
 }
 
