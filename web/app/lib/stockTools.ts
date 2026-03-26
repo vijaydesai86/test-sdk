@@ -1335,80 +1335,6 @@ export async function executeTool(
           };
         };
 
-        /**
-         * Synthesizes a single TTM income statement row from company overview data.
-         * Used as a fallback when the income-statement API call fails (rate limit,
-         * free-tier restriction, etc.).  All values are derived from real API data
-         * already in the overview — no training-data values are injected.
-         */
-        const buildIncomeStatementFallback = (overview: any): any | undefined => {
-          if (!overview) return undefined;
-          const revTTM = Number(overview.revenueTTM);
-          if (!Number.isFinite(revTTM) || revTTM === 0) return undefined;
-          const grossTTM = Number(overview.grossProfitTTM);
-          // Margins from AV come as fractions (0–1); Finnhub also uses fractions.
-          const toFrac = (m: unknown): number | null => {
-            const n = Number(m);
-            if (!Number.isFinite(n) || n === 0) return null;
-            return Math.abs(n) <= 1 ? n : n / 100;
-          };
-          const opFrac = toFrac(overview.operatingMargin);
-          const netFrac = toFrac(overview.profitMargin);
-          return {
-            symbol: overview.symbol,
-            quarterlyReports: [{
-              fiscalQuarter: 'TTM (est.)',
-              totalRevenue: String(Math.round(revTTM)),
-              grossProfit: Number.isFinite(grossTTM) && grossTTM !== 0 ? String(Math.round(grossTTM)) : null,
-              operatingIncome: opFrac !== null ? String(Math.round(revTTM * opFrac)) : null,
-              netIncome: netFrac !== null ? String(Math.round(revTTM * netFrac)) : null,
-              ebitda: null,
-            }],
-          };
-        };
-
-        /**
-         * Synthesizes a balance-sheet row from company overview data.
-         * Shareholder equity is derived from bookValue-per-share × shares-outstanding.
-         */
-        const buildBalanceSheetFallback = (overview: any): any | undefined => {
-          if (!overview) return undefined;
-          const bookValue = Number(overview.bookValue);
-          const shares = Number(overview.sharesOutstanding);
-          if (!Number.isFinite(bookValue) || bookValue === 0) return undefined;
-          if (!Number.isFinite(shares) || shares === 0) return undefined;
-          return {
-            symbol: overview.symbol,
-            quarterlyReports: [{
-              fiscalQuarter: 'Latest (est.)',
-              totalAssets: null,
-              totalLiabilities: null,
-              totalShareholderEquity: String(Math.round(bookValue * shares)),
-              cashAndEquivalents: null,
-              longTermDebt: null,
-            }],
-          };
-        };
-
-        /**
-         * Synthesizes a single earnings point from overview TTM EPS.
-         * Provides at minimum a single-bar EPS chart when quarterly history is unavailable.
-         */
-        const buildEarningsHistoryFallback = (overview: any): any | undefined => {
-          if (!overview) return undefined;
-          const eps = Number(overview.eps);
-          if (!Number.isFinite(eps)) return undefined;
-          return {
-            symbol: overview.symbol,
-            quarterlyEarnings: [{
-              fiscalQuarter: 'TTM',
-              reportedEPS: eps,
-              estimatedEPS: null,
-              surprise: null,
-              surprisePercentage: null,
-            }],
-          };
-        };
 
         /** Returns true when a fetched financial statement has at least one report row. */
         const hasReports = (stmt: any): boolean =>
@@ -1437,26 +1363,33 @@ export async function executeTool(
         const companyNews = await safeFetch('Company news', 'companyNews', stockService.getCompanyNews(symbol, 14));
 
 
-        // Build basic financials from the overview
+        // Build basic financials from the overview. These are direct provider fields
+        // or simple arithmetic on provider fields, not synthetic statement rows.
         const finalBasicFinancials = companyOverview ? buildBasicFinancialsFallback(companyOverview) : undefined;
 
-        // Apply overview-derived fallbacks for data that depends on separate provider calls
-        // (income/balance/cashflow may all fail on the free tier once AV's daily quota is hit,
-        //  since Finnhub's metric series is also sparse on free tier).
-        const finalIncomeStatement = hasReports(incomeStatement)
-          ? incomeStatement
-          : buildIncomeStatementFallback(companyOverview);
-        const finalBalanceSheet = hasReports(balanceSheet)
-          ? balanceSheet
-          : buildBalanceSheetFallback(companyOverview);
+        const hasIncomeData = hasReports(incomeStatement);
+        const hasBalanceData = hasReports(balanceSheet);
+        // Statement-level data must remain real provider output. Do not synthesize
+        // estimated rows from overview fields when free-tier providers return nothing.
+        const finalIncomeStatement = hasIncomeData ? incomeStatement : undefined;
+        const finalBalanceSheet = hasBalanceData ? balanceSheet : undefined;
         // Cash flow has no reliable overview fallback — use real data only.
         const finalCashFlow = hasReports(cashFlow) ? cashFlow : undefined;
-        // EPS history: if no quarterly data, provide a single TTM EPS point from the overview
-        // so the EPS chart can render at minimum one data point.
         const hasEarningsData = earningsHistory?.quarterlyEarnings?.length > 0;
-        const finalEarningsHistory = hasEarningsData
-          ? earningsHistory
-          : buildEarningsHistoryFallback(companyOverview);
+        const finalEarningsHistory = hasEarningsData ? earningsHistory : undefined;
+
+        if (!hasIncomeData) {
+          notes.push('Income statement unavailable from providers; no estimated fallback was used.');
+        }
+        if (!hasBalanceData) {
+          notes.push('Balance sheet unavailable from providers; no estimated fallback was used.');
+        }
+        if (!finalCashFlow) {
+          notes.push('Cash flow unavailable from providers; report shows this section as unavailable.');
+        }
+        if (!hasEarningsData) {
+          notes.push('Quarterly EPS history unavailable from providers; no synthetic EPS series was generated.');
+        }
 
         // LLM moat analysis — best-effort; report still builds without it
         let moatAnalysis: MoatAnalysis | undefined;

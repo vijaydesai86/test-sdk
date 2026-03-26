@@ -1222,7 +1222,7 @@ export function buildStockReport(data: StockReportData): string {
         ]],
         ['left', 'right', 'right', 'right', 'right']
       )
-    : '_Income statement data unavailable (provider or rate limit)._';
+    : '_Income statement data unavailable (provider or rate limit; no estimated fallback shown)._';
 
   const balanceTable = balanceReport
     ? buildTable(
@@ -1237,7 +1237,7 @@ export function buildStockReport(data: StockReportData): string {
         ]],
         ['left', 'right', 'right', 'right', 'right', 'right']
       )
-    : '_Balance sheet data unavailable (provider or rate limit)._';
+    : '_Balance sheet data unavailable (provider or rate limit; no estimated fallback shown)._';
 
   const cashReport = getLatestReport(data.cashFlow);
   const cashTable = cashReport
