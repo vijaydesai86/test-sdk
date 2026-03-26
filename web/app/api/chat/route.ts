@@ -624,6 +624,7 @@ async function callGeminiWithFallback(
       const response = await callGeminiAPI(messages, geminiToken, model, tools);
       if (response && typeof response === 'object') {
         (response as any).__model = model;
+        (response as any).__fallbackCount = candidateModels.indexOf(model);
       }
       return response;
     } catch (err: any) {
@@ -894,7 +895,10 @@ export async function POST(request: NextRequest) {
         response: responseText,
         sessionId: currentSessionId,
         model: requestedModel,
+        requestedModel,
         provider: activeProvider,
+        runtimeProvider: activeProvider,
+        fallbackCount: 0,
         report: filename && content ? { filename, content, downloadUrl } : null,
         stats: {
           rounds: 0,
@@ -931,6 +935,7 @@ export async function POST(request: NextRequest) {
     // Call the LLM with a provider/model strategy chain.
     let rounds = 0;
     let totalToolCalls = 0;
+    let fallbackCount = 0;
     let assistantContent: string | null = null;
     let toolDefinitionsUsed = toolDefinitions;
     const reportArtifacts: Array<{ filename: string; content: string; downloadUrl: string }> = [];
@@ -968,6 +973,7 @@ export async function POST(request: NextRequest) {
         return false;
       }
 
+      fallbackCount += 1;
       activeRuntimeProvider = executionStrategies[strategyIndex].provider;
       activeModel = executionStrategies[strategyIndex].models[modelIndex];
       return true;
@@ -1010,6 +1016,9 @@ export async function POST(request: NextRequest) {
           toolDefinitionsUsed = retryTools;
           if (typeof result?.__model === 'string') {
             activeModel = result.__model;
+          }
+          if (typeof result?.__fallbackCount === 'number') {
+            fallbackCount += result.__fallbackCount;
           }
           break;
         } catch (error: any) {
@@ -1116,7 +1125,10 @@ export async function POST(request: NextRequest) {
 
     console.info('Chat request stats', {
       provider: activeProvider,
+      runtimeProvider: activeRuntimeProvider,
+      requestedModel,
       model: activeModel,
+      fallbackCount,
       rounds,
       toolCalls: totalToolCalls,
       toolsProvided: toolDefinitionsUsed.length,
@@ -1126,7 +1138,10 @@ export async function POST(request: NextRequest) {
       response: assistantContent || "I apologize, but I couldn't generate a response. Please try again.",
       sessionId: currentSessionId,
       model: activeModel,
+      requestedModel,
       provider: activeProvider,
+      runtimeProvider: activeRuntimeProvider,
+      fallbackCount,
       reports: reportArtifacts.length > 0 ? reportArtifacts : undefined,
       stats: {
         rounds,

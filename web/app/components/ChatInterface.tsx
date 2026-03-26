@@ -10,6 +10,10 @@ interface Message {
   role: 'user' | 'assistant';
   content: string;
   model?: string;
+  requestedModel?: string;
+  provider?: string;
+  runtimeProvider?: string;
+  fallbackCount?: number;
   stats?: {
     rounds: number;
     toolCalls: number;
@@ -112,6 +116,17 @@ const QUICK_PROMPTS = [
   { label: '🔬 Deep research on semiconductors', prompt: 'Deep research on semiconductors' },
   { label: '🧠 Deep research on Visa vs Mastercard', prompt: 'Deep research on Visa vs Mastercard' },
 ];
+
+function formatProviderLabel(provider?: string) {
+  if (provider === 'github') return 'GitHub';
+  if (provider === 'gemini') return 'Gemini';
+  if (provider === 'hybrid') return 'Hybrid';
+  return provider || 'Unknown';
+}
+
+function formatModelLabel(model?: string) {
+  return model ? model.split('/').pop() || model : 'unknown';
+}
 
 function MarkdownContent({ content }: { content: string }) {
   return (
@@ -267,6 +282,10 @@ export default function ChatInterface() {
           role: 'assistant',
           content: assistantText,
           model: typeof data['model'] === 'string' ? data['model'] : undefined,
+          requestedModel: typeof data['requestedModel'] === 'string' ? data['requestedModel'] : undefined,
+          provider: typeof data['provider'] === 'string' ? data['provider'] : undefined,
+          runtimeProvider: typeof data['runtimeProvider'] === 'string' ? data['runtimeProvider'] : undefined,
+          fallbackCount: typeof data['fallbackCount'] === 'number' ? data['fallbackCount'] : undefined,
           stats: data['stats'] as Message['stats'],
         },
       ]);
@@ -793,11 +812,26 @@ create policy "service role full access"
                     ].join(' ')}
                   >
                     {msg.role === 'assistant' && (
-                      <div className="flex items-center gap-2 mb-1.5">
+                      <div className="flex flex-wrap items-center gap-2 mb-1.5">
                         <span className="text-xs font-medium text-slate-400 dark:text-gray-500">Assistant</span>
+                        {msg.provider && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-100 dark:bg-gray-700/80 text-slate-500 dark:text-gray-300 uppercase tracking-wide">
+                            Strategy {formatProviderLabel(msg.provider)}
+                          </span>
+                        )}
+                        {msg.runtimeProvider && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 uppercase tracking-wide">
+                            Used {formatProviderLabel(msg.runtimeProvider)}
+                          </span>
+                        )}
                         {msg.model && (
                           <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-indigo-50 dark:bg-indigo-900/50 text-indigo-600 dark:text-indigo-300 font-mono">
-                            {msg.model.split('/').pop()}
+                            {formatModelLabel(msg.model)}
+                          </span>
+                        )}
+                        {msg.fallbackCount && msg.fallbackCount > 0 && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 uppercase tracking-wide">
+                            {msg.fallbackCount} fallback{msg.fallbackCount === 1 ? '' : 's'}
                           </span>
                         )}
                         {msg.stats && (
@@ -823,7 +857,7 @@ create policy "service role full access"
                       <span className="animate-pulse">&#x25CF;</span>
                       <span className="animate-pulse [animation-delay:150ms]">&#x25CF;</span>
                       <span className="animate-pulse [animation-delay:300ms]">&#x25CF;</span>
-                      <span className="ml-1 text-xs">{model.split('/').pop()} thinking&#8230;</span>
+                      <span className="ml-1 text-xs">{formatProviderLabel(provider)} &#xB7; {formatModelLabel(model)} thinking&#8230;</span>
                     </div>
                   </div>
                 </div>
