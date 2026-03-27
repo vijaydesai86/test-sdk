@@ -73,6 +73,10 @@ interface ProviderOption {
 }
 
 type WorkspaceTab = 'watchlist' | 'artifacts' | 'saved';
+type ThemeId = 'aurora' | 'solstice' | 'ember' | 'graphite';
+
+const DEFAULT_THEME: ThemeId = 'aurora';
+const THEME_STORAGE_KEY = 'stock-ui-theme';
 
 const DEFAULT_MODEL = 'openai/gpt-4.1';
 const CHART_HEIGHT = 280;
@@ -82,6 +86,13 @@ const TOOL_CALL_WARNING =
 const SAMPLE_REPORT_LINK = '/reports/nvda-sample.md';
 const isToolCallText = (content: string) =>
   /"name"\s*:\s*"functions\./.test(content) || /"arguments"\s*:\s*\{/.test(content);
+
+const THEME_OPTIONS: Array<{ id: ThemeId; label: string; blurb: string }> = [
+  { id: 'aurora', label: 'Aurora', blurb: 'Cool glass and the strongest overall contrast.' },
+  { id: 'solstice', label: 'Solstice', blurb: 'Ocean blue with a cleaner editorial feel.' },
+  { id: 'ember', label: 'Ember', blurb: 'Warmer copper glow for a richer desk feel.' },
+  { id: 'graphite', label: 'Graphite', blurb: 'Minimal monochrome with subtle blue lift.' },
+];
 
 const QUICK_PROMPTS = [
   {
@@ -336,6 +347,7 @@ export default function ChatInterface() {
   const [savedReports, setSavedReports] = useState<ReportItem[]>([]);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [activeWorkspaceTab, setActiveWorkspaceTab] = useState<WorkspaceTab>('watchlist');
+  const [theme, setTheme] = useState<ThemeId>(DEFAULT_THEME);
   const [supabaseReports, setSupabaseReports] = useState<SavedReportMeta[]>([]);
   const [supabaseReportsLoading, setSupabaseReportsLoading] = useState(false);
   const [supabaseSetupRequired, setSupabaseSetupRequired] = useState(false);
@@ -429,6 +441,20 @@ export default function ChatInterface() {
       document.body.style.overflow = '';
     };
   }, [sidebarOpen, reportPreview]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const savedTheme = window.localStorage.getItem(THEME_STORAGE_KEY);
+    if (savedTheme && THEME_OPTIONS.some((option) => option.id === savedTheme)) {
+      setTheme(savedTheme as ThemeId);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(THEME_STORAGE_KEY, theme);
+    document.documentElement.dataset.stockTheme = theme;
+  }, [theme]);
 
   const sendPrompt = async (prompt: string) => {
     if (!prompt.trim() || isLoading) return;
@@ -1135,11 +1161,11 @@ create index if not exists saved_reports_report_date_idx on public.saved_reports
         />
       )}
 
-      <div className="relative min-h-dvh overflow-hidden bg-[radial-gradient(circle_at_top_left,_rgba(45,212,191,0.16),_transparent_22%),radial-gradient(circle_at_top_right,_rgba(56,189,248,0.14),_transparent_24%),linear-gradient(180deg,_#09111f_0%,_#08101b_42%,_#060b15_100%)] text-white">
-        <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(rgba(148,163,184,0.08)_1px,transparent_1px),linear-gradient(90deg,rgba(148,163,184,0.08)_1px,transparent_1px)] bg-[size:32px_32px] opacity-[0.18]" />
-        <div className="pointer-events-none absolute inset-x-0 top-0 h-80 bg-[radial-gradient(circle_at_top,_rgba(255,255,255,0.12),_transparent_62%)]" />
+      <div data-stock-theme={theme} className="stock-app-shell relative min-h-dvh overflow-hidden text-white">
+        <div className="stock-app-grid pointer-events-none absolute inset-0" />
+        <div className="stock-app-glow pointer-events-none absolute inset-x-0 top-0 h-80" />
 
-        <header className="relative z-10 border-b border-white/10 bg-slate-950/35 px-4 py-4 backdrop-blur-xl sm:px-6">
+        <header className="stock-header relative z-10 border-b border-white/10 px-4 py-4 backdrop-blur-xl sm:px-6">
           <div className="flex items-center justify-between gap-3">
             <div className="flex min-w-0 items-center gap-3">
               <button
@@ -1182,13 +1208,30 @@ create index if not exists saved_reports_report_date_idx on public.saved_reports
               </div>
             </div>
 
-            <button
-              type="button"
-              onClick={() => setSidebarOpen(true)}
-              className="rounded-full border border-white/10 bg-white/8 px-4 py-2 text-sm font-medium text-white transition hover:bg-white/12 lg:hidden"
-            >
-              Workspace
-            </button>
+            <div className="flex items-center gap-2">
+              <label className="stock-theme-picker hidden sm:flex">
+                <span className="sr-only">Theme</span>
+                <select
+                  value={theme}
+                  onChange={(e) => setTheme(e.target.value as ThemeId)}
+                  className="stock-theme-select"
+                  aria-label="Choose theme"
+                >
+                  {THEME_OPTIONS.map((option) => (
+                    <option key={option.id} value={option.id}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button
+                type="button"
+                onClick={() => setSidebarOpen(true)}
+                className="rounded-full border border-white/10 bg-white/8 px-4 py-2 text-sm font-medium text-white transition hover:bg-white/12 lg:hidden"
+              >
+                Workspace
+              </button>
+            </div>
           </div>
         </header>
 
@@ -1248,7 +1291,7 @@ create index if not exists saved_reports_report_date_idx on public.saved_reports
 
           <main className="flex min-w-0 flex-col border-white/10 lg:border-r">
             <section className="border-b border-white/10 px-4 py-4 sm:px-6">
-              <div className="mx-auto max-w-6xl rounded-[30px] border border-white/10 bg-[linear-gradient(135deg,rgba(15,23,42,0.88),rgba(8,24,38,0.7))] p-5 shadow-[0_30px_80px_-35px_rgba(8,145,178,0.45)] backdrop-blur-xl sm:p-6">
+              <div className="stock-hero mx-auto max-w-6xl rounded-[30px] border border-white/10 p-5 backdrop-blur-xl sm:p-6">
                 <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
                   <div className="max-w-3xl">
                     <p className="text-[11px] uppercase tracking-[0.32em] text-teal-200/70">Live market intelligence</p>
@@ -1275,6 +1318,29 @@ create index if not exists saved_reports_report_date_idx on public.saved_reports
                   </div>
 
                   <div className="grid gap-3 xl:w-[430px]">
+                    <div className="rounded-[24px] border border-white/10 bg-slate-950/40 p-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-[11px] uppercase tracking-[0.18em] text-slate-400">Visual theme</p>
+                          <p className="mt-1 text-xs leading-5 text-slate-300">{THEME_OPTIONS.find((option) => option.id === theme)?.blurb}</p>
+                        </div>
+                        <label className="stock-theme-picker flex sm:hidden">
+                          <span className="sr-only">Theme</span>
+                          <select
+                            value={theme}
+                            onChange={(e) => setTheme(e.target.value as ThemeId)}
+                            className="stock-theme-select"
+                            aria-label="Choose theme"
+                          >
+                            {THEME_OPTIONS.map((option) => (
+                              <option key={option.id} value={option.id}>
+                                {option.label}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      </div>
+                    </div>
                     <div className="rounded-[24px] border border-white/10 bg-slate-950/40 p-4">
                       <div className="flex items-start justify-between gap-3">
                         <div>
@@ -1452,7 +1518,7 @@ create index if not exists saved_reports_report_date_idx on public.saved_reports
                 )}
                 <form
                   onSubmit={handleSubmit}
-                  className="rounded-[30px] border border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,0.08),rgba(255,255,255,0.04))] p-3 shadow-[0_25px_70px_-36px_rgba(15,23,42,0.9)] backdrop-blur-xl"
+                  className="stock-input-shell rounded-[30px] border border-white/10 p-3 backdrop-blur-xl"
                 >
                   <textarea
                     ref={textareaRef}
@@ -1505,7 +1571,7 @@ create index if not exists saved_reports_report_date_idx on public.saved_reports
 
       <div
         className={[
-          'fixed inset-x-0 bottom-0 z-50 rounded-t-[32px] border border-white/10 bg-[linear-gradient(180deg,rgba(8,17,31,0.98),rgba(6,11,21,0.98))] p-4 shadow-[0_-28px_80px_-35px_rgba(15,23,42,0.95)] backdrop-blur-2xl transition-transform duration-300 lg:hidden',
+          'stock-bottom-sheet fixed inset-x-0 bottom-0 z-50 rounded-t-[32px] border border-white/10 p-4 backdrop-blur-2xl transition-transform duration-300 lg:hidden',
           sidebarOpen ? 'translate-y-0' : 'translate-y-[105%]',
         ].join(' ')}
       >
@@ -1553,7 +1619,7 @@ create index if not exists saved_reports_report_date_idx on public.saved_reports
 
       {reportPreview !== null && (
         <div className="fixed inset-0 z-[60] flex items-start justify-center overflow-y-auto p-4 sm:p-8">
-          <div className="relative mt-4 flex max-h-[90vh] w-full max-w-5xl flex-col overflow-hidden rounded-[30px] border border-white/12 bg-[linear-gradient(180deg,rgba(8,17,31,0.98),rgba(9,15,26,0.96))] shadow-[0_35px_90px_-40px_rgba(15,23,42,1)] backdrop-blur-2xl">
+          <div className="stock-modal-shell relative mt-4 flex max-h-[90vh] w-full max-w-5xl flex-col overflow-hidden rounded-[30px] border border-white/12 backdrop-blur-2xl">
             <div className="flex items-center justify-between gap-3 border-b border-white/10 px-5 py-4">
               <div className="min-w-0">
                 <p className="text-[11px] uppercase tracking-[0.28em] text-teal-200/70">Report Preview</p>
@@ -1586,7 +1652,7 @@ create index if not exists saved_reports_report_date_idx on public.saved_reports
               {reportLoading ? (
                 <p className="text-sm text-slate-300">Loading report...</p>
               ) : (
-                <div className="rounded-[24px] border border-white/8 bg-white/5 p-4 text-slate-100">
+                <div className="stock-report-paper rounded-[24px] p-4">
                   <MarkdownContent content={reportPreview} />
                 </div>
               )}

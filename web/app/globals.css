@@ -3,12 +3,6 @@
 :root {
   --background: #060b15;
   --foreground: #eff6ff;
-  --surface: rgba(255, 255, 255, 0.06);
-  --surface-strong: rgba(255, 255, 255, 0.1);
-  --border: rgba(255, 255, 255, 0.1);
-  --muted: #94a3b8;
-  --accent: #5eead4;
-  --accent-strong: #22d3ee;
   --font-body: "Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif;
   --font-display: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
   --font-mono: "IBM Plex Mono", "JetBrains Mono", "SFMono-Regular", monospace;
@@ -75,6 +69,159 @@ select {
 
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(148, 163, 184, 0.42);
+}
+
+.stock-app-shell {
+  --app-shell-bg:
+    radial-gradient(circle at top left, rgba(45, 212, 191, 0.18), transparent 24%),
+    radial-gradient(circle at top right, rgba(56, 189, 248, 0.16), transparent 25%),
+    linear-gradient(180deg, #09111f 0%, #08101b 42%, #060b15 100%);
+  --app-grid-color: rgba(148, 163, 184, 0.08);
+  --app-glow-top: radial-gradient(circle at top, rgba(255, 255, 255, 0.12), transparent 62%);
+  --app-header-bg: rgba(2, 6, 23, 0.34);
+  --app-hero-bg: linear-gradient(135deg, rgba(15, 23, 42, 0.9), rgba(8, 24, 38, 0.74));
+  --app-hero-shadow: 0 30px 80px -35px rgba(8, 145, 178, 0.45);
+  --app-input-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.04));
+  --app-input-shadow: 0 25px 70px -36px rgba(15, 23, 42, 0.9);
+  --app-sheet-bg: linear-gradient(180deg, rgba(8, 17, 31, 0.98), rgba(6, 11, 21, 0.98));
+  --app-sheet-shadow: 0 -28px 80px -35px rgba(15, 23, 42, 0.95);
+  --app-modal-bg: linear-gradient(180deg, rgba(8, 17, 31, 0.98), rgba(9, 15, 26, 0.96));
+  --app-modal-shadow: 0 35px 90px -40px rgba(15, 23, 42, 1);
+  --app-control-bg: rgba(255, 255, 255, 0.08);
+  --app-control-border: rgba(255, 255, 255, 0.14);
+  --app-control-text: #f8fafc;
+  --report-paper-bg: linear-gradient(180deg, #fbfffe 0%, #f1f9ff 55%, #eef2ff 100%);
+  --report-paper-border: rgba(125, 211, 252, 0.38);
+  --report-paper-ink: #0f172a;
+  --report-paper-muted: #475569;
+  --report-paper-link: #0f766e;
+  background: var(--app-shell-bg);
+}
+
+.stock-app-shell[data-stock-theme="solstice"] {
+  --app-shell-bg:
+    radial-gradient(circle at top left, rgba(96, 165, 250, 0.2), transparent 25%),
+    radial-gradient(circle at 85% 0%, rgba(34, 211, 238, 0.14), transparent 24%),
+    linear-gradient(180deg, #08111f 0%, #0b1630 42%, #081223 100%);
+  --app-glow-top: radial-gradient(circle at top, rgba(125, 211, 252, 0.18), transparent 60%);
+  --app-header-bg: rgba(6, 11, 24, 0.34);
+  --app-hero-bg: linear-gradient(135deg, rgba(9, 19, 38, 0.92), rgba(13, 37, 66, 0.76));
+  --app-hero-shadow: 0 30px 80px -35px rgba(59, 130, 246, 0.42);
+  --app-input-bg: linear-gradient(180deg, rgba(186, 230, 253, 0.12), rgba(255, 255, 255, 0.04));
+  --app-sheet-bg: linear-gradient(180deg, rgba(7, 15, 29, 0.98), rgba(7, 12, 24, 0.98));
+  --app-modal-bg: linear-gradient(180deg, rgba(8, 16, 31, 0.98), rgba(10, 17, 31, 0.96));
+  --app-control-bg: rgba(186, 230, 253, 0.08);
+  --report-paper-bg: linear-gradient(180deg, #fcfeff 0%, #eff6ff 52%, #f8fafc 100%);
+  --report-paper-border: rgba(96, 165, 250, 0.3);
+  --report-paper-link: #1d4ed8;
+}
+
+.stock-app-shell[data-stock-theme="ember"] {
+  --app-shell-bg:
+    radial-gradient(circle at top left, rgba(251, 146, 60, 0.18), transparent 24%),
+    radial-gradient(circle at top right, rgba(244, 114, 182, 0.12), transparent 24%),
+    linear-gradient(180deg, #140d12 0%, #1a111a 38%, #0d1119 100%);
+  --app-glow-top: radial-gradient(circle at top, rgba(251, 191, 36, 0.14), transparent 58%);
+  --app-header-bg: rgba(18, 10, 14, 0.42);
+  --app-hero-bg: linear-gradient(135deg, rgba(38, 17, 16, 0.92), rgba(53, 24, 36, 0.78));
+  --app-hero-shadow: 0 30px 80px -35px rgba(249, 115, 22, 0.34);
+  --app-input-bg: linear-gradient(180deg, rgba(251, 191, 36, 0.09), rgba(255, 255, 255, 0.04));
+  --app-sheet-bg: linear-gradient(180deg, rgba(19, 11, 17, 0.98), rgba(12, 11, 19, 0.98));
+  --app-modal-bg: linear-gradient(180deg, rgba(19, 11, 17, 0.98), rgba(15, 13, 24, 0.96));
+  --app-control-bg: rgba(251, 191, 36, 0.08);
+  --report-paper-bg: linear-gradient(180deg, #fffaf5 0%, #fff4e8 55%, #fff7ed 100%);
+  --report-paper-border: rgba(251, 146, 60, 0.32);
+  --report-paper-link: #c2410c;
+}
+
+.stock-app-shell[data-stock-theme="graphite"] {
+  --app-shell-bg:
+    radial-gradient(circle at top left, rgba(148, 163, 184, 0.12), transparent 24%),
+    radial-gradient(circle at 82% 8%, rgba(59, 130, 246, 0.08), transparent 24%),
+    linear-gradient(180deg, #080b12 0%, #0b0f17 42%, #06080d 100%);
+  --app-grid-color: rgba(148, 163, 184, 0.06);
+  --app-glow-top: radial-gradient(circle at top, rgba(226, 232, 240, 0.08), transparent 60%);
+  --app-header-bg: rgba(3, 6, 12, 0.42);
+  --app-hero-bg: linear-gradient(135deg, rgba(15, 23, 42, 0.84), rgba(14, 20, 32, 0.8));
+  --app-hero-shadow: 0 30px 80px -35px rgba(15, 23, 42, 0.55);
+  --app-input-bg: linear-gradient(180deg, rgba(148, 163, 184, 0.08), rgba(255, 255, 255, 0.03));
+  --app-sheet-bg: linear-gradient(180deg, rgba(7, 10, 16, 0.98), rgba(4, 6, 10, 0.98));
+  --app-modal-bg: linear-gradient(180deg, rgba(7, 10, 16, 0.98), rgba(7, 10, 16, 0.95));
+  --app-control-bg: rgba(148, 163, 184, 0.08);
+  --report-paper-bg: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 56%, #e2e8f0 100%);
+  --report-paper-border: rgba(148, 163, 184, 0.32);
+  --report-paper-link: #0f172a;
+}
+
+.stock-app-grid {
+  background-image:
+    linear-gradient(var(--app-grid-color) 1px, transparent 1px),
+    linear-gradient(90deg, var(--app-grid-color) 1px, transparent 1px);
+  background-size: 32px 32px;
+  opacity: 0.18;
+}
+
+.stock-app-glow {
+  background: var(--app-glow-top);
+}
+
+.stock-header {
+  background: var(--app-header-bg);
+}
+
+.stock-hero {
+  background: var(--app-hero-bg);
+  box-shadow: var(--app-hero-shadow);
+}
+
+.stock-input-shell {
+  background: var(--app-input-bg);
+  box-shadow: var(--app-input-shadow);
+}
+
+.stock-bottom-sheet {
+  background: var(--app-sheet-bg);
+  box-shadow: var(--app-sheet-shadow);
+}
+
+.stock-modal-shell {
+  background: var(--app-modal-bg);
+  box-shadow: var(--app-modal-shadow);
+}
+
+.stock-theme-picker {
+  align-items: center;
+}
+
+.stock-theme-select {
+  min-width: 8.2rem;
+  appearance: none;
+  border: 1px solid var(--app-control-border);
+  border-radius: 999px;
+  background: var(--app-control-bg);
+  color: var(--app-control-text);
+  padding: 0.65rem 2.5rem 0.65rem 1rem;
+  font-size: 0.875rem;
+  line-height: 1;
+  outline: none;
+  backdrop-filter: blur(14px);
+  background-image:
+    linear-gradient(45deg, transparent 50%, rgba(255, 255, 255, 0.7) 50%),
+    linear-gradient(135deg, rgba(255, 255, 255, 0.7) 50%, transparent 50%);
+  background-position:
+    calc(100% - 18px) calc(50% - 2px),
+    calc(100% - 12px) calc(50% - 2px);
+  background-size: 6px 6px, 6px 6px;
+  background-repeat: no-repeat;
+}
+
+.stock-theme-select:focus {
+  border-color: rgba(255, 255, 255, 0.28);
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.08);
+}
+
+.stock-theme-select option {
+  color: #0f172a;
 }
 
 .prose {
@@ -240,4 +387,103 @@ select {
   background: rgba(94, 234, 212, 0.08);
   padding: 0.95rem 1rem;
   color: #dffaf8;
+}
+
+.stock-report-paper {
+  background: var(--report-paper-bg);
+  border: 1px solid var(--report-paper-border);
+  color: var(--report-paper-ink);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.65), 0 32px 80px -46px rgba(15, 23, 42, 0.5);
+}
+
+.stock-report-paper .prose,
+.stock-report-paper .prose p,
+.stock-report-paper .prose li,
+.stock-report-paper .prose td {
+  color: var(--report-paper-ink);
+}
+
+.stock-report-paper .prose h1,
+.stock-report-paper .prose h2,
+.stock-report-paper .prose h3,
+.stock-report-paper .prose h4,
+.stock-report-paper .prose strong {
+  color: var(--report-paper-ink);
+}
+
+.stock-report-paper .prose em,
+.stock-report-paper .prose blockquote,
+.stock-report-paper .prose p,
+.stock-report-paper .prose li {
+  color: var(--report-paper-muted);
+}
+
+.stock-report-paper .prose h1 {
+  border-bottom-color: rgba(15, 118, 110, 0.2);
+}
+
+.stock-report-paper .prose h2 {
+  border-bottom-color: rgba(148, 163, 184, 0.22);
+}
+
+.stock-report-paper .prose h3 {
+  color: #115e59;
+}
+
+.stock-report-paper .prose h4 {
+  color: #1e293b;
+}
+
+.stock-report-paper .prose a {
+  color: var(--report-paper-link);
+  text-decoration-color: rgba(15, 118, 110, 0.28);
+}
+
+.stock-report-paper .prose table {
+  border-color: rgba(148, 163, 184, 0.18);
+  background: rgba(255, 255, 255, 0.7);
+  box-shadow: 0 24px 60px -40px rgba(15, 23, 42, 0.18);
+}
+
+.stock-report-paper .prose th {
+  background: linear-gradient(135deg, rgba(45, 212, 191, 0.16), rgba(59, 130, 246, 0.12));
+  color: #0f172a;
+  border-bottom-color: rgba(148, 163, 184, 0.2);
+}
+
+.stock-report-paper .prose td {
+  border-bottom-color: rgba(148, 163, 184, 0.14);
+}
+
+.stock-report-paper .prose tr:nth-child(even) td {
+  background: rgba(248, 250, 252, 0.88);
+}
+
+.stock-report-paper .prose tr:hover td {
+  background: rgba(224, 242, 254, 0.7);
+}
+
+.stock-report-paper .prose code {
+  background: rgba(241, 245, 249, 0.95);
+  border-color: rgba(148, 163, 184, 0.24);
+  color: #0f172a;
+}
+
+.stock-report-paper .prose pre {
+  background: linear-gradient(180deg, rgba(15, 23, 42, 0.96), rgba(30, 41, 59, 0.96));
+  border-color: rgba(148, 163, 184, 0.18);
+  color: #e2e8f0;
+}
+
+.stock-report-paper .prose pre code {
+  color: inherit;
+}
+
+.stock-report-paper .prose blockquote {
+  background: rgba(240, 253, 250, 0.95);
+  border-left-color: rgba(13, 148, 136, 0.58);
+}
+
+.stock-report-paper .prose hr {
+  border-top-color: rgba(148, 163, 184, 0.22);
 }
