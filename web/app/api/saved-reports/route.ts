@@ -4,8 +4,36 @@ import { getSupabaseClient } from '../../lib/supabaseClient';
 const DETAILED_COLUMNS = 'id, filename, title, summary, storage_path, report_kind, report_date, created_at';
 const BASIC_COLUMNS = 'id, filename, title, created_at';
 
+interface DetailedSavedReportRow {
+  id: string;
+  filename: string;
+  title: string | null;
+  summary: string | null;
+  storage_path: string | null;
+  report_kind: string | null;
+  report_date: string | null;
+  created_at: string;
+}
+
+interface BasicSavedReportRow {
+  id: string;
+  filename: string;
+  title: string | null;
+  created_at: string;
+}
+
 function isSchemaMismatch(message: string) {
   return /column .* does not exist|schema cache/i.test(message);
+}
+
+function normalizeLegacyReport(row: BasicSavedReportRow): DetailedSavedReportRow {
+  return {
+    ...row,
+    summary: null,
+    storage_path: null,
+    report_kind: null,
+    report_date: null,
+  };
 }
 
 /**
@@ -19,25 +47,34 @@ export async function GET() {
     return NextResponse.json({ reports: [] });
   }
 
-  let query = await supabase
+  const detailedQuery = await supabase
     .from('saved_reports')
     .select(DETAILED_COLUMNS)
     .order('report_date', { ascending: false, nullsFirst: false })
     .order('created_at', { ascending: false });
 
-  if (query.error && isSchemaMismatch(query.error.message)) {
-    query = await supabase
+  if (detailedQuery.error && isSchemaMismatch(detailedQuery.error.message)) {
+    const legacyQuery = await supabase
       .from('saved_reports')
       .select(BASIC_COLUMNS)
       .order('created_at', { ascending: false });
+
+    if (legacyQuery.error) {
+      console.error('[saved-reports] Supabase error:', legacyQuery.error.message);
+      return NextResponse.json({ reports: [], setupRequired: true });
+    }
+
+    return NextResponse.json({
+      reports: ((legacyQuery.data ?? []) as BasicSavedReportRow[]).map(normalizeLegacyReport),
+    });
   }
 
-  if (query.error) {
-    console.error('[saved-reports] Supabase error:', query.error.message);
+  if (detailedQuery.error) {
+    console.error('[saved-reports] Supabase error:', detailedQuery.error.message);
     return NextResponse.json({ reports: [], setupRequired: true });
   }
 
-  return NextResponse.json({ reports: query.data ?? [] });
+  return NextResponse.json({ reports: (detailedQuery.data ?? []) as DetailedSavedReportRow[] });
 }
 
 /**
@@ -84,7 +121,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Supabase not configured' }, { status: 503 });
   }
 
-  let insert = await supabase
+  const detailedInsert = await supabase
     .from('saved_reports')
     .insert({
       filename,
@@ -98,18 +135,31 @@ export async function POST(request: NextRequest) {
     .select(DETAILED_COLUMNS)
     .single();
 
-  if (insert.error && isSchemaMismatch(insert.error.message)) {
-    insert = await supabase
+  if (detailedInsert.error && isSchemaMismatch(detailedInsert.error.message)) {
+    const legacyInsert = await supabase
       .from('saved_reports')
       .insert({ filename, title, content })
       .select(BASIC_COLUMNS)
       .single();
+
+    if (legacyInsert.error) {
+      console.error('[saved-reports] Supabase insert error:', legacyInsert.error.message);
+      return NextResponse.json({ error: legacyInsert.error.message }, { status: 500 });
+    }
+
+    return NextResponse.json(
+      { report: normalizeLegacyReport(legacyInsert.data as BasicSavedReportRow) },
+      { status: 201 }
+    );
   }
 
-  if (insert.error) {
-    console.error('[saved-reports] Supabase insert error:', insert.error.message);
-    return NextResponse.json({ error: insert.error.message }, { status: 500 });
+  if (detailedInsert.error) {
+    console.error('[saved-reports] Supabase insert error:', detailedInsert.error.message);
+    return NextResponse.json({ error: detailedInsert.error.message }, { status: 500 });
   }
 
-  return NextResponse.json({ report: insert.data }, { status: 201 });
+  return NextResponse.json(
+    { report: detailedInsert.data as DetailedSavedReportRow },
+    { status: 201 }
+  );
 }
