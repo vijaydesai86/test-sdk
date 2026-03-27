@@ -1,62 +1,297 @@
 # AGENT.md
-This file is the operating contract for anyone changing this repo.
-## Scope
-The product has exactly three user-facing report modes:
-- individual stock report
-- comparison report
-- deep research
-General chat can still exist, but it is not a separate report mode and must not grow into a parallel product surface.
-## Non-Negotiable Rules
-1. Never fabricate financial data.
-Statement rows, prices, ratios, insider activity, and analyst data must come from real provider responses or direct arithmetic on real provider fields. If the field is unavailable, keep it unavailable.
-2. Never reintroduce synthetic statement fallbacks.
-Do not create fake balance sheet, cash flow, income statement, or EPS history rows from descriptions, heuristics, or LLM output.
-3. Keep natural language easy for users.
-Users should be able to type `google vs microsoft` or `deep research on tesla`. Entity resolution can use the LLM, but real provider verification is still required before market-data fetches.
-4. Deep research stays one mode.
-Deep research may internally branch into:
-- deep stock
-- deep comparison
-- deep sector/theme research
-But the UI and product surface should still expose a single deep-research concept.
-5. Optimize for free-tier operations.
-Assume Vercel free tier, free provider quotas, and rate-limited model access. Prefer bounded fan-out, caching, reuse, and graceful partial-data handling over brute force.
-6. Provider truth beats LLM confidence.
-The LLM can explain, route, and synthesize. It must not silently replace unavailable provider data with model memory.
-7. Keep common report plumbing common.
-New report types should reuse shared data-fetching, timing, valuation, conclusion, and persistence helpers. Avoid copy-pasted report pipelines.
-8. Only three top-level markdown docs are allowed.
-`README.md`, `AGENT.md`, and `CHANGELOG.md` are the only markdown documents that should remain committed in the repo root. Remove stale markdown artifacts and duplicate docs.
-## Current Architecture
-- `web/app/api/chat/route.ts`: parses requests, chooses provider/model strategies, and routes report generation
-- `web/app/lib/stockTools.ts`: tool dispatch, symbol resolution, report orchestration, cache helpers
-- `web/app/lib/stockDataService.ts`: Alpha Vantage, Finnhub, FMP, Twelve Data, Stooq, `hybrid`, and `multi` data services
-- `web/app/lib/reportGenerator.ts`: report builders for stock, comparison, sector body reuse, and deep-research wrappers
-- `web/app/components/ChatInterface.tsx`: user-facing controls and report UX
-## Preferred Runtime Defaults
-- `STOCK_DATA_PROVIDER=multi`
-- `LLM_PROVIDER=hybrid`
-Why:
-- `multi` gives the best chance of returning real data across free-tier gaps
-- `hybrid` gives the best chance of continuing through GitHub/Gemini rate-limit pressure
-## Change Checklist
-Before merging any change, verify these questions:
-- Does this keep report data truthful?
-- Does this preserve the three report modes?
-- Does this keep the user input flow simple?
-- Does this reduce or at least not worsen rate-limit pressure?
-- Does this avoid duplicating report logic that should be shared?
-- Does this keep docs aligned with the current code?
-## Reporting Guidance
-When improving reports, prefer additions that come from real data and help users decide faster:
-- clearer statement coverage using the most complete real report available
-- timing signals derived from price history such as RSI and moving-average trend
-- insider, ownership, short-interest, analyst, and catalyst summaries when providers expose them
-- alternatives only when they come from real peer/company research, not generic LLM brainstorming
-## Anti-Patterns
+
+This file is the operating contract for any agent or contributor changing this repo. Read it before touching code. Follow all rules. Update it when the architecture changes.
+
+---
+
+## Product scope
+
+The product is an AI-powered stock research assistant with exactly **four user-facing research modes**:
+
+1. **Stock report** — full deep-dive on a single company
+2. **Comparison report** — side-by-side analysis of 2–15 companies
+3. **Deep research** — ecosystem dependency analysis + universe refinement, covering single-company, explicit comparison, and sector/theme queries under one mode
+4. **Watchlist daily report** — daily pulse covering every company in the saved watchlist
+
+General chat is supported for data-only questions (e.g. "what is NVDA's P/E?") but is not a separate report mode and must not grow into a parallel product surface.
+
+---
+
+## Non-negotiable rules
+
+1. **Never fabricate financial data.** Prices, ratios, revenues, EPS, margins, insider activity, analyst targets — all must come from real provider API responses or direct arithmetic on those responses. If a field is unavailable, say so; do not fill it.
+
+2. **Never reintroduce synthetic fallbacks.** Do not generate fake income statement rows, balance sheet entries, cash flow entries, or EPS history from LLM memory, heuristics, or descriptions.
+
+3. **Provider truth beats LLM confidence.** The LLM orchestrates, explains, and synthesises. It must not silently substitute missing provider data with model memory.
+
+4. **Report tools accept pre-fetched data only.** `generate_stock_report`, `generate_comparison_report`, `generate_sector_report`, `generate_deep_sector_report`, and `generate_watchlist_daily_report` make zero internal API calls. The LLM must call all data tools first, then pass the results to the report tool.
+
+5. **Keep user input simple.** Users must be able to type `google vs microsoft` or `deep research on tesla` and get the right report. Entity resolution may use the LLM for name-to-ticker mapping, but real provider verification (`search_stock`) is required before any market-data fetch.
+
+6. **Deep research stays one mode.** The UI exposes one "deep research" concept. Internally it routes by target type (single company → deep stock; explicit comparison → deep comparison; sector/theme → full ecosystem analysis), but this is hidden from the user.
+
+7. **Only three top-level markdown docs.** `README.md`, `AGENT.md`, and `CHANGELOG.md` are the only markdown documents committed to the repo root. Do not add stale or duplicate docs.
+
+8. **Keep common report plumbing shared.** New report types must reuse the existing data-fetching, timing, valuation, chart, moat analysis, conclusion, and persistence helpers. No copy-pasted report pipelines.
+
+9. **Optimise for free-tier operation.** Assume Vercel free tier, free provider quotas, and rate-limited model access. Prefer bounded concurrency (`DATA_FETCH_CONCURRENCY`), caching (`STOCK_CACHE_TTL_MS`), and graceful partial-data handling over brute force.
+
+---
+
+## Architecture
+
+### Request flow
+
+```
+User message
+  → POST /api/chat (chat/route.ts)
+      → LLM reasoning loop (up to 30 rounds)
+          → parallel tool calls → executeTool (stockTools.ts)
+              → StockDataService.method() (stockDataService.ts)
+          → report tool call → buildXxxReport() (reportGenerator.ts)
+          → saveReport() → filesystem or Supabase
+      → Response with report artifacts
+```
+
+### Key files
+
+| File | Role |
+|---|---|
+| `web/app/api/chat/route.ts` | Entry point. Parses requests, selects LLM provider and model, runs the tool-call loop, manages session history, handles rate-limit fallbacks. |
+| `web/app/lib/stockTools.ts` | Tool definitions (`getToolDefinitions`), `executeTool` dispatch, report orchestration (generate_* tools), ticker resolution, sector company selection, moat/conclusion prompt builders, disk cache helpers. |
+| `web/app/lib/stockDataService.ts` | All data provider implementations: `AlphaVantageService`, `FinnhubService`, `FinancialModelingPrepService`, `TwelveDataService`, `StooqService`, `HybridStockDataService`, `MultiSourceStockDataService`. `createStockService()` factory selects the active provider from `STOCK_DATA_PROVIDER`. |
+| `web/app/lib/reportGenerator.ts` | Report builders (`buildStockReport`, `buildComparisonReport`, `buildSectorReport`, `buildDeepSectorReport`, `buildDeepStockReport`, `buildDeepComparisonReport`, `buildWatchlistDailyReport`), ECharts and Mermaid chart builders, `saveReport()` persistence. |
+| `web/app/lib/llmProviderConfig.ts` | LLM provider/model selection, GitHub Models catalog fetching, Gemini model fallback list. |
+| `web/app/lib/watchlistStore.ts` | Watchlist CRUD backed by Supabase (primary) or JSON file (fallback). Default watchlist seeded with 15 semiconductor/tech companies (max 25 items). |
+| `web/app/lib/supabaseClient.ts` | Lazy Supabase client singleton; returns `null` when env vars are absent. |
+| `web/app/components/ChatInterface.tsx` | Full single-page UI: chat pane, workspace sidebar (Watchlist / Artifacts / Saved tabs), 4 themes (Aurora, Solstice, Ember, Graphite), ECharts and Mermaid rendering, quick prompts, model/provider picker. |
+| `web/app/api/health/route.ts` | Provider health check. Reports which API keys are configured and whether the service is ready. Supports optional live price check via `HEALTH_CHECK_SYMBOL`. |
+| `web/app/api/saved-reports/route.ts` | GET (list) and POST (persist) for the saved-report library. Falls back to legacy schema when migration columns are absent. |
+| `web/app/api/watchlist/route.ts` | GET default watchlist; PATCH/DELETE individual items. |
+| `web/app/api/models/route.ts` | Returns available GitHub Models from live catalog. |
+| `web/app/api/providers/route.ts` | Returns configured LLM providers and their available models. |
+
+### Tool catalog (23 tools)
+
+**Data tools** — fetch real data, return structured JSON, make zero report-side decisions:
+
+| Tool | StockDataService method |
+|---|---|
+| `search_stock` | `searchStock` |
+| `get_stock_price` | `getStockPrice` |
+| `get_price_history` | `getPriceHistory` |
+| `get_company_overview` | `getCompanyOverview` |
+| `get_basic_financials` | `getBasicFinancials` |
+| `get_insider_trading` | `getInsiderTrading` |
+| `get_analyst_ratings` | `getAnalystRatings` |
+| `get_analyst_recommendations` | `getAnalystRecommendations` |
+| `get_price_targets` | `getPriceTargets` |
+| `get_peers` | `getPeers` |
+| `get_earnings_history` | `getEarningsHistory` |
+| `get_income_statement` | `getIncomeStatement` |
+| `get_balance_sheet` | `getBalanceSheet` |
+| `get_cash_flow` | `getCashFlow` |
+| `get_news_sentiment` | `getNewsSentiment` |
+| `get_company_news` | `getCompanyNews` |
+| `get_sector_performance` | `getSectorPerformance` |
+| `get_top_gainers_losers` | `getTopGainersLosers` |
+
+**Report tools** — accept pre-fetched data, generate Markdown + ECharts + Mermaid, persist to storage:
+
+| Tool | Builder in reportGenerator.ts |
+|---|---|
+| `generate_stock_report` | `buildStockReport` + `buildDeepStockReport` |
+| `generate_comparison_report` | `buildComparisonReport` + `buildDeepComparisonReport` |
+| `generate_sector_report` | `buildSectorReport` (wrapper around `buildComparisonReport`) |
+| `generate_deep_sector_report` | `buildDeepSectorReport` + ecosystem analysis |
+| `generate_watchlist_daily_report` | `buildWatchlistDailyReport` |
+
+### Report pipeline (generate_stock_report example)
+
+1. LLM calls all data tools in one parallel round: price, overview, price history, financials, insider, analyst ratings, analyst recommendations, price targets, earnings, income statement, balance sheet, cash flow, news sentiment.
+2. LLM calls a targeted LLM sub-call for moat analysis (`buildMoatAnalysisPrompt`).
+3. LLM calls a targeted LLM sub-call for investment thesis conclusion (`buildStockConclusionPrompt`).
+4. LLM calls `generate_stock_report` with all pre-fetched data.
+5. `executeTool` calls `buildStockReport()` (produces Markdown + ECharts JSON).
+6. `saveReport()` persists to Supabase or filesystem.
+7. Report artifact is returned to the chat UI.
+
+Deep-sector research adds two more phases before step 4: Phase 2 fetches overview + news for each candidate company in parallel; Phase 3 calls `buildDeepSectorDependencyPrompt` to map ecosystem dependencies, produce a Mermaid diagram, and refine the candidate list (repeated `DEEP_RESEARCH_DEPTH` times).
+
+---
+
+## Data providers
+
+### StockDataService interface
+
+All providers implement `StockDataService`. The active instance is created once per request by `createStockService()` in `stockDataService.ts`.
+
+```
+STOCK_DATA_PROVIDER  →  service class
+────────────────────────────────────────────────────────────────────
+alphavantage         →  AlphaVantageService          (default)
+finnhub              →  FinnhubService
+fmp                  →  FinancialModelingPrepService
+twelvedata           →  TwelveDataService
+stooq                →  StooqService                 (no API key)
+hybrid               →  HybridStockDataService       (AV primary + Finnhub fallback)
+multi                →  MultiSourceStockDataService  (AV → Finnhub → FMP → TwelveData → Stooq)
+```
+
+### Recommended provider setting
+
+`STOCK_DATA_PROVIDER=multi` gives the best data coverage across free-tier gaps. `multi` requires at least one key to be configured; Stooq is always available as the last-resort fallback for price history.
+
+### Rate limiting and caching
+
+- Each provider has a per-instance throttle queue (`ALPHA_VANTAGE_MIN_INTERVAL_MS` etc.) to prevent bursting.
+- `MultiSourceStockDataService` tracks provider cooldowns (`STOCK_PROVIDER_COOLDOWN_MS`, default 5 minutes) and skips cooled-down providers automatically.
+- Disk cache at `CACHE_DIR` (inside `REPORTS_DIR`) with `STOCK_CACHE_TTL_MS` TTL (default 7 days) prevents redundant API calls across report runs.
+
+---
+
+## LLM providers
+
+### Configuration
+
+```
+LLM_PROVIDER  →  behaviour
+────────────────────────────────────────────────────────────────────────
+github        →  GitHub Models API only (GITHUB_TOKEN required)  [default]
+gemini        →  Gemini API only (GEMINI_TOKEN required)
+hybrid        →  GitHub Models primary; auto-falls back to Gemini on 429
+```
+
+### GitHub Models
+
+- Endpoint: `https://models.github.ai/inference/chat/completions`
+- Auth: `GITHUB_TOKEN` (or `GH_TOKEN`, `COPILOT_GITHUB_TOKEN`)
+- Default model: `openai/gpt-4.1` (override with `COPILOT_MODEL`)
+- Gap-fill (ticker resolution) model: `openai/gpt-4.1-mini` (override with `FILL_MODEL`)
+- Fallback chain: configurable via `COPILOT_FALLBACK_MODELS`; defaults to gpt-4.1 → Claude Sonnet → gpt-4.1-mini → Gemini Flash
+- Live model catalog fetched from `https://models.github.ai/catalog/models` filtered to OpenAI/Anthropic/Google tool-calling models
+
+### Gemini
+
+- Endpoint: `https://generativelanguage.googleapis.com/v1beta/openai/chat/completions`
+- Auth: `GEMINI_TOKEN` — must come from [aistudio.google.com/api-keys](https://aistudio.google.com/api-keys), NOT Google Cloud Console
+- Default model: `gemini-2.5-flash` (override with `GEMINI_MODEL`)
+- Internal fallback chain: gemini-2.5-flash → gemini-2.5-flash-lite → gemini-3.0-flash → gemini-3.1-flash-lite
+
+### Model cooldown
+
+Rate-limited models are cooled down for `LLM_MODEL_COOLDOWN_MS` (default 2 minutes). The loop advances to the next fallback model automatically; no request is dropped unless all models are exhausted.
+
+---
+
+## Storage
+
+### Reports
+
+Generated reports are Markdown files (`{slug}-{date}.md`) written to `REPORTS_DIR` (`reports/` locally, `/tmp/reports/` on Vercel). When Supabase is configured, reports are also inserted into the `saved_reports` table with metadata (title, summary, report_kind, report_date, storage_path).
+
+### Watchlists
+
+The default watchlist ("Core Watchlist") is stored in Supabase (`watchlists` + `watchlist_items` tables) when available, otherwise in a JSON file at `WATCHLISTS_FILE`. The watchlist is seeded with 15 semiconductor and tech companies on first load. Maximum 25 items.
+
+### Supabase migrations
+
+Run all `.sql` files in `supabase/migrations/` in the Supabase SQL editor to create the required tables:
+- `saved_reports` — report library with metadata columns
+- `watchlists` + `watchlist_items` — watchlist storage
+
+---
+
+## Key environment variables (complete reference)
+
+See `web/.env.example` for annotated defaults. All variables prefixed with `STOCK_` or `ALPHA_VANTAGE_` etc. are read server-side only and never exposed to the browser.
+
+**Required (at least one from each group):**
+- LLM: `GITHUB_TOKEN` / `GEMINI_TOKEN`
+- Data: `ALPHA_VANTAGE_API_KEY` / `FINNHUB_API_KEY` / `FINANCIAL_MODELING_PREP_API_KEY` / `TWELVE_DATA_API_KEY`
+
+**Provider selection:**
+- `LLM_PROVIDER` — `github` | `gemini` | `hybrid`
+- `STOCK_DATA_PROVIDER` — `alphavantage` | `finnhub` | `fmp` | `twelvedata` | `stooq` | `hybrid` | `multi`
+
+**LLM model overrides:**
+- `COPILOT_MODEL`, `COPILOT_FALLBACK_MODEL`, `COPILOT_FALLBACK_MODELS`
+- `FILL_MODEL`, `GEMINI_MODEL`
+- `AUTO_DOWNGRADE_GPT5` (default `true`)
+
+**Scaling:**
+- `NUM_COMPANIES` — companies per sector/comparison report (2–15, default 10)
+- `DEEP_RESEARCH_DEPTH` — recursive refinement passes (1–3, default 2)
+- `DEEP_RESEARCH_MAX_MS` — deep-research runtime budget in ms (default 240000)
+- `DATA_FETCH_CONCURRENCY` — parallel ticker fetches (1–4, default 3)
+
+**Storage:**
+- `REPORTS_DIR`, `WATCHLISTS_FILE`, `STOCK_CACHE_TTL_MS`
+- `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`
+
+**Throttling:**
+- `ALPHA_VANTAGE_MIN_INTERVAL_MS` (1200), `FINNHUB_MIN_INTERVAL_MS` (500), `FMP_MIN_INTERVAL_MS` (800), `TWELVE_DATA_MIN_INTERVAL_MS` (800), `STOOQ_MIN_INTERVAL_MS` (800)
+- `LLM_MODEL_COOLDOWN_MS` (120000), `STOCK_PROVIDER_COOLDOWN_MS` (300000)
+
+**Debug:**
+- `DEBUG=true` — adds data-source and data-coverage diagnostic sections to reports
+- `HEALTH_CHECK_SYMBOL` — enables live price check in `/api/health`
+
+---
+
+## Production configuration (Vercel)
+
+Set these in Vercel project Settings → Environment Variables in addition to your API keys:
+
+```
+LLM_PROVIDER=hybrid
+STOCK_DATA_PROVIDER=multi
+NUM_COMPANIES=15
+DEEP_RESEARCH_DEPTH=3
+```
+
+These give broader sector analysis and better free-tier resilience than the code defaults.
+
+---
+
+## Change checklist
+
+Before merging any change, verify:
+
+- [ ] Does this keep all report data truthful (no fabricated fields)?
+- [ ] Does this preserve the four research modes?
+- [ ] Does this keep the user input flow simple?
+- [ ] Does this stay within free-tier rate-limit budgets?
+- [ ] Does this avoid duplicating report/data logic that should be shared?
+- [ ] Does this keep README.md, AGENT.md, and CHANGELOG.md aligned with the current code?
+- [ ] Does CHANGELOG.md have an entry for this change?
+
+---
+
+## Anti-patterns
+
 Do not do these:
-- add a fourth report mode for sectors
-- hardcode provider-specific fake defaults
-- let missing fields look populated when they are not
-- optimize by skipping verification on entity resolution
-- add documentation sprawl back into the repo
+
+- Add a fifth report mode or duplicate the report pipeline for a new type.
+- Fabricate financial values from LLM training data — even as a "fallback".
+- Skip `search_stock` for ticker verification and guess tickers from LLM memory.
+- Hardcode provider-specific fake defaults for missing fields.
+- Let missing fields appear populated (show "N/A" or omit the row instead).
+- Add markdown documentation files anywhere other than `README.md`, `AGENT.md`, and `CHANGELOG.md` in the repo root.
+- Revert parallel `Promise.all` fan-out in comparison/sector/deep-sector phases to sequential loops.
+- Introduce a new LLM call that supplies financial data rather than routing to a data tool.
+
+---
+
+## Reporting guidance
+
+When improving reports, prefer additions that come from real data:
+
+- Timing signals derived from price history: RSI-14, moving-average trend, 52-week range position, action stance
+- Insider and institutional ownership summaries when provider data is available
+- Analyst consensus, recommendation trends, and price-target distributions
+- Earnings surprise history and EPS trend charts
+- Peer alternatives sourced from real `get_peers` results, not LLM brainstorming
+- Sector dependency diagrams sourced from real overview and news data
+
