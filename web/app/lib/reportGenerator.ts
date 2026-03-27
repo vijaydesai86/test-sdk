@@ -1869,12 +1869,33 @@ export function buildStockReport(data: StockReportData): string {
   return sections.filter(Boolean).join('\n\n');
 }
 
-export async function saveReport(content: string, title: string, directory = DEFAULT_REPORTS_DIR) {
+export async function saveReport(
+  content: string,
+  title: string,
+  directory = DEFAULT_REPORTS_DIR,
+  metadata: { reportKind?: string; summary?: string } = {}
+) {
   const safeTitle = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
-  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const createdAt = new Date();
+  const reportDate = createdAt.toISOString().slice(0, 10);
+  const timestamp = createdAt.toISOString().replace(/[:.]/g, '-');
   const filename = `${safeTitle || 'report'}-${timestamp}.md`;
+  const storagePath = path.posix.join(reportDate, filename);
+  const codeFence = String.fromCharCode(96).repeat(3);
+  const fallbackTitle = title.replace(/[-_]+/g, ' ').replace(/\b\w/g, (char) => char.toUpperCase()).trim();
+  const derivedTitle = content.match(/^#\s+(.+)$/m)?.[1]?.trim() || fallbackTitle;
+  const derivedSummary = metadata.summary
+    || content
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find((line) => line
+        && !line.startsWith('#')
+        && !line.startsWith('|')
+        && !line.startsWith(codeFence)
+        && !line.startsWith('- ')
+        && !line.startsWith('_Legend:')
+      );
 
-  // Persist to Supabase first (independent of filesystem)
   let supabaseId: string | undefined;
   const supabaseUrl = process.env.SUPABASE_URL;
   const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -1883,24 +1904,36 @@ export async function saveReport(content: string, title: string, directory = DEF
       const { getSupabaseClient } = await import('./supabaseClient');
       const client = getSupabaseClient();
       if (client) {
-        const { data, error } = await client
+        let insertResult = await client
           .from('saved_reports')
-          .insert({ filename, title: safeTitle || title, content })
+          .insert({
+            filename,
+            title: derivedTitle,
+            summary: derivedSummary || null,
+            content,
+            storage_path: storagePath,
+            report_kind: metadata.reportKind || null,
+            report_date: reportDate,
+          })
           .select('id')
           .single();
-        if (error) {
-          // Surface actionable message so it's visible in Vercel logs
-          if (error.message.includes('schema cache') || error.message.includes('does not exist')) {
-            console.error(
-              '[saveReport] Supabase table missing — run the setup SQL at ' +
-              'https://supabase.com/dashboard/project/bnhnlyiuwlebgmjerueb/sql/new\n' +
-              'SQL: create table if not exists public.saved_reports (id uuid primary key default gen_random_uuid(), filename text not null, title text, content text not null, created_at timestamptz not null default now());'
-            );
+
+        if (insertResult.error && /column .* does not exist|schema cache/i.test(insertResult.error.message)) {
+          insertResult = await client
+            .from('saved_reports')
+            .insert({ filename, title: derivedTitle, content })
+            .select('id')
+            .single();
+        }
+
+        if (insertResult.error) {
+          if (insertResult.error.message.includes('schema cache') || insertResult.error.message.includes('does not exist')) {
+            console.error('[saveReport] Supabase table missing columns — run the saved_reports migration in the SQL editor to enable grouped library metadata.');
           } else {
-            console.error('[saveReport] Supabase insert error:', error.message);
+            console.error('[saveReport] Supabase insert error:', insertResult.error.message);
           }
-        } else if (data?.id) {
-          supabaseId = data.id as string;
+        } else if (insertResult.data?.id) {
+          supabaseId = insertResult.data.id as string;
         }
       }
     } catch (err) {
@@ -1908,21 +1941,30 @@ export async function saveReport(content: string, title: string, directory = DEF
     }
   }
 
-  // Also write to local filesystem (best-effort; /tmp/reports on Vercel)
-  let filePath = path.join(directory, filename);
+  let filePath = path.join(directory, reportDate, filename);
   try {
-    await fs.mkdir(directory, { recursive: true });
+    await fs.mkdir(path.dirname(filePath), { recursive: true });
     await fs.writeFile(filePath, content, 'utf8');
   } catch {
-    filePath = path.join('/tmp', filename);
+    filePath = path.join('/tmp', 'reports', reportDate, filename);
     try {
+      await fs.mkdir(path.dirname(filePath), { recursive: true });
       await fs.writeFile(filePath, content, 'utf8');
     } catch {
       // Filesystem not available — Supabase is the source of truth
     }
   }
 
-  return { filePath, filename, supabaseId };
+  return {
+    filePath,
+    filename,
+    supabaseId,
+    storagePath,
+    reportDate,
+    title: derivedTitle,
+    summary: derivedSummary,
+    reportKind: metadata.reportKind,
+  };
 }
 
 export function buildComparisonReport(data: ComparisonReportData): string {

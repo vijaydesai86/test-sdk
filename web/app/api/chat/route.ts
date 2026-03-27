@@ -873,6 +873,11 @@ export async function POST(request: NextRequest) {
       const downloadUrl = toolResult.data?.downloadUrl;
       const filename = toolResult.data?.filename as string | undefined;
       const content = toolResult.data?.content as string | undefined;
+      const title = toolResult.data?.title as string | undefined;
+      const summary = toolResult.data?.summary as string | undefined;
+      const reportDate = toolResult.data?.reportDate as string | undefined;
+      const reportKind = toolResult.data?.reportKind as string | undefined;
+      const storagePath = toolResult.data?.storagePath as string | undefined;
       const responseText = 'Report ready — open the **Artifacts** panel to view it.';
 
       conversationMessages.push({ role: 'assistant', content: responseText });
@@ -895,7 +900,7 @@ export async function POST(request: NextRequest) {
         provider: activeProvider,
         runtimeProvider: activeProvider,
         fallbackCount: 0,
-        report: filename && content ? { filename, content, downloadUrl } : null,
+        report: filename && content ? { filename, content, downloadUrl, title, summary, reportDate, reportKind, storagePath } : null,
         stats: {
           rounds: 0,
           toolCalls: 1,
@@ -934,7 +939,7 @@ export async function POST(request: NextRequest) {
     let fallbackCount = 0;
     let assistantContent: string | null = null;
     let toolDefinitionsUsed = toolDefinitions;
-    const reportArtifacts: Array<{ filename: string; content: string; downloadUrl: string }> = [];
+    const reportArtifacts: Array<{ filename: string; content: string; downloadUrl: string; title?: string; summary?: string; reportDate?: string; reportKind?: string; storagePath?: string }> = [];
     const executionStrategies = buildLLMExecutionStrategies(
       activeProvider,
       requestedModel,
@@ -1082,6 +1087,11 @@ export async function POST(request: NextRequest) {
                 filename: toolResult.data.filename as string,
                 content: toolResult.data.content as string,
                 downloadUrl: toolResult.data.downloadUrl as string,
+                title: toolResult.data.title as string | undefined,
+                summary: toolResult.data.summary as string | undefined,
+                reportDate: toolResult.data.reportDate as string | undefined,
+                reportKind: toolResult.data.reportKind as string | undefined,
+                storagePath: toolResult.data.storagePath as string | undefined,
               });
               return {
                 role: 'tool' as const,

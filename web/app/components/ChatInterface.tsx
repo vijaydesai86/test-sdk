@@ -25,13 +25,22 @@ interface ReportItem {
   filename: string;
   content?: string;
   downloadUrl?: string;
+  title?: string;
+  summary?: string;
+  reportDate?: string;
+  reportKind?: string;
+  storagePath?: string;
 }
 
 interface SavedReportMeta {
   id: string;
   filename: string;
   title: string | null;
+  summary?: string | null;
   created_at: string;
+  report_date?: string | null;
+  report_kind?: string | null;
+  storage_path?: string | null;
 }
 
 interface WatchlistItemMeta {
@@ -63,6 +72,62 @@ interface ProviderOption {
   models: ModelOption[];
 }
 
+type WorkspaceTab = 'watchlist' | 'artifacts' | 'saved';
+
+const DEFAULT_MODEL = 'openai/gpt-4.1';
+const CHART_HEIGHT = 280;
+const MAX_TEXTAREA_HEIGHT = 160;
+const TOOL_CALL_WARNING =
+  'Model returned tool calls as plain text. Switch to a tool-calling model from the dropdown.';
+const SAMPLE_REPORT_LINK = '/reports/nvda-sample.md';
+const isToolCallText = (content: string) =>
+  /"name"\s*:\s*"functions\./.test(content) || /"arguments"\s*:\s*\{/.test(content);
+
+const QUICK_PROMPTS = [
+  {
+    label: 'NVDA stock report',
+    prompt: 'Generate a full stock report for NVDA',
+    eyebrow: 'Single company',
+  },
+  {
+    label: 'Compare NVDA, AMD, INTC',
+    prompt: 'Compare companies NVDA, AMD, INTC',
+    eyebrow: 'Comparison',
+  },
+  {
+    label: 'Deep research on semiconductors',
+    prompt: 'Deep research on semiconductors',
+    eyebrow: 'Sector study',
+  },
+  {
+    label: 'Visa vs Mastercard',
+    prompt: 'Deep research on Visa vs Mastercard',
+    eyebrow: 'Competitive moat',
+  },
+  {
+    label: 'Daily watchlist report',
+    prompt: 'Generate daily report for my watchlist',
+    eyebrow: 'Portfolio pulse',
+  },
+];
+
+function Icon({ children, className = 'h-4 w-4' }: { children: React.ReactNode; className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      {children}
+    </svg>
+  );
+}
+
 function MermaidBlock({ chart }: { chart: string }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartId = useId();
@@ -73,11 +138,11 @@ function MermaidBlock({ chart }: { chart: string }) {
       startOnLoad: false,
       theme: 'base',
       themeVariables: {
-        fontFamily: 'Inter, system-ui, -apple-system, Segoe UI, sans-serif',
-        primaryColor: '#6366f1',
+        fontFamily: 'Avenir Next, Segoe UI, sans-serif',
+        primaryColor: '#14b8a6',
         primaryTextColor: '#0f172a',
-        lineColor: '#4f46e5',
-        tertiaryColor: '#eef2ff',
+        lineColor: '#0f766e',
+        tertiaryColor: '#ccfbf1',
       },
     });
     mermaid
@@ -92,7 +157,9 @@ function MermaidBlock({ chart }: { chart: string }) {
           containerRef.current.textContent = 'Chart rendering failed.';
         }
       });
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [chart, chartId]);
 
   return <div ref={containerRef} className="my-4 overflow-x-auto" />;
@@ -116,23 +183,6 @@ function ChartBlock({ option }: { option: Record<string, unknown> }) {
   return <div ref={containerRef} className="my-4 w-full" style={{ height: `${CHART_HEIGHT}px` }} />;
 }
 
-const DEFAULT_MODEL = 'openai/gpt-4.1';
-const CHART_HEIGHT = 280;
-const MAX_TEXTAREA_HEIGHT = 160;
-const TOOL_CALL_WARNING =
-  'Model returned tool calls as plain text. Switch to a tool-calling model from the dropdown.';
-const isToolCallText = (content: string) =>
-  /"name"\s*:\s*"functions\./.test(content) || /"arguments"\s*:\s*\{/.test(content);
-const SAMPLE_REPORT_LINK = '/reports/nvda-sample.md';
-
-const QUICK_PROMPTS = [
-  { label: '📊 NVDA stock report', prompt: 'Generate a full stock report for NVDA' },
-  { label: '⚖️ Compare NVDA, AMD, INTC', prompt: 'Compare companies NVDA, AMD, INTC' },
-  { label: '🔬 Deep research on semiconductors', prompt: 'Deep research on semiconductors' },
-  { label: '🧠 Deep research on Visa vs Mastercard', prompt: 'Deep research on Visa vs Mastercard' },
-  { label: '🗓️ Daily watchlist report', prompt: 'Generate daily report for my watchlist' },
-];
-
 function formatProviderLabel(provider?: string) {
   if (provider === 'github') return 'GitHub';
   if (provider === 'gemini') return 'Gemini';
@@ -144,9 +194,91 @@ function formatModelLabel(model?: string) {
   return model ? model.split('/').pop() || model : 'unknown';
 }
 
+function humanizeSlug(value: string) {
+  return value
+    .replace(/\.md$/i, '')
+    .replace(/-\d{4}-\d{2}-\d{2}t[\w-]+z?$/i, '')
+    .replace(/[-_]+/g, ' ')
+    .replace(/\b\w/g, (char) => char.toUpperCase())
+    .trim();
+}
+
+function formatShortDate(value?: string | null) {
+  if (!value) return '';
+  const parsed = /^\d{4}-\d{2}-\d{2}$/.test(value) ? new Date(`${value}T00:00:00`) : new Date(value);
+  if (Number.isNaN(parsed.getTime())) return '';
+  return new Intl.DateTimeFormat(undefined, {
+    month: 'short',
+    day: 'numeric',
+  }).format(parsed);
+}
+
+function formatLibraryDate(value: string) {
+  if (value === 'Undated') return value;
+  const parsed = new Date(`${value}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return new Intl.DateTimeFormat(undefined, {
+    month: 'long',
+    day: 'numeric',
+    year: 'numeric',
+  }).format(parsed);
+}
+
+function getDateBucket(primary?: string | null, secondary?: string | null) {
+  if (primary) {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(primary)) return primary;
+    const directDate = new Date(primary);
+    if (!Number.isNaN(directDate.getTime())) {
+      return directDate.toISOString().slice(0, 10);
+    }
+  }
+  if (secondary) {
+    const matched = secondary.match(/\b\d{4}-\d{2}-\d{2}\b/);
+    if (matched) return matched[0];
+  }
+  return 'Undated';
+}
+
+function buildReportTitle(item: Pick<ReportItem, 'title' | 'filename'>) {
+  return item.title?.trim() || humanizeSlug(item.filename);
+}
+
+function buildSavedTitle(item: Pick<SavedReportMeta, 'title' | 'filename'>) {
+  return item.title?.trim() || humanizeSlug(item.filename);
+}
+
+function buildReportSummary(item: Pick<ReportItem, 'summary' | 'reportKind' | 'filename'>) {
+  if (item.summary?.trim()) return item.summary.trim();
+  if (item.reportKind?.trim()) return `${humanizeSlug(item.reportKind)} report`; 
+  return `Preview ${humanizeSlug(item.filename)}.`;
+}
+
+function buildSavedSummary(item: Pick<SavedReportMeta, 'summary' | 'report_kind' | 'filename'>) {
+  if (item.summary?.trim()) return item.summary.trim();
+  if (item.report_kind?.trim()) return `${humanizeSlug(item.report_kind)} report`;
+  return `Saved markdown report for ${humanizeSlug(item.filename)}.`;
+}
+
+function groupByDate<T>(items: T[], getBucket: (item: T) => string) {
+  const groups = new Map<string, T[]>();
+  for (const item of items) {
+    const bucket = getBucket(item);
+    const existing = groups.get(bucket) ?? [];
+    existing.push(item);
+    groups.set(bucket, existing);
+  }
+  return [...groups.entries()]
+    .sort((a, b) => {
+      if (a[0] === 'Undated') return 1;
+      if (b[0] === 'Undated') return -1;
+      return b[0].localeCompare(a[0]);
+    })
+    .map(([date, bucketItems]) => ({ date, label: formatLibraryDate(date), items: bucketItems }));
+}
+
 function MarkdownContent({ content }: { content: string }) {
   return (
-    <div className="prose prose-sm dark:prose-invert max-w-none break-words">
+    <div className="prose prose-sm max-w-none break-words text-inherit">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
@@ -160,10 +292,18 @@ function MarkdownContent({ content }: { content: string }) {
                 const option = JSON.parse(String(children)) as Record<string, unknown>;
                 return <ChartBlock option={option} />;
               } catch {
-                return <code className={className} {...props}>{children}</code>;
+                return (
+                  <code className={className} {...props}>
+                    {children}
+                  </code>
+                );
               }
             }
-            return <code className={className} {...props}>{children}</code>;
+            return (
+              <code className={className} {...props}>
+                {children}
+              </code>
+            );
           },
         }}
       >
@@ -195,6 +335,7 @@ export default function ChatInterface() {
   const [deletedReports, setDeletedReports] = useState<Set<string>>(new Set());
   const [savedReports, setSavedReports] = useState<ReportItem[]>([]);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [activeWorkspaceTab, setActiveWorkspaceTab] = useState<WorkspaceTab>('watchlist');
   const [supabaseReports, setSupabaseReports] = useState<SavedReportMeta[]>([]);
   const [supabaseReportsLoading, setSupabaseReportsLoading] = useState(false);
   const [supabaseSetupRequired, setSupabaseSetupRequired] = useState(false);
@@ -229,9 +370,11 @@ export default function ChatInterface() {
           setModel(nextModels[0].value);
         }
       })
-      .catch(() => { /* keep fallback model */ })
+      .catch(() => {
+        /* keep fallback model */
+      })
       .finally(() => setModelsLoading(false));
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const fetchSupabaseReports = () => {
@@ -242,7 +385,9 @@ export default function ChatInterface() {
         setSupabaseReports(payload.reports ?? []);
         setSupabaseSetupRequired(payload.setupRequired === true);
       })
-      .catch(() => { /* Supabase may not be configured */ })
+      .catch(() => {
+        /* Supabase may not be configured */
+      })
       .finally(() => setSupabaseReportsLoading(false));
   };
 
@@ -251,7 +396,7 @@ export default function ChatInterface() {
     setWatchlistError(null);
     fetch('/api/watchlist')
       .then(async (res) => {
-        const payload = await res.json() as { watchlist?: WatchlistMeta; error?: string };
+        const payload = (await res.json()) as { watchlist?: WatchlistMeta; error?: string };
         if (!res.ok) throw new Error(payload.error || 'Failed to load watchlist');
         setWatchlist(payload.watchlist ?? null);
       })
@@ -267,7 +412,7 @@ export default function ChatInterface() {
   }, []);
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
   }, [messages]);
 
   useEffect(() => {
@@ -277,10 +422,19 @@ export default function ChatInterface() {
     el.style.height = `${Math.min(el.scrollHeight, MAX_TEXTAREA_HEIGHT)}px`;
   }, [input]);
 
+  useEffect(() => {
+    const shouldLock = sidebarOpen || reportPreview !== null;
+    document.body.style.overflow = shouldLock ? 'hidden' : '';
+    return () => {
+      document.body.style.overflow = '';
+    };
+  }, [sidebarOpen, reportPreview]);
+
   const sendPrompt = async (prompt: string) => {
     if (!prompt.trim() || isLoading) return;
 
     const userMessage = prompt.trim();
+    setSidebarOpen(false);
     setInput('');
     setError(null);
     setMessages((prev) => [...prev, { role: 'user', content: userMessage }]);
@@ -302,33 +456,51 @@ export default function ChatInterface() {
       }
 
       if (!res.ok) {
-        const errMsg = typeof data['details'] === 'string'
-          ? `${String(data['error'] ?? 'Error')} \u2014 ${data['details']}`
-          : String(data['error'] ?? 'Failed to get response');
+        const errMsg = typeof data.details === 'string'
+          ? `${String(data.error ?? 'Error')} - ${data.details}`
+          : String(data.error ?? 'Failed to get response');
         throw new Error(errMsg);
       }
 
-      const responseText = typeof data['response'] === 'string' ? data['response'] : '';
+      const responseText = typeof data.response === 'string' ? data.response : '';
       const assistantText = isToolCallText(responseText) ? TOOL_CALL_WARNING : responseText;
       if (isToolCallText(responseText)) setError(TOOL_CALL_WARNING);
 
-      setSessionId(typeof data['sessionId'] === 'string' ? data['sessionId'] : null);
+      setSessionId(typeof data.sessionId === 'string' ? data.sessionId : null);
       setMessages((prev) => [
         ...prev,
         {
           role: 'assistant',
           content: assistantText,
-          model: typeof data['model'] === 'string' ? data['model'] : undefined,
-          requestedModel: typeof data['requestedModel'] === 'string' ? data['requestedModel'] : undefined,
-          provider: typeof data['provider'] === 'string' ? data['provider'] : undefined,
-          runtimeProvider: typeof data['runtimeProvider'] === 'string' ? data['runtimeProvider'] : undefined,
-          fallbackCount: typeof data['fallbackCount'] === 'number' ? data['fallbackCount'] : undefined,
-          stats: data['stats'] as Message['stats'],
+          model: typeof data.model === 'string' ? data.model : undefined,
+          requestedModel: typeof data.requestedModel === 'string' ? data.requestedModel : undefined,
+          provider: typeof data.provider === 'string' ? data.provider : undefined,
+          runtimeProvider: typeof data.runtimeProvider === 'string' ? data.runtimeProvider : undefined,
+          fallbackCount: typeof data.fallbackCount === 'number' ? data.fallbackCount : undefined,
+          stats: data.stats as Message['stats'],
         },
       ]);
 
-      const report = data['report'] as { filename?: string; content?: string; downloadUrl?: string } | null;
-      const reports = data['reports'] as { filename?: string; content?: string; downloadUrl?: string }[] | null;
+      const report = data.report as {
+        filename?: string;
+        content?: string;
+        downloadUrl?: string;
+        title?: string;
+        summary?: string;
+        reportDate?: string;
+        reportKind?: string;
+        storagePath?: string;
+      } | null;
+      const reports = data.reports as Array<{
+        filename?: string;
+        content?: string;
+        downloadUrl?: string;
+        title?: string;
+        summary?: string;
+        reportDate?: string;
+        reportKind?: string;
+        storagePath?: string;
+      }> | null;
       const allReports = reports?.length
         ? reports
         : report?.filename && report?.content ? [report] : [];
@@ -337,12 +509,23 @@ export default function ChatInterface() {
           let updated = prev;
           for (const r of allReports) {
             if (r.filename && r.content && !updated.find((s) => s.filename === r.filename)) {
-              updated = [...updated, { filename: r.filename, content: r.content, downloadUrl: r.downloadUrl }];
+              updated = [
+                ...updated,
+                {
+                  filename: r.filename,
+                  content: r.content,
+                  downloadUrl: r.downloadUrl,
+                  title: r.title,
+                  summary: r.summary,
+                  reportDate: r.reportDate,
+                  reportKind: r.reportKind,
+                  storagePath: r.storagePath,
+                },
+              ];
             }
           }
           return updated;
         });
-        // Refresh Supabase saved reports list
         fetchSupabaseReports();
       }
     } catch (err: unknown) {
@@ -370,38 +553,46 @@ export default function ChatInterface() {
     new Set(
       messages
         .filter((m) => m.role === 'assistant')
-        .flatMap((m) => m.content.match(/\/api\/reports\/[a-z0-9-]+\.md/gi) ?? [])
+        .flatMap((m) => m.content.match(/\/api\/reports\/[a-z0-9/_-]+\.md/gi) ?? [])
     )
   ).filter((link) => !deletedReports.has(link));
 
   const reportItems: ReportItem[] = [
     ...savedReports,
     ...reportLinks
-      .map((link) => ({ filename: link.split('/').pop() ?? link, downloadUrl: link }))
+      .map((link) => ({ filename: link.split('/').pop() ?? link, downloadUrl: link, storagePath: link }))
       .filter((r) => !savedReports.find((s) => s.filename === r.filename)),
   ];
 
+  const artifactGroups = groupByDate(reportItems, (item) =>
+    getDateBucket(item.reportDate, item.storagePath ?? item.downloadUrl ?? item.filename)
+  );
+  const savedReportGroups = groupByDate(supabaseReports, (item) =>
+    getDateBucket(item.report_date ?? item.created_at, item.storage_path ?? item.filename)
+  );
+
   const handleReportClick = async (item: ReportItem) => {
+    setSidebarOpen(false);
     setReportLoading(true);
     setReportUrl(item.downloadUrl ?? null);
     try {
       if (item.content) {
         setReportPreview(item.content);
-        setReportTitle(item.filename);
+        setReportTitle(item.title ?? item.filename);
         return;
       }
       if (!item.downloadUrl) {
         setReportPreview('Unable to load report preview.');
-        setReportTitle(item.filename ?? 'Report');
+        setReportTitle(item.title ?? item.filename ?? 'Report');
         return;
       }
       const res = await fetch(item.downloadUrl);
       const content = await res.text();
       setReportPreview(content);
-      setReportTitle(item.filename ?? 'Report');
+      setReportTitle(item.title ?? item.filename ?? 'Report');
     } catch {
       setReportPreview('Unable to load report preview.');
-      setReportTitle(item.filename ?? 'Report');
+      setReportTitle(item.title ?? item.filename ?? 'Report');
     } finally {
       setReportLoading(false);
     }
@@ -428,8 +619,8 @@ export default function ChatInterface() {
     try {
       if (item.downloadUrl) {
         const res = await fetch(item.downloadUrl, { method: 'DELETE' });
-        const data = await res.json() as Record<string, unknown>;
-        if (!res.ok) throw new Error(String(data['error'] ?? 'Failed to delete report'));
+        const data = (await res.json()) as Record<string, unknown>;
+        if (!res.ok) throw new Error(String(data.error ?? 'Failed to delete report'));
       }
       setDeletedReports((prev) => new Set(prev).add(item.downloadUrl ?? item.filename));
       setSavedReports((prev) => prev.filter((s) => s.filename !== item.filename));
@@ -444,6 +635,7 @@ export default function ChatInterface() {
   };
 
   const handleSupabaseReportClick = async (report: SavedReportMeta) => {
+    setSidebarOpen(false);
     setReportLoading(true);
     const downloadUrl = `/api/saved-reports/${report.id}`;
     setReportUrl(downloadUrl);
@@ -451,10 +643,10 @@ export default function ChatInterface() {
       const res = await fetch(downloadUrl);
       const content = await res.text();
       setReportPreview(content);
-      setReportTitle(report.filename);
+      setReportTitle(report.title || report.filename);
     } catch {
       setReportPreview('Unable to load report preview.');
-      setReportTitle(report.filename);
+      setReportTitle(report.title || report.filename);
     } finally {
       setReportLoading(false);
     }
@@ -482,8 +674,8 @@ export default function ChatInterface() {
     setError(null);
     try {
       const res = await fetch(`/api/saved-reports/${report.id}`, { method: 'DELETE' });
-      const data = await res.json() as Record<string, unknown>;
-      if (!res.ok) throw new Error(String(data['error'] ?? 'Failed to delete report'));
+      const data = (await res.json()) as Record<string, unknown>;
+      if (!res.ok) throw new Error(String(data.error ?? 'Failed to delete report'));
       setSupabaseReports((prev) => prev.filter((r) => r.id !== report.id));
       if (reportUrl === `/api/saved-reports/${report.id}`) {
         setReportUrl(null);
@@ -506,7 +698,7 @@ export default function ChatInterface() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query: watchlistInput.trim() }),
       });
-      const payload = await res.json() as { watchlist?: WatchlistMeta; error?: string };
+      const payload = (await res.json()) as { watchlist?: WatchlistMeta; error?: string };
       if (!res.ok) throw new Error(payload.error || 'Failed to add watchlist item');
       setWatchlist(payload.watchlist ?? null);
       setWatchlistInput('');
@@ -523,7 +715,7 @@ export default function ChatInterface() {
     setWatchlistError(null);
     try {
       const res = await fetch(`/api/watchlist/items/${encodeURIComponent(symbol)}`, { method: 'DELETE' });
-      const payload = await res.json() as { watchlist?: WatchlistMeta; error?: string };
+      const payload = (await res.json()) as { watchlist?: WatchlistMeta; error?: string };
       if (!res.ok) throw new Error(payload.error || 'Failed to remove watchlist item');
       setWatchlist(payload.watchlist ?? null);
     } catch (err: unknown) {
@@ -538,543 +730,865 @@ export default function ChatInterface() {
     void sendPrompt('Generate daily report for my watchlist');
   };
 
-  return (
-    <>
-      {sidebarOpen && (
-        <div
-          className="fixed inset-0 z-30 bg-black/40 lg:hidden"
-          onClick={() => setSidebarOpen(false)}
-        />
-      )}
+  const workspaceTabs: Array<{ id: WorkspaceTab; label: string; count: number }> = [
+    { id: 'watchlist', label: 'Watchlist', count: watchlist?.items.length ?? 0 },
+    { id: 'artifacts', label: 'Artifacts', count: reportItems.length },
+    { id: 'saved', label: 'Saved', count: supabaseReports.length },
+  ];
 
-      <div className="flex flex-col h-screen bg-slate-50 dark:bg-gray-950">
-        <header className="shrink-0 flex items-center justify-between gap-3 px-4 py-3 bg-white dark:bg-gray-900 border-b border-slate-200 dark:border-gray-800 shadow-sm">
-          <div className="flex items-center gap-3 min-w-0">
-            <button
-              type="button"
-              aria-label="Open sidebar"
-              onClick={() => setSidebarOpen(true)}
-              className="lg:hidden p-1.5 rounded-md text-slate-500 hover:text-slate-700 dark:text-gray-400 dark:hover:text-white"
-            >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
-              </svg>
-            </button>
-            <span className="text-base sm:text-lg font-semibold text-slate-900 dark:text-white truncate">
-              📈 Stock Research
-            </span>
-          </div>
+  const panelTabClass = (tab: WorkspaceTab) =>
+    [
+      'rounded-2xl border px-3 py-3 text-left transition-all',
+      activeWorkspaceTab === tab
+        ? 'border-white/20 bg-white text-slate-950 shadow-[0_18px_50px_-24px_rgba(15,23,42,0.55)]'
+        : 'border-white/10 bg-white/6 text-slate-100 hover:bg-white/10',
+    ].join(' ');
 
-        </header>
+  const railButtonClass = (tab: WorkspaceTab) =>
+    [
+      'group flex h-14 w-14 items-center justify-center rounded-2xl border transition-all',
+      activeWorkspaceTab === tab
+        ? 'border-teal-300/60 bg-gradient-to-br from-teal-300 to-cyan-300 text-slate-950 shadow-[0_18px_45px_-24px_rgba(45,212,191,0.9)]'
+        : 'border-white/10 bg-white/8 text-slate-200 hover:border-white/20 hover:bg-white/14',
+    ].join(' ');
 
-        <section className="shrink-0 border-b border-slate-200 dark:border-gray-800 bg-white/95 dark:bg-gray-900/95 px-4 py-3 backdrop-blur">
-          <div className="grid gap-3 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)]">
-            <div className="rounded-xl border border-slate-200 dark:border-gray-700 bg-slate-50 dark:bg-gray-800/70 p-3">
-              <div className="flex items-center justify-between gap-3 mb-1.5">
-                <div>
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500 dark:text-gray-400">
-                    Execution Strategy
-                  </p>
-                  <p className="text-xs text-slate-500 dark:text-gray-400">
-                    Pick which provider path to spend first.
-                  </p>
-                </div>
-                {availableProviders.length > 1 ? (
-                  <select
-                    value={provider}
-                    onChange={(e) => {
-                      const next = e.target.value;
-                      setProvider(next);
-                      setSessionId(null);
-                      const sel = availableProviders.find((p) => p.id === next);
-                      const models = sel?.models ?? [];
-                      setAvailableModels(models);
-                      if (models.length > 0) setModel(models[0].value);
-                    }}
-                    disabled={modelsLoading}
-                    className="min-w-[150px] text-xs px-3 py-2 rounded-lg border border-slate-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-slate-700 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-50"
-                  >
-                    {availableProviders.map((p) => (
-                      <option key={p.id} value={p.id} disabled={!p.available}>
-                        {p.label}{p.available ? '' : ' (unavailable)'}
-                      </option>
-                    ))}
-                  </select>
-                ) : (
-                  <div className="text-xs font-medium text-slate-700 dark:text-gray-200">
-                    {selectedProvider?.label ?? 'Default'}
-                  </div>
-                )}
-              </div>
-              <p className="text-xs leading-5 text-slate-600 dark:text-gray-300">
-                {providerHelpText}
-              </p>
-            </div>
-
-            <div className="rounded-xl border border-slate-200 dark:border-gray-700 bg-slate-50 dark:bg-gray-800/70 p-3">
-              <div className="flex items-center justify-between gap-3 mb-1.5">
-                <div>
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500 dark:text-gray-400">
-                    Starting Model
-                  </p>
-                  <p className="text-xs text-slate-500 dark:text-gray-400">
-                    The first model tried inside the selected strategy.
-                  </p>
-                </div>
-                <select
-                  value={model}
-                  onChange={(e) => { setModel(e.target.value); setSessionId(null); }}
-                  disabled={modelsLoading}
-                  className="min-w-[170px] text-xs px-3 py-2 rounded-lg border border-slate-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-slate-700 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-50"
-                >
-                  {modelsLoading
-                    ? <option>Loading&#8230;</option>
-                    : availableModels.map((m) => (
-                        <option key={m.value} value={m.value}>{m.label}</option>
-                      ))}
-                </select>
-              </div>
-              <p className="text-xs leading-5 text-slate-600 dark:text-gray-300">
-                {modelHelpText}
-              </p>
-              {selectedModel?.rateLimitTier && (
-                <p className="mt-1.5 text-[11px] uppercase tracking-[0.16em] text-slate-400 dark:text-gray-500">
-                  Current tier: {selectedModel.rateLimitTier}
+  const renderWorkspacePane = (mobile = false) => {
+    if (activeWorkspaceTab === 'watchlist') {
+      return (
+        <div className="space-y-4">
+          <div className="rounded-[26px] border border-white/10 bg-white/8 p-4 shadow-[0_20px_45px_-30px_rgba(15,23,42,0.75)]">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <p className="text-[11px] uppercase tracking-[0.28em] text-teal-200/70">Watchlist Workspace</p>
+                <h2 className="mt-1 text-lg font-semibold text-white">
+                  {watchlist?.name || 'Default watchlist'}
+                </h2>
+                <p className="mt-1 text-sm text-slate-300">
+                  Keep the portfolio pulse one tap away, then generate the daily report from the same surface.
                 </p>
-              )}
-            </div>
-          </div>
-        </section>
-
-        <div className="flex flex-1 overflow-hidden">
-          <aside
-            className={[
-              'shrink-0 w-72 bg-white dark:bg-gray-900 border-r border-slate-200 dark:border-gray-800 flex flex-col gap-5 p-4 overflow-y-auto',
-              'fixed inset-y-0 left-0 z-40 transition-transform duration-200 lg:static lg:translate-x-0',
-              sidebarOpen ? 'translate-x-0' : '-translate-x-full',
-            ].join(' ')}
-          >
-            <div className="flex items-center justify-between lg:hidden">
-              <span className="font-semibold text-slate-700 dark:text-white text-sm">Sidebar</span>
+              </div>
               <button
                 type="button"
-                onClick={() => setSidebarOpen(false)}
-                className="text-slate-400 hover:text-slate-700 dark:hover:text-white"
-                aria-label="Close sidebar"
+                onClick={handleGenerateDailyReport}
+                disabled={isLoading || watchlistLoading || !watchlist?.items.length}
+                className="rounded-full bg-gradient-to-r from-teal-300 via-cyan-300 to-sky-300 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                &#x2715;
+                Daily report
               </button>
             </div>
+            <div className="mt-4 grid gap-3 sm:grid-cols-3">
+              <div className="rounded-2xl border border-white/10 bg-slate-950/35 p-3">
+                <p className="text-[11px] uppercase tracking-[0.2em] text-slate-400">Tracked</p>
+                <p className="mt-2 text-2xl font-semibold text-white">{watchlist?.items.length ?? 0}</p>
+                <p className="mt-1 text-xs text-slate-400">Companies in focus</p>
+              </div>
+              <div className="rounded-2xl border border-white/10 bg-slate-950/35 p-3">
+                <p className="text-[11px] uppercase tracking-[0.2em] text-slate-400">State</p>
+                <p className="mt-2 text-2xl font-semibold text-white">{watchlistBusy ? 'Busy' : 'Ready'}</p>
+                <p className="mt-1 text-xs text-slate-400">Live add and remove actions</p>
+              </div>
+              <div className="rounded-2xl border border-white/10 bg-slate-950/35 p-3">
+                <p className="text-[11px] uppercase tracking-[0.2em] text-slate-400">Coverage</p>
+                <p className="mt-2 text-2xl font-semibold text-white">1x</p>
+                <p className="mt-1 text-xs text-slate-400">Unified daily summary</p>
+              </div>
+            </div>
+          </div>
 
-            <section>
-              <h2 className="text-xs font-semibold text-slate-400 dark:text-gray-500 uppercase tracking-widest mb-2">
-                Quick Research
-              </h2>
-              <div className="flex flex-col gap-1.5">
-                {QUICK_PROMPTS.map(({ label, prompt }) => (
-                  <button
-                    key={label}
-                    type="button"
-                    onClick={() => { setSidebarOpen(false); void sendPrompt(prompt); }}
-                    className="text-left text-sm px-3 py-2 rounded-lg bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-100 dark:hover:bg-indigo-800/50 transition-colors"
-                  >
-                    {label}
-                  </button>
-                ))}
+          <form
+            onSubmit={handleWatchlistAdd}
+            className="rounded-[26px] border border-white/10 bg-white/7 p-4 shadow-[0_18px_40px_-30px_rgba(15,23,42,0.9)]"
+          >
+            <label htmlFor={mobile ? 'watchlist-mobile' : 'watchlist-desktop'} className="block text-sm font-medium text-white">
+              Add ticker or company
+            </label>
+            <div className="mt-3 flex gap-2">
+              <input
+                id={mobile ? 'watchlist-mobile' : 'watchlist-desktop'}
+                value={watchlistInput}
+                onChange={(e) => setWatchlistInput(e.target.value)}
+                placeholder="AAPL or Apple"
+                disabled={watchlistBusy}
+                className="min-w-0 flex-1 rounded-2xl border border-white/10 bg-slate-950/50 px-4 py-3 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-teal-300 disabled:opacity-50"
+              />
+              <button
+                type="submit"
+                disabled={watchlistBusy || !watchlistInput.trim()}
+                className="rounded-2xl border border-white/15 bg-white/10 px-4 py-3 text-sm font-medium text-white transition hover:bg-white/16 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Add
+              </button>
+            </div>
+            {watchlistError && (
+              <p className="mt-3 rounded-2xl border border-rose-400/25 bg-rose-500/10 px-3 py-2 text-sm text-rose-200">
+                {watchlistError}
+              </p>
+            )}
+          </form>
+
+          <div className="space-y-3">
+            {watchlistLoading ? (
+              <div className="rounded-[24px] border border-white/10 bg-white/7 px-4 py-5 text-sm text-slate-300">
+                Loading watchlist...
               </div>
-            </section>
-            <section>
-              <div className="flex items-center justify-between mb-2 gap-2">
-                <div>
-                  <h2 className="text-xs font-semibold text-slate-400 dark:text-gray-500 uppercase tracking-widest">
-                    Watchlist
-                  </h2>
-                  <p className="text-[11px] text-slate-400 dark:text-gray-500 mt-1">
-                    {watchlist?.name || "Default watchlist"} {watchlist ? `(${watchlist.items.length})` : ""}
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={handleGenerateDailyReport}
-                  disabled={isLoading || watchlistLoading || !watchlist?.items.length}
-                  className="text-xs px-2.5 py-1.5 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:bg-slate-200 dark:disabled:bg-gray-700 disabled:text-slate-400 transition-colors"
-                >
-                  Daily report
-                </button>
+            ) : !watchlist?.items.length ? (
+              <div className="rounded-[24px] border border-dashed border-white/12 bg-white/5 px-4 py-8 text-center text-sm text-slate-300">
+                No companies in the watchlist yet.
               </div>
-              <form onSubmit={handleWatchlistAdd} className="flex gap-2 mb-2">
-                <input
-                  value={watchlistInput}
-                  onChange={(e) => setWatchlistInput(e.target.value)}
-                  placeholder="Add ticker or company"
-                  disabled={watchlistBusy}
-                  className="flex-1 min-w-0 text-xs px-3 py-2 rounded-lg border border-slate-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-slate-700 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-60"
-                />
-                <button
-                  type="submit"
-                  disabled={watchlistBusy || !watchlistInput.trim()}
-                  className="text-xs px-3 py-2 rounded-lg border border-slate-200 dark:border-gray-700 text-slate-700 dark:text-white hover:bg-slate-50 dark:hover:bg-gray-800 disabled:opacity-50 transition-colors"
+            ) : (
+              watchlist.items.map((item) => (
+                <div
+                  key={item.id}
+                  className="rounded-[24px] border border-white/10 bg-white/7 p-4 shadow-[0_16px_35px_-30px_rgba(15,23,42,0.9)]"
                 >
-                  Add
-                </button>
-              </form>
-              {watchlistError && (
-                <p className="text-xs text-red-500 dark:text-red-400 mb-2">{watchlistError}</p>
-              )}
-              {watchlistLoading ? (
-                <p className="text-xs text-slate-400 dark:text-gray-500">Loading watchlist...</p>
-              ) : !watchlist?.items.length ? (
-                <p className="text-xs text-slate-400 dark:text-gray-500">No companies in the watchlist yet.</p>
-              ) : (
-                <ul className="space-y-1.5">
-                  {watchlist.items.map((item) => (
-                    <li
-                      key={item.id}
-                      className="flex items-center gap-2 rounded-lg border border-slate-200 dark:border-gray-700 px-2 py-1.5 text-xs"
-                    >
-                      <div className="flex-1 min-w-0">
-                        <p className="font-medium text-slate-700 dark:text-white truncate">{item.symbol}</p>
-                        <p className="text-slate-400 dark:text-gray-500 truncate">{item.companyName}</p>
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="rounded-full border border-teal-300/20 bg-teal-300/10 px-2.5 py-1 text-[11px] font-semibold tracking-[0.18em] text-teal-100">
+                          {item.symbol}
+                        </span>
+                        {formatShortDate(item.createdAt) && (
+                          <span className="text-xs text-slate-400">{formatShortDate(item.createdAt)}</span>
+                        )}
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => void handleWatchlistRemove(item.symbol)}
-                        disabled={watchlistBusy}
-                        title="Remove"
-                        className="text-slate-300 hover:text-red-500 disabled:opacity-40 shrink-0 px-1"
-                      >
-                        &#x2715;
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </section>
-
-            <section className="flex-1">
-              <h2 className="text-xs font-semibold text-slate-400 dark:text-gray-500 uppercase tracking-widest mb-2">
-                Artifacts
-              </h2>
-              {reportItems.length === 0 ? (
-                <div className="space-y-2">
-                  <p className="text-xs text-slate-400 dark:text-gray-500">
-                    No reports yet. Ask for a stock, comparison, deep research, or watchlist daily report.
-                  </p>
-                  <button
-                    type="button"
-                    onClick={() => handleReportClick({ filename: 'nvda-sample.md', downloadUrl: SAMPLE_REPORT_LINK })}
-                    className="text-xs w-full text-left px-3 py-2 rounded-lg border border-slate-200 dark:border-gray-700 text-indigo-600 dark:text-indigo-300 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 transition-colors truncate"
-                  >
-                    View sample NVDA report
-                  </button>
-                </div>
-              ) : (
-                <ul className="space-y-1.5">
-                  {reportItems.map((item) => (
-                    <li
-                      key={item.filename}
-                      className="flex items-center gap-1 rounded-lg border border-slate-200 dark:border-gray-700 px-2 py-1.5 text-xs"
-                    >
-                      <button
-                        type="button"
-                        onClick={() => handleReportClick(item)}
-                        className="flex-1 text-left truncate text-indigo-600 dark:text-indigo-300 hover:underline"
-                      >
-                        {item.filename}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleReportDownload(item)}
-                        title="Download"
-                        className="text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-300 shrink-0 px-1"
-                      >
-                        &#x2193;
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void handleReportDelete(item)}
-                        title="Delete"
-                        className="text-slate-300 hover:text-red-500 shrink-0 px-1"
-                      >
-                        &#x2715;
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </section>
-
-            <section>
-              <div className="flex items-center justify-between mb-2">
-                <h2 className="text-xs font-semibold text-slate-400 dark:text-gray-500 uppercase tracking-widest">
-                  Saved Reports
-                </h2>
-                <button
-                  type="button"
-                  onClick={fetchSupabaseReports}
-                  title="Refresh"
-                  className="text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-300 text-xs px-1"
-                >
-                  &#x21bb;
-                </button>
-              </div>
-              {supabaseReportsLoading ? (
-                <p className="text-xs text-slate-400 dark:text-gray-500">Loading&#8230;</p>
-              ) : supabaseSetupRequired ? (
-                <div className="rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/40 p-2 text-xs space-y-2">
-                  <p className="text-amber-700 dark:text-amber-400 font-medium">
-                    One-time database setup required
-                  </p>
-                  <p className="text-amber-600 dark:text-amber-500 leading-snug">
-                    Run this SQL in the{' '}
-                    <a
-                      href="https://supabase.com/dashboard/project/bnhnlyiuwlebgmjerueb/sql/new"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="underline font-medium hover:text-amber-700 dark:hover:text-amber-300"
-                    >
-                      Supabase SQL editor ↗
-                    </a>
-                    , then click &#x21bb; above.
-                  </p>
-                  <div className="relative">
-                    <pre className="bg-slate-900 text-green-400 rounded p-2 text-[10px] leading-relaxed overflow-x-auto whitespace-pre-wrap break-all select-all">
-{`create table if not exists public.saved_reports (
-  id         uuid primary key default gen_random_uuid(),
-  filename   text not null,
-  title      text,
-  content    text not null,
-  created_at timestamptz not null default now()
-);
-alter table public.saved_reports enable row level security;
-create policy "service role full access"
-  on public.saved_reports as permissive for all
-  to service_role using (true) with check (true);`}
-                    </pre>
+                      <p className="mt-3 truncate text-sm text-slate-200">{item.companyName}</p>
+                    </div>
                     <button
                       type="button"
-                      onClick={() => {
-                        void navigator.clipboard.writeText(
-                          `create table if not exists public.saved_reports (\n  id         uuid primary key default gen_random_uuid(),\n  filename   text not null,\n  title      text,\n  content    text not null,\n  created_at timestamptz not null default now()\n);\nalter table public.saved_reports enable row level security;\ncreate policy "service role full access"\n  on public.saved_reports as permissive for all\n  to service_role using (true) with check (true);`
-                        );
-                      }}
-                      className="absolute top-1.5 right-1.5 bg-slate-700 hover:bg-slate-600 text-slate-200 text-[10px] px-1.5 py-0.5 rounded"
-                      title="Copy SQL"
+                      onClick={() => void handleWatchlistRemove(item.symbol)}
+                      disabled={watchlistBusy}
+                      title="Remove"
+                      className="rounded-full border border-white/10 bg-slate-950/45 p-2 text-slate-300 transition hover:border-rose-300/35 hover:text-rose-200 disabled:opacity-40"
                     >
-                      Copy
+                      <Icon className="h-4 w-4">
+                        <path d="M18 6 6 18" />
+                        <path d="m6 6 12 12" />
+                      </Icon>
                     </button>
                   </div>
                 </div>
-              ) : supabaseReports.length === 0 ? (
-                <p className="text-xs text-slate-400 dark:text-gray-500">
-                  No saved reports yet.
-                </p>
-              ) : (
-                <ul className="space-y-1.5">
-                  {supabaseReports.map((report) => (
-                    <li
-                      key={report.id}
-                      className="flex items-center gap-1 rounded-lg border border-slate-200 dark:border-gray-700 px-2 py-1.5 text-xs"
+              ))
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    if (activeWorkspaceTab === 'artifacts') {
+      return (
+        <div className="space-y-4">
+          <div className="rounded-[26px] border border-white/10 bg-white/8 p-4 shadow-[0_20px_45px_-30px_rgba(15,23,42,0.75)]">
+            <p className="text-[11px] uppercase tracking-[0.28em] text-cyan-200/70">Session Artifacts</p>
+            <h2 className="mt-1 text-lg font-semibold text-white">Generated in this workspace</h2>
+            <p className="mt-1 text-sm text-slate-300">
+              Reports are grouped by day and surfaced as cards with real labels, not a flat stream of repeated filenames.
+            </p>
+            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+              <div className="rounded-2xl border border-white/10 bg-slate-950/35 p-3">
+                <p className="text-[11px] uppercase tracking-[0.2em] text-slate-400">Artifacts</p>
+                <p className="mt-2 text-2xl font-semibold text-white">{reportItems.length}</p>
+                <p className="mt-1 text-xs text-slate-400">Built in the current session</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => handleReportClick({ filename: 'nvda-sample.md', downloadUrl: SAMPLE_REPORT_LINK, title: 'Sample NVDA Report' })}
+                className="rounded-2xl border border-white/12 bg-white/8 p-3 text-left transition hover:bg-white/14"
+              >
+                <p className="text-[11px] uppercase tracking-[0.2em] text-cyan-200/70">Demo Artifact</p>
+                <p className="mt-2 text-sm font-medium text-white">Open sample NVDA report</p>
+                <p className="mt-1 text-xs text-slate-400">Useful before you generate your own first report.</p>
+              </button>
+            </div>
+          </div>
+
+          {reportItems.length === 0 ? (
+            <div className="rounded-[24px] border border-dashed border-white/12 bg-white/5 px-4 py-8 text-center text-sm text-slate-300">
+              No reports yet. Ask for a stock, comparison, deep research, or watchlist daily report.
+            </div>
+          ) : (
+            artifactGroups.map((group) => (
+              <section key={group.date} className="space-y-3">
+                <div className="flex items-center justify-between gap-3 px-1">
+                  <div>
+                    <h3 className="text-sm font-semibold text-white">{group.label}</h3>
+                    <p className="text-xs text-slate-400">{group.items.length} report{group.items.length === 1 ? '' : 's'}</p>
+                  </div>
+                </div>
+                <div className="space-y-3">
+                  {group.items.map((item) => (
+                    <div
+                      key={item.downloadUrl ?? item.filename}
+                      className="rounded-[24px] border border-white/10 bg-white/7 p-4 shadow-[0_16px_35px_-30px_rgba(15,23,42,0.9)]"
                     >
+                      <div className="flex items-start justify-between gap-3">
+                        <button
+                          type="button"
+                          onClick={() => handleReportClick(item)}
+                          className="min-w-0 flex-1 text-left"
+                        >
+                          <div className="flex flex-wrap items-center gap-2">
+                            <p className="truncate text-sm font-medium text-white">{buildReportTitle(item)}</p>
+                            {item.reportKind && (
+                              <span className="rounded-full border border-cyan-300/20 bg-cyan-300/10 px-2 py-0.5 text-[10px] uppercase tracking-[0.16em] text-cyan-100">
+                                {humanizeSlug(item.reportKind)}
+                              </span>
+                            )}
+                          </div>
+                          <p className="mt-1 line-clamp-2 text-xs leading-5 text-slate-400">{buildReportSummary(item)}</p>
+                        </button>
+                        <div className="flex shrink-0 items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => handleReportDownload(item)}
+                            title="Download"
+                            className="rounded-full border border-white/10 bg-slate-950/45 p-2 text-slate-300 transition hover:border-cyan-300/35 hover:text-cyan-100"
+                          >
+                            <Icon className="h-4 w-4">
+                              <path d="M12 3v12" />
+                              <path d="m7 10 5 5 5-5" />
+                              <path d="M4 20h16" />
+                            </Icon>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void handleReportDelete(item)}
+                            title="Delete"
+                            className="rounded-full border border-white/10 bg-slate-950/45 p-2 text-slate-300 transition hover:border-rose-300/35 hover:text-rose-200"
+                          >
+                            <Icon className="h-4 w-4">
+                              <path d="M18 6 6 18" />
+                              <path d="m6 6 12 12" />
+                            </Icon>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            ))
+          )}
+        </div>
+      );
+    }
+
+    return (
+      <div className="space-y-4">
+        <div className="rounded-[26px] border border-white/10 bg-white/8 p-4 shadow-[0_20px_45px_-30px_rgba(15,23,42,0.75)]">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="text-[11px] uppercase tracking-[0.28em] text-sky-200/70">Saved Reports</p>
+              <h2 className="mt-1 text-lg font-semibold text-white">Long-term report library</h2>
+              <p className="mt-1 text-sm text-slate-300">
+                Persistent reports are clustered by report date so the library reads like a timeline, not a dump of matching names.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={fetchSupabaseReports}
+              title="Refresh"
+              className="rounded-full border border-white/10 bg-slate-950/45 p-2 text-slate-300 transition hover:border-sky-300/35 hover:text-sky-100"
+            >
+              <Icon className="h-4 w-4">
+                <path d="M21 12a9 9 0 0 1-15.5 6.36" />
+                <path d="M3 12a9 9 0 0 1 15.5-6.36" />
+                <path d="M3 4v4h4" />
+                <path d="M21 20v-4h-4" />
+              </Icon>
+            </button>
+          </div>
+          <div className="mt-4 rounded-2xl border border-white/10 bg-slate-950/35 p-3">
+            <p className="text-[11px] uppercase tracking-[0.2em] text-slate-400">Saved Count</p>
+            <p className="mt-2 text-2xl font-semibold text-white">{supabaseReports.length}</p>
+            <p className="mt-1 text-xs text-slate-400">Reports available across sessions</p>
+          </div>
+        </div>
+
+        {supabaseReportsLoading ? (
+          <div className="rounded-[24px] border border-white/10 bg-white/7 px-4 py-5 text-sm text-slate-300">
+            Loading...
+          </div>
+        ) : supabaseSetupRequired ? (
+          <div className="rounded-[24px] border border-amber-300/30 bg-amber-500/10 p-4 text-sm text-amber-100">
+            <p className="font-medium text-amber-50">One-time database setup required</p>
+            <p className="mt-2 leading-6 text-amber-100/85">
+              Run the existing SQL in the Supabase SQL editor, then refresh this pane.
+            </p>
+            <div className="mt-4 rounded-2xl border border-amber-200/15 bg-slate-950/55 p-3">
+              <pre className="overflow-x-auto whitespace-pre-wrap break-all text-[11px] leading-relaxed text-emerald-300">
+{`create table if not exists public.saved_reports (
+  id           uuid primary key default gen_random_uuid(),
+  filename     text not null,
+  title        text,
+  summary      text,
+  content      text not null,
+  storage_path text,
+  report_kind  text,
+  report_date  date,
+  created_at   timestamptz not null default now()
+);
+create index if not exists saved_reports_created_at_idx on public.saved_reports (created_at desc);
+create index if not exists saved_reports_report_date_idx on public.saved_reports (report_date desc, created_at desc);`}
+              </pre>
+              <button
+                type="button"
+                onClick={() => {
+                  void navigator.clipboard.writeText(
+                    `create table if not exists public.saved_reports (\n  id           uuid primary key default gen_random_uuid(),\n  filename     text not null,\n  title        text,\n  summary      text,\n  content      text not null,\n  storage_path text,\n  report_kind  text,\n  report_date  date,\n  created_at   timestamptz not null default now()\n);\ncreate index if not exists saved_reports_created_at_idx on public.saved_reports (created_at desc);\ncreate index if not exists saved_reports_report_date_idx on public.saved_reports (report_date desc, created_at desc);`
+                  );
+                }}
+                className="mt-3 rounded-full border border-amber-200/20 bg-amber-100/10 px-3 py-1.5 text-xs font-medium text-amber-50 transition hover:bg-amber-100/20"
+              >
+                Copy SQL
+              </button>
+            </div>
+          </div>
+        ) : supabaseReports.length === 0 ? (
+          <div className="rounded-[24px] border border-dashed border-white/12 bg-white/5 px-4 py-8 text-center text-sm text-slate-300">
+            No saved reports yet.
+          </div>
+        ) : (
+          savedReportGroups.map((group) => (
+            <section key={group.date} className="space-y-3">
+              <div className="flex items-center justify-between gap-3 px-1">
+                <div>
+                  <h3 className="text-sm font-semibold text-white">{group.label}</h3>
+                  <p className="text-xs text-slate-400">{group.items.length} saved report{group.items.length === 1 ? '' : 's'}</p>
+                </div>
+              </div>
+              <div className="space-y-3">
+                {group.items.map((report) => (
+                  <div
+                    key={report.id}
+                    className="rounded-[24px] border border-white/10 bg-white/7 p-4 shadow-[0_16px_35px_-30px_rgba(15,23,42,0.9)]"
+                  >
+                    <div className="flex items-start justify-between gap-3">
                       <button
                         type="button"
                         onClick={() => void handleSupabaseReportClick(report)}
-                        className="flex-1 text-left truncate text-indigo-600 dark:text-indigo-300 hover:underline"
+                        className="min-w-0 flex-1 text-left"
                         title={report.filename}
                       >
-                        {report.title || report.filename}
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p className="truncate text-sm font-medium text-white">{buildSavedTitle(report)}</p>
+                          {report.report_kind && (
+                            <span className="rounded-full border border-sky-300/20 bg-sky-300/10 px-2 py-0.5 text-[10px] uppercase tracking-[0.16em] text-sky-100">
+                              {humanizeSlug(report.report_kind)}
+                            </span>
+                          )}
+                        </div>
+                        <p className="mt-1 line-clamp-2 text-xs leading-5 text-slate-400">{buildSavedSummary(report)}</p>
+                        <p className="mt-2 text-[11px] uppercase tracking-[0.16em] text-slate-500">
+                          {formatShortDate(report.report_date ?? report.created_at) || 'Saved report'}
+                        </p>
                       </button>
-                      <button
-                        type="button"
-                        onClick={() => void handleSupabaseReportDownload(report)}
-                        title="Download"
-                        className="text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-300 shrink-0 px-1"
-                      >
-                        &#x2193;
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void handleSupabaseReportDelete(report)}
-                        title="Delete"
-                        className="text-slate-300 hover:text-red-500 shrink-0 px-1"
-                      >
-                        &#x2715;
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              )}
+                      <div className="flex shrink-0 items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => void handleSupabaseReportDownload(report)}
+                          title="Download"
+                          className="rounded-full border border-white/10 bg-slate-950/45 p-2 text-slate-300 transition hover:border-sky-300/35 hover:text-sky-100"
+                        >
+                          <Icon className="h-4 w-4">
+                            <path d="M12 3v12" />
+                            <path d="m7 10 5 5 5-5" />
+                            <path d="M4 20h16" />
+                          </Icon>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void handleSupabaseReportDelete(report)}
+                          title="Delete"
+                          className="rounded-full border border-white/10 bg-slate-950/45 p-2 text-slate-300 transition hover:border-rose-300/35 hover:text-rose-200"
+                        >
+                          <Icon className="h-4 w-4">
+                            <path d="M18 6 6 18" />
+                            <path d="m6 6 12 12" />
+                          </Icon>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
             </section>
+          ))
+        )}
+      </div>
+    );
+  };
 
-            <section>
-              <h2 className="text-xs font-semibold text-slate-400 dark:text-gray-500 uppercase tracking-widest mb-2">
-                What&apos;s Supported
-              </h2>
-              <ul className="text-xs text-slate-500 dark:text-gray-400 space-y-1">
-                <li>&#x2022; Individual stock deep-dive reports</li>
-                <li>&#x2022; Side-by-side comparison reports</li>
-                <li>&#x2022; Deep research on companies, comparisons, themes &amp; industries</li>
-                <li>&#x2022; Combined daily reports for the saved watchlist</li>
-                <li>&#x2022; Price, EPS, revenue &amp; margin charts</li>
-                <li>&#x2022; Analyst targets &amp; scorecard</li>
-              </ul>
-            </section>
+  return (
+    <>
+      {(sidebarOpen || reportPreview !== null) && (
+        <div
+          className="fixed inset-0 z-40 bg-slate-950/65 backdrop-blur-sm"
+          onClick={() => {
+            if (reportPreview !== null) {
+              setReportPreview(null);
+              setReportTitle(null);
+              setReportUrl(null);
+            } else {
+              setSidebarOpen(false);
+            }
+          }}
+        />
+      )}
+
+      <div className="relative min-h-dvh overflow-hidden bg-[radial-gradient(circle_at_top_left,_rgba(45,212,191,0.16),_transparent_22%),radial-gradient(circle_at_top_right,_rgba(56,189,248,0.14),_transparent_24%),linear-gradient(180deg,_#09111f_0%,_#08101b_42%,_#060b15_100%)] text-white">
+        <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(rgba(148,163,184,0.08)_1px,transparent_1px),linear-gradient(90deg,rgba(148,163,184,0.08)_1px,transparent_1px)] bg-[size:32px_32px] opacity-[0.18]" />
+        <div className="pointer-events-none absolute inset-x-0 top-0 h-80 bg-[radial-gradient(circle_at_top,_rgba(255,255,255,0.12),_transparent_62%)]" />
+
+        <header className="relative z-10 border-b border-white/10 bg-slate-950/35 px-4 py-4 backdrop-blur-xl sm:px-6">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex min-w-0 items-center gap-3">
+              <button
+                type="button"
+                aria-label="Open workspace"
+                onClick={() => setSidebarOpen(true)}
+                className="flex h-11 w-11 items-center justify-center rounded-2xl border border-white/10 bg-white/8 text-slate-100 transition hover:bg-white/12 lg:hidden"
+              >
+                <Icon className="h-5 w-5">
+                  <path d="M4 7h16" />
+                  <path d="M4 12h16" />
+                  <path d="M4 17h16" />
+                </Icon>
+              </button>
+              <div className="flex h-12 w-12 items-center justify-center rounded-[18px] bg-gradient-to-br from-teal-300 via-cyan-300 to-sky-400 text-slate-950 shadow-[0_20px_45px_-22px_rgba(56,189,248,0.9)]">
+                <Icon className="h-6 w-6">
+                  <path d="M4 17 10 11l4 4 6-8" />
+                  <path d="M4 7h4" />
+                  <path d="M16 7h4" />
+                </Icon>
+              </div>
+              <div className="min-w-0">
+                <p className="text-[11px] uppercase tracking-[0.34em] text-teal-200/70">Adaptive Research Cockpit</p>
+                <h1 className="truncate text-lg font-semibold text-white sm:text-xl">Stock Research</h1>
+              </div>
+            </div>
+
+            <div className="hidden items-center gap-2 lg:flex">
+              <div className="rounded-full border border-white/10 bg-white/8 px-3 py-2 text-xs text-slate-200">
+                {workspaceTabs[0].count} tracked
+              </div>
+              <div className="rounded-full border border-white/10 bg-white/8 px-3 py-2 text-xs text-slate-200">
+                {workspaceTabs[1].count} session
+              </div>
+              <div className="rounded-full border border-white/10 bg-white/8 px-3 py-2 text-xs text-slate-200">
+                {workspaceTabs[2].count} saved
+              </div>
+              <div className="rounded-full border border-white/10 bg-white/8 px-3 py-2 text-xs text-slate-200">
+                {formatProviderLabel(provider)} • {formatModelLabel(model)}
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setSidebarOpen(true)}
+              className="rounded-full border border-white/10 bg-white/8 px-4 py-2 text-sm font-medium text-white transition hover:bg-white/12 lg:hidden"
+            >
+              Workspace
+            </button>
+          </div>
+        </header>
+
+        <div className="relative z-10 grid min-h-[calc(100dvh-77px)] lg:grid-cols-[88px_minmax(0,1fr)_minmax(320px,24vw)]">
+          <aside className="hidden border-r border-white/10 bg-slate-950/35 px-4 py-5 backdrop-blur-xl lg:flex lg:flex-col lg:items-center lg:justify-between">
+            <div className="flex flex-col items-center gap-3">
+              {workspaceTabs.map((tab) => (
+                <button
+                  key={tab.id}
+                  type="button"
+                  title={tab.label}
+                  onClick={() => setActiveWorkspaceTab(tab.id)}
+                  className={railButtonClass(tab.id)}
+                >
+                  {tab.id === 'watchlist' && (
+                    <Icon className="h-5 w-5">
+                      <path d="M4 6h16" />
+                      <path d="M4 12h10" />
+                      <path d="M4 18h16" />
+                    </Icon>
+                  )}
+                  {tab.id === 'artifacts' && (
+                    <Icon className="h-5 w-5">
+                      <path d="M5 8a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2Z" />
+                      <path d="M9 3h6" />
+                    </Icon>
+                  )}
+                  {tab.id === 'saved' && (
+                    <Icon className="h-5 w-5">
+                      <path d="M7 3h10a2 2 0 0 1 2 2v16l-7-4-7 4V5a2 2 0 0 1 2-2Z" />
+                    </Icon>
+                  )}
+                </button>
+              ))}
+            </div>
+
+            <div className="flex flex-col items-center gap-3">
+              <button
+                type="button"
+                title="Generate daily watchlist report"
+                onClick={handleGenerateDailyReport}
+                disabled={isLoading || watchlistLoading || !watchlist?.items.length}
+                className="flex h-14 w-14 items-center justify-center rounded-2xl border border-white/10 bg-white/8 text-slate-100 transition hover:bg-white/12 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <Icon className="h-5 w-5">
+                  <path d="M8 2v4" />
+                  <path d="M16 2v4" />
+                  <rect x="3" y="5" width="18" height="16" rx="2" />
+                  <path d="M3 10h18" />
+                </Icon>
+              </button>
+              <div className="writing-vertical-rl rotate-180 text-[10px] uppercase tracking-[0.34em] text-slate-500">
+                Workspace
+              </div>
+            </div>
           </aside>
 
-          <main className="flex-1 flex flex-col overflow-hidden">
-            <div className="flex-1 overflow-y-auto px-3 sm:px-6 py-4 space-y-4">
-              {messages.length === 0 && (
-                <div className="flex flex-col items-center justify-center h-full text-center gap-4 py-16">
-                  <div className="text-5xl">&#x1F4D1;</div>
-                  <div>
-                    <h2 className="text-xl font-semibold text-slate-700 dark:text-white mb-1">
-                      Start a research session
+          <main className="flex min-w-0 flex-col border-white/10 lg:border-r">
+            <section className="border-b border-white/10 px-4 py-4 sm:px-6">
+              <div className="mx-auto max-w-6xl rounded-[30px] border border-white/10 bg-[linear-gradient(135deg,rgba(15,23,42,0.88),rgba(8,24,38,0.7))] p-5 shadow-[0_30px_80px_-35px_rgba(8,145,178,0.45)] backdrop-blur-xl sm:p-6">
+                <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
+                  <div className="max-w-3xl">
+                    <p className="text-[11px] uppercase tracking-[0.32em] text-teal-200/70">Live market intelligence</p>
+                    <h2 className="mt-2 text-2xl font-semibold text-white sm:text-3xl">
+                      A sharper workspace for research, watchlists, and report archives.
                     </h2>
-                    <p className="text-sm text-slate-500 dark:text-gray-400 max-w-xs mx-auto">
-                      Ask for a stock report (e.g. <em>NVDA report</em>), compare companies (e.g. <em>compare NVDA AMD INTC</em>), run deep research (e.g. <em>deep research on semiconductors</em>), or generate your watchlist daily report.
+                    <p className="mt-3 max-w-2xl text-sm leading-7 text-slate-300 sm:text-[15px]">
+                      The chat stays central, while watchlist and reports move into a dedicated adaptive workspace that is easier to scan on laptop and easier to reach on mobile.
                     </p>
-                  </div>
-                  <div className="flex flex-wrap justify-center gap-2">
-                    {QUICK_PROMPTS.map(({ label, prompt }) => (
-                      <button
-                        key={label}
-                        type="button"
-                        onClick={() => void sendPrompt(prompt)}
-                        className="text-sm px-4 py-2 rounded-full bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-200 dark:hover:bg-indigo-800 transition-colors"
-                      >
-                        {label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
 
-              {messages.map((msg, i) => (
-                <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                  <div
-                    className={[
-                      'max-w-[90%] sm:max-w-[80%] rounded-2xl px-4 py-3 shadow-sm',
-                      msg.role === 'user'
-                        ? 'bg-indigo-600 text-white rounded-br-sm'
-                        : 'bg-white dark:bg-gray-800 text-slate-800 dark:text-slate-100 border border-slate-100 dark:border-gray-700 rounded-bl-sm',
-                    ].join(' ')}
-                  >
-                    {msg.role === 'assistant' && (
-                      <div className="flex flex-wrap items-center gap-2 mb-1.5">
-                        <span className="text-xs font-medium text-slate-400 dark:text-gray-500">Assistant</span>
-                        {msg.provider && (
-                          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-100 dark:bg-gray-700/80 text-slate-500 dark:text-gray-300 uppercase tracking-wide">
-                            Strategy {formatProviderLabel(msg.provider)}
-                          </span>
-                        )}
-                        {msg.runtimeProvider && (
-                          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 uppercase tracking-wide">
-                            Used {formatProviderLabel(msg.runtimeProvider)}
-                          </span>
-                        )}
-                        {msg.model && (
-                          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-indigo-50 dark:bg-indigo-900/50 text-indigo-600 dark:text-indigo-300 font-mono">
-                            {formatModelLabel(msg.model)}
-                          </span>
-                        )}
-                        {msg.fallbackCount && msg.fallbackCount > 0 && (
-                          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 uppercase tracking-wide">
-                            {msg.fallbackCount} fallback{msg.fallbackCount === 1 ? '' : 's'}
-                          </span>
-                        )}
-                        {msg.stats && (
-                          <span className="text-[10px] text-slate-300 dark:text-gray-600">
-                            {msg.stats.rounds} rounds &#xB7; {msg.stats.toolCalls} calls
-                          </span>
+                    <div className="mt-5 flex gap-3 overflow-x-auto pb-1 lg:grid lg:grid-cols-5 lg:overflow-visible">
+                      {QUICK_PROMPTS.map(({ label, prompt, eyebrow }) => (
+                        <button
+                          key={label}
+                          type="button"
+                          onClick={() => void sendPrompt(prompt)}
+                          className="min-w-[220px] rounded-[24px] border border-white/10 bg-white/7 p-4 text-left transition hover:-translate-y-0.5 hover:bg-white/11 lg:min-w-0"
+                        >
+                          <p className="text-[11px] uppercase tracking-[0.18em] text-cyan-200/70">{eyebrow}</p>
+                          <p className="mt-2 text-sm font-medium text-white">{label}</p>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="grid gap-3 xl:w-[430px]">
+                    <div className="rounded-[24px] border border-white/10 bg-slate-950/40 p-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-[11px] uppercase tracking-[0.18em] text-slate-400">Execution strategy</p>
+                          <p className="mt-1 text-xs leading-5 text-slate-300">{providerHelpText}</p>
+                        </div>
+                        {availableProviders.length > 1 ? (
+                          <select
+                            value={provider}
+                            onChange={(e) => {
+                              const next = e.target.value;
+                              setProvider(next);
+                              setSessionId(null);
+                              const sel = availableProviders.find((p) => p.id === next);
+                              const models = sel?.models ?? [];
+                              setAvailableModels(models);
+                              if (models.length > 0) setModel(models[0].value);
+                            }}
+                            disabled={modelsLoading}
+                            className="min-w-[150px] rounded-2xl border border-white/10 bg-white/8 px-3 py-2 text-xs text-white focus:outline-none focus:ring-2 focus:ring-teal-300 disabled:opacity-50"
+                          >
+                            {availableProviders.map((p) => (
+                              <option key={p.id} value={p.id} disabled={!p.available}>
+                                {p.label}
+                                {p.available ? '' : ' (unavailable)'}
+                              </option>
+                            ))}
+                          </select>
+                        ) : (
+                          <div className="rounded-full border border-white/10 bg-white/8 px-3 py-2 text-xs font-medium text-white">
+                            {selectedProvider?.label ?? 'Default'}
+                          </div>
                         )}
                       </div>
-                    )}
-                    {msg.role === 'assistant' ? (
-                      <MarkdownContent content={msg.content} />
-                    ) : (
-                      <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
-                    )}
-                  </div>
-                </div>
-              ))}
+                    </div>
 
-              {isLoading && (
-                <div className="flex justify-start">
-                  <div className="bg-white dark:bg-gray-800 border border-slate-100 dark:border-gray-700 rounded-2xl rounded-bl-sm px-4 py-3 shadow-sm">
-                    <div className="flex items-center gap-1.5 text-slate-400 dark:text-gray-500 text-sm">
-                      <span className="animate-pulse">&#x25CF;</span>
-                      <span className="animate-pulse [animation-delay:150ms]">&#x25CF;</span>
-                      <span className="animate-pulse [animation-delay:300ms]">&#x25CF;</span>
-                      <span className="ml-1 text-xs">{formatProviderLabel(provider)} &#xB7; {formatModelLabel(model)} thinking&#8230;</span>
+                    <div className="rounded-[24px] border border-white/10 bg-slate-950/40 p-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-[11px] uppercase tracking-[0.18em] text-slate-400">Starting model</p>
+                          <p className="mt-1 text-xs leading-5 text-slate-300">{modelHelpText}</p>
+                        </div>
+                        <select
+                          value={model}
+                          onChange={(e) => {
+                            setModel(e.target.value);
+                            setSessionId(null);
+                          }}
+                          disabled={modelsLoading}
+                          className="min-w-[170px] rounded-2xl border border-white/10 bg-white/8 px-3 py-2 text-xs text-white focus:outline-none focus:ring-2 focus:ring-teal-300 disabled:opacity-50"
+                        >
+                          {modelsLoading
+                            ? <option>Loading...</option>
+                            : availableModels.map((m) => (
+                                <option key={m.value} value={m.value}>
+                                  {m.label}
+                                </option>
+                              ))}
+                        </select>
+                      </div>
+                      {selectedModel?.rateLimitTier && (
+                        <p className="mt-3 text-[11px] uppercase tracking-[0.18em] text-teal-200/60">
+                          Current tier: {selectedModel.rateLimitTier}
+                        </p>
+                      )}
                     </div>
                   </div>
                 </div>
-              )}
-              <div ref={messagesEndRef} />
+              </div>
+            </section>
+
+            <div className="flex-1 overflow-y-auto px-4 py-5 sm:px-6">
+              <div className="mx-auto flex max-w-5xl flex-col gap-4">
+                {messages.length === 0 && (
+                  <div className="rounded-[32px] border border-white/10 bg-white/6 p-6 shadow-[0_28px_80px_-38px_rgba(45,212,191,0.5)] backdrop-blur-xl sm:p-8">
+                    <div className="grid gap-5 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)] lg:items-end">
+                      <div>
+                        <p className="text-[11px] uppercase tracking-[0.34em] text-slate-400">Start here</p>
+                        <h3 className="mt-3 text-3xl font-semibold text-white">Run a new research session</h3>
+                        <p className="mt-3 max-w-2xl text-sm leading-7 text-slate-300">
+                          Ask for a company report, compare peers, run deep research on a sector, or produce a combined daily report for the saved watchlist.
+                        </p>
+                      </div>
+                      <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-1">
+                        <div className="rounded-[24px] border border-white/10 bg-slate-950/35 p-4">
+                          <p className="text-[11px] uppercase tracking-[0.2em] text-slate-400">Deep dives</p>
+                          <p className="mt-2 text-sm text-white">Single-stock and comparison reports with charts and scorecards.</p>
+                        </div>
+                        <div className="rounded-[24px] border border-white/10 bg-slate-950/35 p-4">
+                          <p className="text-[11px] uppercase tracking-[0.2em] text-slate-400">Watchlist pulse</p>
+                          <p className="mt-2 text-sm text-white">One button to turn the whole watchlist into a daily brief.</p>
+                        </div>
+                        <div className="rounded-[24px] border border-white/10 bg-slate-950/35 p-4">
+                          <p className="text-[11px] uppercase tracking-[0.2em] text-slate-400">Library</p>
+                          <p className="mt-2 text-sm text-white">Reports are grouped by date and surfaced as cards with summaries.</p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {messages.map((msg, i) => (
+                  <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                    <div
+                      className={[
+                        'max-w-[92%] rounded-[28px] px-5 py-4 shadow-[0_24px_50px_-30px_rgba(15,23,42,0.85)] sm:max-w-[82%]',
+                        msg.role === 'user'
+                          ? 'rounded-br-md bg-[linear-gradient(135deg,#5eead4,#22d3ee_45%,#38bdf8)] text-slate-950'
+                          : 'rounded-bl-md border border-white/10 bg-white/8 text-slate-100 backdrop-blur-xl',
+                      ].join(' ')}
+                    >
+                      {msg.role === 'assistant' && (
+                        <div className="mb-3 flex flex-wrap items-center gap-2">
+                          <span className="text-xs font-medium text-slate-400">Assistant</span>
+                          {msg.provider && (
+                            <span className="rounded-full border border-white/10 bg-white/8 px-2 py-1 text-[10px] uppercase tracking-[0.14em] text-slate-300">
+                              Strategy {formatProviderLabel(msg.provider)}
+                            </span>
+                          )}
+                          {msg.runtimeProvider && (
+                            <span className="rounded-full border border-teal-300/20 bg-teal-300/10 px-2 py-1 text-[10px] uppercase tracking-[0.14em] text-teal-100">
+                              Used {formatProviderLabel(msg.runtimeProvider)}
+                            </span>
+                          )}
+                          {msg.model && (
+                            <span className="rounded-full border border-cyan-300/20 bg-cyan-300/10 px-2 py-1 font-mono text-[10px] text-cyan-100">
+                              {formatModelLabel(msg.model)}
+                            </span>
+                          )}
+                          {msg.fallbackCount && msg.fallbackCount > 0 && (
+                            <span className="rounded-full border border-amber-300/20 bg-amber-300/10 px-2 py-1 text-[10px] uppercase tracking-[0.14em] text-amber-100">
+                              {msg.fallbackCount} fallback{msg.fallbackCount === 1 ? '' : 's'}
+                            </span>
+                          )}
+                          {msg.stats && (
+                            <span className="text-[10px] text-slate-400">
+                              {msg.stats.rounds} rounds • {msg.stats.toolCalls} calls
+                            </span>
+                          )}
+                        </div>
+                      )}
+                      {msg.role === 'assistant' ? (
+                        <MarkdownContent content={msg.content} />
+                      ) : (
+                        <p className="whitespace-pre-wrap text-sm font-medium">{msg.content}</p>
+                      )}
+                    </div>
+                  </div>
+                ))}
+
+                {isLoading && (
+                  <div className="flex justify-start">
+                    <div className="rounded-[28px] rounded-bl-md border border-white/10 bg-white/8 px-5 py-4 shadow-[0_24px_50px_-30px_rgba(15,23,42,0.85)] backdrop-blur-xl">
+                      <div className="flex items-center gap-1.5 text-sm text-slate-300">
+                        <span className="animate-pulse">●</span>
+                        <span className="animate-pulse [animation-delay:150ms]">●</span>
+                        <span className="animate-pulse [animation-delay:300ms]">●</span>
+                        <span className="ml-2 text-xs text-slate-400">
+                          {formatProviderLabel(provider)} • {formatModelLabel(model)} thinking...
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+                <div ref={messagesEndRef} />
+              </div>
             </div>
 
-            <div className="shrink-0 border-t border-slate-200 dark:border-gray-800 bg-white dark:bg-gray-900 px-3 sm:px-6 py-3">
-              {error && (
-                <p className="text-xs text-red-500 dark:text-red-400 mb-2 px-1">&#x26A0;&#xFE0F; {error}</p>
-              )}
-              <form onSubmit={handleSubmit} className="flex items-end gap-2">
-                <textarea
-                  ref={textareaRef}
-                  rows={1}
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                  onKeyDown={handleKeyDown}
-                  placeholder="Ask for a stock report, comparison, deep research, or watchlist daily report&#8230; (Enter to send, Shift+Enter for newline)"
-                  disabled={isLoading}
-                  className="flex-1 resize-none px-4 py-2.5 rounded-xl border border-slate-200 dark:border-gray-700 bg-slate-50 dark:bg-gray-800 text-slate-900 dark:text-white text-sm placeholder-slate-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-60 min-h-[44px] max-h-40"
-                />
-                <button
-                  type="submit"
-                  disabled={isLoading || !input.trim()}
-                  className="shrink-0 h-11 px-5 rounded-xl bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700 disabled:bg-slate-200 dark:disabled:bg-gray-700 disabled:text-slate-400 dark:disabled:text-gray-500 disabled:cursor-not-allowed transition-colors"
+            <div className="border-t border-white/10 px-4 py-4 sm:px-6">
+              <div className="mx-auto max-w-5xl">
+                {error && (
+                  <p className="mb-3 rounded-2xl border border-rose-400/25 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+                    {error}
+                  </p>
+                )}
+                <form
+                  onSubmit={handleSubmit}
+                  className="rounded-[30px] border border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,0.08),rgba(255,255,255,0.04))] p-3 shadow-[0_25px_70px_-36px_rgba(15,23,42,0.9)] backdrop-blur-xl"
                 >
-                  {isLoading ? '&#8230;' : 'Send'}
-                </button>
-              </form>
+                  <textarea
+                    ref={textareaRef}
+                    rows={1}
+                    value={input}
+                    onChange={(e) => setInput(e.target.value)}
+                    onKeyDown={handleKeyDown}
+                    placeholder="Ask for a stock report, comparison, deep research, or watchlist daily report... (Enter to send, Shift+Enter for newline)"
+                    disabled={isLoading}
+                    className="min-h-[54px] max-h-40 w-full resize-none bg-transparent px-3 py-2 text-sm text-white placeholder:text-slate-500 focus:outline-none disabled:opacity-60"
+                  />
+                  <div className="flex flex-wrap items-center justify-between gap-3 border-t border-white/8 px-2 pt-3">
+                    <p className="text-xs text-slate-400">Enter sends. Shift+Enter adds a newline.</p>
+                    <button
+                      type="submit"
+                      disabled={isLoading || !input.trim()}
+                      className="rounded-full bg-gradient-to-r from-teal-300 via-cyan-300 to-sky-300 px-5 py-2.5 text-sm font-semibold text-slate-950 transition hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {isLoading ? '...' : 'Send'}
+                    </button>
+                  </div>
+                </form>
+              </div>
             </div>
           </main>
+
+          <aside className="hidden min-h-0 flex-col border-l border-white/10 bg-slate-950/35 p-4 backdrop-blur-xl lg:flex">
+            <div className="grid grid-cols-3 gap-2">
+              {workspaceTabs.map((tab) => (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => setActiveWorkspaceTab(tab.id)}
+                  className={panelTabClass(tab.id)}
+                >
+                  <span className={`block text-[11px] uppercase tracking-[0.18em] ${activeWorkspaceTab === tab.id ? 'text-slate-500' : 'text-slate-400'}`}>
+                    {tab.count}
+                  </span>
+                  <span className="mt-1 block text-sm font-medium">{tab.label}</span>
+                </button>
+              ))}
+            </div>
+
+            <div className="mt-4 min-h-0 flex-1 overflow-y-auto pr-1">
+              {renderWorkspacePane()}
+            </div>
+          </aside>
+        </div>
+      </div>
+
+      <div
+        className={[
+          'fixed inset-x-0 bottom-0 z-50 rounded-t-[32px] border border-white/10 bg-[linear-gradient(180deg,rgba(8,17,31,0.98),rgba(6,11,21,0.98))] p-4 shadow-[0_-28px_80px_-35px_rgba(15,23,42,0.95)] backdrop-blur-2xl transition-transform duration-300 lg:hidden',
+          sidebarOpen ? 'translate-y-0' : 'translate-y-[105%]',
+        ].join(' ')}
+      >
+        <div className="mx-auto max-h-[78vh] max-w-2xl overflow-hidden">
+          <div className="mx-auto mb-4 h-1.5 w-14 rounded-full bg-white/20" />
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <div>
+              <p className="text-[11px] uppercase tracking-[0.32em] text-teal-200/70">Workspace</p>
+              <h2 className="text-lg font-semibold text-white">Watchlist and report navigation</h2>
+            </div>
+            <button
+              type="button"
+              onClick={() => setSidebarOpen(false)}
+              className="rounded-full border border-white/10 bg-white/8 p-2 text-slate-200"
+              aria-label="Close workspace"
+            >
+              <Icon className="h-5 w-5">
+                <path d="M18 6 6 18" />
+                <path d="m6 6 12 12" />
+              </Icon>
+            </button>
+          </div>
+
+          <div className="grid grid-cols-3 gap-2">
+            {workspaceTabs.map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setActiveWorkspaceTab(tab.id)}
+                className={panelTabClass(tab.id)}
+              >
+                <span className={`block text-[11px] uppercase tracking-[0.18em] ${activeWorkspaceTab === tab.id ? 'text-slate-500' : 'text-slate-400'}`}>
+                  {tab.count}
+                </span>
+                <span className="mt-1 block text-sm font-medium">{tab.label}</span>
+              </button>
+            ))}
+          </div>
+
+          <div className="mt-4 max-h-[calc(78vh-140px)] overflow-y-auto pr-1">
+            {renderWorkspacePane(true)}
+          </div>
         </div>
       </div>
 
       {reportPreview !== null && (
-        <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 p-4 sm:p-8 overflow-y-auto">
-          <div className="relative w-full max-w-5xl bg-white dark:bg-gray-900 rounded-2xl shadow-2xl flex flex-col max-h-[90vh] mt-4 mb-4">
-            <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200 dark:border-gray-700 shrink-0">
+        <div className="fixed inset-0 z-[60] flex items-start justify-center overflow-y-auto p-4 sm:p-8">
+          <div className="relative mt-4 flex max-h-[90vh] w-full max-w-5xl flex-col overflow-hidden rounded-[30px] border border-white/12 bg-[linear-gradient(180deg,rgba(8,17,31,0.98),rgba(9,15,26,0.96))] shadow-[0_35px_90px_-40px_rgba(15,23,42,1)] backdrop-blur-2xl">
+            <div className="flex items-center justify-between gap-3 border-b border-white/10 px-5 py-4">
               <div className="min-w-0">
-                <h3 className="font-semibold text-slate-900 dark:text-white text-sm truncate">
-                  {reportTitle ?? 'Report'}
-                </h3>
-                <p className="text-xs text-slate-400 dark:text-gray-500">Research report preview</p>
+                <p className="text-[11px] uppercase tracking-[0.28em] text-teal-200/70">Report Preview</p>
+                <h3 className="truncate text-base font-semibold text-white">{reportTitle ?? 'Report'}</h3>
               </div>
-              <div className="flex items-center gap-2 shrink-0 ml-3">
+              <div className="ml-3 flex shrink-0 items-center gap-2">
                 {reportUrl && (
                   <a
                     href={reportUrl}
                     download
-                    className="text-xs px-3 py-1.5 rounded-lg border border-slate-200 dark:border-gray-700 text-indigo-600 dark:text-indigo-300 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 transition-colors"
+                    className="rounded-full border border-white/10 bg-white/8 px-4 py-2 text-sm font-medium text-white transition hover:bg-white/12"
                   >
                     Download
                   </a>
                 )}
                 <button
                   type="button"
-                  onClick={() => { setReportPreview(null); setReportTitle(null); setReportUrl(null); }}
-                  className="text-xs px-3 py-1.5 rounded-lg bg-slate-100 dark:bg-gray-800 text-slate-600 dark:text-gray-300 hover:bg-slate-200 dark:hover:bg-gray-700 transition-colors"
+                  onClick={() => {
+                    setReportPreview(null);
+                    setReportTitle(null);
+                    setReportUrl(null);
+                  }}
+                  className="rounded-full bg-gradient-to-r from-teal-300 via-cyan-300 to-sky-300 px-4 py-2 text-sm font-semibold text-slate-950"
                 >
                   Close
                 </button>
               </div>
             </div>
-            <div className="overflow-y-auto px-5 py-4 flex-1">
+            <div className="overflow-y-auto px-5 py-5">
               {reportLoading ? (
-                <p className="text-sm text-slate-400 dark:text-gray-500">Loading report&#8230;</p>
+                <p className="text-sm text-slate-300">Loading report...</p>
               ) : (
-                <MarkdownContent content={reportPreview} />
+                <div className="rounded-[24px] border border-white/8 bg-white/5 p-4 text-slate-100">
+                  <MarkdownContent content={reportPreview} />
+                </div>
               )}
             </div>
           </div>

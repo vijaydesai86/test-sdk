@@ -1532,10 +1532,10 @@ export async function executeTool(
             message: `Built stock report content for ${symbol}`,
           };
         }
-        const saved = await saveReport(finalContent, `${symbol}-stock-report`);
+        const saved = await saveReport(finalContent, `${symbol}-stock-report`, undefined, { reportKind: 'stock' });
         return {
           success: true,
-          data: { content: finalContent, symbol: symbol.toUpperCase(), range, ...saved, downloadUrl: `/api/reports/${saved.filename}` },
+          data: { content: finalContent, symbol: symbol.toUpperCase(), range, ...saved, downloadUrl: `/api/reports/${saved.storagePath ?? saved.filename}` },
           message: `Saved stock report to ${saved.filePath}`,
         };
       }
@@ -1771,10 +1771,10 @@ export async function executeTool(
             message: `Built comparison report content for ${universe.join(', ')}`,
           };
         }
-        const saved = await saveReport(content, `${universe.join('-')}-comparison-report`);
+        const saved = await saveReport(content, `${universe.join('-')}-comparison-report`, undefined, { reportKind: 'comparison' });
         return {
           success: true,
-          data: { content, universe, range, ...saved, downloadUrl: `/api/reports/${saved.filename}` },
+          data: { content, universe, range, ...saved, downloadUrl: `/api/reports/${saved.storagePath ?? saved.filename}` },
           message: `Saved comparison report to ${saved.filePath}`,
         };
       }
@@ -1869,10 +1869,10 @@ export async function executeTool(
           };
         }
 
-        const saved = await saveReport(content, `${watchlist.slug}-daily-report`);
+        const saved = await saveReport(content, `${watchlist.slug}-daily-report`, undefined, { reportKind: 'watchlist-daily' });
         return {
           success: true,
-          data: { content, watchlist, range, ...saved, downloadUrl: `/api/reports/${saved.filename}` },
+          data: { content, watchlist, range, ...saved, downloadUrl: `/api/reports/${saved.storagePath ?? saved.filename}` },
           message: `Saved daily watchlist report to ${saved.filePath}`
         };
       }
@@ -2089,10 +2089,10 @@ export async function executeTool(
           llmConclusion: llmConclusionSector,
         });
         const safeTitle = sector.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
-        const saved = await saveReport(content, `${safeTitle}-sector-report`);
+        const saved = await saveReport(content, `${safeTitle}-sector-report`, undefined, { reportKind: 'sector' });
         return {
           success: true,
-          data: { content, ...saved, downloadUrl: `/api/reports/${saved.filename}` },
+          data: { content, ...saved, downloadUrl: `/api/reports/${saved.storagePath ?? saved.filename}` },
           message: `Saved sector report for "${sector}" to ${saved.filePath}`,
         };
       }
@@ -2146,10 +2146,10 @@ export async function executeTool(
             items: Array.isArray(comparisonResult.data?.items) ? comparisonResult.data.items : undefined,
           });
           const safeTitle = sector.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
-          const saved = await saveReport(content, `${safeTitle}-deep-research-report`);
+          const saved = await saveReport(content, `${safeTitle}-deep-research-report`, undefined, { reportKind: 'deep-research' });
           return {
             success: true,
-            data: { content, ...saved, downloadUrl: `/api/reports/${saved.filename}` },
+            data: { content, ...saved, downloadUrl: `/api/reports/${saved.storagePath ?? saved.filename}` },
             message: `Saved deep research comparison report for "${sector}" to ${saved.filePath}`,
           };
         }
@@ -2175,10 +2175,10 @@ export async function executeTool(
             baseContent: String(stockResult.data.content),
           });
           const safeTitle = sector.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
-          const saved = await saveReport(content, `${safeTitle}-deep-research-report`);
+          const saved = await saveReport(content, `${safeTitle}-deep-research-report`, undefined, { reportKind: 'deep-research' });
           return {
             success: true,
-            data: { content, ...saved, downloadUrl: `/api/reports/${saved.filename}` },
+            data: { content, ...saved, downloadUrl: `/api/reports/${saved.storagePath ?? saved.filename}` },
             message: `Saved deep research company report for "${sector}" to ${saved.filePath}`,
           };
         }
@@ -2503,10 +2503,10 @@ export async function executeTool(
           llmConclusion: llmConclusionDeep,
         });
         const safeTitle = sector.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
-        const saved = await saveReport(content, `${safeTitle}-deep-sector-report`);
+        const saved = await saveReport(content, `${safeTitle}-deep-sector-report`, undefined, { reportKind: 'deep-sector' });
         return {
           success: true,
-          data: { content, ...saved, downloadUrl: `/api/reports/${saved.filename}` },
+          data: { content, ...saved, downloadUrl: `/api/reports/${saved.storagePath ?? saved.filename}` },
           message: `Saved deep sector report for "${sector}" to ${saved.filePath}`,
         };
       }

@@ -4,22 +4,25 @@
 -- Creates the table that the /api/saved-reports endpoints read from and write to.
 
 create table if not exists public.saved_reports (
-  id          uuid        primary key default gen_random_uuid(),
-  filename    text        not null,
-  title       text,
-  content     text        not null,
-  created_at  timestamptz not null default now()
+  id           uuid        primary key default gen_random_uuid(),
+  filename     text        not null,
+  title        text,
+  summary      text,
+  content      text        not null,
+  storage_path text,
+  report_kind  text,
+  report_date  date,
+  created_at   timestamptz not null default now()
 );
 
--- Optional: index on created_at for fast descending list queries
 create index if not exists saved_reports_created_at_idx
   on public.saved_reports (created_at desc);
 
--- Row-Level Security: allow the service role full access
--- (the service role key bypasses RLS by default, but it's good practice to be explicit)
+create index if not exists saved_reports_report_date_idx
+  on public.saved_reports (report_date desc, created_at desc);
+
 alter table public.saved_reports enable row level security;
 
--- Allow service role to do everything (server-side API routes use this key)
 create policy "service role full access"
   on public.saved_reports
   as permissive
