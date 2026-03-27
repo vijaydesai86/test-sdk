@@ -172,6 +172,134 @@ describe('buildStockReport', () => {
     expect(report).toContain('Price History');
   });
 
+  it('assigns buy guidance when quality, valuation, and trend all support entry', () => {
+    const report = buildStockReport({
+      symbol: 'BUYME',
+      generatedAt: '2025-01-01T00:00:00Z',
+      price: { price: '100.00', changePercent: '1.2%' },
+      companyOverview: {
+        name: 'Buy Me Inc.',
+        peRatio: '16',
+        analystTargetPrice: '135',
+        operatingMargin: '0.38',
+        profitMargin: '0.62',
+        returnOnEquity: '1.20',
+        '50DayMovingAverage': '95',
+        '200DayMovingAverage': '85',
+      },
+      basicFinancials: {
+        metric: {
+          grossMarginTTM: 0.72,
+          operatingMarginTTM: 0.38,
+          roeTTM: 1.2,
+          revenueGrowthTTM: 0.32,
+          epsGrowth5Y: 0.28,
+        },
+      },
+      analystRatings: { strongBuy: 8, buy: 4, hold: 1, sell: 0, strongSell: 0 },
+      priceTargets: { targetMean: 135 },
+      priceHistory: {
+        prices: [
+          { date: '2024-01-01', close: '72' },
+          { date: '2024-04-01', close: '79' },
+          { date: '2024-07-01', close: '88' },
+          { date: '2024-10-01', close: '100' },
+        ],
+      },
+      balanceSheet: {
+        quarterlyReports: [
+          {
+            fiscalDateEnding: '2024-09-30',
+            cashAndEquivalents: '5000000000',
+            longTermDebt: '1000000000',
+            totalAssets: '18000000000',
+            totalLiabilities: '6000000000',
+            totalShareholderEquity: '12000000000',
+          },
+        ],
+      },
+      cashFlow: {
+        quarterlyReports: [
+          {
+            fiscalDateEnding: '2024-09-30',
+            operatingCashflow: '2200000000',
+            capitalExpenditures: '-400000000',
+            freeCashFlow: '1800000000',
+          },
+        ],
+      },
+    });
+
+    expect(report).toContain('| Buy Me Inc. (BUYME) | Buy | High | Add | Buy |');
+  });
+
+  it('assigns sell guidance for weak quality with broken reward-to-risk', () => {
+    const report = buildStockReport({
+      symbol: 'EXIT',
+      generatedAt: '2025-01-01T00:00:00Z',
+      price: { price: '100.00', changePercent: '-3.4%' },
+      companyOverview: {
+        name: 'Exit Corp.',
+        peRatio: '150',
+        analystTargetPrice: '70',
+        operatingMargin: '-0.05',
+        profitMargin: '-0.08',
+        returnOnEquity: '-0.25',
+        '50DayMovingAverage': '115',
+        '200DayMovingAverage': '130',
+      },
+      basicFinancials: {
+        metric: {
+          grossMarginTTM: 0.12,
+          operatingMarginTTM: -0.05,
+          roeTTM: -0.25,
+          revenueGrowthTTM: -0.18,
+          epsGrowth5Y: -0.22,
+        },
+      },
+      analystRatings: { strongBuy: 0, buy: 1, hold: 3, sell: 5, strongSell: 2 },
+      priceTargets: { targetMean: 70 },
+      priceHistory: {
+        prices: [
+          { date: '2024-01-01', close: '132' },
+          { date: '2024-04-01', close: '124' },
+          { date: '2024-07-01', close: '112' },
+          { date: '2024-10-01', close: '100' },
+        ],
+      },
+      balanceSheet: {
+        quarterlyReports: [
+          {
+            fiscalDateEnding: '2024-09-30',
+            cashAndEquivalents: '200000000',
+            longTermDebt: '4200000000',
+            totalAssets: '5000000000',
+            totalLiabilities: '6200000000',
+            totalShareholderEquity: '-1200000000',
+          },
+        ],
+      },
+      cashFlow: {
+        quarterlyReports: [
+          {
+            fiscalDateEnding: '2024-09-30',
+            operatingCashflow: '-500000000',
+            capitalExpenditures: '-250000000',
+            freeCashFlow: '-750000000',
+          },
+        ],
+      },
+    });
+
+    expect(report).toContain('| Exit Corp. (EXIT) | Sell | High | Sell | Avoid |');
+  });
+
+  it('lowers confidence when the recommendation relies on partial data', () => {
+    const report = buildStockReport(minimalStock());
+    expect(report).toContain('| AAPL (AAPL) | Watch | Low |');
+    expect(report).toContain('Confidence reflects data completeness and signal alignment');
+  });
+
   it('renders EPS chart when earnings data is present', () => {
     const report = buildStockReport(richStock());
     expect(report).toContain('Quarterly EPS');
@@ -671,6 +799,22 @@ describe('investment conclusion derivation', () => {
     const report = buildComparisonReport(data);
     expect(report).toContain('## 🎯 Investment Conclusion');
   });
+
+  it('omits balance section when every comparison balance cell is unavailable', () => {
+    const data: ComparisonReportData = {
+      generatedAt: '2025-01-01T00:00:00Z',
+      range: '1y',
+      universe: ['A', 'B'],
+      items: [
+        { symbol: 'A', overview: { name: 'Alpha' } },
+        { symbol: 'B', overview: { name: 'Beta' } },
+      ],
+      notes: [],
+    };
+    const report = buildComparisonReport(data);
+    expect(report).not.toContain('## 🏦 Balance Sheet & Cash');
+    expect(report).not.toContain('| Company | Cash | LT Debt | Net Debt | Equity | Free Cash Flow |');
+  });
 });
 
 // ─── LLM conclusion integration ───────────────────────────────────────────────
@@ -931,10 +1075,10 @@ describe('buildWatchlistDailyReport', () => {
     });
 
     expect(report).toContain('# Watchlist Daily Report: Core Watchlist');
-    expect(report).toContain('| Company | Signal | For owners | For non-owners | Why |');
-    expect(report).toContain('| Apple Inc. (AAPL) | Buy | Add | Buy | Strong profitability and supportive target upside. |');
-    expect(report).toContain('| NVIDIA (NVDA) | Hold | Hold | Watch | Signals are constructive, but the fresh entry is less compelling. |');
-    expect(report).toContain('_For owners = you already hold the stock. For non-owners = you are considering a fresh entry._');
+    expect(report).toContain('| Company | Signal | Confidence | For owners | For non-owners | Why |');
+    expect(report).toContain('| Apple Inc. (AAPL) | Buy | Medium | Add | Buy | Strong profitability and supportive target upside. |');
+    expect(report).toContain('| NVIDIA (NVDA) | Hold | Medium | Hold | Watch | Signals are constructive, but the fresh entry is less compelling. |');
+    expect(report).toContain('_For owners = you already hold the stock. For non-owners = you are considering a fresh entry. Confidence reflects data completeness and signal alignment._');
     expect(report).toContain('## 1. Apple Inc. (AAPL)');
     expect(report).toContain('## 2. NVIDIA (NVDA)');
     expect(report).toContain('### 🏢 Business Overview');

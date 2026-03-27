@@ -635,11 +635,16 @@ function buildTable(headers: string[], rows: string[][], alignments?: Array<'lef
   return [headerRow, dividerRow, ...rows.map((row) => `| ${row.join(' | ')} |`)].join('\n');
 }
 
+function hasMeaningfulTableValue(value: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  return normalized !== '' && normalized !== 'n/a' && normalized !== '—' && normalized !== 'unavailable';
+}
+
 function buildPositionGuidanceTable(rows: Array<{ company: string; guidance: PositionGuidance }>): string {
   return buildTable(
-    ['Company', 'Signal', 'For owners', 'For non-owners', 'Why'],
-    rows.map(({ company, guidance }) => [company, guidance.stance, guidance.forOwners, guidance.forNonOwners, guidance.rationale]),
-    ['left', 'left', 'left', 'left', 'left']
+    ['Company', 'Signal', 'Confidence', 'For owners', 'For non-owners', 'Why'],
+    rows.map(({ company, guidance }) => [company, guidance.stance, guidance.confidence, guidance.forOwners, guidance.forNonOwners, guidance.rationale]),
+    ['left', 'left', 'left', 'left', 'left', 'left']
   );
 }
 
@@ -876,6 +881,8 @@ type ActionStance = {
   rationale: string;
   ownerAction: OwnerAction;
   nonOwnerAction: NonOwnerAction;
+  confidence: 'High' | 'Medium' | 'Low';
+  missingInputs: string[];
 };
 
 type PositionGuidance = {
@@ -883,9 +890,25 @@ type PositionGuidance = {
   rationale: string;
   forOwners: OwnerAction;
   forNonOwners: NonOwnerAction;
+  confidence: 'High' | 'Medium' | 'Low';
+  missingInputs: string[];
 };
 
-const POSITION_GUIDANCE_NOTE = '_For owners = you already hold the stock. For non-owners = you are considering a fresh entry._';
+type RecommendationProfile = {
+  signal: ActionLabel;
+  rationale: string;
+  ownerAction: OwnerAction;
+  nonOwnerAction: NonOwnerAction;
+  confidence: 'High' | 'Medium' | 'Low';
+  confidenceScore: number;
+  missingInputs: string[];
+  qualityScore: number | null;
+  valuationScore: number | null;
+  trendScore: number | null;
+  overallScore: number | null;
+};
+
+const POSITION_GUIDANCE_NOTE = '_For owners = you already hold the stock. For non-owners = you are considering a fresh entry. Confidence reflects data completeness and signal alignment._';
 
 function normalizeActionLabel(label?: string | null): ActionLabel {
   if (label === 'Wait') return 'Watch';
@@ -893,70 +916,253 @@ function normalizeActionLabel(label?: string | null): ActionLabel {
   return 'Hold';
 }
 
-function deriveActionStance(args: {
-  score: number | null;
+function formatMissingInputs(inputs: string[], maxItems = 2): string {
+  if (inputs.length === 0) return '';
+  const shown = inputs.slice(0, maxItems);
+  if (inputs.length === 1) return shown[0];
+  if (inputs.length === 2) return `${shown[0]} and ${shown[1]}`;
+  return `${shown[0]}, ${shown[1]}, and more`;
+}
+
+function sentenceCase(text: string): string {
+  return text ? `${text[0].toUpperCase()}${text.slice(1)}` : text;
+}
+
+function weightedAverage(entries: Array<{ value: number | null; weight: number }>): number | null {
+  const available = entries.filter((entry) => entry.value !== null);
+  if (!available.length) return null;
+  const totalWeight = available.reduce((sum, entry) => sum + entry.weight, 0);
+  if (!totalWeight) return null;
+  const value = available.reduce((sum, entry) => sum + (entry.value as number) * (entry.weight / totalWeight), 0);
+  return clampScore(value);
+}
+
+function scoreTargetUpside(upside: number | null): number | null {
+  if (upside === null) return null;
+  return clampScore(50 + upside * 1.5);
+}
+
+function scoreTechnicalTrend(technical: TechnicalSnapshot, momentum: number | null): number | null {
+  let trendBase: number | null = null;
+  if (technical.vs50 !== null && technical.vs200 !== null) {
+    if (technical.vs50 >= 0 && technical.vs200 >= 0) trendBase = 80;
+    else if (technical.vs50 >= 0 && technical.vs200 < 0) trendBase = 56;
+    else if (technical.vs50 < 0 && technical.vs200 >= 0) trendBase = 44;
+    else trendBase = 24;
+  } else if (technical.vs50 !== null) {
+    trendBase = technical.vs50 >= 0 ? 62 : 38;
+  } else if (technical.vs200 !== null) {
+    trendBase = technical.vs200 >= 0 ? 58 : 34;
+  }
+
+  const rsiScore = technical.rsi14 === null
+    ? null
+    : technical.rsi14 >= 75
+      ? 38
+      : technical.rsi14 >= 65
+        ? 50
+        : technical.rsi14 >= 55
+          ? 64
+          : technical.rsi14 >= 40
+            ? 56
+            : technical.rsi14 >= 30
+              ? 44
+              : 58;
+
+  return weightedAverage([
+    { value: trendBase, weight: 0.45 },
+    { value: rsiScore, weight: 0.2 },
+    { value: momentum, weight: 0.35 },
+  ]);
+}
+
+function deriveRecommendationConfidence(args: {
+  price: number | null;
+  qualityScore: number | null;
+  valuationScore: number | null;
+  trendScore: number | null;
+  targetUpside: number | null;
+  hasBalanceSheet: boolean;
+  hasCashFlow: boolean;
+}): { score: number; label: 'High' | 'Medium' | 'Low'; missingInputs: string[] } {
+  const { price, qualityScore, valuationScore, trendScore, targetUpside, hasBalanceSheet, hasCashFlow } = args;
+  const missingInputs: string[] = [];
+  let score = 0;
+
+  if (price !== null) score += 20;
+  else missingInputs.push('current price');
+
+  if (qualityScore !== null) score += 25;
+  else missingInputs.push('quality metrics');
+
+  if (valuationScore !== null) score += 20;
+  else missingInputs.push('valuation anchor');
+
+  if (trendScore !== null) score += 20;
+  else missingInputs.push('trend data');
+
+  if (targetUpside !== null) score += 7.5;
+  else missingInputs.push('analyst target data');
+
+  if (hasBalanceSheet) score += 3.75;
+  else missingInputs.push('balance-sheet detail');
+
+  if (hasCashFlow) score += 3.75;
+  else missingInputs.push('cash-flow detail');
+
+  const label = score >= 80 ? 'High' : score >= 58 ? 'Medium' : 'Low';
+  return { score, label, missingInputs };
+}
+
+function buildRecommendationRationale(profile: {
+  signal: ActionLabel;
+  qualityScore: number | null;
+  valuationScore: number | null;
+  trendScore: number | null;
+  confidence: 'High' | 'Medium' | 'Low';
+  missingInputs: string[];
+}): string {
+  const positives: string[] = [];
+  const cautions: string[] = [];
+
+  if (profile.qualityScore !== null) {
+    if (profile.qualityScore >= 70) positives.push('business quality is strong');
+    else if (profile.qualityScore >= 55) positives.push('business quality is solid');
+    else if (profile.qualityScore < 38) cautions.push('business quality is weak');
+  }
+
+  if (profile.valuationScore !== null) {
+    if (profile.valuationScore >= 60) positives.push('valuation offers room for upside');
+    else if (profile.valuationScore < 40) cautions.push('valuation support is weak');
+  }
+
+  if (profile.trendScore !== null) {
+    if (profile.trendScore >= 58) positives.push('trend is supportive');
+    else if (profile.trendScore < 35) cautions.push('trend is working against the setup');
+  }
+
+  let opening = 'Signals are mixed across quality, valuation, and trend.';
+  if (profile.signal === 'Buy') {
+    opening = positives.length >= 2
+      ? `${sentenceCase(positives.slice(0, 2).join(' and '))}.`
+      : 'Quality, valuation, and trend are supportive enough to justify fresh exposure.';
+  } else if (profile.signal === 'Hold') {
+    opening = positives.length
+      ? `${positives[0][0].toUpperCase()}${positives[0].slice(1)}, but the setup is not attractive enough for an aggressive add.`
+      : 'The thesis is still investable, but this is not a high-conviction entry point.';
+  } else if (profile.signal === 'Watch') {
+    opening = cautions.length
+      ? `${cautions[0][0].toUpperCase()}${cautions[0].slice(1)}, so patience is warranted.`
+      : 'The setup needs a better entry or cleaner confirmation before acting.';
+  } else if (profile.signal === 'Sell') {
+    opening = cautions.length >= 2
+      ? `${sentenceCase(cautions.slice(0, 2).join(' and '))}.`
+      : 'Quality and reward-to-risk are weak enough that capital is better protected elsewhere.';
+  }
+
+  if (profile.confidence === 'High' || profile.missingInputs.length === 0) {
+    return opening;
+  }
+
+  return `${opening} Confidence is ${profile.confidence.toLowerCase()} because ${formatMissingInputs(profile.missingInputs)} are incomplete.`;
+}
+
+function deriveRecommendationProfile(args: {
+  scorecard: ReturnType<typeof computeScorecard>;
   targetUpside: number | null;
   technical: TechnicalSnapshot;
-  revenueGrowth: number | null;
-  operatingMargin: number | null;
-}): ActionStance {
-  const { score, targetUpside, technical, revenueGrowth, operatingMargin } = args;
-  const strongFundamentals = score !== null && score >= 65;
-  const weakFundamentals = score !== null && score < 40;
-  const positiveUpside = targetUpside !== null && targetUpside >= 10;
-  const negativeUpside = targetUpside !== null && targetUpside <= -10;
-  const uptrend = (technical.vs50 !== null && technical.vs50 >= 0) && (technical.vs200 === null || technical.vs200 >= 0);
-  const downtrend = (technical.vs50 !== null && technical.vs50 < 0) && (technical.vs200 === null || technical.vs200 < 0);
-  const overbought = technical.rsi14 !== null && technical.rsi14 >= 70;
-  const oversold = technical.rsi14 !== null && technical.rsi14 <= 30;
-  const healthyOps = operatingMargin !== null && operatingMargin >= 15;
-  const growthPositive = revenueGrowth !== null && revenueGrowth > 0;
+  price: number | null;
+  hasBalanceSheet: boolean;
+  hasCashFlow: boolean;
+}): RecommendationProfile {
+  const { scorecard, targetUpside, technical, price, hasBalanceSheet, hasCashFlow } = args;
+  const qualityScore = weightedAverage([
+    { value: scorecard.components.profitability, weight: 0.45 },
+    { value: scorecard.components.growth, weight: 0.25 },
+    { value: scorecard.components.moat, weight: 0.3 },
+  ]);
+  const valuationScore = weightedAverage([
+    { value: scorecard.components.valuation, weight: 0.55 },
+    { value: scoreTargetUpside(targetUpside), weight: 0.45 },
+  ]);
+  const trendScore = scoreTechnicalTrend(technical, scorecard.components.momentum);
+  const confidence = deriveRecommendationConfidence({
+    price,
+    qualityScore,
+    valuationScore,
+    trendScore,
+    targetUpside,
+    hasBalanceSheet,
+    hasCashFlow,
+  });
+  const overallScore = weightedAverage([
+    { value: qualityScore, weight: 0.45 },
+    { value: valuationScore, weight: 0.25 },
+    { value: trendScore, weight: 0.2 },
+    { value: confidence.score, weight: 0.1 },
+  ]);
 
-  if (weakFundamentals && negativeUpside && downtrend) {
-    return {
-      label: 'Sell',
-      rationale: 'Composite score, target spread, and price trend all point to a weak setup.',
-      ownerAction: 'Sell',
-      nonOwnerAction: 'Avoid',
-    };
+  const strongQuality = qualityScore !== null && qualityScore >= 50;
+  const weakQuality = qualityScore !== null && qualityScore < 32;
+  const attractiveValuation = valuationScore !== null && valuationScore >= 55;
+  const weakValuation = valuationScore !== null && valuationScore < 38;
+  const supportiveTrend = trendScore !== null && trendScore >= 50;
+  const brokenTrend = trendScore !== null && trendScore < 32;
+
+  let signal: ActionLabel;
+  if ((overallScore !== null && overallScore >= 50 && (qualityScore === null || qualityScore >= 40) && (valuationScore === null || valuationScore >= 48) && (trendScore === null || trendScore >= 45))
+    || (strongQuality && attractiveValuation && supportiveTrend && confidence.label !== 'Low')) {
+    signal = 'Buy';
+  } else if ((overallScore !== null && overallScore < 28 && weakQuality && (brokenTrend || weakValuation)) && confidence.label !== 'Low') {
+    signal = 'Sell';
+  } else if ((overallScore !== null && overallScore >= 46) || strongQuality || (qualityScore !== null && qualityScore >= 45 && !brokenTrend)) {
+    signal = 'Hold';
+  } else if ((overallScore !== null && overallScore >= 30) || weakValuation || brokenTrend) {
+    signal = 'Watch';
+  } else {
+    signal = confidence.label === 'Low' ? 'Watch' : 'Sell';
   }
-  if (strongFundamentals && positiveUpside && !overbought && (uptrend || oversold)) {
-    return {
-      label: 'Buy',
-      rationale: 'Fundamentals and upside are supportive, and the technical setup is not stretched.',
-      ownerAction: 'Add',
-      nonOwnerAction: 'Buy',
-    };
+
+  if (confidence.label === 'Low' && signal === 'Buy') signal = 'Hold';
+  if (confidence.label === 'Low' && signal === 'Sell') signal = 'Watch';
+
+  let ownerAction: OwnerAction;
+  let nonOwnerAction: NonOwnerAction;
+  if (signal === 'Buy') {
+    ownerAction = 'Add';
+    nonOwnerAction = 'Buy';
+  } else if (signal === 'Hold') {
+    ownerAction = 'Hold';
+    nonOwnerAction = 'Watch';
+  } else if (signal === 'Watch') {
+    ownerAction = brokenTrend || weakValuation || weakQuality ? 'Trim' : 'Hold';
+    nonOwnerAction = brokenTrend || weakValuation || weakQuality ? 'Avoid' : 'Watch';
+  } else {
+    ownerAction = 'Sell';
+    nonOwnerAction = 'Avoid';
   }
-  if (strongFundamentals && overbought) {
-    return {
-      label: 'Watch',
-      rationale: 'Fundamentals are strong, but RSI suggests the stock may be extended near term.',
-      ownerAction: 'Trim',
-      nonOwnerAction: 'Watch',
-    };
-  }
-  if ((score !== null && score >= 45) && (growthPositive || healthyOps) && !negativeUpside) {
-    return {
-      label: 'Hold',
-      rationale: 'The business quality still supports staying involved, but the setup is not an obvious fresh entry.',
-      ownerAction: 'Hold',
-      nonOwnerAction: 'Watch',
-    };
-  }
-  if (downtrend || negativeUpside) {
-    return {
-      label: 'Watch',
-      rationale: 'Momentum or analyst target support is weak, so patience is warranted.',
-      ownerAction: 'Trim',
-      nonOwnerAction: 'Avoid',
-    };
-  }
+
+  const rationale = buildRecommendationRationale({
+    signal,
+    qualityScore,
+    valuationScore,
+    trendScore,
+    confidence: confidence.label,
+    missingInputs: confidence.missingInputs,
+  });
+
   return {
-    label: 'Hold',
-    rationale: 'Signals are mixed rather than decisively bullish or bearish.',
-    ownerAction: 'Hold',
-    nonOwnerAction: 'Watch',
+    signal,
+    rationale,
+    ownerAction,
+    nonOwnerAction,
+    confidence: confidence.label,
+    confidenceScore: confidence.score,
+    missingInputs: confidence.missingInputs,
+    qualityScore,
+    valuationScore,
+    trendScore,
+    overallScore,
   };
 }
 
@@ -966,6 +1172,8 @@ function toPositionGuidance(action: ActionStance): PositionGuidance {
     rationale: action.rationale,
     forOwners: action.ownerAction,
     forNonOwners: action.nonOwnerAction,
+    confidence: action.confidence,
+    missingInputs: action.missingInputs,
   };
 }
 
@@ -977,6 +1185,8 @@ function derivePositionGuidanceFromExplicitAction(action: ActionLabel, rationale
         rationale,
         ownerAction: 'Add',
         nonOwnerAction: 'Buy',
+        confidence: 'Medium',
+        missingInputs: [],
       });
     case 'Sell':
       return toPositionGuidance({
@@ -984,6 +1194,8 @@ function derivePositionGuidanceFromExplicitAction(action: ActionLabel, rationale
         rationale,
         ownerAction: 'Sell',
         nonOwnerAction: 'Avoid',
+        confidence: 'Medium',
+        missingInputs: [],
       });
     case 'Watch':
       return toPositionGuidance({
@@ -991,6 +1203,8 @@ function derivePositionGuidanceFromExplicitAction(action: ActionLabel, rationale
         rationale,
         ownerAction: 'Trim',
         nonOwnerAction: 'Watch',
+        confidence: 'Medium',
+        missingInputs: [],
       });
     case 'Hold':
     default:
@@ -999,6 +1213,8 @@ function derivePositionGuidanceFromExplicitAction(action: ActionLabel, rationale
         rationale,
         ownerAction: 'Hold',
         nonOwnerAction: 'Watch',
+        confidence: 'Medium',
+        missingInputs: [],
       });
   }
 }
@@ -1028,20 +1244,34 @@ function derivePositionGuidanceFromStock(data: StockReportData, score: number | 
   const overview = data.companyOverview || {};
   const price = toNumber(data.price?.price);
   const targetUpside = getTargetUpsideStock(data);
-  const revenueGrowth = getStockRevenueGrowth(data);
-  const operatingMargin = normalizePercent(data.basicFinancials?.metric?.operatingMarginTTM ?? overview.operatingMargin);
   const technical = getTechnicalSnapshot(price, data.priceHistory?.prices || [], {
     ...overview,
     ['50DayMovingAverage']: overview['50DayMovingAverage'] ?? data.analystRatings?.movingAverage50Day,
   });
-
-  return toPositionGuidance(deriveActionStance({
-    score,
+  const baseScorecard = computeScorecard(data);
+  const scorecard = score === baseScorecard.composite ? baseScorecard : {
+    ...baseScorecard,
+    composite: score,
+  };
+  const balanceReport = getMostCompleteReport(data.balanceSheet, ['cashAndEquivalents', 'longTermDebt', 'totalAssets', 'totalLiabilities', 'totalShareholderEquity']);
+  const cashFlowReport = getMostCompleteReport(data.cashFlow, ['operatingCashflow', 'capitalExpenditures', 'freeCashFlow', 'dividendPayout']);
+  const profile = deriveRecommendationProfile({
+    scorecard,
     targetUpside,
     technical,
-    revenueGrowth,
-    operatingMargin,
-  }));
+    price,
+    hasBalanceSheet: balanceReport !== null,
+    hasCashFlow: cashFlowReport !== null,
+  });
+
+  return toPositionGuidance({
+    label: profile.signal,
+    rationale: profile.rationale,
+    ownerAction: profile.ownerAction,
+    nonOwnerAction: profile.nonOwnerAction,
+    confidence: profile.confidence,
+    missingInputs: profile.missingInputs,
+  });
 }
 
 function summarizeInsiderActivity(insiderTrading: any): { summary: string | null; table: string | null } {
@@ -2252,6 +2482,7 @@ export function buildComparisonReport(data: ComparisonReportData): string {
     balanceRows,
     ['left', 'right', 'right', 'right', 'right', 'right']
   );
+  const hasBalanceData = balanceRows.some((row) => row.slice(1).some(hasMeaningfulTableValue));
 
   const ownershipRows = items.map((item) => {
     const overview = item.overview || {};
@@ -2497,8 +2728,8 @@ export function buildComparisonReport(data: ComparisonReportData): string {
     growthTable,
     '## 🧮 Valuation',
     valuationTable,
-    '## 🏦 Balance Sheet & Cash',
-    balanceTable,
+    hasBalanceData ? '## 🏦 Balance Sheet & Cash' : null,
+    hasBalanceData ? balanceTable : null,
     '## ⏱️ Timing & Action Setup',
     timingTable,
     '## 🎯 Position Guidance',
@@ -2931,6 +3162,13 @@ function deriveRating(
   return { label: 'SELL / AVOID', emoji: '🔴' };
 }
 
+function deriveRatingFromGuidance(guidance: PositionGuidance): { label: string; emoji: string } {
+  if (guidance.stance === 'Buy') return { label: guidance.confidence === 'High' ? 'BUY' : 'BUY CANDIDATE', emoji: '✅' };
+  if (guidance.stance === 'Hold') return { label: 'HOLD', emoji: '⚖️' };
+  if (guidance.stance === 'Watch') return { label: 'WATCH', emoji: '👀' };
+  return { label: 'SELL / AVOID', emoji: '🔴' };
+}
+
 /**
  * Builds the Investment Conclusion section for a single-stock report.
  *
@@ -2955,7 +3193,8 @@ function buildStockConclusion(data: StockReportData, scorecard: ReturnType<typeo
     ? ((strongBuy + buy) / totalAnalyst)
     : null;
 
-  const rating = deriveRating(scorecard.composite, analystBuyPct);
+  const positionGuidance = derivePositionGuidanceFromStock(data, scorecard.composite);
+  const rating = deriveRatingFromGuidance(positionGuidance);
 
   // Target upside — cascade: priceTargets → analystRatings → overview
   const price = toNumber(data.price?.price);
@@ -2997,15 +3236,16 @@ function buildStockConclusion(data: StockReportData, scorecard: ReturnType<typeo
     ...overview,
     ['50DayMovingAverage']: overview['50DayMovingAverage'] ?? data.analystRatings?.movingAverage50Day,
   });
-  const positionGuidance = derivePositionGuidanceFromStock(data, scorecard.composite);
   const beta = toNumber(overview.beta);
 
   const dataLines: string[] = [
     `- **Rating:** ${rating.emoji} ${rating.label}`,
     `- **Suggested Portfolio Role:** ${portfolioRole}`,
+    `- **Confidence:** ${positionGuidance.confidence}`,
     `- **For Owners:** ${positionGuidance.forOwners}`,
     `- **For Non-Owners:** ${positionGuidance.forNonOwners}`,
     `- **Why:** ${positionGuidance.rationale}`,
+    positionGuidance.missingInputs.length ? `- **Decision Inputs Missing:** ${formatMissingInputs(positionGuidance.missingInputs, 3)}` : null,
     composite !== null ? `- **Composite Score:** ${composite.toFixed(1)}/100` : null,
     upside !== null ? `- **Analyst Target Upside:** ${upside.toFixed(1)}% (mean ${targetMean?.toFixed(2)}${targetLow !== null && targetHigh !== null ? `, range ${targetLow.toFixed(2)}–${targetHigh.toFixed(2)}` : ''})` : null,
     revenueGrowth !== null ? `- **Revenue Growth (TTM):** ${revenueGrowth.toFixed(1)}%` : null,
@@ -3119,6 +3359,19 @@ function buildComparisonConclusion(
   const topName = top?.item.overview?.name || top?.item.symbol || 'N/A';
   const topSymbol = top?.item.symbol || 'N/A';
   const topScore = top?.score;
+  const recommendationRows = ranked.map((row) => {
+    const stockData = asStockReportData(row.item, '');
+    return {
+      item: row.item,
+      guidance: derivePositionGuidanceFromStock(stockData, row.score),
+    };
+  });
+  const freshEntryBuys = recommendationRows
+    .filter((row) => row.guidance.forNonOwners === 'Buy')
+    .map((row) => `${row.item.overview?.name || row.item.symbol} (${row.item.symbol})`);
+  const cautionNames = recommendationRows
+    .filter((row) => row.guidance.forNonOwners === 'Avoid' || row.guidance.forOwners === 'Sell')
+    .map((row) => `${row.item.overview?.name || row.item.symbol} (${row.item.symbol})`);
 
   // Average composite score → group outlook
   const validScores = ranked.map((r) => r.score as number);
@@ -3171,6 +3424,8 @@ function buildComparisonConclusion(
   const summaryLines = [
     top ? `**Top Pick: ${topName} (${topSymbol})** — Composite ${topScore?.toFixed(1)}/100` : '_Insufficient data for ranking._',
     runnerUp ? `- Runner-up: ${runnerUp.item.overview?.name || runnerUp.item.symbol} (${runnerUp.item.symbol}) — ${runnerUp.score?.toFixed(1)}/100` : null,
+    freshEntryBuys.length ? `- Fresh-entry buys: ${freshEntryBuys.slice(0, 3).join(', ')}` : '- Fresh-entry buys: none at current thresholds',
+    cautionNames.length ? `- Highest-caution names: ${cautionNames.slice(0, 3).join(', ')}` : null,
     moatLeader ? `- Strongest moat: **${moatLeader.overview?.name || moatLeader.symbol} (${moatLeader.symbol})** — ${moatLeader.moatAnalysis?.moatType ?? 'N/A'} (${moatLeader.moatAnalysis?.moatScore ?? 'N/A'}/100)` : null,
     outlookLabel,
     `- Strategy: ${strategyAdvice}`,
