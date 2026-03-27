@@ -293,6 +293,13 @@ function MarkdownContent({ content }: { content: string }) {
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
+          table({ children, ...props }) {
+            return (
+              <div className="stock-markdown-table-wrap" role="region" aria-label="Scrollable data table" tabIndex={0}>
+                <table {...props}>{children}</table>
+              </div>
+            );
+          },
           code({ className, children, ...props }) {
             const match = /language-(\w+)/.exec(className ?? '');
             if (match?.[1] === 'mermaid') {

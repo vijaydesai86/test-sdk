@@ -387,27 +387,41 @@ select {
   text-underline-offset: 0.2em;
 }
 
-.prose table {
-  display: block;
+.stock-markdown-table-wrap {
   width: 100%;
   overflow-x: auto;
+  overscroll-behavior-x: contain;
   margin: 1.2rem 0 1.4rem;
-  border-collapse: separate;
-  border-spacing: 0;
   border: 1px solid rgba(148, 163, 184, 0.14);
   border-radius: 20px;
   background: rgba(15, 23, 42, 0.45);
   box-shadow: 0 24px 60px -40px rgba(15, 23, 42, 0.95);
+  scrollbar-width: thin;
+}
+
+.stock-markdown-table-wrap:focus-visible {
+  outline: 2px solid rgba(103, 232, 249, 0.55);
+  outline-offset: 4px;
+}
+
+.prose table {
+  width: max-content;
+  min-width: 100%;
+  margin: 0;
+  border-collapse: separate;
+  border-spacing: 0;
+  table-layout: auto;
 }
 
 .prose th,
 .prose td {
-  white-space: nowrap;
-  padding: 0.8rem 1rem;
+  padding: 0.85rem 1rem;
   text-align: left;
+  vertical-align: top;
 }
 
 .prose th {
+  white-space: nowrap;
   background: linear-gradient(135deg, rgba(45, 212, 191, 0.28), rgba(56, 189, 248, 0.18));
   color: #f8fafc;
   font-size: 0.74rem;
@@ -561,10 +575,20 @@ select {
   text-decoration-color: color-mix(in srgb, var(--report-paper-link) 28%, transparent);
 }
 
-.stock-report-paper .prose table {
+.stock-report-paper .stock-markdown-table-wrap {
   border-color: var(--report-table-border);
-  background: var(--report-table-shell);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.26), rgba(255, 255, 255, 0.04)),
+    var(--report-table-shell);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.84), 0 26px 60px -42px rgba(15, 23, 42, 0.24);
+}
+
+.stock-report-paper .stock-markdown-table-wrap table {
+  background: transparent;
+}
+
+.stock-report-paper .prose table {
+  color: var(--report-paper-ink);
 }
 
 .stock-report-paper .prose th {
@@ -588,15 +612,19 @@ select {
 }
 
 .stock-report-paper .prose td {
+  min-width: 8.5rem;
+  white-space: normal;
+  line-height: 1.6;
   background: var(--report-table-row);
   border-bottom-color: var(--report-table-rule);
+  background-clip: padding-box;
 }
 
-.stock-report-paper .prose tr:nth-child(even) td {
+.stock-report-paper .prose tbody tr:nth-child(even) td {
   background: var(--report-table-row-alt);
 }
 
-.stock-report-paper .prose tr:hover td {
+.stock-report-paper .prose tbody tr:hover td {
   background: var(--report-table-row-hover);
 }
 
@@ -641,7 +669,7 @@ select {
     inset: 10px;
   }
 
-  .stock-report-paper .prose table {
+  .stock-markdown-table-wrap {
     border-radius: 18px;
   }
 
