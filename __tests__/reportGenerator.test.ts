@@ -931,8 +931,10 @@ describe('buildWatchlistDailyReport', () => {
     });
 
     expect(report).toContain('# Watchlist Daily Report: Core Watchlist');
-    expect(report).toContain('| Company | Action | Reason |');
-    expect(report).toContain('| Apple Inc. (AAPL) | **Buy** | Strong profitability and supportive target upside. |');
+    expect(report).toContain('| Company | Signal | For owners | For non-owners | Why |');
+    expect(report).toContain('| Apple Inc. (AAPL) | Buy | Add | Buy | Strong profitability and supportive target upside. |');
+    expect(report).toContain('| NVIDIA (NVDA) | Hold | Hold | Watch | Signals are constructive, but the fresh entry is less compelling. |');
+    expect(report).toContain('_For owners = you already hold the stock. For non-owners = you are considering a fresh entry._');
     expect(report).toContain('## 1. Apple Inc. (AAPL)');
     expect(report).toContain('## 2. NVIDIA (NVDA)');
     expect(report).toContain('### 🏢 Business Overview');

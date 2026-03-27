@@ -5,6 +5,8 @@ import path from 'path';
 type PricePoint = { date: string; close: string | number };
 type EarningsPoint = { fiscalQuarter: string; reportedEPS: string | number };
 type ActionLabel = 'Buy' | 'Hold' | 'Watch' | 'Sell';
+type OwnerAction = 'Add' | 'Hold' | 'Trim' | 'Sell';
+type NonOwnerAction = 'Buy' | 'Watch' | 'Avoid';
 
 export interface StockReportData {
   symbol: string;
@@ -635,9 +637,9 @@ function buildTable(headers: string[], rows: string[][], alignments?: Array<'lef
 
 function buildPositionGuidanceTable(rows: Array<{ company: string; guidance: PositionGuidance }>): string {
   return buildTable(
-    ['Company', 'For owners', 'For non-owners', 'Why'],
-    rows.map(({ company, guidance }) => [company, guidance.forOwners, guidance.forNonOwners, guidance.rationale]),
-    ['left', 'left', 'left', 'left']
+    ['Company', 'Signal', 'For owners', 'For non-owners', 'Why'],
+    rows.map(({ company, guidance }) => [company, guidance.stance, guidance.forOwners, guidance.forNonOwners, guidance.rationale]),
+    ['left', 'left', 'left', 'left', 'left']
   );
 }
 
@@ -872,13 +874,15 @@ function getTechnicalSnapshot(price: number | null, prices: PricePoint[] = [], o
 type ActionStance = {
   label: ActionLabel;
   rationale: string;
+  ownerAction: OwnerAction;
+  nonOwnerAction: NonOwnerAction;
 };
 
 type PositionGuidance = {
   stance: ActionLabel;
   rationale: string;
-  forOwners: string;
-  forNonOwners: string;
+  forOwners: OwnerAction;
+  forNonOwners: NonOwnerAction;
 };
 
 const POSITION_GUIDANCE_NOTE = '_For owners = you already hold the stock. For non-owners = you are considering a fresh entry._';
@@ -909,54 +913,94 @@ function deriveActionStance(args: {
   const growthPositive = revenueGrowth !== null && revenueGrowth > 0;
 
   if (weakFundamentals && negativeUpside && downtrend) {
-    return { label: 'Sell', rationale: 'Composite score, target spread, and price trend all point to a weak setup.' };
+    return {
+      label: 'Sell',
+      rationale: 'Composite score, target spread, and price trend all point to a weak setup.',
+      ownerAction: 'Sell',
+      nonOwnerAction: 'Avoid',
+    };
   }
   if (strongFundamentals && positiveUpside && !overbought && (uptrend || oversold)) {
-    return { label: 'Buy', rationale: 'Fundamentals and upside are supportive, and the technical setup is not stretched.' };
+    return {
+      label: 'Buy',
+      rationale: 'Fundamentals and upside are supportive, and the technical setup is not stretched.',
+      ownerAction: 'Add',
+      nonOwnerAction: 'Buy',
+    };
   }
   if (strongFundamentals && overbought) {
-    return { label: 'Watch', rationale: 'Fundamentals are strong, but RSI suggests the stock may be extended near term.' };
+    return {
+      label: 'Watch',
+      rationale: 'Fundamentals are strong, but RSI suggests the stock may be extended near term.',
+      ownerAction: 'Trim',
+      nonOwnerAction: 'Watch',
+    };
   }
   if ((score !== null && score >= 45) && (growthPositive || healthyOps) && !negativeUpside) {
-    return { label: 'Hold', rationale: 'The business quality still supports staying involved, but the setup is not an obvious fresh entry.' };
+    return {
+      label: 'Hold',
+      rationale: 'The business quality still supports staying involved, but the setup is not an obvious fresh entry.',
+      ownerAction: 'Hold',
+      nonOwnerAction: 'Watch',
+    };
   }
   if (downtrend || negativeUpside) {
-    return { label: 'Watch', rationale: 'Momentum or analyst target support is weak, so patience is warranted.' };
-  }
-  return { label: 'Hold', rationale: 'Signals are mixed rather than decisively bullish or bearish.' };
-}
-
-function toPositionGuidance(action: ActionStance): PositionGuidance {
-  if (action.label === 'Buy') {
     return {
-      stance: 'Buy',
-      rationale: action.rationale,
-      forOwners: 'Add',
-      forNonOwners: 'Buy',
-    };
-  }
-  if (action.label === 'Sell') {
-    return {
-      stance: 'Sell',
-      rationale: action.rationale,
-      forOwners: 'Reduce / Sell',
-      forNonOwners: 'Avoid',
-    };
-  }
-  if (action.label === 'Watch') {
-    return {
-      stance: 'Watch',
-      rationale: action.rationale,
-      forOwners: 'Hold, do not add',
-      forNonOwners: 'Watch',
+      label: 'Watch',
+      rationale: 'Momentum or analyst target support is weak, so patience is warranted.',
+      ownerAction: 'Trim',
+      nonOwnerAction: 'Avoid',
     };
   }
   return {
-    stance: 'Hold',
-    rationale: action.rationale,
-    forOwners: 'Hold',
-    forNonOwners: 'Watch',
+    label: 'Hold',
+    rationale: 'Signals are mixed rather than decisively bullish or bearish.',
+    ownerAction: 'Hold',
+    nonOwnerAction: 'Watch',
   };
+}
+
+function toPositionGuidance(action: ActionStance): PositionGuidance {
+  return {
+    stance: action.label,
+    rationale: action.rationale,
+    forOwners: action.ownerAction,
+    forNonOwners: action.nonOwnerAction,
+  };
+}
+
+function derivePositionGuidanceFromExplicitAction(action: ActionLabel, rationale: string): PositionGuidance {
+  switch (action) {
+    case 'Buy':
+      return toPositionGuidance({
+        label: 'Buy',
+        rationale,
+        ownerAction: 'Add',
+        nonOwnerAction: 'Buy',
+      });
+    case 'Sell':
+      return toPositionGuidance({
+        label: 'Sell',
+        rationale,
+        ownerAction: 'Sell',
+        nonOwnerAction: 'Avoid',
+      });
+    case 'Watch':
+      return toPositionGuidance({
+        label: 'Watch',
+        rationale,
+        ownerAction: 'Trim',
+        nonOwnerAction: 'Watch',
+      });
+    case 'Hold':
+    default:
+      return toPositionGuidance({
+        label: 'Hold',
+        rationale,
+        ownerAction: 'Hold',
+        nonOwnerAction: 'Watch',
+      });
+  }
 }
 
 function asStockReportData(item: ComparisonReportItem, generatedAt: string): StockReportData {
@@ -2691,7 +2735,9 @@ function buildWatchlistDecision(item: WatchlistDailyReportItem): { action: Actio
 function buildWatchlistSummaryTable(items: WatchlistDailyReportItem[]): string {
   const rows = items.map((item) => {
     const decision = buildWatchlistDecision(item);
-    const guidance = toPositionGuidance({ label: decision.action, rationale: decision.reason });
+    const guidance = item.action && item.reason
+      ? derivePositionGuidanceFromExplicitAction(decision.action, decision.reason)
+      : derivePositionGuidanceFromStock(item.stock, decision.score);
     const name = item.companyName || item.stock.companyOverview?.name || item.symbol;
     return { company: `${name} (${item.symbol})`, guidance };
   });
@@ -2717,7 +2763,7 @@ function buildWatchlistOverview(items: WatchlistDailyReportItem[]): string {
   const weakest = scored[scored.length - 1];
 
   const lines = [
-    `- **Buy:** ${counts.Buy} | **Hold:** ${counts.Hold} | **Watch:** ${counts.Watch} | **Sell:** ${counts.Sell}`
+    `- **Signal Mix:** Buy ${counts.Buy} | Hold ${counts.Hold} | Watch ${counts.Watch} | Sell ${counts.Sell}`
   ];
 
   if (strongest) {
