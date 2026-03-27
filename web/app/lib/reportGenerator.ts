@@ -4,6 +4,7 @@ import path from 'path';
 
 type PricePoint = { date: string; close: string | number };
 type EarningsPoint = { fiscalQuarter: string; reportedEPS: string | number };
+type ActionLabel = 'Buy' | 'Hold' | 'Watch' | 'Sell';
 
 export interface StockReportData {
   symbol: string;
@@ -82,7 +83,7 @@ export interface WatchlistDailyReportItem {
   symbol: string;
   companyName?: string;
   stock: StockReportData;
-  action?: 'Buy' | 'Hold' | 'Wait' | 'Sell';
+  action?: ActionLabel | 'Wait';
   reason?: string;
 }
 
@@ -632,6 +633,14 @@ function buildTable(headers: string[], rows: string[][], alignments?: Array<'lef
   return [headerRow, dividerRow, ...rows.map((row) => `| ${row.join(' | ')} |`)].join('\n');
 }
 
+function buildPositionGuidanceTable(rows: Array<{ company: string; guidance: PositionGuidance }>): string {
+  return buildTable(
+    ['Company', 'For owners', 'For non-owners', 'Why'],
+    rows.map(({ company, guidance }) => [company, guidance.forOwners, guidance.forNonOwners, guidance.rationale]),
+    ['left', 'left', 'left', 'left']
+  );
+}
+
 function applyAxisTheme(axis: any): any {
   if (!axis) return axis;
   return {
@@ -861,9 +870,24 @@ function getTechnicalSnapshot(price: number | null, prices: PricePoint[] = [], o
 }
 
 type ActionStance = {
-  label: "Buy" | "Hold" | "Wait" | "Sell";
+  label: ActionLabel;
   rationale: string;
 };
+
+type PositionGuidance = {
+  stance: ActionLabel;
+  rationale: string;
+  forOwners: string;
+  forNonOwners: string;
+};
+
+const POSITION_GUIDANCE_NOTE = '_For owners = you already hold the stock. For non-owners = you are considering a fresh entry._';
+
+function normalizeActionLabel(label?: string | null): ActionLabel {
+  if (label === 'Wait') return 'Watch';
+  if (label === 'Buy' || label === 'Hold' || label === 'Watch' || label === 'Sell') return label;
+  return 'Hold';
+}
 
 function deriveActionStance(args: {
   score: number | null;
@@ -885,21 +909,95 @@ function deriveActionStance(args: {
   const growthPositive = revenueGrowth !== null && revenueGrowth > 0;
 
   if (weakFundamentals && negativeUpside && downtrend) {
-    return { label: "Sell", rationale: "Composite score, target spread, and price trend all point to a weak setup." };
+    return { label: 'Sell', rationale: 'Composite score, target spread, and price trend all point to a weak setup.' };
   }
   if (strongFundamentals && positiveUpside && !overbought && (uptrend || oversold)) {
-    return { label: "Buy", rationale: "Fundamentals and upside are supportive, and the technical setup is not stretched." };
+    return { label: 'Buy', rationale: 'Fundamentals and upside are supportive, and the technical setup is not stretched.' };
   }
   if (strongFundamentals && overbought) {
-    return { label: "Wait", rationale: "Fundamentals are strong, but RSI suggests the stock may be extended near term." };
+    return { label: 'Watch', rationale: 'Fundamentals are strong, but RSI suggests the stock may be extended near term.' };
   }
   if ((score !== null && score >= 45) && (growthPositive || healthyOps) && !negativeUpside) {
-    return { label: "Hold", rationale: "The business quality still supports staying involved, but the setup is not an obvious fresh entry." };
+    return { label: 'Hold', rationale: 'The business quality still supports staying involved, but the setup is not an obvious fresh entry.' };
   }
   if (downtrend || negativeUpside) {
-    return { label: "Wait", rationale: "Momentum or analyst target support is weak, so patience is warranted." };
+    return { label: 'Watch', rationale: 'Momentum or analyst target support is weak, so patience is warranted.' };
   }
-  return { label: "Hold", rationale: "Signals are mixed rather than decisively bullish or bearish." };
+  return { label: 'Hold', rationale: 'Signals are mixed rather than decisively bullish or bearish.' };
+}
+
+function toPositionGuidance(action: ActionStance): PositionGuidance {
+  if (action.label === 'Buy') {
+    return {
+      stance: 'Buy',
+      rationale: action.rationale,
+      forOwners: 'Add',
+      forNonOwners: 'Buy',
+    };
+  }
+  if (action.label === 'Sell') {
+    return {
+      stance: 'Sell',
+      rationale: action.rationale,
+      forOwners: 'Reduce / Sell',
+      forNonOwners: 'Avoid',
+    };
+  }
+  if (action.label === 'Watch') {
+    return {
+      stance: 'Watch',
+      rationale: action.rationale,
+      forOwners: 'Hold, do not add',
+      forNonOwners: 'Watch',
+    };
+  }
+  return {
+    stance: 'Hold',
+    rationale: action.rationale,
+    forOwners: 'Hold',
+    forNonOwners: 'Watch',
+  };
+}
+
+function asStockReportData(item: ComparisonReportItem, generatedAt: string): StockReportData {
+  return {
+    symbol: item.symbol,
+    generatedAt,
+    price: item.price || {},
+    priceHistory: item.priceHistory,
+    companyOverview: item.overview,
+    basicFinancials: item.basicFinancials,
+    incomeStatement: item.incomeStatement,
+    balanceSheet: item.balanceSheet,
+    cashFlow: item.cashFlow,
+    analystRatings: item.analystRatings,
+    insiderTrading: item.insiderTrading,
+    priceTargets: item.priceTargets,
+    peers: item.peers,
+    newsSentiment: item.newsSentiment,
+    companyNews: item.companyNews,
+    moatAnalysis: item.moatAnalysis,
+  };
+}
+
+function derivePositionGuidanceFromStock(data: StockReportData, score: number | null = computeScorecard(data).composite): PositionGuidance {
+  const overview = data.companyOverview || {};
+  const price = toNumber(data.price?.price);
+  const targetUpside = getTargetUpsideStock(data);
+  const revenueGrowth = getStockRevenueGrowth(data);
+  const operatingMargin = normalizePercent(data.basicFinancials?.metric?.operatingMarginTTM ?? overview.operatingMargin);
+  const technical = getTechnicalSnapshot(price, data.priceHistory?.prices || [], {
+    ...overview,
+    ['50DayMovingAverage']: overview['50DayMovingAverage'] ?? data.analystRatings?.movingAverage50Day,
+  });
+
+  return toPositionGuidance(deriveActionStance({
+    score,
+    targetUpside,
+    technical,
+    revenueGrowth,
+    operatingMargin,
+  }));
 }
 
 function summarizeInsiderActivity(insiderTrading: any): { summary: string | null; table: string | null } {
@@ -1515,13 +1613,10 @@ export function buildStockReport(data: StockReportData): string {
   });
   const trend50 = technical.vs50;
   const trend200 = technical.vs200;
-  const actionStance = deriveActionStance({
-    score: scorecard.composite,
-    targetUpside,
-    technical,
-    revenueGrowth,
-    operatingMargin,
-  });
+  const positionGuidance = derivePositionGuidanceFromStock(data, scorecard.composite);
+  const positionGuidanceTable = buildPositionGuidanceTable([
+    { company: `${overview.name || data.symbol} (${data.symbol})`, guidance: positionGuidance },
+  ]);
   const insiderSummary = summarizeInsiderActivity(data.insiderTrading);
   const themes = extractThemes([overview.description, overview.industry, overview.sector].filter(Boolean).join(' '));
   const growthLines = [
@@ -1541,8 +1636,6 @@ export function buildStockReport(data: StockReportData): string {
     trend200 !== null ? `- Price vs 200D average: ${trend200.toFixed(1)}%` : null,
     technical.rangePosition !== null ? `- 52W range position: ${technical.rangePosition.toFixed(1)}%` : null,
     `- Technical trend: ${technical.trend}`,
-    `- Data-driven stance: ${actionStance.label}`,
-    `- Stance rationale: ${actionStance.rationale}`,
   ].filter(Boolean) as string[];
 
   const recommendationRows = Array.isArray(data.analystRecommendations?.recommendations)
@@ -1820,6 +1913,7 @@ export function buildStockReport(data: StockReportData): string {
 
   sections.push('## 🚀 Growth Drivers', '- Period: trailing twelve months unless noted', ...(growthLines.length ? growthLines : ['- Growth drivers unavailable']));
   sections.push('## ⏱️ Timing & Trade Setup', ...(timingLines.length ? timingLines : ['- Timing data unavailable']));
+  sections.push('## 🎯 Position Guidance', POSITION_GUIDANCE_NOTE, positionGuidanceTable);
   sections.push('## ⚠️ Risks & Headwinds', ...(riskLines.length ? riskLines : ['- No major risk flags surfaced from available data']));
   sections.push('## 🧭 Investment Highlights', ...highlightsLines);
 
@@ -2234,40 +2328,36 @@ export function buildComparisonReport(data: ComparisonReportData): string {
   });
 
   const timingRows = scored.map((row) => {
-    const item = row.item;
-    const overview = item.overview || {};
-    const price = toNumber(item.price?.price);
-    const technical = getTechnicalSnapshot(price, item.priceHistory?.prices || [], overview);
-    const upside = price && toNumber(item.priceTargets?.targetMean ?? item.analystRatings?.analystTargetPrice ?? overview.analystTargetPrice)
-      ? ((toNumber(item.priceTargets?.targetMean ?? item.analystRatings?.analystTargetPrice ?? overview.analystTargetPrice) as number) - price) / price * 100
-      : null;
-    const revenueGrowth = getStockRevenueGrowth({
-      symbol: item.symbol,
-      generatedAt: data.generatedAt,
-      price: item.price || {},
-      companyOverview: item.overview,
-      basicFinancials: item.basicFinancials,
-    } as StockReportData);
-    const operatingMargin = normalizePercent(item.basicFinancials?.metric?.operatingMarginTTM ?? overview.operatingMargin);
-    const stance = deriveActionStance({
-      score: row.score,
-      targetUpside: upside,
-      technical,
-      revenueGrowth,
-      operatingMargin,
+    const stockData = asStockReportData(row.item, data.generatedAt);
+    const overview = stockData.companyOverview || {};
+    const price = toNumber(stockData.price?.price);
+    const technical = getTechnicalSnapshot(price, stockData.priceHistory?.prices || [], {
+      ...overview,
+      ['50DayMovingAverage']: overview['50DayMovingAverage'] ?? stockData.analystRatings?.movingAverage50Day,
     });
+    const upside = getTargetUpsideStock(stockData);
     return [
-      `${overview.name || item.symbol} (${item.symbol})`,
-      technical.rsi14 === null ? "N/A" : `${technical.rsi14.toFixed(1)} (${technical.rsiState})`,
+      `${overview.name || row.item.symbol} (${row.item.symbol})`,
+      technical.rsi14 === null ? 'N/A' : `${technical.rsi14.toFixed(1)} (${technical.rsiState})`,
       technical.trend,
-      upside === null ? "N/A" : `${upside.toFixed(1)}%`,
-      stance.label,
+      upside === null ? 'N/A' : `${upside.toFixed(1)}%`,
     ];
   });
   const timingTable = buildTable(
-    ['Company', 'RSI (14)', 'Trend', 'Target Upside', 'Action Stance'],
+    ['Company', 'RSI (14)', 'Trend', 'Target Upside'],
     timingRows,
-    ['left', 'right', 'left', 'right', 'left']
+    ['left', 'right', 'left', 'right']
+  );
+
+  const guidanceTable = buildPositionGuidanceTable(
+    scored.map((row) => {
+      const stockData = asStockReportData(row.item, data.generatedAt);
+      const overview = stockData.companyOverview || {};
+      return {
+        company: `${overview.name || row.item.symbol} (${row.item.symbol})`,
+        guidance: derivePositionGuidanceFromStock(stockData, row.score),
+      };
+    })
   );
 
   const validScores = scored.filter((row) => row.score !== null) as Array<{ item: ComparisonReportItem; score: number }>;
@@ -2367,6 +2457,9 @@ export function buildComparisonReport(data: ComparisonReportData): string {
     balanceTable,
     '## ⏱️ Timing & Action Setup',
     timingTable,
+    '## 🎯 Position Guidance',
+    POSITION_GUIDANCE_NOTE,
+    guidanceTable,
     '## 🧑‍💼 Ownership & Positioning',
     ownershipTable,
     '## 🧾 Insider Activity Summary',
@@ -2585,58 +2678,37 @@ function shiftMarkdownHeadings(body: string, levels = 1): string {
   return body.replace(/^(#{1,6})\s+/gm, (_line, hashes) => '#'.repeat(Math.min(6, hashes.length + levels)) + ' ');
 }
 
-function buildWatchlistDecision(item: WatchlistDailyReportItem): { action: 'Buy' | 'Hold' | 'Wait' | 'Sell'; reason: string; score: number | null } {
+function buildWatchlistDecision(item: WatchlistDailyReportItem): { action: ActionLabel; reason: string; score: number | null } {
+  const scorecard = computeScorecard(item.stock);
   if (item.action && item.reason) {
-    const scorecard = computeScorecard(item.stock);
-    return { action: item.action, reason: item.reason, score: scorecard.composite };
+    return { action: normalizeActionLabel(item.action), reason: item.reason, score: scorecard.composite };
   }
 
-  const scorecard = computeScorecard(item.stock);
-  const overview = item.stock.companyOverview || {};
-  const price = toNumber(item.stock.price?.price);
-  const targetMean = toNumber(
-    item.stock.priceTargets?.targetMean
-    ?? (item.stock.analystRatings?.analystTargetPrice !== 'N/A' ? item.stock.analystRatings?.analystTargetPrice : null)
-    ?? overview.analystTargetPrice
-  );
-  const upside = price && targetMean ? ((targetMean - price) / price) * 100 : null;
-  const revenueGrowth = getStockRevenueGrowth(item.stock);
-  const operatingMargin = normalizePercent(
-    item.stock.basicFinancials?.metric?.operatingMarginTTM ?? overview.operatingMargin
-  );
-  const technical = getTechnicalSnapshot(price, item.stock.priceHistory?.prices || [], overview);
-  const action = deriveActionStance({
-    score: scorecard.composite,
-    targetUpside: upside,
-    technical,
-    revenueGrowth,
-    operatingMargin,
-  });
-
-  return { action: action.label, reason: action.rationale, score: scorecard.composite };
+  const guidance = derivePositionGuidanceFromStock(item.stock, scorecard.composite);
+  return { action: guidance.stance, reason: guidance.rationale, score: scorecard.composite };
 }
 
 function buildWatchlistSummaryTable(items: WatchlistDailyReportItem[]): string {
   const rows = items.map((item) => {
     const decision = buildWatchlistDecision(item);
+    const guidance = toPositionGuidance({ label: decision.action, rationale: decision.reason });
     const name = item.companyName || item.stock.companyOverview?.name || item.symbol;
-    return `| ${name} (${item.symbol}) | **${decision.action}** | ${decision.reason} |`;
+    return { company: `${name} (${item.symbol})`, guidance };
   });
 
   return [
-    '## Daily Summary',
-    '| Company | Action | Reason |',
-    '|---------|--------|--------|',
-    ...rows,
-  ].join('\n');
+    '## Position Guidance',
+    POSITION_GUIDANCE_NOTE,
+    buildPositionGuidanceTable(rows),
+  ].join('\n\n');
 }
 
 function buildWatchlistOverview(items: WatchlistDailyReportItem[]): string {
   const decisions = items.map((item) => ({ item, decision: buildWatchlistDecision(item) }));
-  const counts = decisions.reduce<Record<'Buy' | 'Hold' | 'Wait' | 'Sell', number>>((acc, entry) => {
+  const counts = decisions.reduce<Record<ActionLabel, number>>((acc, entry) => {
     acc[entry.decision.action] += 1;
     return acc;
-  }, { Buy: 0, Hold: 0, Wait: 0, Sell: 0 });
+  }, { Buy: 0, Hold: 0, Watch: 0, Sell: 0 });
 
   const scored = decisions
     .filter((entry) => entry.decision.score !== null)
@@ -2645,7 +2717,7 @@ function buildWatchlistOverview(items: WatchlistDailyReportItem[]): string {
   const weakest = scored[scored.length - 1];
 
   const lines = [
-    `- **Buy:** ${counts.Buy} | **Hold:** ${counts.Hold} | **Wait:** ${counts.Wait} | **Sell:** ${counts.Sell}`
+    `- **Buy:** ${counts.Buy} | **Hold:** ${counts.Hold} | **Watch:** ${counts.Watch} | **Sell:** ${counts.Sell}`
   ];
 
   if (strongest) {
@@ -2724,7 +2796,6 @@ export function buildWatchlistDailyReport(data: WatchlistDailyReportData): strin
   const summaryTable = buildWatchlistSummaryTable(data.items);
   const overview = buildWatchlistOverview(data.items);
   const companySections = data.items.map((item, index) => {
-    const decision = buildWatchlistDecision(item);
     const title = item.companyName || item.stock.companyOverview?.name || item.symbol;
     const body = shiftMarkdownHeadings(
       stripStockReportHeader(buildStockReport(item.stock)),
@@ -2732,8 +2803,6 @@ export function buildWatchlistDailyReport(data: WatchlistDailyReportData): strin
     );
     return [
       `## ${index + 1}. ${title} (${item.symbol})`,
-      `- **Daily Action:** ${decision.action}`,
-      `- **Reason:** ${decision.reason}`,
       body,
     ].join('\n\n');
   });
@@ -2882,19 +2951,15 @@ function buildStockConclusion(data: StockReportData, scorecard: ReturnType<typeo
     ...overview,
     ['50DayMovingAverage']: overview['50DayMovingAverage'] ?? data.analystRatings?.movingAverage50Day,
   });
-  const actionStance = deriveActionStance({
-    score: scorecard.composite,
-    targetUpside: upside,
-    technical,
-    revenueGrowth,
-    operatingMargin: opMargin,
-  });
+  const positionGuidance = derivePositionGuidanceFromStock(data, scorecard.composite);
   const beta = toNumber(overview.beta);
 
   const dataLines: string[] = [
     `- **Rating:** ${rating.emoji} ${rating.label}`,
     `- **Suggested Portfolio Role:** ${portfolioRole}`,
-    `- **Data-Driven Action Stance:** ${actionStance.label} — ${actionStance.rationale}`,
+    `- **For Owners:** ${positionGuidance.forOwners}`,
+    `- **For Non-Owners:** ${positionGuidance.forNonOwners}`,
+    `- **Why:** ${positionGuidance.rationale}`,
     composite !== null ? `- **Composite Score:** ${composite.toFixed(1)}/100` : null,
     upside !== null ? `- **Analyst Target Upside:** ${upside.toFixed(1)}% (mean ${targetMean?.toFixed(2)}${targetLow !== null && targetHigh !== null ? `, range ${targetLow.toFixed(2)}–${targetHigh.toFixed(2)}` : ''})` : null,
     revenueGrowth !== null ? `- **Revenue Growth (TTM):** ${revenueGrowth.toFixed(1)}%` : null,
