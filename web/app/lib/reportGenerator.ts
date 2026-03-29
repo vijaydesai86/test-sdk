@@ -827,6 +827,141 @@ function computeRsi(prices: PricePoint[] = [], period = 14): number | null {
   return 100 - (100 / (1 + rs));
 }
 
+function computeEMA(prices: PricePoint[], period: number): number[] {
+  const sorted = [...prices].sort((a, b) => a.date.localeCompare(b.date));
+  const closes = sorted
+    .map((point) => toNumber(point.close))
+    .filter((value): value is number => value !== null);
+  if (closes.length < period) return [];
+  const multiplier = 2 / (period + 1);
+  const ema: number[] = new Array(closes.length).fill(NaN);
+  let smaSum = 0;
+  for (let i = 0; i < period; i += 1) smaSum += closes[i];
+  ema[period - 1] = smaSum / period;
+  for (let i = period; i < closes.length; i += 1) {
+    ema[i] = (closes[i] - ema[i - 1]) * multiplier + ema[i - 1];
+  }
+  return ema;
+}
+
+function computeMACD(prices: PricePoint[]): { macd: number | null; signal: number | null; histogram: number | null; trend: string } {
+  const sorted = [...prices].sort((a, b) => a.date.localeCompare(b.date));
+  const closes = sorted
+    .map((point) => toNumber(point.close))
+    .filter((value): value is number => value !== null);
+  if (closes.length < 35) return { macd: null, signal: null, histogram: null, trend: "Unavailable" };
+
+  const pricePoints: PricePoint[] = closes.map((c, i) => ({ date: String(i), close: c }));
+  const ema12 = computeEMA(pricePoints, 12);
+  const ema26 = computeEMA(pricePoints, 26);
+
+  const macdLine: number[] = [];
+  for (let i = 0; i < closes.length; i += 1) {
+    if (isNaN(ema12[i]) || isNaN(ema26[i])) {
+      macdLine.push(NaN);
+    } else {
+      macdLine.push(ema12[i] - ema26[i]);
+    }
+  }
+
+  // Compute signal line as EMA(9) of the MACD values (skip NaN prefix)
+  const validMacd = macdLine.filter((v) => !isNaN(v));
+  if (validMacd.length < 9) return { macd: null, signal: null, histogram: null, trend: "Unavailable" };
+
+  const macdPoints: PricePoint[] = validMacd.map((v, i) => ({ date: String(i), close: v }));
+  const signalEma = computeEMA(macdPoints, 9);
+
+  const latestMacd = validMacd[validMacd.length - 1];
+  const latestSignal = signalEma[signalEma.length - 1];
+  if (isNaN(latestSignal)) return { macd: latestMacd, signal: null, histogram: null, trend: "Unavailable" };
+
+  const histogram = latestMacd - latestSignal;
+  const trend = latestMacd > latestSignal ? "Bullish" : latestMacd < latestSignal ? "Bearish" : "Neutral";
+  return { macd: latestMacd, signal: latestSignal, histogram, trend };
+}
+
+function computeBollingerBands(
+  prices: PricePoint[],
+  period = 20,
+  stdDev = 2,
+): { upper: number | null; middle: number | null; lower: number | null; bandwidth: number | null; percentB: number | null } {
+  const sorted = [...prices].sort((a, b) => a.date.localeCompare(b.date));
+  const closes = sorted
+    .map((point) => toNumber(point.close))
+    .filter((value): value is number => value !== null);
+  if (closes.length < period) return { upper: null, middle: null, lower: null, bandwidth: null, percentB: null };
+
+  const slice = closes.slice(-period);
+  const middle = slice.reduce((s, v) => s + v, 0) / period;
+  const variance = slice.reduce((s, v) => s + (v - middle) ** 2, 0) / period;
+  const sd = Math.sqrt(variance);
+  const upper = middle + stdDev * sd;
+  const lower = middle - stdDev * sd;
+  const bandwidth = middle !== 0 ? ((upper - lower) / middle) * 100 : null;
+  const currentPrice = closes[closes.length - 1];
+  const percentB = upper !== lower ? ((currentPrice - lower) / (upper - lower)) * 100 : null;
+  return { upper, middle, lower, bandwidth, percentB };
+}
+
+function computeStochastic(
+  prices: PricePoint[],
+  kPeriod = 14,
+  dPeriod = 3,
+): { k: number | null; d: number | null; state: string } {
+  const sorted = [...prices].sort((a, b) => a.date.localeCompare(b.date));
+  const closes = sorted
+    .map((point) => toNumber(point.close))
+    .filter((value): value is number => value !== null);
+  if (closes.length < kPeriod + dPeriod - 1) return { k: null, d: null, state: "Unavailable" };
+
+  const kValues: number[] = [];
+  for (let i = kPeriod - 1; i < closes.length; i += 1) {
+    const window = closes.slice(i - kPeriod + 1, i + 1);
+    const highest = Math.max(...window);
+    const lowest = Math.min(...window);
+    kValues.push(highest === lowest ? 100 : ((closes[i] - lowest) / (highest - lowest)) * 100);
+  }
+
+  // %D = SMA of %K over dPeriod
+  if (kValues.length < dPeriod) return { k: null, d: null, state: "Unavailable" };
+  const dSlice = kValues.slice(-dPeriod);
+  const d = dSlice.reduce((s, v) => s + v, 0) / dPeriod;
+  const k = kValues[kValues.length - 1];
+  const state = k > 80 ? "Overbought" : k < 20 ? "Oversold" : "Neutral";
+  return { k, d, state };
+}
+
+function computeATR(prices: PricePoint[], period = 14): number | null {
+  const sorted = [...prices].sort((a, b) => a.date.localeCompare(b.date));
+  const closes = sorted
+    .map((point) => toNumber(point.close))
+    .filter((value): value is number => value !== null);
+  if (closes.length < period + 1) return null;
+  const trValues: number[] = [];
+  for (let i = 1; i < closes.length; i += 1) {
+    trValues.push(Math.abs(closes[i] - closes[i - 1]));
+  }
+  const slice = trValues.slice(-period);
+  return slice.reduce((s, v) => s + v, 0) / period;
+}
+
+function computeVolumeAnalysis(priceHistory: any): { avgVolume20: number | null; relativeVolume: number | null; volumeTrend: string } {
+  if (!Array.isArray(priceHistory) || priceHistory.length === 0) {
+    return { avgVolume20: null, relativeVolume: null, volumeTrend: "N/A" };
+  }
+  const volumes = priceHistory
+    .map((p: any) => (p && typeof p.volume !== "undefined" ? toNumber(p.volume) : null))
+    .filter((v: number | null): v is number => v !== null && v > 0);
+  if (volumes.length === 0) return { avgVolume20: null, relativeVolume: null, volumeTrend: "N/A" };
+  const recent = volumes.slice(-20);
+  const avgVolume20 = recent.reduce((s: number, v: number) => s + v, 0) / recent.length;
+  const latestVolume = volumes[volumes.length - 1];
+  const relativeVolume = avgVolume20 > 0 ? latestVolume / avgVolume20 : null;
+  const volumeTrend =
+    relativeVolume === null ? "N/A" : relativeVolume > 1.5 ? "Above Average" : relativeVolume < 0.5 ? "Below Average" : "Normal";
+  return { avgVolume20, relativeVolume, volumeTrend };
+}
+
 type TechnicalSnapshot = {
   rsi14: number | null;
   rsiState: "Overbought" | "Oversold" | "Bullish" | "Bearish" | "Neutral" | "Unavailable";
@@ -836,6 +971,12 @@ type TechnicalSnapshot = {
   vs200: number | null;
   trend: string;
   rangePosition: number | null;
+  macd: { macd: number | null; signal: number | null; histogram: number | null; trend: string };
+  bollinger: { upper: number | null; middle: number | null; lower: number | null; bandwidth: number | null; percentB: number | null };
+  stochastic: { k: number | null; d: number | null; state: string };
+  atr: number | null;
+  ema12: number | null;
+  ema26: number | null;
 };
 
 function getTechnicalSnapshot(price: number | null, prices: PricePoint[] = [], overview: any = {}): TechnicalSnapshot {
@@ -873,7 +1014,16 @@ function getTechnicalSnapshot(price: number | null, prices: PricePoint[] = [], o
     trend = vs200 >= 0 ? "Above 200D average" : "Below 200D average";
   }
 
-  return { rsi14, rsiState, moving50, moving200, vs50, vs200, trend, rangePosition };
+  const macd = computeMACD(prices);
+  const bollinger = computeBollingerBands(prices);
+  const stochastic = computeStochastic(prices);
+  const atr = computeATR(prices);
+  const ema12Arr = computeEMA(prices, 12);
+  const ema26Arr = computeEMA(prices, 26);
+  const ema12Val = ema12Arr.length > 0 && !isNaN(ema12Arr[ema12Arr.length - 1]) ? ema12Arr[ema12Arr.length - 1] : null;
+  const ema26Val = ema26Arr.length > 0 && !isNaN(ema26Arr[ema26Arr.length - 1]) ? ema26Arr[ema26Arr.length - 1] : null;
+
+  return { rsi14, rsiState, moving50, moving200, vs50, vs200, trend, rangePosition, macd, bollinger, stochastic, atr, ema12: ema12Val, ema26: ema26Val };
 }
 
 type ActionStance = {
