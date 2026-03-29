@@ -2145,3 +2145,267 @@ export function createStockService(apiKey?: string): StockDataService {
   }
   return new AlphaVantageService(apiKey);
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// Standalone services — NOT part of the StockDataService interface.
+// Instantiated on-demand in executeTool (stockTools.ts).
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * SEC EDGAR service — free, no API key required.
+ * Rate limit: 10 requests/second (use User-Agent header as required by SEC).
+ * Docs: https://www.sec.gov/search-filings/efts/efts-documentation
+ */
+export class SecEdgarService {
+  private baseUrl = 'https://efts.sec.gov/LATEST';
+  private edgarBaseUrl = 'https://data.sec.gov';
+  private userAgent = 'StockResearchBot/1.0 (stock-research-tool)';
+
+  /**
+   * Search for a company's CIK (Central Index Key) by ticker symbol.
+   * Uses the SEC company tickers JSON endpoint which maps tickers to CIKs.
+   */
+  async getCIK(ticker: string): Promise<{ cik: string; name: string } | null> {
+    try {
+      // Use SEC's full-text search to find CIK by ticker
+      const searchResp = await axios.get(`${this.baseUrl}/search-index?q="${ticker.toUpperCase()}"&dateRange=custom&startdt=2020-01-01&forms=10-K,10-Q`, {
+        headers: { 'User-Agent': this.userAgent, Accept: 'application/json' },
+        timeout: 10000,
+      });
+      const hit = searchResp.data?.hits?.hits?.[0]?._source;
+      if (hit?.entity_id) {
+        return { cik: String(hit.entity_id).padStart(10, '0'), name: hit.display_names?.[0] || ticker };
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Get recent SEC filings for a company.
+   * Returns 10-K, 10-Q, 8-K, and other significant filings.
+   */
+  async getRecentFilings(ticker: string, count = 10): Promise<any> {
+    try {
+      // Use EDGAR full-text search to find filings by ticker
+      const resp = await axios.get(
+        `${this.baseUrl}/search-index?q="${ticker.toUpperCase()}"&forms=10-K,10-Q,8-K,DEF+14A,S-1&dateRange=custom&startdt=2023-01-01&from=0&size=${count}`,
+        {
+          headers: { 'User-Agent': this.userAgent, Accept: 'application/json' },
+          timeout: 15000,
+        }
+      );
+      const hits = resp.data?.hits?.hits || [];
+      const filings = hits.map((hit: any) => {
+        const src = hit._source || {};
+        return {
+          form: src.form_type || src.file_type || 'Unknown',
+          filedDate: src.file_date || src.period_of_report || null,
+          description: src.display_names?.[0] || src.entity_name || ticker,
+          accessionNumber: src.accession_no || null,
+          url: src.accession_no
+            ? `https://www.sec.gov/Archives/edgar/data/${(src.entity_id || '').replace(/^0+/, '')}/${src.accession_no.replace(/-/g, '')}/${src.accession_no}-index.htm`
+            : null,
+        };
+      });
+      return {
+        ticker: ticker.toUpperCase(),
+        totalFilings: resp.data?.hits?.total?.value || filings.length,
+        filings,
+      };
+    } catch (error: any) {
+      // Fallback: try submissions endpoint directly
+      try {
+        const tickerResp = await axios.get(
+          `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&company=${ticker}&type=10-K&dateb=&owner=include&count=${count}&search_text=&action=getcompany&output=atom`,
+          {
+            headers: { 'User-Agent': this.userAgent },
+            timeout: 10000,
+          }
+        );
+        // Parse basic info from response
+        return {
+          ticker: ticker.toUpperCase(),
+          totalFilings: 0,
+          filings: [],
+          note: 'EDGAR search returned limited results. Try using the company name for better results.',
+        };
+      } catch {
+        return {
+          ticker: ticker.toUpperCase(),
+          totalFilings: 0,
+          filings: [],
+          error: error?.message || 'SEC EDGAR unavailable',
+        };
+      }
+    }
+  }
+
+  /**
+   * Get insider transactions from SEC EDGAR (Form 4 filings).
+   */
+  async getInsiderFilings(ticker: string, count = 20): Promise<any> {
+    try {
+      const resp = await axios.get(
+        `${this.baseUrl}/search-index?q="${ticker.toUpperCase()}"&forms=4&dateRange=custom&startdt=2024-01-01&from=0&size=${count}`,
+        {
+          headers: { 'User-Agent': this.userAgent, Accept: 'application/json' },
+          timeout: 15000,
+        }
+      );
+      const hits = resp.data?.hits?.hits || [];
+      const filings = hits.map((hit: any) => {
+        const src = hit._source || {};
+        return {
+          form: 'Form 4',
+          filedDate: src.file_date || null,
+          filerName: src.display_names?.[0] || 'Unknown',
+          accessionNumber: src.accession_no || null,
+          url: src.accession_no
+            ? `https://www.sec.gov/Archives/edgar/data/${(src.entity_id || '').replace(/^0+/, '')}/${src.accession_no.replace(/-/g, '')}/${src.accession_no}-index.htm`
+            : null,
+        };
+      });
+      return { ticker: ticker.toUpperCase(), filings };
+    } catch {
+      return { ticker: ticker.toUpperCase(), filings: [] };
+    }
+  }
+}
+
+/**
+ * FRED (Federal Reserve Economic Data) service — free API key required.
+ * Get a key at: https://fred.stlouisfed.org/docs/api/api_key.html
+ * Rate limit: 120 requests/minute.
+ */
+export class FredService {
+  private apiKey: string;
+  private baseUrl = 'https://api.stlouisfed.org/fred';
+
+  constructor(apiKey?: string) {
+    this.apiKey = apiKey || process.env.FRED_API_KEY || '';
+  }
+
+  isConfigured(): boolean {
+    return this.apiKey.length > 0;
+  }
+
+  /**
+   * Get a FRED series observation (latest value).
+   */
+  private async getSeriesLatest(seriesId: string): Promise<{ date: string; value: number | null }> {
+    try {
+      const resp = await axios.get(`${this.baseUrl}/series/observations`, {
+        params: {
+          series_id: seriesId,
+          api_key: this.apiKey,
+          file_type: 'json',
+          sort_order: 'desc',
+          limit: 1,
+        },
+        timeout: 10000,
+      });
+      const obs = resp.data?.observations?.[0];
+      if (!obs) return { date: 'N/A', value: null };
+      const val = obs.value === '.' ? null : Number(obs.value);
+      return { date: obs.date || 'N/A', value: Number.isFinite(val) ? val : null };
+    } catch {
+      return { date: 'N/A', value: null };
+    }
+  }
+
+  /**
+   * Get a FRED series with recent observations for trend analysis.
+   */
+  private async getSeriesHistory(seriesId: string, limit = 12): Promise<Array<{ date: string; value: number | null }>> {
+    try {
+      const resp = await axios.get(`${this.baseUrl}/series/observations`, {
+        params: {
+          series_id: seriesId,
+          api_key: this.apiKey,
+          file_type: 'json',
+          sort_order: 'desc',
+          limit,
+        },
+        timeout: 10000,
+      });
+      return (resp.data?.observations || []).map((obs: any) => ({
+        date: obs.date || 'N/A',
+        value: obs.value === '.' ? null : (Number.isFinite(Number(obs.value)) ? Number(obs.value) : null),
+      })).reverse();
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Get key macroeconomic indicators.
+   * Returns: GDP growth, CPI/inflation, Fed Funds Rate, unemployment, 10Y Treasury yield,
+   * consumer sentiment, and initial jobless claims.
+   */
+  async getEconomicIndicators(): Promise<any> {
+    if (!this.isConfigured()) {
+      return { error: 'FRED_API_KEY not configured. Get a free key at fred.stlouisfed.org' };
+    }
+
+    const indicators = [
+      { id: 'GDP', name: 'GDP (Quarterly, Billions $)', series: 'GDP' },
+      { id: 'GDPC1', name: 'Real GDP Growth Rate (%)', series: 'A191RL1Q225SBEA' },
+      { id: 'CPI', name: 'CPI (Consumer Price Index)', series: 'CPIAUCSL' },
+      { id: 'INFLATION', name: 'Inflation Rate (CPI YoY %)', series: 'CPIAUCSL' },
+      { id: 'FED_FUNDS', name: 'Federal Funds Rate (%)', series: 'DFF' },
+      { id: 'UNEMPLOYMENT', name: 'Unemployment Rate (%)', series: 'UNRATE' },
+      { id: 'TREASURY_10Y', name: '10-Year Treasury Yield (%)', series: 'DGS10' },
+      { id: 'TREASURY_2Y', name: '2-Year Treasury Yield (%)', series: 'DGS2' },
+      { id: 'CONSUMER_SENTIMENT', name: 'Consumer Sentiment Index', series: 'UMCSENT' },
+      { id: 'INITIAL_CLAIMS', name: 'Initial Jobless Claims', series: 'ICSA' },
+    ];
+
+    const results = await Promise.all(
+      indicators.map(async (ind) => {
+        const latest = await this.getSeriesLatest(ind.series);
+        return {
+          id: ind.id,
+          name: ind.name,
+          value: latest.value,
+          date: latest.date,
+        };
+      })
+    );
+
+    // Calculate yield curve spread (10Y - 2Y)
+    const t10y = results.find((r) => r.id === 'TREASURY_10Y')?.value;
+    const t2y = results.find((r) => r.id === 'TREASURY_2Y')?.value;
+    const yieldSpread = t10y !== null && t10y !== undefined && t2y !== null && t2y !== undefined
+      ? t10y - t2y
+      : null;
+    const yieldCurveStatus = yieldSpread === null
+      ? 'Unavailable'
+      : yieldSpread < 0
+        ? 'Inverted (recession signal)'
+        : yieldSpread < 0.5
+          ? 'Flat (caution)'
+          : 'Normal (healthy)';
+
+    return {
+      indicators: results,
+      yieldCurve: {
+        spread: yieldSpread,
+        status: yieldCurveStatus,
+      },
+      fetchedAt: new Date().toISOString(),
+    };
+  }
+
+  /**
+   * Get historical series data for charting.
+   */
+  async getSeriesData(seriesId: string, limit = 60): Promise<any> {
+    if (!this.isConfigured()) {
+      return { error: 'FRED_API_KEY not configured' };
+    }
+    const history = await this.getSeriesHistory(seriesId, limit);
+    return { seriesId, observations: history };
+  }
+}

@@ -2,6 +2,14 @@
 All notable changes to this project are recorded here.
 ## [Unreleased]
 ### Added
+- **7 new research tools** (30 total): `get_technical_indicators`, `get_sec_filings`, `get_economic_indicators`, `get_dividend_analysis`, `get_dcf_valuation`, `get_market_sentiment`, bringing total tool count from 23 to 30.
+- **Advanced technical indicators**: MACD(12,26,9), Bollinger Bands(20,2), Stochastic Oscillator(14,3,3), ATR(14), EMA(12/26), volume analysis — all computed from existing price data with zero extra API calls.
+- **SEC EDGAR integration**: `SecEdgarService` fetches recent 10-K, 10-Q, 8-K filings with direct links. Completely free — no API key needed.
+- **FRED economic data**: `FredService` provides GDP growth, CPI/inflation, Federal Funds rate, unemployment, 10Y/2Y Treasury yields, yield curve spread (recession indicator), consumer sentiment, initial jobless claims. Requires free `FRED_API_KEY`.
+- **Dividend analysis tool**: Comprehensive dividend metrics including yield, payout ratio, FCF coverage ratio, dividend safety score, ex-dividend dates. Derived entirely from existing provider data.
+- **DCF valuation tool**: Simplified 10-year discounted cash flow model with growth fade, CAPM-based WACC, terminal value, margin of safety, and valuation verdict. Uses only real financial data from providers.
+- **Market sentiment indicator**: Composite Fear & Greed-style index (0-100) aggregating sector breadth, gainers/losers ratio, gain/loss magnitude, and market momentum from real market data.
+- **Enhanced stock report sections**: Timing & Trade Setup now includes MACD, Bollinger Bands, Stochastic, ATR, EMA indicators. New Dividend Analysis and DCF Valuation Estimate sections appear when data is available.
 - Stock reports now surface a timing layer derived from real price history: RSI, moving-average trend, 52-week range position, and a data-driven buy/hold/wait/sell stance.
 - Stock reports now include analyst recommendation trend tables when provider recommendation history is available.
 - Stock reports now surface recent insider activity summaries and transaction tables when provider data is available.

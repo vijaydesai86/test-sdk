@@ -827,6 +827,142 @@ function computeRsi(prices: PricePoint[] = [], period = 14): number | null {
   return 100 - (100 / (1 + rs));
 }
 
+function computeEMA(prices: PricePoint[], period: number): number[] {
+  const sorted = [...prices].sort((a, b) => a.date.localeCompare(b.date));
+  const closes = sorted
+    .map((point) => toNumber(point.close))
+    .filter((value): value is number => value !== null);
+  if (closes.length < period) return [];
+  const multiplier = 2 / (period + 1);
+  const ema: number[] = new Array(closes.length).fill(NaN);
+  let smaSum = 0;
+  for (let i = 0; i < period; i += 1) smaSum += closes[i];
+  ema[period - 1] = smaSum / period;
+  for (let i = period; i < closes.length; i += 1) {
+    ema[i] = (closes[i] - ema[i - 1]) * multiplier + ema[i - 1];
+  }
+  return ema;
+}
+
+function computeMACD(prices: PricePoint[]): { macd: number | null; signal: number | null; histogram: number | null; trend: string } {
+  const sorted = [...prices].sort((a, b) => a.date.localeCompare(b.date));
+  const closes = sorted
+    .map((point) => toNumber(point.close))
+    .filter((value): value is number => value !== null);
+  if (closes.length < 26 + 9) return { macd: null, signal: null, histogram: null, trend: "Unavailable" };
+
+  const pricePoints: PricePoint[] = closes.map((c, i) => ({ date: String(i), close: c }));
+  const ema12 = computeEMA(pricePoints, 12);
+  const ema26 = computeEMA(pricePoints, 26);
+
+  const macdLine: number[] = [];
+  for (let i = 0; i < closes.length; i += 1) {
+    if (isNaN(ema12[i]) || isNaN(ema26[i])) {
+      macdLine.push(NaN);
+    } else {
+      macdLine.push(ema12[i] - ema26[i]);
+    }
+  }
+
+  // Compute signal line as EMA(9) of the MACD values (skip NaN prefix)
+  const validMacd = macdLine.filter((v) => !isNaN(v));
+  if (validMacd.length < 9) return { macd: null, signal: null, histogram: null, trend: "Unavailable" };
+
+  const macdPoints: PricePoint[] = validMacd.map((v, i) => ({ date: String(i), close: v }));
+  const signalEma = computeEMA(macdPoints, 9);
+
+  const latestMacd = validMacd[validMacd.length - 1];
+  const latestSignal = signalEma[signalEma.length - 1];
+  if (isNaN(latestSignal)) return { macd: latestMacd, signal: null, histogram: null, trend: "Unavailable" };
+
+  const histogram = latestMacd - latestSignal;
+  const trend = latestMacd > latestSignal ? "Bullish" : latestMacd < latestSignal ? "Bearish" : "Neutral";
+  return { macd: latestMacd, signal: latestSignal, histogram, trend };
+}
+
+function computeBollingerBands(
+  prices: PricePoint[],
+  period = 20,
+  stdDev = 2,
+): { upper: number | null; middle: number | null; lower: number | null; bandwidth: number | null; percentB: number | null } {
+  const sorted = [...prices].sort((a, b) => a.date.localeCompare(b.date));
+  const closes = sorted
+    .map((point) => toNumber(point.close))
+    .filter((value): value is number => value !== null);
+  if (closes.length < period) return { upper: null, middle: null, lower: null, bandwidth: null, percentB: null };
+
+  const slice = closes.slice(-period);
+  const middle = slice.reduce((s, v) => s + v, 0) / period;
+  const variance = slice.reduce((s, v) => s + (v - middle) ** 2, 0) / period;
+  const sd = Math.sqrt(variance);
+  const upper = middle + stdDev * sd;
+  const lower = middle - stdDev * sd;
+  const bandwidth = middle !== 0 ? ((upper - lower) / middle) * 100 : null;
+  const currentPrice = closes[closes.length - 1];
+  const percentB = upper !== lower ? ((currentPrice - lower) / (upper - lower)) * 100 : null;
+  return { upper, middle, lower, bandwidth, percentB };
+}
+
+function computeStochastic(
+  prices: PricePoint[],
+  kPeriod = 14,
+  dPeriod = 3,
+): { k: number | null; d: number | null; state: string } {
+  const sorted = [...prices].sort((a, b) => a.date.localeCompare(b.date));
+  const closes = sorted
+    .map((point) => toNumber(point.close))
+    .filter((value): value is number => value !== null);
+  if (closes.length < kPeriod + dPeriod - 1) return { k: null, d: null, state: "Unavailable" };
+
+  const kValues: number[] = [];
+  for (let i = kPeriod - 1; i < closes.length; i += 1) {
+    const window = closes.slice(i - kPeriod + 1, i + 1);
+    const highest = Math.max(...window);
+    const lowest = Math.min(...window);
+    kValues.push(highest === lowest ? 100 : ((closes[i] - lowest) / (highest - lowest)) * 100);
+  }
+
+  // %D = SMA of %K over dPeriod
+  if (kValues.length < dPeriod) return { k: null, d: null, state: "Unavailable" };
+  const dSlice = kValues.slice(-dPeriod);
+  const d = dSlice.reduce((s, v) => s + v, 0) / dPeriod;
+  const k = kValues[kValues.length - 1];
+  const state = k > 80 ? "Overbought" : k < 20 ? "Oversold" : "Neutral";
+  return { k, d, state };
+}
+
+function computeATR(prices: PricePoint[], period = 14): number | null {
+  const sorted = [...prices].sort((a, b) => a.date.localeCompare(b.date));
+  const closes = sorted
+    .map((point) => toNumber(point.close))
+    .filter((value): value is number => value !== null);
+  if (closes.length < period + 1) return null;
+  const trValues: number[] = [];
+  for (let i = 1; i < closes.length; i += 1) {
+    trValues.push(Math.abs(closes[i] - closes[i - 1]));
+  }
+  const slice = trValues.slice(-period);
+  return slice.reduce((s, v) => s + v, 0) / period;
+}
+
+/** Exported for reuse in stockTools.ts */
+export function computeVolumeAnalysis(priceHistory: any): { avgVolume20: number | null; relativeVolume: number | null; volumeTrend: string } {
+  if (!Array.isArray(priceHistory) || priceHistory.length === 0) {
+    return { avgVolume20: null, relativeVolume: null, volumeTrend: "N/A" };
+  }
+  const volumes = priceHistory
+    .map((p: any) => (p && typeof p.volume !== "undefined" ? toNumber(p.volume) : null))
+    .filter((v: number | null): v is number => v !== null && v > 0);
+  if (volumes.length === 0) return { avgVolume20: null, relativeVolume: null, volumeTrend: "N/A" };
+  const recent = volumes.slice(-20);
+  const avgVolume20 = recent.reduce((s: number, v: number) => s + v, 0) / recent.length;
+  const latestVolume = volumes[volumes.length - 1];
+  const relativeVolume = avgVolume20 > 0 ? latestVolume / avgVolume20 : null;
+  const volumeTrend =
+    relativeVolume === null ? "N/A" : relativeVolume > 1.5 ? "Above Average" : relativeVolume < 0.5 ? "Below Average" : "Normal";
+  return { avgVolume20, relativeVolume, volumeTrend };
+}
+
 type TechnicalSnapshot = {
   rsi14: number | null;
   rsiState: "Overbought" | "Oversold" | "Bullish" | "Bearish" | "Neutral" | "Unavailable";
@@ -836,6 +972,12 @@ type TechnicalSnapshot = {
   vs200: number | null;
   trend: string;
   rangePosition: number | null;
+  macd: { macd: number | null; signal: number | null; histogram: number | null; trend: string };
+  bollinger: { upper: number | null; middle: number | null; lower: number | null; bandwidth: number | null; percentB: number | null };
+  stochastic: { k: number | null; d: number | null; state: string };
+  atr: number | null;
+  ema12: number | null;
+  ema26: number | null;
 };
 
 function getTechnicalSnapshot(price: number | null, prices: PricePoint[] = [], overview: any = {}): TechnicalSnapshot {
@@ -873,8 +1015,20 @@ function getTechnicalSnapshot(price: number | null, prices: PricePoint[] = [], o
     trend = vs200 >= 0 ? "Above 200D average" : "Below 200D average";
   }
 
-  return { rsi14, rsiState, moving50, moving200, vs50, vs200, trend, rangePosition };
+  const macd = computeMACD(prices);
+  const bollinger = computeBollingerBands(prices);
+  const stochastic = computeStochastic(prices);
+  const atr = computeATR(prices);
+  const ema12Arr = computeEMA(prices, 12);
+  const ema26Arr = computeEMA(prices, 26);
+  const ema12Val = ema12Arr.length > 0 && !isNaN(ema12Arr[ema12Arr.length - 1]) ? ema12Arr[ema12Arr.length - 1] : null;
+  const ema26Val = ema26Arr.length > 0 && !isNaN(ema26Arr[ema26Arr.length - 1]) ? ema26Arr[ema26Arr.length - 1] : null;
+
+  return { rsi14, rsiState, moving50, moving200, vs50, vs200, trend, rangePosition, macd, bollinger, stochastic, atr, ema12: ema12Val, ema26: ema26Val };
 }
+
+/** Exported alias for getTechnicalSnapshot — used by tools that need technical analysis outside reports. */
+export const computeTechnicalSnapshot = getTechnicalSnapshot;
 
 type ActionStance = {
   label: ActionLabel;
@@ -1910,6 +2064,13 @@ export function buildStockReport(data: StockReportData): string {
     trend200 !== null ? `- Price vs 200D average: ${trend200.toFixed(1)}%` : null,
     technical.rangePosition !== null ? `- 52W range position: ${technical.rangePosition.toFixed(1)}%` : null,
     `- Technical trend: ${technical.trend}`,
+    technical.macd.macd !== null ? `- MACD: ${technical.macd.macd.toFixed(2)} | Signal: ${technical.macd.signal?.toFixed(2) ?? 'N/A'} | Histogram: ${technical.macd.histogram?.toFixed(2) ?? 'N/A'} (${technical.macd.trend})` : null,
+    technical.bollinger.upper !== null ? `- Bollinger Bands: Upper ${technical.bollinger.upper.toFixed(2)} | Middle ${technical.bollinger.middle?.toFixed(2)} | Lower ${technical.bollinger.lower?.toFixed(2)}` : null,
+    technical.bollinger.percentB !== null ? `- Bollinger %B: ${technical.bollinger.percentB.toFixed(1)}% | Bandwidth: ${technical.bollinger.bandwidth?.toFixed(1)}%` : null,
+    technical.stochastic.k !== null ? `- Stochastic: %K ${technical.stochastic.k.toFixed(1)} | %D ${technical.stochastic.d?.toFixed(1) ?? 'N/A'} (${technical.stochastic.state})` : null,
+    technical.atr !== null ? `- ATR (14): ${technical.atr.toFixed(2)}` : null,
+    technical.ema12 !== null ? `- EMA (12): ${technical.ema12.toFixed(2)}` : null,
+    technical.ema26 !== null ? `- EMA (26): ${technical.ema26.toFixed(2)}` : null,
   ].filter(Boolean) as string[];
 
   const recommendationRows = Array.isArray(data.analystRecommendations?.recommendations)
@@ -2171,6 +2332,115 @@ export function buildStockReport(data: StockReportData): string {
     '### Cash Flow (recent reported periods)',
     cashTable,
   );
+
+  // Dividend Analysis section — only for dividend-paying stocks
+  const dividendYield = toNumber(overview.dividendYield);
+  const dividendPerShare = toNumber(overview.dividendPerShare);
+  const isDividendPayer = (dividendYield != null && dividendYield > 0) || (dividendPerShare != null && dividendPerShare > 0);
+  if (isDividendPayer) {
+    const divEps = toNumber(overview.eps);
+    const divPayoutRatio = dividendPerShare && divEps && divEps > 0 ? (dividendPerShare / divEps) * 100 : null;
+    const latestCFReport = cashReports.length > 0 ? (data.cashFlow?.annualReports || data.cashFlow?.quarterlyReports || [])[0] : null;
+    const divOCF = latestCFReport?.operatingCashflow != null ? Number(latestCFReport.operatingCashflow) : null;
+    const divCapex = latestCFReport?.capitalExpenditures != null ? Math.abs(Number(latestCFReport.capitalExpenditures)) : null;
+    const divPaid = latestCFReport?.dividendPayout != null ? Math.abs(Number(latestCFReport.dividendPayout)) : null;
+    const divFCF = divOCF != null && divCapex != null ? divOCF - divCapex : null;
+    const divCoverage = divFCF != null && divPaid != null && divPaid > 0 ? divFCF / divPaid : null;
+    let divSafety = 'Unavailable';
+    if (divCoverage !== null) {
+      if (divCoverage >= 3) divSafety = '🟢 Very Safe (FCF covers 3x+)';
+      else if (divCoverage >= 2) divSafety = '🟢 Safe (FCF covers 2x+)';
+      else if (divCoverage >= 1.5) divSafety = '🟡 Adequate (FCF covers 1.5x+)';
+      else if (divCoverage >= 1) divSafety = '🟠 At Risk (FCF barely covers)';
+      else divSafety = '🔴 Unsafe (FCF does not cover)';
+    }
+    const dividendLines = [
+      dividendYield != null ? `- Dividend Yield: ${formatPercent(dividendYield)}` : null,
+      dividendPerShare != null ? `- Annual Dividend/Share: $${dividendPerShare.toFixed(2)}` : null,
+      divPayoutRatio != null ? `- Payout Ratio (EPS): ${divPayoutRatio.toFixed(1)}%` : null,
+      divCoverage != null ? `- FCF Coverage Ratio: ${divCoverage.toFixed(2)}x` : null,
+      `- Dividend Safety: ${divSafety}`,
+      overview.exDividendDate ? `- Ex-Dividend Date: ${overview.exDividendDate}` : null,
+      overview.dividendDate ? `- Dividend Pay Date: ${overview.dividendDate}` : null,
+    ].filter(Boolean) as string[];
+    sections.push('## 💵 Dividend Analysis', ...dividendLines);
+  }
+
+  // DCF Valuation section — simplified intrinsic value estimate
+  const dcfSharesOutstanding = toNumber(overview.sharesOutstanding);
+  const dcfBeta = toNumber(overview.beta);
+  const dcfAnnualReports = data.cashFlow?.annualReports || [];
+  const dcfFCFs: number[] = [];
+  for (const report of dcfAnnualReports.slice(0, 5)) {
+    const ocf = report?.operatingCashflow != null ? Number(report.operatingCashflow) : null;
+    const capex = report?.capitalExpenditures != null ? Math.abs(Number(report.capitalExpenditures)) : null;
+    if (ocf != null && capex != null && Number.isFinite(ocf) && Number.isFinite(capex)) {
+      dcfFCFs.push(ocf - capex);
+    }
+  }
+  if (dcfFCFs.length > 0 && dcfSharesOutstanding && dcfSharesOutstanding > 0 && price !== null) {
+    const latestFCF = dcfFCFs[0];
+    let dcfGrowth = 0.05;
+    const dcfRevGrowth = toNumber(overview.quarterlyRevenueGrowth);
+    if (dcfFCFs.length >= 2 && dcfFCFs[dcfFCFs.length - 1] > 0) {
+      const cagr = Math.pow(dcfFCFs[0] / dcfFCFs[dcfFCFs.length - 1], 1 / (dcfFCFs.length - 1)) - 1;
+      if (Number.isFinite(cagr) && cagr > -0.5 && cagr < 1.0) dcfGrowth = Math.min(cagr, 0.25);
+    } else if (dcfRevGrowth != null && Number.isFinite(dcfRevGrowth)) {
+      dcfGrowth = Math.min(Math.max(dcfRevGrowth, -0.1), 0.25);
+    }
+    const riskFree = 0.04;
+    const erp = 0.05;
+    const eBeta = dcfBeta != null && Number.isFinite(dcfBeta) && dcfBeta > 0 ? dcfBeta : 1.0;
+    const dcfWacc = riskFree + eBeta * erp;
+    const termGrowth = 0.025;
+    let dcfTotalPV = 0;
+    let projFCF = latestFCF;
+    for (let yr = 1; yr <= 10; yr++) {
+      const effectiveGrowth = yr <= 5
+        ? dcfGrowth
+        : dcfGrowth * (1 - (yr - 5) / 5) + termGrowth * ((yr - 5) / 5);
+      projFCF *= (1 + effectiveGrowth);
+      dcfTotalPV += projFCF / Math.pow(1 + dcfWacc, yr);
+    }
+    const termFCF = projFCF * (1 + termGrowth);
+    const termVal = termFCF / (dcfWacc - termGrowth);
+    const termPV = termVal / Math.pow(1 + dcfWacc, 10);
+    const ev = dcfTotalPV + termPV;
+    const nDebt = (toNumber(overview.longTermDebt) || 0) - (toNumber(overview.cashAndEquivalents) || 0);
+    const eqVal = ev - (Number.isFinite(nDebt) ? nDebt : 0);
+    const intrinsic = eqVal / dcfSharesOutstanding;
+    const mos = ((intrinsic - price) / intrinsic) * 100;
+    let dcfVerdict = 'Unavailable';
+    if (Number.isFinite(mos)) {
+      if (mos > 30) dcfVerdict = '🟢 Significantly Undervalued';
+      else if (mos > 15) dcfVerdict = '🟢 Moderately Undervalued';
+      else if (mos > 0) dcfVerdict = '🟡 Slightly Undervalued';
+      else if (mos > -15) dcfVerdict = '🟡 Fairly Valued';
+      else if (mos > -30) dcfVerdict = '🟠 Moderately Overvalued';
+      else dcfVerdict = '🔴 Significantly Overvalued';
+    }
+    if (Number.isFinite(intrinsic)) {
+      sections.push(
+        '## 📐 DCF Valuation Estimate',
+        '_Simplified 10-year DCF model. Not investment advice — estimates depend on assumptions._',
+        buildTable(
+          ['Metric', 'Value'],
+          [
+            ['**Intrinsic Value / Share**', `$${intrinsic.toFixed(2)}`],
+            ['**Current Price**', formatPrice(price)],
+            ['**Margin of Safety**', `${mos.toFixed(1)}%`],
+            ['**Verdict**', dcfVerdict],
+            ['Growth Rate Used', `${(dcfGrowth * 100).toFixed(1)}%`],
+            ['WACC (Discount Rate)', `${(dcfWacc * 100).toFixed(1)}%`],
+            ['Terminal Growth', `${(termGrowth * 100).toFixed(1)}%`],
+            ['Beta', `${eBeta.toFixed(2)}`],
+            ['Latest FCF', formatCurrency(latestFCF)],
+          ],
+          ['left', 'right']
+        ),
+      );
+    }
+  }
 
   sections.push(
     '## 🧮 Valuation & Multiples',

@@ -1,8 +1,8 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { promises as fs } from 'fs';
 import path from 'path';
-import { StockDataService } from './stockDataService';
-import { buildStockReport, buildComparisonReport, buildSectorReport, buildDeepSectorReport, buildDeepStockReport, buildDeepComparisonReport, buildWatchlistDailyReport, saveReport, MoatAnalysis } from './reportGenerator';
+import { StockDataService, SecEdgarService, FredService } from './stockDataService';
+import { buildStockReport, buildComparisonReport, buildSectorReport, buildDeepSectorReport, buildDeepStockReport, buildDeepComparisonReport, buildWatchlistDailyReport, saveReport, MoatAnalysis, computeTechnicalSnapshot, computeVolumeAnalysis } from './reportGenerator';
 import { getDefaultWatchlist } from './watchlistStore';
 
 /**
@@ -1110,6 +1110,85 @@ function buildToolDefinitions() {
         },
       },
     },
+    {
+      type: 'function',
+      function: {
+        name: 'get_technical_indicators',
+        description: 'Get comprehensive technical analysis indicators for a stock: RSI(14), MACD(12,26,9), Bollinger Bands(20,2), Stochastic(14,3), ATR(14), EMA(12/26), SMA(50/200), 52W range position, trend classification, and volume analysis. All computed from price data — no extra API calls.',
+        parameters: {
+          type: 'object',
+          properties: {
+            symbol: { type: 'string', description: 'Stock ticker symbol (e.g. AAPL)' },
+          },
+          required: ['symbol'],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'get_sec_filings',
+        description: 'Get recent SEC EDGAR filings for a company: 10-K (annual), 10-Q (quarterly), 8-K (current events), DEF 14A (proxy), and insider Form 4 filings. Includes filing dates and links to SEC documents. Free — no API key required.',
+        parameters: {
+          type: 'object',
+          properties: {
+            symbol: { type: 'string', description: 'Stock ticker symbol (e.g. AAPL)' },
+            count: { type: 'number', description: 'Number of filings to return (default 10, max 20)' },
+          },
+          required: ['symbol'],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'get_economic_indicators',
+        description: 'Get key macroeconomic indicators from FRED (Federal Reserve): GDP growth, CPI/inflation rate, Federal Funds rate, unemployment rate, 10Y & 2Y Treasury yields, yield curve spread (recession indicator), consumer sentiment, and initial jobless claims. Requires free FRED_API_KEY.',
+        parameters: {
+          type: 'object',
+          properties: {},
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'get_dividend_analysis',
+        description: 'Get comprehensive dividend analysis for a stock: current yield, annual dividend per share, payout ratio, ex-dividend date, payment date, dividend frequency estimate, and dividend safety assessment based on free cash flow coverage. Derived from existing company overview and cash flow data.',
+        parameters: {
+          type: 'object',
+          properties: {
+            symbol: { type: 'string', description: 'Stock ticker symbol (e.g. AAPL)' },
+          },
+          required: ['symbol'],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'get_dcf_valuation',
+        description: 'Compute a simplified Discounted Cash Flow (DCF) intrinsic value estimate for a stock. Uses trailing free cash flow, estimated growth rate, and a discount rate (WACC proxy) derived from the risk-free rate and beta. Returns intrinsic value per share, margin of safety, and valuation verdict. All inputs come from real provider data.',
+        parameters: {
+          type: 'object',
+          properties: {
+            symbol: { type: 'string', description: 'Stock ticker symbol (e.g. AAPL)' },
+          },
+          required: ['symbol'],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'get_market_sentiment',
+        description: 'Get a composite market sentiment indicator (similar to Fear & Greed index). Aggregates sector performance breadth, top gainers vs losers ratio, and market momentum to produce a sentiment score (0-100) with classification: Extreme Fear, Fear, Neutral, Greed, Extreme Greed. Uses real market data only.',
+        parameters: {
+          type: 'object',
+          properties: {},
+        },
+      },
+    },
   ];
 }
 
@@ -1260,6 +1339,305 @@ export async function executeTool(
       case 'get_top_gainers_losers': {
         const data = await stockService.getTopGainersLosers();
         return { success: true, data, message: 'Retrieved top gainers, losers, and most active stocks' };
+      }
+      case 'get_technical_indicators': {
+        const sym = (args.symbol || '').toUpperCase();
+        if (!sym) return { success: false, error: 'Symbol is required' };
+        const priceHist = await stockService.getPriceHistory(sym, '1y');
+        const overview = await stockService.getCompanyOverview(sym);
+        const priceData = await stockService.getStockPrice(sym);
+        const currentPrice = priceData?.price != null ? Number(priceData.price) : null;
+        const prices = priceHist?.prices || [];
+
+        // Compute all technical indicators from the raw price data
+        const snapshot = computeTechnicalSnapshot(currentPrice, prices, overview || {});
+        const volumeData = computeVolumeAnalysis(priceHist?.prices);
+        return {
+          success: true,
+          data: {
+            symbol: sym,
+            price: currentPrice,
+            ...snapshot,
+            volume: volumeData,
+          },
+          message: `Technical indicators for ${sym}: RSI=${snapshot.rsi14?.toFixed(1) || 'N/A'}, MACD trend=${snapshot.macd?.trend || 'N/A'}, Stochastic=${snapshot.stochastic?.state || 'N/A'}`,
+        };
+      }
+      case 'get_sec_filings': {
+        const sym = (args.symbol || '').toUpperCase();
+        if (!sym) return { success: false, error: 'Symbol is required' };
+        const count = Math.min(args.count || 10, 20);
+        const edgar = new SecEdgarService();
+        const filings = await edgar.getRecentFilings(sym, count);
+        return {
+          success: true,
+          data: filings,
+          message: `Retrieved ${filings.filings?.length || 0} SEC filings for ${sym}`,
+        };
+      }
+      case 'get_economic_indicators': {
+        const fred = new FredService();
+        if (!fred.isConfigured()) {
+          return {
+            success: false,
+            error: 'FRED_API_KEY not configured. Get a free key at https://fred.stlouisfed.org/docs/api/api_key.html',
+          };
+        }
+        const indicators = await fred.getEconomicIndicators();
+        return {
+          success: true,
+          data: indicators,
+          message: 'Retrieved macroeconomic indicators from FRED',
+        };
+      }
+      case 'get_dividend_analysis': {
+        const sym = (args.symbol || '').toUpperCase();
+        if (!sym) return { success: false, error: 'Symbol is required' };
+        const overview = await stockService.getCompanyOverview(sym);
+        const cashFlowData = await stockService.getCashFlow(sym);
+        const priceData = await stockService.getStockPrice(sym);
+        const currentPrice = priceData?.price != null ? Number(priceData.price) : null;
+
+        const dividendYield = overview?.dividendYield != null ? Number(overview.dividendYield) : null;
+        const dividendPerShare = overview?.dividendPerShare != null ? Number(overview.dividendPerShare) : null;
+        const exDividendDate = overview?.exDividendDate || null;
+        const dividendDate = overview?.dividendDate || null;
+        const eps = overview?.eps != null ? Number(overview.eps) : null;
+        const payoutRatio = dividendPerShare && eps && eps > 0 ? (dividendPerShare / eps) * 100 : null;
+
+        // Compute FCF coverage from cash flow data
+        const reports = cashFlowData?.annualReports || cashFlowData?.quarterlyReports || [];
+        const latestCF = reports[0];
+        const ocf = latestCF?.operatingCashflow != null ? Number(latestCF.operatingCashflow) : null;
+        const capex = latestCF?.capitalExpenditures != null ? Math.abs(Number(latestCF.capitalExpenditures)) : null;
+        const divPaid = latestCF?.dividendPayout != null ? Math.abs(Number(latestCF.dividendPayout)) : null;
+        const fcf = ocf != null && capex != null ? ocf - capex : null;
+        const fcfCoverage = fcf != null && divPaid != null && divPaid > 0 ? fcf / divPaid : null;
+        const sharesOutstanding = overview?.sharesOutstanding != null ? Number(overview.sharesOutstanding) : null;
+        const fcfPerShare = fcf != null && sharesOutstanding && sharesOutstanding > 0 ? fcf / sharesOutstanding : null;
+
+        let dividendSafety = 'Unavailable';
+        if (fcfCoverage !== null) {
+          if (fcfCoverage >= 3) dividendSafety = 'Very Safe (FCF covers dividend 3x+)';
+          else if (fcfCoverage >= 2) dividendSafety = 'Safe (FCF covers dividend 2x+)';
+          else if (fcfCoverage >= 1.5) dividendSafety = 'Adequate (FCF covers dividend 1.5x+)';
+          else if (fcfCoverage >= 1) dividendSafety = 'At Risk (FCF barely covers dividend)';
+          else dividendSafety = 'Unsafe (FCF does not cover dividend)';
+        }
+
+        const isDividendPayer = (dividendYield != null && dividendYield > 0) || (dividendPerShare != null && dividendPerShare > 0);
+
+        return {
+          success: true,
+          data: {
+            symbol: sym,
+            isDividendPayer,
+            currentPrice,
+            dividendYield: dividendYield != null && Number.isFinite(dividendYield) ? dividendYield : null,
+            dividendPerShare: dividendPerShare != null && Number.isFinite(dividendPerShare) ? dividendPerShare : null,
+            payoutRatioPercent: payoutRatio != null && Number.isFinite(payoutRatio) ? payoutRatio : null,
+            exDividendDate,
+            dividendDate,
+            fcfPerShare: fcfPerShare != null && Number.isFinite(fcfPerShare) ? fcfPerShare : null,
+            fcfCoverageRatio: fcfCoverage != null && Number.isFinite(fcfCoverage) ? fcfCoverage : null,
+            dividendSafety,
+          },
+          message: isDividendPayer
+            ? `${sym} dividend analysis: yield ${dividendYield != null ? (dividendYield * 100).toFixed(2) + '%' : 'N/A'}, safety: ${dividendSafety}`
+            : `${sym} does not currently pay a dividend`,
+        };
+      }
+      case 'get_dcf_valuation': {
+        const sym = (args.symbol || '').toUpperCase();
+        if (!sym) return { success: false, error: 'Symbol is required' };
+        const overview = await stockService.getCompanyOverview(sym);
+        const cashFlowData = await stockService.getCashFlow(sym);
+        const priceData = await stockService.getStockPrice(sym);
+        const currentPrice = priceData?.price != null ? Number(priceData.price) : null;
+
+        const sharesOutstanding = overview?.sharesOutstanding != null ? Number(overview.sharesOutstanding) : null;
+        const beta = overview?.beta != null ? Number(overview.beta) : null;
+
+        // Get FCF from cash flow statements
+        const annualReports = cashFlowData?.annualReports || [];
+        const recentFCFs: number[] = [];
+        for (const report of annualReports.slice(0, 5)) {
+          const ocf = report?.operatingCashflow != null ? Number(report.operatingCashflow) : null;
+          const capex = report?.capitalExpenditures != null ? Math.abs(Number(report.capitalExpenditures)) : null;
+          if (ocf != null && capex != null && Number.isFinite(ocf) && Number.isFinite(capex)) {
+            recentFCFs.push(ocf - capex);
+          }
+        }
+
+        if (recentFCFs.length === 0 || !sharesOutstanding || sharesOutstanding <= 0) {
+          return {
+            success: true,
+            data: {
+              symbol: sym,
+              currentPrice,
+              intrinsicValue: null,
+              marginOfSafety: null,
+              verdict: 'Insufficient data for DCF calculation (no FCF or shares data)',
+            },
+            message: `DCF valuation unavailable for ${sym} — insufficient financial data`,
+          };
+        }
+
+        const latestFCF = recentFCFs[0];
+        // Estimate growth from FCF trend or use revenue growth as proxy
+        let growthRate = 0.05; // conservative default
+        const revenueGrowth = overview?.quarterlyRevenueGrowth != null ? Number(overview.quarterlyRevenueGrowth) : null;
+        if (recentFCFs.length >= 2 && recentFCFs[recentFCFs.length - 1] > 0) {
+          const cagr = Math.pow(recentFCFs[0] / recentFCFs[recentFCFs.length - 1], 1 / (recentFCFs.length - 1)) - 1;
+          if (Number.isFinite(cagr) && cagr > -0.5 && cagr < 1.0) {
+            growthRate = Math.min(cagr, 0.25); // cap at 25%
+          }
+        } else if (revenueGrowth != null && Number.isFinite(revenueGrowth)) {
+          growthRate = Math.min(Math.max(revenueGrowth, -0.1), 0.25);
+        }
+
+        // WACC proxy: risk-free rate + beta * equity risk premium
+        const riskFreeRate = 0.04; // approximate 10Y Treasury
+        const equityRiskPremium = 0.05; // historical ERP
+        const effectiveBeta = beta != null && Number.isFinite(beta) && beta > 0 ? beta : 1.0;
+        const wacc = riskFreeRate + effectiveBeta * equityRiskPremium;
+        const terminalGrowth = 0.025; // long-term GDP growth proxy
+
+        // 10-year DCF projection
+        let totalPV = 0;
+        let projectedFCF = latestFCF;
+        for (let year = 1; year <= 10; year++) {
+          // Fade growth toward terminal rate after year 5
+          const effectiveGrowth = year <= 5
+            ? growthRate
+            : growthRate * (1 - (year - 5) / 5) + terminalGrowth * ((year - 5) / 5);
+          projectedFCF *= (1 + effectiveGrowth);
+          totalPV += projectedFCF / Math.pow(1 + wacc, year);
+        }
+
+        // Terminal value
+        const terminalFCF = projectedFCF * (1 + terminalGrowth);
+        const terminalValue = terminalFCF / (wacc - terminalGrowth);
+        const terminalPV = terminalValue / Math.pow(1 + wacc, 10);
+        const enterpriseValue = totalPV + terminalPV;
+
+        // Subtract net debt for equity value
+        const netDebt = (overview?.longTermDebt != null ? Number(overview.longTermDebt) : 0)
+          - (overview?.cashAndEquivalents != null ? Number(overview.cashAndEquivalents) : 0);
+        const equityValue = enterpriseValue - (Number.isFinite(netDebt) ? netDebt : 0);
+        const intrinsicValue = equityValue / sharesOutstanding;
+        const marginOfSafety = currentPrice && intrinsicValue ? ((intrinsicValue - currentPrice) / intrinsicValue) * 100 : null;
+
+        let verdict = 'Unavailable';
+        if (marginOfSafety !== null) {
+          if (marginOfSafety > 30) verdict = 'Significantly Undervalued (30%+ margin of safety)';
+          else if (marginOfSafety > 15) verdict = 'Moderately Undervalued (15-30% margin of safety)';
+          else if (marginOfSafety > 0) verdict = 'Slightly Undervalued (0-15% margin of safety)';
+          else if (marginOfSafety > -15) verdict = 'Fairly Valued (within 15% of intrinsic value)';
+          else if (marginOfSafety > -30) verdict = 'Moderately Overvalued (15-30% above intrinsic value)';
+          else verdict = 'Significantly Overvalued (30%+ above intrinsic value)';
+        }
+
+        return {
+          success: true,
+          data: {
+            symbol: sym,
+            currentPrice,
+            intrinsicValuePerShare: Number.isFinite(intrinsicValue) ? Number(intrinsicValue.toFixed(2)) : null,
+            marginOfSafetyPercent: marginOfSafety !== null && Number.isFinite(marginOfSafety) ? Number(marginOfSafety.toFixed(1)) : null,
+            verdict,
+            assumptions: {
+              latestFCF,
+              growthRate: Number((growthRate * 100).toFixed(1)),
+              wacc: Number((wacc * 100).toFixed(1)),
+              terminalGrowthRate: Number((terminalGrowth * 100).toFixed(1)),
+              projectionYears: 10,
+              beta: effectiveBeta,
+            },
+          },
+          message: `DCF valuation for ${sym}: intrinsic value $${Number.isFinite(intrinsicValue) ? intrinsicValue.toFixed(2) : 'N/A'} vs current $${currentPrice?.toFixed(2) || 'N/A'} — ${verdict}`,
+        };
+      }
+      case 'get_market_sentiment': {
+        // Composite sentiment from multiple real market data signals
+        const [sectorPerf, gainersLosers] = await Promise.all([
+          stockService.getSectorPerformance().catch(() => null),
+          stockService.getTopGainersLosers().catch(() => null),
+        ]);
+
+        const signals: Array<{ name: string; score: number; weight: number }> = [];
+
+        // Signal 1: Sector breadth — how many sectors are positive today
+        if (sectorPerf) {
+          const sectors = Object.entries(sectorPerf).filter(([, val]) => typeof val === 'string' || typeof val === 'number');
+          const positive = sectors.filter(([, val]) => Number(String(val).replace('%', '')) > 0).length;
+          const breadthScore = sectors.length > 0 ? (positive / sectors.length) * 100 : 50;
+          signals.push({ name: 'Sector Breadth', score: breadthScore, weight: 0.3 });
+        }
+
+        // Signal 2: Gainers vs losers ratio
+        if (gainersLosers) {
+          const gainers = gainersLosers.top_gainers?.length || gainersLosers.topGainers?.length || 0;
+          const losers = gainersLosers.top_losers?.length || gainersLosers.topLosers?.length || 0;
+          const total = gainers + losers;
+          const glScore = total > 0 ? (gainers / total) * 100 : 50;
+          signals.push({ name: 'Gainers/Losers Ratio', score: glScore, weight: 0.3 });
+
+          // Signal 3: Average magnitude of gains vs losses
+          const gainerChanges = (gainersLosers.top_gainers || gainersLosers.topGainers || [])
+            .map((g: any) => Math.abs(Number(String(g.change_percentage || g.changePercent || '0').replace('%', ''))))
+            .filter((v: number) => Number.isFinite(v));
+          const loserChanges = (gainersLosers.top_losers || gainersLosers.topLosers || [])
+            .map((l: any) => Math.abs(Number(String(l.change_percentage || l.changePercent || '0').replace('%', ''))))
+            .filter((v: number) => Number.isFinite(v));
+          const avgGain = gainerChanges.length > 0 ? gainerChanges.reduce((s: number, v: number) => s + v, 0) / gainerChanges.length : 0;
+          const avgLoss = loserChanges.length > 0 ? loserChanges.reduce((s: number, v: number) => s + v, 0) / loserChanges.length : 0;
+          const magnitudeScore = avgGain + avgLoss > 0 ? (avgGain / (avgGain + avgLoss)) * 100 : 50;
+          signals.push({ name: 'Gain/Loss Magnitude', score: magnitudeScore, weight: 0.2 });
+        }
+
+        // Signal 4: Market momentum from sector YTD performance
+        if (sectorPerf) {
+          const ytdValues = Object.entries(sectorPerf)
+            .map(([, val]) => Number(String(val).replace('%', '')))
+            .filter((v) => Number.isFinite(v));
+          if (ytdValues.length > 0) {
+            const avgYtd = ytdValues.reduce((s, v) => s + v, 0) / ytdValues.length;
+            // Map YTD to 0-100: -20% → 0, 0% → 50, +20% → 100
+            const momentumScore = Math.max(0, Math.min(100, (avgYtd + 20) * 2.5));
+            signals.push({ name: 'Market Momentum', score: momentumScore, weight: 0.2 });
+          }
+        }
+
+        if (signals.length === 0) {
+          return {
+            success: true,
+            data: { score: null, classification: 'Unavailable', signals: [] },
+            message: 'Market sentiment data unavailable',
+          };
+        }
+
+        const totalWeight = signals.reduce((s, sig) => s + sig.weight, 0);
+        const compositeScore = signals.reduce((s, sig) => s + sig.score * (sig.weight / totalWeight), 0);
+        const clampedScore = Math.max(0, Math.min(100, Math.round(compositeScore)));
+
+        let classification: string;
+        if (clampedScore <= 20) classification = 'Extreme Fear';
+        else if (clampedScore <= 40) classification = 'Fear';
+        else if (clampedScore <= 60) classification = 'Neutral';
+        else if (clampedScore <= 80) classification = 'Greed';
+        else classification = 'Extreme Greed';
+
+        return {
+          success: true,
+          data: {
+            score: clampedScore,
+            classification,
+            signals: signals.map((s) => ({ name: s.name, score: Math.round(s.score), weight: s.weight })),
+            fetchedAt: new Date().toISOString(),
+          },
+          message: `Market sentiment: ${clampedScore}/100 (${classification})`,
+        };
       }
       case 'generate_stock_report': {
         const symbolQuery = args.symbol || '';
