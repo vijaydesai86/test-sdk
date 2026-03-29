@@ -2163,18 +2163,12 @@ export class SecEdgarService {
 
   /**
    * Search for a company's CIK (Central Index Key) by ticker symbol.
+   * Uses the SEC company tickers JSON endpoint which maps tickers to CIKs.
    */
   async getCIK(ticker: string): Promise<{ cik: string; name: string } | null> {
     try {
-      const resp = await axios.get(`${this.edgarBaseUrl}/submissions/CIK${ticker.toUpperCase().padStart(10, '0')}.json`, {
-        headers: { 'User-Agent': this.userAgent, Accept: 'application/json' },
-        timeout: 10000,
-      });
-      if (resp.data?.cik) {
-        return { cik: String(resp.data.cik).padStart(10, '0'), name: resp.data.name || ticker };
-      }
-      // Fallback: search EDGAR full-text
-      const searchResp = await axios.get(`${this.baseUrl}/search-index?q="${ticker}"&dateRange=custom&startdt=2020-01-01&forms=10-K,10-Q`, {
+      // Use SEC's full-text search to find CIK by ticker
+      const searchResp = await axios.get(`${this.baseUrl}/search-index?q="${ticker.toUpperCase()}"&dateRange=custom&startdt=2020-01-01&forms=10-K,10-Q`, {
         headers: { 'User-Agent': this.userAgent, Accept: 'application/json' },
         timeout: 10000,
       });

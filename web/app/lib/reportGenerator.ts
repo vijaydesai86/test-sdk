@@ -849,7 +849,7 @@ function computeMACD(prices: PricePoint[]): { macd: number | null; signal: numbe
   const closes = sorted
     .map((point) => toNumber(point.close))
     .filter((value): value is number => value !== null);
-  if (closes.length < 35) return { macd: null, signal: null, histogram: null, trend: "Unavailable" };
+  if (closes.length < 26 + 9) return { macd: null, signal: null, histogram: null, trend: "Unavailable" };
 
   const pricePoints: PricePoint[] = closes.map((c, i) => ({ date: String(i), close: c }));
   const ema12 = computeEMA(pricePoints, 12);
@@ -945,7 +945,8 @@ function computeATR(prices: PricePoint[], period = 14): number | null {
   return slice.reduce((s, v) => s + v, 0) / period;
 }
 
-function computeVolumeAnalysis(priceHistory: any): { avgVolume20: number | null; relativeVolume: number | null; volumeTrend: string } {
+/** Exported for reuse in stockTools.ts */
+export function computeVolumeAnalysis(priceHistory: any): { avgVolume20: number | null; relativeVolume: number | null; volumeTrend: string } {
   if (!Array.isArray(priceHistory) || priceHistory.length === 0) {
     return { avgVolume20: null, relativeVolume: null, volumeTrend: "N/A" };
   }
@@ -2395,12 +2396,10 @@ export function buildStockReport(data: StockReportData): string {
     let dcfTotalPV = 0;
     let projFCF = latestFCF;
     for (let yr = 1; yr <= 10; yr++) {
-      projFCF *= (1 + dcfGrowth);
-      if (yr > 5) {
-        const fade = (yr - 5) / 5;
-        const fadedG = dcfGrowth * (1 - fade) + termGrowth * fade;
-        projFCF = latestFCF * Math.pow(1 + fadedG, yr);
-      }
+      const effectiveGrowth = yr <= 5
+        ? dcfGrowth
+        : dcfGrowth * (1 - (yr - 5) / 5) + termGrowth * ((yr - 5) / 5);
+      projFCF *= (1 + effectiveGrowth);
       dcfTotalPV += projFCF / Math.pow(1 + dcfWacc, yr);
     }
     const termFCF = projFCF * (1 + termGrowth);

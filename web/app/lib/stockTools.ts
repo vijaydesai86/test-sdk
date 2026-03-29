@@ -2,7 +2,7 @@
 import { promises as fs } from 'fs';
 import path from 'path';
 import { StockDataService, SecEdgarService, FredService } from './stockDataService';
-import { buildStockReport, buildComparisonReport, buildSectorReport, buildDeepSectorReport, buildDeepStockReport, buildDeepComparisonReport, buildWatchlistDailyReport, saveReport, MoatAnalysis, computeTechnicalSnapshot } from './reportGenerator';
+import { buildStockReport, buildComparisonReport, buildSectorReport, buildDeepSectorReport, buildDeepStockReport, buildDeepComparisonReport, buildWatchlistDailyReport, saveReport, MoatAnalysis, computeTechnicalSnapshot, computeVolumeAnalysis } from './reportGenerator';
 import { getDefaultWatchlist } from './watchlistStore';
 
 /**
@@ -62,23 +62,6 @@ async function mapWithConcurrency<T, R>(
 
   await Promise.all(runners);
   return results;
-}
-
-function computeVolumeFromPrices(prices: any[]): { avgVolume20: number | null; relativeVolume: number | null; volumeTrend: string } {
-  if (!Array.isArray(prices) || prices.length === 0) {
-    return { avgVolume20: null, relativeVolume: null, volumeTrend: 'N/A' };
-  }
-  const volumes = prices
-    .map((p: any) => (p && p.volume != null ? Number(p.volume) : null))
-    .filter((v): v is number => v !== null && Number.isFinite(v) && v > 0);
-  if (volumes.length === 0) return { avgVolume20: null, relativeVolume: null, volumeTrend: 'N/A' };
-  const recent = volumes.slice(-20);
-  const avgVolume20 = recent.reduce((s, v) => s + v, 0) / recent.length;
-  const latestVolume = volumes[volumes.length - 1];
-  const relativeVolume = avgVolume20 > 0 ? latestVolume / avgVolume20 : null;
-  const volumeTrend =
-    relativeVolume === null ? 'N/A' : relativeVolume > 1.5 ? 'Above Average' : relativeVolume < 0.5 ? 'Below Average' : 'Normal';
-  return { avgVolume20, relativeVolume, volumeTrend };
 }
 const DEFAULT_SOURCE = (() => {
   const provider = (process.env.STOCK_DATA_PROVIDER || 'alphavantage').toLowerCase();
@@ -1368,7 +1351,7 @@ export async function executeTool(
 
         // Compute all technical indicators from the raw price data
         const snapshot = computeTechnicalSnapshot(currentPrice, prices, overview || {});
-        const volumeData = computeVolumeFromPrices(priceHist?.prices);
+        const volumeData = computeVolumeAnalysis(priceHist?.prices);
         return {
           success: true,
           data: {
@@ -1524,13 +1507,11 @@ export async function executeTool(
         let totalPV = 0;
         let projectedFCF = latestFCF;
         for (let year = 1; year <= 10; year++) {
-          projectedFCF *= (1 + growthRate);
-          // Fade growth toward terminal rate over projection period
-          if (year > 5) {
-            const fade = (year - 5) / 5;
-            const fadedGrowth = growthRate * (1 - fade) + terminalGrowth * fade;
-            projectedFCF = latestFCF * Math.pow(1 + fadedGrowth, year);
-          }
+          // Fade growth toward terminal rate after year 5
+          const effectiveGrowth = year <= 5
+            ? growthRate
+            : growthRate * (1 - (year - 5) / 5) + terminalGrowth * ((year - 5) / 5);
+          projectedFCF *= (1 + effectiveGrowth);
           totalPV += projectedFCF / Math.pow(1 + wacc, year);
         }
 
