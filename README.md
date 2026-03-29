@@ -12,10 +12,21 @@ Type a question in plain English and the assistant calls the right data tools, f
 
 | Mode | How to ask | What you get |
 |---|---|---|
-| **Stock report** | `Generate a stock report for NVDA` | Full deep-dive: price, financials, earnings, insider activity, analyst ratings, technicals, moat analysis, investment thesis |
+| **Stock report** | `Generate a stock report for NVDA` | Full deep-dive: price, financials, earnings, insider activity, analyst ratings, technicals (RSI, MACD, Bollinger, Stochastic), dividend analysis, DCF valuation, moat analysis, investment thesis |
 | **Comparison report** | `Compare NVDA, AMD, INTC` | Side-by-side tables, charts, moat rankings, and position guidance for 2–15 companies |
 | **Deep research** | `Deep research on semiconductors` or `Tesla vs Rivian` | Ecosystem dependency map (Mermaid diagram), sector universe refinement, full comparison body, multi-pass synthesis |
 | **Watchlist daily** | `Generate daily report for my watchlist` | One combined report covering every company in the saved watchlist |
+
+**Additional research tools** (use via natural language questions):
+
+| Tool | How to ask | What you get |
+|---|---|---|
+| **Technical analysis** | `What are the technical indicators for AAPL?` | RSI(14), MACD(12,26,9), Bollinger Bands, Stochastic, ATR, EMA, SMA, volume analysis |
+| **SEC filings** | `Show me recent SEC filings for TSLA` | Recent 10-K, 10-Q, 8-K filings with dates and links to SEC EDGAR |
+| **Economic indicators** | `What are the current economic indicators?` | GDP, CPI/inflation, Fed Funds rate, unemployment, Treasury yields, yield curve |
+| **Dividend analysis** | `Analyze dividends for KO` | Yield, payout ratio, FCF coverage, safety score, ex-dividend dates |
+| **DCF valuation** | `What's the intrinsic value of MSFT?` | 10-year DCF, WACC, margin of safety, valuation verdict |
+| **Market sentiment** | `What's the market sentiment right now?` | Composite Fear & Greed index (0-100) from real market data |
 
 ---
 
@@ -61,6 +72,14 @@ Copy `web/.env.example` to `web/.env.local` and fill in the values. All variable
 | `FINANCIAL_MODELING_PREP_API_KEY` | No | Free key from [financialmodelingprep.com](https://financialmodelingprep.com/developer/docs). Enables `fmp` and `multi` modes. |
 | `TWELVE_DATA_API_KEY` | No | Free key from [twelvedata.com](https://twelvedata.com/pricing). Enables `twelvedata` and `multi` modes. |
 | `STOCK_DATA_PROVIDER` | No | `alphavantage` (default) · `finnhub` · `fmp` · `twelvedata` · `stooq` · `hybrid` · `multi`. See provider guide below. |
+
+### Additional data sources (optional — enable extra research tools)
+
+| Variable | Required | Description |
+|---|---|---|
+| `FRED_API_KEY` | No | Free key from [fred.stlouisfed.org](https://fred.stlouisfed.org/docs/api/api_key.html). Enables the `get_economic_indicators` tool (GDP, CPI, Fed Funds rate, unemployment, Treasury yields, yield curve). |
+
+_Note: SEC EDGAR filings (`get_sec_filings`) require no API key — the SEC EDGAR API is completely free._
 
 ### Persistence (optional — filesystem fallback used when not set)
 
@@ -150,9 +169,9 @@ test-sdk/
 │   │   ├── components/
 │   │   │   └── ChatInterface.tsx  # Full UI: chat, workspace, themes, charts
 │   │   └── lib/
-│   │       ├── stockTools.ts      # Tool definitions, executeTool, report orchestration
-│   │       ├── stockDataService.ts# All data provider implementations
-│   │       ├── reportGenerator.ts # Report builders, chart builders, saveReport
+│   │       ├── stockTools.ts      # 30 tool definitions, executeTool, report orchestration
+│   │       ├── stockDataService.ts# All data providers + SecEdgarService + FredService
+│   │       ├── reportGenerator.ts # Report builders, technical indicators, chart builders
 │   │       ├── llmProviderConfig.ts# LLM provider/model configuration
 │   │       ├── watchlistStore.ts  # Watchlist CRUD (Supabase / filesystem)
 │   │       └── supabaseClient.ts  # Supabase client singleton

@@ -60,8 +60,8 @@ User message
 |---|---|
 | `web/app/api/chat/route.ts` | Entry point. Parses requests, selects LLM provider and model, runs the tool-call loop, manages session history, handles rate-limit fallbacks. |
 | `web/app/lib/stockTools.ts` | Tool definitions (`getToolDefinitions`), `executeTool` dispatch, report orchestration (generate_* tools), ticker resolution, sector company selection, moat/conclusion prompt builders, disk cache helpers. |
-| `web/app/lib/stockDataService.ts` | All data provider implementations: `AlphaVantageService`, `FinnhubService`, `FinancialModelingPrepService`, `TwelveDataService`, `StooqService`, `HybridStockDataService`, `MultiSourceStockDataService`. `createStockService()` factory selects the active provider from `STOCK_DATA_PROVIDER`. |
-| `web/app/lib/reportGenerator.ts` | Report builders (`buildStockReport`, `buildComparisonReport`, `buildSectorReport`, `buildDeepSectorReport`, `buildDeepStockReport`, `buildDeepComparisonReport`, `buildWatchlistDailyReport`), ECharts and Mermaid chart builders, `saveReport()` persistence. |
+| `web/app/lib/stockDataService.ts` | All data provider implementations: `AlphaVantageService`, `FinnhubService`, `FinancialModelingPrepService`, `TwelveDataService`, `StooqService`, `HybridStockDataService`, `MultiSourceStockDataService`. Also standalone services: `SecEdgarService` (SEC EDGAR filings), `FredService` (FRED economic data). `createStockService()` factory selects the active provider from `STOCK_DATA_PROVIDER`. |
+| `web/app/lib/reportGenerator.ts` | Report builders (`buildStockReport`, `buildComparisonReport`, `buildSectorReport`, `buildDeepSectorReport`, `buildDeepStockReport`, `buildDeepComparisonReport`, `buildWatchlistDailyReport`), technical indicator computations (RSI, MACD, Bollinger, Stochastic, ATR, EMA), ECharts and Mermaid chart builders, `saveReport()` persistence. |
 | `web/app/lib/llmProviderConfig.ts` | LLM provider/model selection, GitHub Models catalog fetching, Gemini model fallback list. |
 | `web/app/lib/watchlistStore.ts` | Watchlist CRUD backed by Supabase (primary) or JSON file (fallback). Default watchlist seeded with 15 semiconductor/tech companies (max 25 items). |
 | `web/app/lib/supabaseClient.ts` | Lazy Supabase client singleton; returns `null` when env vars are absent. |
@@ -72,7 +72,7 @@ User message
 | `web/app/api/models/route.ts` | Returns available GitHub Models from live catalog. |
 | `web/app/api/providers/route.ts` | Returns configured LLM providers and their available models. |
 
-### Tool catalog (23 tools)
+### Tool catalog (30 tools)
 
 **Data tools** — fetch real data, return structured JSON, make zero report-side decisions:
 
@@ -96,6 +96,22 @@ User message
 | `get_company_news` | `getCompanyNews` |
 | `get_sector_performance` | `getSectorPerformance` |
 | `get_top_gainers_losers` | `getTopGainersLosers` |
+
+**Analysis tools** — compute derived metrics from real data, zero fabrication:
+
+| Tool | Source |
+|---|---|
+| `get_technical_indicators` | Computed from price history: RSI(14), MACD(12,26,9), Bollinger Bands(20,2), Stochastic(14,3), ATR(14), EMA(12/26), SMA(50/200), volume analysis |
+| `get_dividend_analysis` | Derived from company overview + cash flow: yield, payout ratio, FCF coverage, safety score |
+| `get_dcf_valuation` | Computed from cash flow + overview: 10-year DCF, WACC, margin of safety, valuation verdict |
+| `get_market_sentiment` | Aggregated from sector performance + gainers/losers: composite Fear & Greed index (0-100) |
+
+**External data tools** — standalone services, not part of StockDataService interface:
+
+| Tool | Service class |
+|---|---|
+| `get_sec_filings` | `SecEdgarService` — SEC EDGAR (free, no API key) |
+| `get_economic_indicators` | `FredService` — FRED API (free key from fred.stlouisfed.org) |
 
 **Report tools** — accept pre-fetched data, generate Markdown + ECharts + Mermaid, persist to storage:
 
@@ -148,6 +164,26 @@ multi                →  MultiSourceStockDataService  (AV → Finnhub → FMP �
 - Each provider has a per-instance throttle queue (`ALPHA_VANTAGE_MIN_INTERVAL_MS` etc.) to prevent bursting.
 - `MultiSourceStockDataService` tracks provider cooldowns (`STOCK_PROVIDER_COOLDOWN_MS`, default 5 minutes) and skips cooled-down providers automatically.
 - Disk cache at `CACHE_DIR` (inside `REPORTS_DIR`) with `STOCK_CACHE_TTL_MS` TTL (default 7 days) prevents redundant API calls across report runs.
+
+### Standalone services (not part of StockDataService interface)
+
+These services are instantiated on-demand in `executeTool` and are NOT part of the multi-provider fallback chain:
+
+| Service | API | Key required | Tools |
+|---|---|---|---|
+| `SecEdgarService` | SEC EDGAR EFTS | No (free, 10 req/s) | `get_sec_filings` |
+| `FredService` | FRED (Federal Reserve) | `FRED_API_KEY` (free) | `get_economic_indicators` |
+
+### Computed analysis (zero API calls)
+
+Some tools derive insights purely from data already fetched by other tools:
+
+| Tool | Inputs | What it computes |
+|---|---|---|
+| `get_technical_indicators` | Price history, overview | RSI, MACD, Bollinger, Stochastic, ATR, EMA, SMA, volume |
+| `get_dividend_analysis` | Overview, cash flow | Yield, payout ratio, FCF coverage, safety score |
+| `get_dcf_valuation` | Overview, cash flow, price | DCF intrinsic value, margin of safety, WACC |
+| `get_market_sentiment` | Sector performance, gainers/losers | Composite sentiment score (0-100) |
 
 ---
 
@@ -210,6 +246,9 @@ See `web/.env.example` for annotated defaults. All variables prefixed with `STOC
 **Required (at least one from each group):**
 - LLM: `GITHUB_TOKEN` / `GEMINI_TOKEN`
 - Data: `ALPHA_VANTAGE_API_KEY` / `FINNHUB_API_KEY` / `FINANCIAL_MODELING_PREP_API_KEY` / `TWELVE_DATA_API_KEY`
+
+**Optional standalone API keys:**
+- `FRED_API_KEY` — free from [fred.stlouisfed.org](https://fred.stlouisfed.org/docs/api/api_key.html). Enables `get_economic_indicators` tool (GDP, CPI, Fed Funds rate, unemployment, Treasury yields, yield curve).
 
 **Provider selection:**
 - `LLM_PROVIDER` — `github` | `gemini` | `hybrid`
@@ -288,10 +327,14 @@ Do not do these:
 
 When improving reports, prefer additions that come from real data:
 
-- Timing signals derived from price history: RSI-14, moving-average trend, 52-week range position, action stance
+- Timing signals derived from price history: RSI-14, MACD(12,26,9), Bollinger Bands, Stochastic, ATR, EMA, moving-average trend, 52-week range position, action stance
 - Insider and institutional ownership summaries when provider data is available
 - Analyst consensus, recommendation trends, and price-target distributions
 - Earnings surprise history and EPS trend charts
 - Peer alternatives sourced from real `get_peers` results, not LLM brainstorming
 - Sector dependency diagrams sourced from real overview and news data
-
+- Dividend analysis sections (yield, payout ratio, FCF coverage, safety) for dividend-paying stocks
+- DCF valuation estimates derived from real free cash flow, growth rates, and beta
+- SEC filings context from EDGAR when due-diligence depth is needed
+- Macroeconomic context from FRED when market-level analysis is relevant
+- Market sentiment (Fear & Greed) indicators computed from real sector and market breadth data
