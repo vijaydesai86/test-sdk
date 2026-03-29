@@ -1026,6 +1026,9 @@ function getTechnicalSnapshot(price: number | null, prices: PricePoint[] = [], o
   return { rsi14, rsiState, moving50, moving200, vs50, vs200, trend, rangePosition, macd, bollinger, stochastic, atr, ema12: ema12Val, ema26: ema26Val };
 }
 
+/** Exported alias for getTechnicalSnapshot — used by tools that need technical analysis outside reports. */
+export const computeTechnicalSnapshot = getTechnicalSnapshot;
+
 type ActionStance = {
   label: ActionLabel;
   rationale: string;
@@ -2060,6 +2063,13 @@ export function buildStockReport(data: StockReportData): string {
     trend200 !== null ? `- Price vs 200D average: ${trend200.toFixed(1)}%` : null,
     technical.rangePosition !== null ? `- 52W range position: ${technical.rangePosition.toFixed(1)}%` : null,
     `- Technical trend: ${technical.trend}`,
+    technical.macd.macd !== null ? `- MACD: ${technical.macd.macd.toFixed(2)} | Signal: ${technical.macd.signal?.toFixed(2) ?? 'N/A'} | Histogram: ${technical.macd.histogram?.toFixed(2) ?? 'N/A'} (${technical.macd.trend})` : null,
+    technical.bollinger.upper !== null ? `- Bollinger Bands: Upper ${technical.bollinger.upper.toFixed(2)} | Middle ${technical.bollinger.middle?.toFixed(2)} | Lower ${technical.bollinger.lower?.toFixed(2)}` : null,
+    technical.bollinger.percentB !== null ? `- Bollinger %B: ${technical.bollinger.percentB.toFixed(1)}% | Bandwidth: ${technical.bollinger.bandwidth?.toFixed(1)}%` : null,
+    technical.stochastic.k !== null ? `- Stochastic: %K ${technical.stochastic.k.toFixed(1)} | %D ${technical.stochastic.d?.toFixed(1) ?? 'N/A'} (${technical.stochastic.state})` : null,
+    technical.atr !== null ? `- ATR (14): ${technical.atr.toFixed(2)}` : null,
+    technical.ema12 !== null ? `- EMA (12): ${technical.ema12.toFixed(2)}` : null,
+    technical.ema26 !== null ? `- EMA (26): ${technical.ema26.toFixed(2)}` : null,
   ].filter(Boolean) as string[];
 
   const recommendationRows = Array.isArray(data.analystRecommendations?.recommendations)
@@ -2321,6 +2331,117 @@ export function buildStockReport(data: StockReportData): string {
     '### Cash Flow (recent reported periods)',
     cashTable,
   );
+
+  // Dividend Analysis section — only for dividend-paying stocks
+  const dividendYield = toNumber(overview.dividendYield);
+  const dividendPerShare = toNumber(overview.dividendPerShare);
+  const isDividendPayer = (dividendYield != null && dividendYield > 0) || (dividendPerShare != null && dividendPerShare > 0);
+  if (isDividendPayer) {
+    const divEps = toNumber(overview.eps);
+    const divPayoutRatio = dividendPerShare && divEps && divEps > 0 ? (dividendPerShare / divEps) * 100 : null;
+    const latestCFReport = cashReports.length > 0 ? (data.cashFlow?.annualReports || data.cashFlow?.quarterlyReports || [])[0] : null;
+    const divOCF = latestCFReport?.operatingCashflow != null ? Number(latestCFReport.operatingCashflow) : null;
+    const divCapex = latestCFReport?.capitalExpenditures != null ? Math.abs(Number(latestCFReport.capitalExpenditures)) : null;
+    const divPaid = latestCFReport?.dividendPayout != null ? Math.abs(Number(latestCFReport.dividendPayout)) : null;
+    const divFCF = divOCF != null && divCapex != null ? divOCF - divCapex : null;
+    const divCoverage = divFCF != null && divPaid != null && divPaid > 0 ? divFCF / divPaid : null;
+    let divSafety = 'Unavailable';
+    if (divCoverage !== null) {
+      if (divCoverage >= 3) divSafety = '🟢 Very Safe (FCF covers 3x+)';
+      else if (divCoverage >= 2) divSafety = '🟢 Safe (FCF covers 2x+)';
+      else if (divCoverage >= 1.5) divSafety = '🟡 Adequate (FCF covers 1.5x+)';
+      else if (divCoverage >= 1) divSafety = '🟠 At Risk (FCF barely covers)';
+      else divSafety = '🔴 Unsafe (FCF does not cover)';
+    }
+    const dividendLines = [
+      dividendYield != null ? `- Dividend Yield: ${formatPercent(dividendYield)}` : null,
+      dividendPerShare != null ? `- Annual Dividend/Share: $${dividendPerShare.toFixed(2)}` : null,
+      divPayoutRatio != null ? `- Payout Ratio (EPS): ${divPayoutRatio.toFixed(1)}%` : null,
+      divCoverage != null ? `- FCF Coverage Ratio: ${divCoverage.toFixed(2)}x` : null,
+      `- Dividend Safety: ${divSafety}`,
+      overview.exDividendDate ? `- Ex-Dividend Date: ${overview.exDividendDate}` : null,
+      overview.dividendDate ? `- Dividend Pay Date: ${overview.dividendDate}` : null,
+    ].filter(Boolean) as string[];
+    sections.push('## 💵 Dividend Analysis', ...dividendLines);
+  }
+
+  // DCF Valuation section — simplified intrinsic value estimate
+  const dcfSharesOutstanding = toNumber(overview.sharesOutstanding);
+  const dcfBeta = toNumber(overview.beta);
+  const dcfAnnualReports = data.cashFlow?.annualReports || [];
+  const dcfFCFs: number[] = [];
+  for (const report of dcfAnnualReports.slice(0, 5)) {
+    const ocf = report?.operatingCashflow != null ? Number(report.operatingCashflow) : null;
+    const capex = report?.capitalExpenditures != null ? Math.abs(Number(report.capitalExpenditures)) : null;
+    if (ocf != null && capex != null && Number.isFinite(ocf) && Number.isFinite(capex)) {
+      dcfFCFs.push(ocf - capex);
+    }
+  }
+  if (dcfFCFs.length > 0 && dcfSharesOutstanding && dcfSharesOutstanding > 0 && price !== null) {
+    const latestFCF = dcfFCFs[0];
+    let dcfGrowth = 0.05;
+    const dcfRevGrowth = toNumber(overview.quarterlyRevenueGrowth);
+    if (dcfFCFs.length >= 2 && dcfFCFs[dcfFCFs.length - 1] > 0) {
+      const cagr = Math.pow(dcfFCFs[0] / dcfFCFs[dcfFCFs.length - 1], 1 / (dcfFCFs.length - 1)) - 1;
+      if (Number.isFinite(cagr) && cagr > -0.5 && cagr < 1.0) dcfGrowth = Math.min(cagr, 0.25);
+    } else if (dcfRevGrowth != null && Number.isFinite(dcfRevGrowth)) {
+      dcfGrowth = Math.min(Math.max(dcfRevGrowth, -0.1), 0.25);
+    }
+    const riskFree = 0.04;
+    const erp = 0.05;
+    const eBeta = dcfBeta != null && Number.isFinite(dcfBeta) && dcfBeta > 0 ? dcfBeta : 1.0;
+    const dcfWacc = riskFree + eBeta * erp;
+    const termGrowth = 0.025;
+    let dcfTotalPV = 0;
+    let projFCF = latestFCF;
+    for (let yr = 1; yr <= 10; yr++) {
+      projFCF *= (1 + dcfGrowth);
+      if (yr > 5) {
+        const fade = (yr - 5) / 5;
+        const fadedG = dcfGrowth * (1 - fade) + termGrowth * fade;
+        projFCF = latestFCF * Math.pow(1 + fadedG, yr);
+      }
+      dcfTotalPV += projFCF / Math.pow(1 + dcfWacc, yr);
+    }
+    const termFCF = projFCF * (1 + termGrowth);
+    const termVal = termFCF / (dcfWacc - termGrowth);
+    const termPV = termVal / Math.pow(1 + dcfWacc, 10);
+    const ev = dcfTotalPV + termPV;
+    const nDebt = (toNumber(overview.longTermDebt) || 0) - (toNumber(overview.cashAndEquivalents) || 0);
+    const eqVal = ev - (Number.isFinite(nDebt) ? nDebt : 0);
+    const intrinsic = eqVal / dcfSharesOutstanding;
+    const mos = ((intrinsic - price) / intrinsic) * 100;
+    let dcfVerdict = 'Unavailable';
+    if (Number.isFinite(mos)) {
+      if (mos > 30) dcfVerdict = '🟢 Significantly Undervalued';
+      else if (mos > 15) dcfVerdict = '🟢 Moderately Undervalued';
+      else if (mos > 0) dcfVerdict = '🟡 Slightly Undervalued';
+      else if (mos > -15) dcfVerdict = '🟡 Fairly Valued';
+      else if (mos > -30) dcfVerdict = '🟠 Moderately Overvalued';
+      else dcfVerdict = '🔴 Significantly Overvalued';
+    }
+    if (Number.isFinite(intrinsic)) {
+      sections.push(
+        '## 📐 DCF Valuation Estimate',
+        '_Simplified 10-year DCF model. Not investment advice — estimates depend on assumptions._',
+        buildTable(
+          ['Metric', 'Value'],
+          [
+            ['**Intrinsic Value / Share**', `$${intrinsic.toFixed(2)}`],
+            ['**Current Price**', formatPrice(price)],
+            ['**Margin of Safety**', `${mos.toFixed(1)}%`],
+            ['**Verdict**', dcfVerdict],
+            ['Growth Rate Used', `${(dcfGrowth * 100).toFixed(1)}%`],
+            ['WACC (Discount Rate)', `${(dcfWacc * 100).toFixed(1)}%`],
+            ['Terminal Growth', `${(termGrowth * 100).toFixed(1)}%`],
+            ['Beta', `${eBeta.toFixed(2)}`],
+            ['Latest FCF', formatCurrency(latestFCF)],
+          ],
+          ['left', 'right']
+        ),
+      );
+    }
+  }
 
   sections.push(
     '## 🧮 Valuation & Multiples',
