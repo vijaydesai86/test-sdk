@@ -471,7 +471,7 @@ function toNumber(value: unknown): number | null {
 function normalizePercent(value: unknown): number | null {
   const num = toNumber(value);
   if (num === null) return null;
-  if (num <= 1 && num >= -1) return num * 100;
+  if (Math.abs(num) <= 2) return num * 100;
   return num;
 }
 
@@ -758,6 +758,115 @@ function getTargetUpsideStock(data: StockReportData): number | null {
   );
   if (!price || !target) return null;
   return ((target - price) / price) * 100;
+}
+
+function getAnalystSnapshot(item: any): {
+  targetMean: number | null;
+  targetLow: number | null;
+  targetMedian: number | null;
+  targetHigh: number | null;
+  upside: number | null;
+  strongBuy: number | null;
+  buy: number | null;
+  hold: number | null;
+  sell: number | null;
+  strongSell: number | null;
+  total: number;
+} {
+  const overview = item.companyOverview || item.overview || {};
+  const ratings = item.analystRatings || overview || {};
+  const price = toNumber(item.price?.price);
+  const targetMean = toNumber(
+    item.priceTargets?.targetMean
+    ?? (item.analystRatings?.analystTargetPrice !== 'N/A' ? item.analystRatings?.analystTargetPrice : null)
+    ?? overview.analystTargetPrice
+  );
+
+  const strongBuy = toNumber(ratings.strongBuy ?? ratings.analystRatingStrongBuy);
+  const buy = toNumber(ratings.buy ?? ratings.analystRatingBuy);
+  const hold = toNumber(ratings.hold ?? ratings.analystRatingHold);
+  const sell = toNumber(ratings.sell ?? ratings.analystRatingSell);
+  const strongSell = toNumber(ratings.strongSell ?? ratings.analystRatingStrongSell);
+
+  return {
+    targetMean,
+    targetLow: toNumber(item.priceTargets?.targetLow),
+    targetMedian: toNumber(item.priceTargets?.targetMedian),
+    targetHigh: toNumber(item.priceTargets?.targetHigh),
+    upside: price && targetMean ? ((targetMean - price) / price) * 100 : null,
+    strongBuy,
+    buy,
+    hold,
+    sell,
+    strongSell,
+    total: [strongBuy, buy, hold, sell, strongSell].reduce<number>((sum, value) => sum + (value ?? 0), 0),
+  };
+}
+
+function formatRatingSummary(item: any, mode: 'short' | 'long' = 'long'): string {
+  const snapshot = getAnalystSnapshot(item);
+
+  if ([snapshot.strongBuy, snapshot.buy, snapshot.hold, snapshot.sell, snapshot.strongSell].every((value) => value === null)) {
+    return 'N/A';
+  }
+
+  if (mode === 'short') {
+    return `SB ${snapshot.strongBuy ?? 0} / B ${snapshot.buy ?? 0} / H ${snapshot.hold ?? 0} / S ${snapshot.sell ?? 0} / SS ${snapshot.strongSell ?? 0}`;
+  }
+
+  return `${snapshot.strongBuy ?? 0} Strong Buy · ${snapshot.buy ?? 0} Buy · ${snapshot.hold ?? 0} Hold · ${snapshot.sell ?? 0} Sell · ${snapshot.strongSell ?? 0} Strong Sell`;
+}
+
+function formatScoreSummary(label: string, score: number | null): string | null {
+  if (score === null) return null;
+  return `${label} ${score.toFixed(1)}/100`;
+}
+
+function formatMoatSummary(moat?: MoatAnalysis | null): string | null {
+  if (!moat) return null;
+  return `${moat.moatType} · ${moat.moatStrength} (${Math.round(moat.moatScore)}/100)`;
+}
+
+function formatAnalystTargetSummary(
+  snapshot: ReturnType<typeof getAnalystSnapshot>,
+  options: { includeRange?: boolean; includeMedian?: boolean } = {}
+): string | null {
+  const { includeRange = false, includeMedian = false } = options;
+  if (snapshot.targetMean === null && snapshot.upside === null) return null;
+
+  let summary = snapshot.targetMean !== null
+    ? `${formatPrice(snapshot.targetMean)} mean`
+    : 'Target unavailable';
+
+  if (snapshot.upside !== null) {
+    summary += ` (${formatSignedPercentValue(snapshot.upside, 1, { alreadyPercent: true })} upside)`;
+  }
+
+  const extras: string[] = [];
+  if (includeRange && (snapshot.targetLow !== null || snapshot.targetHigh !== null)) {
+    extras.push(`range ${formatPrice(snapshot.targetLow)} - ${formatPrice(snapshot.targetHigh)}`);
+  }
+  if (includeMedian && snapshot.targetMedian !== null) {
+    extras.push(`median ${formatPrice(snapshot.targetMedian)}`);
+  }
+
+  if (extras.length) {
+    summary += `; ${extras.join('; ')}`;
+  }
+
+  return summary;
+}
+
+function getStockOwnershipDisplayValue(
+  data: StockReportData,
+  field: 'insider' | 'institutional' | 'shortFloat'
+): string {
+  const item: ComparisonReportItem = {
+    symbol: data.symbol,
+    overview: data.companyOverview,
+    insiderTrading: data.insiderTrading,
+  };
+  return getOwnershipDisplayValue(item, field);
 }
 
 function buildScorecardRadar(scorecard: ReturnType<typeof computeScorecard>): string {
@@ -1107,6 +1216,95 @@ function describeNonOwnerAction(action: NonOwnerAction): string {
   return 'Avoid new entry';
 }
 
+function ownerActionFromDecisionSnapshot(action?: DecisionSnapshot['action']): OwnerAction {
+  if (action === 'Initiate' || action === 'Add') return 'Add';
+  if (action === 'Trim') return 'Trim';
+  if (action === 'Exit') return 'Sell';
+  return 'Hold';
+}
+
+function nonOwnerActionFromDecisionSnapshot(action?: DecisionSnapshot['action']): NonOwnerAction {
+  if (action === 'Initiate' || action === 'Add') return 'Buy';
+  if (action === 'Trim' || action === 'Exit') return 'Avoid';
+  return 'Watch';
+}
+
+function decisionActionFromSignal(action: ActionLabel): DecisionSnapshot['action'] {
+  if (action === 'Buy') return 'Initiate';
+  if (action === 'Hold') return 'Hold';
+  if (action === 'Sell') return 'Exit';
+  return 'Wait';
+}
+
+function canonicalRatingLabel(label: string): 'BUY' | 'HOLD' | 'WATCH' | 'SELL / AVOID' {
+  const normalized = label.trim().toUpperCase();
+  if (normalized.includes('BUY')) return 'BUY';
+  if (normalized.includes('HOLD')) return 'HOLD';
+  if (normalized.includes('WATCH')) return 'WATCH';
+  return 'SELL / AVOID';
+}
+
+function sanitizeLlmConclusionNarrative(value?: string | null): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+
+  const unfenced = trimmed
+    .replace(/^```(?:markdown|md|text)?\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim();
+
+  if (!unfenced) return null;
+
+  if ((unfenced.startsWith('{') && unfenced.endsWith('}')) || (unfenced.startsWith('[') && unfenced.endsWith(']'))) {
+    try {
+      JSON.parse(unfenced);
+      return null;
+    } catch {
+      // Keep non-JSON narratives that merely start/end with brackets.
+    }
+  }
+
+  return unfenced;
+}
+
+function extractNarrativeRecommendation(text: string): 'BUY' | 'HOLD' | 'WATCH' | 'SELL / AVOID' | null {
+  const patterns = [
+    /(?:recommendation|rating|stance|status)\s*(?:is|:)?\s*(?:a\s+)?(buy|hold|watch|sell|avoid)\b/i,
+    /(?:recommend|recommended action)\s*(?:is|:)?\s*(?:to\s+)?(buy|hold|watch|sell|avoid)\b/i,
+    /(?:appropriate|prudent|correct)\s+recommendation\s+(?:is|would be)\s*(?:to\s+)?(buy|hold|watch|sell|avoid)\b/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (!match) continue;
+    const normalized = match[1].toUpperCase();
+    if (normalized === 'BUY') return 'BUY';
+    if (normalized === 'HOLD') return 'HOLD';
+    if (normalized === 'WATCH') return 'WATCH';
+    return 'SELL / AVOID';
+  }
+
+  return null;
+}
+
+function llmConclusionMatchesRating(text: string, expectedRating: string): boolean {
+  const extracted = extractNarrativeRecommendation(text);
+  if (!extracted) return true;
+  return extracted === canonicalRatingLabel(expectedRating);
+}
+
+function primaryStockScoreLabel(data: StockReportData): 'Decision Score' | 'Composite Score' {
+  return data.decisionSnapshot?.overallScore !== null && data.decisionSnapshot?.overallScore !== undefined
+    ? 'Decision Score'
+    : 'Composite Score';
+}
+
+function comparisonScoreSourceLabel(item: ComparisonReportItem): 'Decision Score' | 'Composite Score' {
+  return item.decisionSnapshot?.overallScore !== null && item.decisionSnapshot?.overallScore !== undefined
+    ? 'Decision Score'
+    : 'Composite Score';
+}
+
 function derivePortfolioRoleLabel(data: StockReportData, scorecard: ReturnType<typeof computeScorecard>, guidance: PositionGuidance): string {
   if (data.decisionSnapshot) {
     switch (data.decisionSnapshot.action) {
@@ -1156,7 +1354,7 @@ function buildDecisionActionTable(snapshot: DecisionSnapshot): string {
       ['Action', describeDecisionAction(snapshot.action)],
       ['Confidence', snapshot.confidence],
       ['Freshness', snapshot.freshness],
-      ['Overall Score', snapshot.overallScore !== null ? `${snapshot.overallScore}/100` : 'Unavailable'],
+      ['Decision Score', snapshot.overallScore !== null ? `${snapshot.overallScore}/100` : 'Unavailable'],
       ['Portfolio Impact', snapshot.portfolioImpact],
       ['Invalidation', snapshot.invalidation],
       ['Next Trigger', snapshot.nextTrigger],
@@ -1499,7 +1697,7 @@ function derivePositionGuidanceFromExplicitAction(action: ActionLabel, rationale
       return toPositionGuidance({
         label: 'Watch',
         rationale,
-        ownerAction: 'Trim',
+        ownerAction: 'Hold',
         nonOwnerAction: 'Watch',
         confidence: 'Medium',
         missingInputs: [],
@@ -1543,20 +1741,11 @@ function asStockReportData(item: ComparisonReportItem, generatedAt: string): Sto
 function derivePositionGuidanceFromStock(data: StockReportData, score: number | null = computeScorecard(data).composite): PositionGuidance {
   if (data.decisionSnapshot) {
     const stance = actionFromDecisionSnapshot(data.decisionSnapshot.action);
-    const forOwners: OwnerAction =
-      data.decisionSnapshot.action === 'Add' ? 'Add'
-      : data.decisionSnapshot.action === 'Trim' ? 'Trim'
-      : data.decisionSnapshot.action === 'Exit' ? 'Sell'
-      : 'Hold';
-    const forNonOwners: NonOwnerAction =
-      data.decisionSnapshot.action === 'Initiate' ? 'Buy'
-      : data.decisionSnapshot.action === 'Exit' ? 'Avoid'
-      : 'Watch';
     return {
       stance,
       rationale: data.decisionSnapshot.summary,
-      forOwners,
-      forNonOwners,
+      forOwners: ownerActionFromDecisionSnapshot(data.decisionSnapshot.action),
+      forNonOwners: nonOwnerActionFromDecisionSnapshot(data.decisionSnapshot.action),
       confidence: data.decisionSnapshot.confidence,
       missingInputs: data.decisionSnapshot.missingInputs,
     };
@@ -1669,8 +1858,6 @@ function buildComparisonInsiderSummaryTable(items: ComparisonReportItem[]): stri
     const metrics = summarizeInsiderMetrics(item.insiderTrading);
     return [
       `${item.overview?.name || item.symbol} (${item.symbol})`,
-      getOwnershipDisplayValue(item, 'insider'),
-      getOwnershipDisplayValue(item, 'institutional'),
       metrics.transactions.length ? String(metrics.buyCount) : '—',
       metrics.transactions.length ? String(metrics.sellCount) : '—',
       metrics.transactions.length ? formatCurrency(metrics.buyValue) : '—',
@@ -1680,9 +1867,9 @@ function buildComparisonInsiderSummaryTable(items: ComparisonReportItem[]): stri
   });
 
   return buildTable(
-    ['Company', 'Insider Own', 'Institutional Own', 'Recent Buys', 'Recent Sells', 'Buy Value', 'Sell Value', 'Latest Filing'],
+    ['Company', 'Recent Buys', 'Recent Sells', 'Buy Value', 'Sell Value', 'Latest Filing'],
     rows,
-    ['left', 'right', 'right', 'right', 'right', 'right', 'right', 'right']
+    ['left', 'right', 'right', 'right', 'right', 'right']
   );
 }
 
@@ -1690,14 +1877,9 @@ function buildDeepInsiderSections(items: ComparisonReportItem[]): string {
   const sections = items.map((item) => {
     const metrics = summarizeInsiderMetrics(item.insiderTrading);
     const overview = item.overview || {};
-    const ownershipLines = [
-      `- Insider ownership: ${getOwnershipDisplayValue(item, 'insider')}`,
-      `- Institutional ownership: ${getOwnershipDisplayValue(item, 'institutional')}`,
-      `- Short float: ${getOwnershipDisplayValue(item, 'shortFloat')}`,
-      metrics.transactions.length
-        ? `- Recent transaction summary: ${metrics.buyCount} purchase(s), ${metrics.sellCount} sale(s), ${formatCurrency(metrics.buyValue)} bought, ${formatCurrency(metrics.sellValue)} sold.`
-        : '- Recent transaction summary: provider transaction feed unavailable.',
-    ];
+    const summaryLine = metrics.transactions.length
+      ? `- Recent transaction summary: ${metrics.buyCount} purchase(s), ${metrics.sellCount} sale(s), ${formatCurrency(metrics.buyValue)} bought, ${formatCurrency(metrics.sellValue)} sold.`
+      : '- Recent transaction summary: provider transaction feed unavailable.';
 
     const transactionTable = metrics.transactions.length
       ? buildTable(
@@ -1717,7 +1899,7 @@ function buildDeepInsiderSections(items: ComparisonReportItem[]): string {
 
     return [
       `### ${overview.name || item.symbol} (${item.symbol})`,
-      ownershipLines.join('\n'),
+      summaryLine,
       transactionTable,
     ].join('\n\n');
   });
@@ -1796,21 +1978,6 @@ function buildMarginComparisonChart(items: ComparisonReportItem[]): string {
       { name: 'Operating Margin', type: 'bar', data: rows.map((row) => row.operating) },
     ],
   });
-}
-
-function formatRatingSummary(item: any): string {
-  const ratings = item.analystRatings || item.overview || {};
-  const strongBuy = toNumber(ratings.strongBuy ?? ratings.analystRatingStrongBuy);
-  const buy = toNumber(ratings.buy ?? ratings.analystRatingBuy);
-  const hold = toNumber(ratings.hold ?? ratings.analystRatingHold);
-  const sell = toNumber(ratings.sell ?? ratings.analystRatingSell);
-  const strongSell = toNumber(ratings.strongSell ?? ratings.analystRatingStrongSell);
-
-  if ([strongBuy, buy, hold, sell, strongSell].every((value) => value === null)) {
-    return 'N/A';
-  }
-
-  return `SB ${strongBuy ?? 0} / B ${buy ?? 0} / H ${hold ?? 0} / S ${sell ?? 0} / SS ${strongSell ?? 0}`;
 }
 
 function clampScore(value: number): number {
@@ -1898,7 +2065,7 @@ function computeAnalystConviction(data: StockReportData): number | null {
   return average([strongBuyPct, upsideScore]);
 }
 
-function computeScorecard(data: StockReportData) {
+export function computeScorecard(data: StockReportData) {
   const moatDetails = {
     marginStability: computeMarginStability(data.incomeStatement),
     pricingPower: computePricingPower(data),
@@ -1915,10 +2082,8 @@ function computeScorecard(data: StockReportData) {
   const roe = normalizePercent(data.basicFinancials?.metric?.roeTTM);
   const profitability = average([grossMargin, operatingMargin, roe]);
 
-  const revenueGrowth = normalizePercent(
-    data.basicFinancials?.metric?.revenueGrowth5Y || data.basicFinancials?.metric?.revenueGrowthTTM
-  );
-  const epsGrowth = normalizePercent(data.basicFinancials?.metric?.epsGrowth5Y);
+  const revenueGrowth = getStockRevenueGrowth(data);
+  const epsGrowth = getStockEpsGrowth(data);
   const growth = average([revenueGrowth, epsGrowth]);
 
   const pe = toNumber(data.companyOverview?.peRatio ?? data.basicFinancials?.metric?.peBasicExclExtraTTM);
@@ -2157,6 +2322,7 @@ export function buildStockReport(data: StockReportData): string {
   const headline = `# ${data.symbol} Comprehensive Equity Research Report`;
   const scorecard = computeScorecard(data);
   const overview = data.companyOverview || {};
+  const analystSnapshot = getAnalystSnapshot(data);
   const price = toNumber(data.price?.price);
   const changePercent = data.price?.changePercent;
   const changePercentValue = typeof changePercent === 'string'
@@ -2178,9 +2344,6 @@ export function buildStockReport(data: StockReportData): string {
   const businessLines = [
     overview.name ? `- Company: ${overview.name} (${data.symbol})` : `- Company: ${data.symbol}`,
     description ? `- Description: ${description}` : null,
-    overview.sector ? `- Sector: ${overview.sector}` : null,
-    overview.industry ? `- Industry: ${overview.industry}` : null,
-    overview.marketCapitalization ? `- Market Cap: ${formatCurrency(overview.marketCapitalization)}` : null,
     overview.revenueTTM ? `- Revenue (TTM): ${formatCurrency(overview.revenueTTM)}` : null,
     overview.grossProfitTTM ? `- Gross Profit (TTM): ${formatCurrency(overview.grossProfitTTM)}` : null,
     overview.sharesOutstanding ? `- Shares Outstanding: ${formatCompactNumber(overview.sharesOutstanding)}` : null,
@@ -2191,8 +2354,6 @@ export function buildStockReport(data: StockReportData): string {
     .filter((peer: string) => peer && peer.toUpperCase() !== data.symbol.toUpperCase())
     .slice(0, 10);
   const competitiveLines = [
-    overview.industry ? `- Industry Focus: ${overview.industry}` : null,
-    overview.sector ? `- Sector: ${overview.sector}` : null,
     peers.length ? `- Peer Set: ${peers.join(', ')}` : '- Peer Set: Unavailable (data gap or rate limit)',
   ].filter(Boolean) as string[];
 
@@ -2216,11 +2377,6 @@ export function buildStockReport(data: StockReportData): string {
   const growthLines = [
     revenueGrowth !== null ? `- Revenue growth (TTM): ${formatPercent(revenueGrowth)}` : null,
     epsGrowth !== null ? `- EPS growth (TTM): ${formatPercent(epsGrowth)}` : null,
-    grossMargin !== null ? `- Gross margin: ${formatPercent(grossMargin)}` : null,
-    operatingMargin !== null ? `- Operating margin: ${formatPercent(operatingMargin)}` : null,
-    trend50 !== null ? `- Price vs 50D MA: ${trend50.toFixed(1)}%` : null,
-    trend200 !== null ? `- Price vs 200D MA: ${trend200.toFixed(1)}%` : null,
-    targetUpside !== null ? `- Analyst target upside: ${targetUpside.toFixed(1)}%` : null,
     themes.length ? `- Theme exposure: ${themes.join(', ')}` : null,
   ].filter(Boolean) as string[];
 
@@ -2376,42 +2532,30 @@ export function buildStockReport(data: StockReportData): string {
   );
 
   const ownershipLines = [
-    data.insiderTrading?.institutionalOwnership && data.insiderTrading.institutionalOwnership !== "N/A"
-      ? `- Institutional Ownership: ${formatPercent(data.insiderTrading.institutionalOwnership)}`
-      : (overview.percentInstitutions ? `- Institutional Ownership: ${formatPercent(overview.percentInstitutions)}` : null),
-    data.insiderTrading?.insiderOwnership && data.insiderTrading.insiderOwnership !== "N/A"
-      ? `- Insider Ownership: ${formatPercent(data.insiderTrading.insiderOwnership)}`
-      : (overview.percentInsiders ? `- Insider Ownership: ${formatPercent(overview.percentInsiders)}` : null),
+    getStockOwnershipDisplayValue(data, 'institutional') !== 'N/A'
+      ? `- Institutional Ownership: ${getStockOwnershipDisplayValue(data, 'institutional')}`
+      : null,
+    getStockOwnershipDisplayValue(data, 'insider') !== 'N/A'
+      ? `- Insider Ownership: ${getStockOwnershipDisplayValue(data, 'insider')}`
+      : null,
     data.insiderTrading?.sharesFloat && data.insiderTrading.sharesFloat !== "N/A"
       ? `- Shares Float: ${formatCompactNumber(data.insiderTrading.sharesFloat)}`
       : (overview.sharesFloat ? `- Shares Float: ${formatCompactNumber(overview.sharesFloat)}` : null),
     data.insiderTrading?.shortRatio && data.insiderTrading.shortRatio !== "N/A"
       ? `- Short Ratio: ${formatNumber(data.insiderTrading.shortRatio, 2)}`
       : (overview.shortRatio ? `- Short Ratio: ${formatNumber(overview.shortRatio, 2)}` : null),
-    data.insiderTrading?.shortPercentFloat && data.insiderTrading.shortPercentFloat !== "N/A"
-      ? `- Short Interest (float): ${formatPercent(data.insiderTrading.shortPercentFloat)}`
-      : (overview.shortPercentFloat ? `- Short Interest (float): ${formatPercent(overview.shortPercentFloat)}` : null),
+    getStockOwnershipDisplayValue(data, 'shortFloat') !== 'N/A'
+      ? `- Short Float: ${getStockOwnershipDisplayValue(data, 'shortFloat')}`
+      : null,
     insiderSummary.summary ? `- Recent insider activity: ${insiderSummary.summary}` : null,
-    `- Analyst Ratings: ${formatRatingSummary(data)}`,
   ].filter(Boolean) as string[];
-
-  const analystTarget = toNumber(
-    data.priceTargets?.targetMean
-    ?? (data.analystRatings?.analystTargetPrice !== 'N/A' ? data.analystRatings?.analystTargetPrice : null)
-    ?? data.companyOverview?.analystTargetPrice
-  );
-  const targetLow = toNumber(data.priceTargets?.targetLow);
-  const targetHigh = toNumber(data.priceTargets?.targetHigh);
-  const targetMedian = toNumber(data.priceTargets?.targetMedian);
+  const dividendYield = toNumber(overview.dividendYield);
+  const dividendPerShare = toNumber(overview.dividendPerShare);
+  const isDividendPayer = (dividendYield != null && dividendYield > 0) || (dividendPerShare != null && dividendPerShare > 0);
   const latestEarnings = data.earningsHistory?.quarterlyEarnings?.[0];
   const catalystLines = [
-    analystTarget !== null ? `- Target Mean: ${analystTarget.toFixed(2)}` : null,
-    targetLow !== null ? `- Target Low: ${targetLow.toFixed(2)}` : null,
-    targetMedian !== null ? `- Target Median: ${targetMedian.toFixed(2)}` : null,
-    targetHigh !== null ? `- Target High: ${targetHigh.toFixed(2)}` : null,
-    targetUpside !== null ? `- Implied Upside: ${targetUpside.toFixed(1)}%` : null,
-    overview.exDividendDate ? `- Ex-Dividend Date: ${overview.exDividendDate}` : null,
-    overview.dividendDate ? `- Dividend Pay Date: ${overview.dividendDate}` : null,
+    !isDividendPayer && overview.exDividendDate ? `- Ex-Dividend Date: ${overview.exDividendDate}` : null,
+    !isDividendPayer && overview.dividendDate ? `- Dividend Pay Date: ${overview.dividendDate}` : null,
     latestEarnings
       ? `- Latest EPS (${formatDateLabel(latestEarnings.fiscalQuarter)}): ${latestEarnings.reportedEPS}`
       : null,
@@ -2481,17 +2625,6 @@ export function buildStockReport(data: StockReportData): string {
     if (marginChart) sections.push(marginChart);
   }
 
-  const financialLines = [
-    `- P/E: ${peRatio === null ? 'Unavailable' : peRatio.toFixed(1)}`,
-    `- PEG: ${pegRatio === null ? 'Unavailable' : pegRatio.toFixed(2)}`,
-    `- Gross Margin (TTM): ${formatPercent(grossMargin)}`,
-    `- Operating Margin (TTM): ${formatPercent(operatingMargin)}`,
-    `- ROE (TTM): ${formatPercent(data.basicFinancials?.metric?.roeTTM)}`,
-  ].filter((line) => !line.endsWith('Unavailable'));
-  if (financialLines.length) {
-    sections.push('## 💰 Financials', ...financialLines);
-  }
-
   sections.push(
     '## 🧾 Financial Deep Dive',
     '### Income Statement (recent reported periods)',
@@ -2503,9 +2636,6 @@ export function buildStockReport(data: StockReportData): string {
   );
 
   // Dividend Analysis section — only for dividend-paying stocks
-  const dividendYield = toNumber(overview.dividendYield);
-  const dividendPerShare = toNumber(overview.dividendPerShare);
-  const isDividendPayer = (dividendYield != null && dividendYield > 0) || (dividendPerShare != null && dividendPerShare > 0);
   if (isDividendPayer) {
     const divEps = toNumber(overview.eps);
     const divPayoutRatio = dividendPerShare && divEps && divEps > 0 ? (dividendPerShare / divEps) * 100 : null;
@@ -2630,14 +2760,17 @@ export function buildStockReport(data: StockReportData): string {
   sections.push('## ⚠️ Risks & Headwinds', ...(riskLines.length ? riskLines : ['- No major risk flags surfaced from available data']));
   sections.push('## 🧭 Investment Highlights', ...highlightsLines);
 
-  const hasRatings = [data.analystRatings?.strongBuy, data.analystRatings?.buy, data.analystRatings?.hold]
-    .map((value) => toNumber(value))
-    .some((value) => value !== null);
-  if (analystTarget !== null || hasRatings || targetChart || recommendationTable) {
+  const hasRatings = analystSnapshot.total > 0;
+  if (analystSnapshot.targetMean !== null || hasRatings || targetChart || recommendationTable) {
     sections.push('## 🧠 Analyst View');
-    if (analystTarget !== null) sections.push(`- Target Mean: ${analystTarget.toFixed(2)}`);
+    if (analystSnapshot.targetMean !== null) sections.push(`- Target Mean: ${formatPrice(analystSnapshot.targetMean)}`);
+    if (analystSnapshot.targetLow !== null || analystSnapshot.targetHigh !== null) {
+      sections.push(`- Target Range: ${formatPrice(analystSnapshot.targetLow)} - ${formatPrice(analystSnapshot.targetHigh)}`);
+    }
+    if (analystSnapshot.targetMedian !== null) sections.push(`- Target Median: ${formatPrice(analystSnapshot.targetMedian)}`);
+    if (analystSnapshot.upside !== null) sections.push(`- Target Upside: ${formatSignedPercentValue(analystSnapshot.upside, 1, { alreadyPercent: true })}`);
     if (hasRatings) {
-      sections.push(`- Ratings: Strong Buy ${data.analystRatings?.strongBuy || 'Unavailable'} / Buy ${data.analystRatings?.buy || 'Unavailable'} / Hold ${data.analystRatings?.hold || 'Unavailable'}`);
+      sections.push(`- Ratings: ${formatRatingSummary(data)}`);
     }
     if (targetChart) sections.push(targetChart);
     if (recommendationTable) {
@@ -2667,7 +2800,7 @@ export function buildStockReport(data: StockReportData): string {
       `- Valuation: ${scorecard.components.valuation?.toFixed(1) ?? 'Unavailable'} (100 - PE/50*100)`,
       `- Momentum: ${scorecard.components.momentum?.toFixed(1) ?? 'Unavailable'}`,
       `- Moat: ${scorecard.components.moat?.toFixed(1) ?? 'Unavailable'} (data-derived: avg of margin stability, pricing power, analyst conviction)${data.moatAnalysis ? ` | LLM Moat Score: ${Math.round(data.moatAnalysis.moatScore)}/100 (${data.moatAnalysis.moatStrength})` : ''}`,
-      `- Composite Score: ${scorecard.composite?.toFixed(1) ?? 'Unavailable'}`,
+      `- Composite Score: ${scorecard.composite?.toFixed(1) ?? 'Unavailable'} (data-only scorecard; separate from the Decision Snapshot score)`,
     );
   }
 
@@ -2942,13 +3075,12 @@ export function buildComparisonReport(data: ComparisonReportData): string {
       getOwnershipDisplayValue(item, 'insider'),
       getOwnershipDisplayValue(item, 'institutional'),
       getOwnershipDisplayValue(item, 'shortFloat'),
-      formatRatingSummary(item),
     ];
   });
   const ownershipTable = buildTable(
-    ['Company', 'Insider Own', 'Institutional Own', 'Short Float', 'Ratings'],
+    ['Company', 'Insider Ownership', 'Institutional Ownership', 'Short Float'],
     ownershipRows,
-    ['left', 'right', 'right', 'right', 'left']
+    ['left', 'right', 'right', 'right']
   );
   const insiderSummaryTable = buildComparisonInsiderSummaryTable(items);
 
@@ -2979,21 +3111,11 @@ export function buildComparisonReport(data: ComparisonReportData): string {
   );
 
   const analystRows = items.map((item) => {
-    const price = toNumber(item.price?.price);
-    // Cascade through three sources for the analyst price target:
-    // 1. priceTargets.targetMean  (Finnhub /stock/price-target or FMP)
-    // 2. analystRatings.analystTargetPrice  (AV/Finnhub getAnalystRatings fallback)
-    // 3. overview.analystTargetPrice  (AV company overview — most reliable for AV provider)
-    const target = toNumber(
-      item.priceTargets?.targetMean
-      ?? (item.analystRatings?.analystTargetPrice !== 'N/A' ? item.analystRatings?.analystTargetPrice : null)
-      ?? item.overview?.analystTargetPrice
-    );
-    const upside = price && target ? ((target - price) / price) * 100 : null;
+    const analyst = getAnalystSnapshot(item);
     return [
       `${item.overview?.name || item.symbol} (${item.symbol})`,
-      target === null ? 'N/A' : target.toFixed(2),
-      upside === null ? 'N/A' : `${upside.toFixed(1)}%`,
+      formatPrice(analyst.targetMean),
+      analyst.upside === null ? 'N/A' : formatSignedPercentValue(analyst.upside, 1, { alreadyPercent: true }),
       formatRatingSummary(item),
     ];
   });
@@ -3040,18 +3162,16 @@ export function buildComparisonReport(data: ComparisonReportData): string {
       ...overview,
       ['50DayMovingAverage']: overview['50DayMovingAverage'] ?? stockData.analystRatings?.movingAverage50Day,
     });
-    const upside = getTargetUpsideStock(stockData);
     return [
       `${overview.name || row.item.symbol} (${row.item.symbol})`,
       technical.rsi14 === null ? 'N/A' : `${technical.rsi14.toFixed(1)} (${technical.rsiState})`,
       technical.trend,
-      upside === null ? 'N/A' : `${upside.toFixed(1)}%`,
     ];
   });
   const timingTable = buildTable(
-    ['Company', 'RSI (14)', 'Trend', 'Target Upside'],
+    ['Company', 'RSI (14)', 'Trend'],
     timingRows,
-    ['left', 'right', 'left', 'right']
+    ['left', 'right', 'left']
   );
 
   const guidanceTable = buildPositionGuidanceTable(
@@ -3107,7 +3227,7 @@ export function buildComparisonReport(data: ComparisonReportData): string {
     const reasons = [
       row.item.symbol === topGrowth ? 'Top revenue growth' : null,
       row.item.symbol === topMargin ? 'Best operating margin' : null,
-      row.score !== null && row.score > 60 ? 'Strong composite score' : null,
+      row.score !== null && row.score > 60 ? 'Strong score' : null,
       moatScore !== null && moatScore >= 61 ? `Wide moat (${row.item.moatAnalysis!.moatType})` : null,
     ].filter(Boolean);
     return {
@@ -3129,7 +3249,7 @@ export function buildComparisonReport(data: ComparisonReportData): string {
   });
   const allocationRows = allocationEntries.map((e) => e.row);
   const allocationTable = buildTable(
-    ['Company', 'Composite Score', 'Indicative Weight', 'Rationale'],
+    ['Company', 'Score', 'Indicative Weight', 'Rationale'],
     allocationRows,
     ['left', 'right', 'right', 'left']
   );
@@ -3187,8 +3307,8 @@ export function buildComparisonReport(data: ComparisonReportData): string {
     '## 🧭 Indicative Allocation (Not Investment Advice)',
     allocationTable,
     validScores.length < scored.length
-      ? '_Some companies lack composite scores; weights are normalized across available scores._'
-      : '_Indicative allocation is derived from normalized composite scores. It is not investment advice._',
+      ? '_Some companies lack report scores; weights are normalized across available scores._'
+      : '_Indicative allocation is derived from normalized report scores (Decision Snapshot overall score when available; otherwise the data-only composite score). It is not investment advice._',
     buildComparisonConclusion(items, scored, 'comparison', undefined, data.llmConclusion),
   ].filter(Boolean) as string[];
 
@@ -3196,7 +3316,9 @@ export function buildComparisonReport(data: ComparisonReportData): string {
 }
 
 /**
- * Computes composite scores for a set of ComparisonReportItems.
+ * Computes ranking scores for a set of ComparisonReportItems.
+ * Uses the Decision Snapshot overall score when available, otherwise falls back
+ * to the data-only composite score.
  * Extracted as a shared helper so sector/deep-sector reports can produce
  * a theme-aware conclusion without re-running the full comparison pipeline.
  */
@@ -3382,6 +3504,13 @@ function stripStockReportHeader(body: string): string {
     .trimStart();
 }
 
+function stripMarkdownSection(body: string, heading: string): string {
+  const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return body
+    .replace(new RegExp(`\n\n${escaped}\n[\\s\\S]*?(?=\n\n## [^\n]+|\n\n# [^\n]+|$)`), '')
+    .trim();
+}
+
 function shiftMarkdownHeadings(body: string, levels = 1): string {
   return body.replace(/^(#{1,6})\s+/gm, (_line, hashes) => '#'.repeat(Math.min(6, hashes.length + levels)) + ' ');
 }
@@ -3407,6 +3536,36 @@ function buildWatchlistDecision(item: WatchlistDailyReportItem): { action: Actio
   return { action: guidance.stance, reason: guidance.rationale, score: scorecard.composite };
 }
 
+function buildWatchlistStockReportData(item: WatchlistDailyReportItem): StockReportData {
+  if (!item.action || !item.reason) return item.stock;
+
+  const action = normalizeActionLabel(item.action);
+  const decisionAction = decisionActionFromSignal(action);
+  const scorecard = computeScorecard(item.stock);
+
+  return {
+    ...item.stock,
+    decisionSnapshot: {
+      action: decisionAction,
+      confidence: 'Medium',
+      freshness: item.stock.decisionSnapshot?.freshness ?? 'fresh',
+      overallScore: item.stock.decisionSnapshot?.overallScore ?? scorecard.composite,
+      qualityScore: item.stock.decisionSnapshot?.qualityScore ?? null,
+      valuationScore: item.stock.decisionSnapshot?.valuationScore ?? null,
+      technicalScore: item.stock.decisionSnapshot?.technicalScore ?? null,
+      portfolioFitScore: item.stock.decisionSnapshot?.portfolioFitScore ?? null,
+      whyNow: action === 'Buy' || action === 'Hold' ? [item.reason] : [],
+      whyNot: action === 'Watch' || action === 'Sell' ? [item.reason] : [],
+      missingInputs: item.stock.decisionSnapshot?.missingInputs ?? [],
+      changed: ['Watchlist action override applied to keep the report sections aligned.'],
+      summary: item.reason,
+      portfolioImpact: `Watchlist override applied. Recommended action: ${describeDecisionAction(decisionAction)}.`,
+      invalidation: 'Reassess if fresher data or a catalyst changes the watchlist thesis.',
+      nextTrigger: 'Revisit after the next material catalyst, fresh data refresh, or a meaningful move in the setup.',
+    },
+  };
+}
+
 function buildWatchlistSummaryTable(items: WatchlistDailyReportItem[]): string {
   const rows = items.map((item) => {
     const decision = buildWatchlistDecision(item);
@@ -3418,7 +3577,7 @@ function buildWatchlistSummaryTable(items: WatchlistDailyReportItem[]): string {
   });
 
   return [
-    '## Position Guidance',
+    '## 🎯 Position Guidance',
     POSITION_GUIDANCE_NOTE,
     buildPositionGuidanceTable(rows),
   ].join('\n\n');
@@ -3518,8 +3677,13 @@ export function buildWatchlistDailyReport(data: WatchlistDailyReportData): strin
   const overview = buildWatchlistOverview(data.items);
   const companySections = data.items.map((item, index) => {
     const title = item.companyName || item.stock.companyOverview?.name || item.symbol;
+    const reportData = buildWatchlistStockReportData(item);
+    const embeddedBody = stripMarkdownSection(
+      stripStockReportHeader(buildStockReport(reportData)),
+      '## 🎯 Position Guidance'
+    );
     const body = shiftMarkdownHeadings(
-      stripStockReportHeader(buildStockReport(item.stock)),
+      embeddedBody,
       1
     );
     return [
@@ -3577,10 +3741,11 @@ function buildCompanySnapshotsSection(
 }
 
 /**
- * Derives a plain-English investment rating from a 0-100 composite score,
+ * Derives a plain-English investment rating from the primary report score
+ * (Decision Snapshot overall score when available, otherwise the data-only composite),
  * optionally adjusted by analyst consensus.
  *
- * @param compositeScore  Normalized composite score (0-100) or null if unavailable
+ * @param compositeScore  Primary report score (0-100) or null if unavailable
  * @param analystBuyPct   Fraction of analyst ratings that are Buy/Strong-Buy (0-1), or null
  */
 function deriveRating(
@@ -3625,14 +3790,10 @@ function buildStockConclusion(data: StockReportData, scorecard: ReturnType<typeo
   const overview = data.companyOverview || {};
   const symbol = data.symbol;
   const name = overview.name || symbol;
+  const analystSnapshot = getAnalystSnapshot(data);
 
   // Analyst buy fraction from real data
-  const strongBuy = toNumber(data.analystRatings?.strongBuy);
-  const buy = toNumber(data.analystRatings?.buy);
-  const hold = toNumber(data.analystRatings?.hold);
-  const sell = toNumber(data.analystRatings?.sell);
-  const strongSell = toNumber(data.analystRatings?.strongSell);
-  const totalAnalyst = [strongBuy, buy, hold, sell, strongSell].reduce<number>((s, v) => s + (v ?? 0), 0);
+  const { strongBuy, buy, hold, sell, strongSell, total: totalAnalyst } = analystSnapshot;
   const analystBuyPct = totalAnalyst > 0 && strongBuy !== null && buy !== null
     ? ((strongBuy + buy) / totalAnalyst)
     : null;
@@ -3640,20 +3801,13 @@ function buildStockConclusion(data: StockReportData, scorecard: ReturnType<typeo
   const positionGuidance = derivePositionGuidanceFromStock(data, scorecard.composite);
   const rating = deriveRatingFromGuidance(positionGuidance);
 
-  // Target upside — cascade: priceTargets → analystRatings → overview
   const price = toNumber(data.price?.price);
-  const targetMean = toNumber(
-    data.priceTargets?.targetMean
-    ?? (data.analystRatings?.analystTargetPrice !== 'N/A' ? data.analystRatings?.analystTargetPrice : null)
-    ?? overview.analystTargetPrice
-  );
-  const targetLow = toNumber(data.priceTargets?.targetLow);
-  const targetHigh = toNumber(data.priceTargets?.targetHigh);
-  const upside = price && targetMean ? ((targetMean - price) / price) * 100 : null;
+  const { targetMean, upside } = analystSnapshot;
 
   // ── Suggested portfolio role ──────────────────────────────────────────────
   const moat = data.moatAnalysis;
   const composite = data.decisionSnapshot?.overallScore ?? scorecard.composite;
+  const scoreLabel = primaryStockScoreLabel(data);
   const portfolioRole = derivePortfolioRoleLabel(data, scorecard, positionGuidance);
 
   // ── Data-derived quick-reference metrics ─────────────────────────────────
@@ -3661,16 +3815,13 @@ function buildStockConclusion(data: StockReportData, scorecard: ReturnType<typeo
   const opMargin = normalizePercent(
     data.basicFinancials?.metric?.operatingMarginTTM ?? overview.operatingMargin
   );
-  const grossMargin = normalizePercent(
-    data.basicFinancials?.metric?.grossMarginTTM ?? overview.profitMargin
-  );
   const roe = normalizePercent(data.basicFinancials?.metric?.roeTTM ?? overview.returnOnEquity);
-  const pe = toNumber(overview.peRatio ?? data.basicFinancials?.metric?.peBasicExclExtraTTM);
   const technical = getTechnicalSnapshot(price, data.priceHistory?.prices || [], {
     ...overview,
     ['50DayMovingAverage']: overview['50DayMovingAverage'] ?? data.analystRatings?.movingAverage50Day,
   });
   const beta = toNumber(overview.beta);
+  const analystTargetSummary = formatAnalystTargetSummary(analystSnapshot, { includeRange: true });
 
   const dataLines: string[] = [
     `- **Rating:** ${rating.emoji} ${rating.label}`,
@@ -3680,26 +3831,20 @@ function buildStockConclusion(data: StockReportData, scorecard: ReturnType<typeo
     `- **For Non-Owners:** ${describeNonOwnerAction(positionGuidance.forNonOwners)}`,
     `- **Why:** ${positionGuidance.rationale}`,
     positionGuidance.missingInputs.length ? `- **Decision Inputs Missing:** ${formatMissingInputs(positionGuidance.missingInputs, 3)}` : null,
-    composite !== null ? `- **Composite Score:** ${composite.toFixed(1)}/100` : null,
-    upside !== null ? `- **Analyst Target Upside:** ${upside.toFixed(1)}% (mean ${targetMean?.toFixed(2)}${targetLow !== null && targetHigh !== null ? `, range ${targetLow.toFixed(2)}–${targetHigh.toFixed(2)}` : ''})` : null,
-    revenueGrowth !== null ? `- **Revenue Growth (TTM):** ${revenueGrowth.toFixed(1)}%` : null,
-    opMargin !== null ? `- **Operating Margin:** ${opMargin.toFixed(1)}%` : null,
-    grossMargin !== null ? `- **Gross Margin:** ${grossMargin.toFixed(1)}%` : null,
-    roe !== null ? `- **Return on Equity:** ${roe.toFixed(1)}%` : null,
-    pe !== null ? `- **P/E Ratio:** ${pe.toFixed(1)}x` : null,
-    beta !== null ? `- **Beta:** ${beta.toFixed(2)}` : null,
-    technical.rsi14 !== null ? `- **RSI (14):** ${technical.rsi14.toFixed(1)} (${technical.rsiState})` : null,
+    composite !== null ? `- **${scoreLabel}:** ${composite.toFixed(1)}/100` : null,
+    analystTargetSummary ? `- **Analyst Target:** ${analystTargetSummary}` : null,
     `- **Trend:** ${technical.trend}`,
-    moat ? `- **Moat:** ${moat.moatType} · ${moat.moatStrength} (${moat.moatScore}/100)` : null,
-    totalAnalyst > 0 ? `- **Analyst Consensus:** ${strongBuy ?? 0} Strong Buy · ${buy ?? 0} Buy · ${hold ?? 0} Hold · ${sell ?? 0} Sell · ${strongSell ?? 0} Strong Sell` : null,
+    formatMoatSummary(moat) ? `- **Moat:** ${formatMoatSummary(moat)}` : null,
+    totalAnalyst > 0 ? `- **Analyst Consensus:** ${formatRatingSummary(data)}` : null,
   ].filter(Boolean) as string[];
 
   // ── LLM-generated narrative (if available) ───────────────────────────────
-  if (data.llmConclusion) {
+  const llmNarrative = sanitizeLlmConclusionNarrative(data.llmConclusion);
+  if (llmNarrative && llmConclusionMatchesRating(llmNarrative, rating.label)) {
     return [
       '## 🎯 Investment Conclusion',
       `> _Analysis grounded in real market-data API responses. Not financial advice._`,
-      data.llmConclusion,
+      llmNarrative,
       '### 📋 Quick Reference',
       ...dataLines,
     ].join('\n\n');
@@ -3710,8 +3855,8 @@ function buildStockConclusion(data: StockReportData, scorecard: ReturnType<typeo
   const bearish: string[] = [];
 
   if (composite !== null) {
-    if (composite >= 60) bullish.push(`Strong composite score (${composite.toFixed(1)}/100)`);
-    else if (composite < 40) bearish.push(`Below-average composite score (${composite.toFixed(1)}/100)`);
+    if (composite >= 60) bullish.push(`Strong ${scoreLabel.toLowerCase()} (${composite.toFixed(1)}/100)`);
+    else if (composite < 40) bearish.push(`Below-average ${scoreLabel.toLowerCase()} (${composite.toFixed(1)}/100)`);
   }
   if (upside !== null) {
     if (upside > 10) bullish.push(`Analyst consensus implies ${upside.toFixed(1)}% upside to mean target ($${targetMean?.toFixed(2)})`);
@@ -3769,7 +3914,7 @@ function buildStockConclusion(data: StockReportData, scorecard: ReturnType<typeo
  * rankings and metrics are appended as a quick-reference section.
  *
  * @param items        The comparison items with financial data
- * @param scored       Each item paired with its composite score
+ * @param scored       Each item paired with its primary report score
  * @param reportType   'comparison' | 'sector' | 'deep-sector'
  * @param sectorQuery  Optional sector/theme label for sector-type reports
  * @param llmConclusion Optional LLM-generated narrative
@@ -3783,17 +3928,24 @@ function buildComparisonConclusion(
 ): string {
   if (items.length === 0) return '';
 
-  // Rank by composite score (real data only)
+  // Rank by mixed score source: Decision Snapshot overall score when available,
+  // otherwise the data-only composite score.
   const ranked = scored
     .filter((r) => r.score !== null)
     .sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+  const sortedForReference = [...scored].sort((a, b) => {
+    if (a.score === null && b.score === null) return 0;
+    if (a.score === null) return 1;
+    if (b.score === null) return -1;
+    return (b.score ?? 0) - (a.score ?? 0);
+  });
 
   const top = ranked[0];
   const runnerUp = ranked[1];
   const topName = top?.item.overview?.name || top?.item.symbol || 'N/A';
   const topSymbol = top?.item.symbol || 'N/A';
   const topScore = top?.score;
-  const recommendationRows = ranked.map((row) => {
+  const recommendationRows = scored.map((row) => {
     const stockData = asStockReportData(row.item, '');
     return {
       item: row.item,
@@ -3807,7 +3959,7 @@ function buildComparisonConclusion(
     .filter((row) => row.guidance.forNonOwners === 'Avoid' || row.guidance.forOwners === 'Sell')
     .map((row) => `${row.item.overview?.name || row.item.symbol} (${row.item.symbol})`);
 
-  // Average composite score → group outlook
+  // Average score → group outlook
   const validScores = ranked.map((r) => r.score as number);
   const avgScore = validScores.length
     ? validScores.reduce((s, v) => s + v, 0) / validScores.length
@@ -3835,41 +3987,36 @@ function buildComparisonConclusion(
       : `A diversified basket approach reduces single-name risk given mixed fundamentals.`;
 
   // Build data-derived quick reference lines for every company
-  const companyRefLines = ranked.map((r) => {
+  const companyRefLines = sortedForReference.map((r) => {
     const n = r.item.overview?.name || r.item.symbol;
     const sym = r.item.symbol;
-    const price = toNumber(r.item.price?.price);
-    const target = toNumber(
-      r.item.priceTargets?.targetMean
-      ?? (r.item.analystRatings?.analystTargetPrice !== 'N/A' ? r.item.analystRatings?.analystTargetPrice : null)
-      ?? r.item.overview?.analystTargetPrice
-    );
-    const upside = price && target ? ((target - price) / price) * 100 : null;
-    const moat = r.item.moatAnalysis;
+    const analystTargetSummary = formatAnalystTargetSummary(getAnalystSnapshot(r.item));
     const parts = [
-      r.score !== null ? `Score ${r.score.toFixed(1)}` : null,
-      upside !== null ? `${upside >= 0 ? '+' : ''}${upside.toFixed(1)}% upside` : null,
-      moat ? `${moat.moatStrength} moat` : null,
+      formatScoreSummary(comparisonScoreSourceLabel(r.item), r.score),
+      analystTargetSummary ? `Target ${analystTargetSummary}` : null,
+      formatMoatSummary(r.item.moatAnalysis),
     ].filter(Boolean).join(' · ');
     return `- **${n} (${sym}):** ${parts || 'Insufficient data'}`;
   });
 
   // Summary block always shown
   const summaryLines = [
-    top ? `**Top Pick: ${topName} (${topSymbol})** — Composite ${topScore?.toFixed(1)}/100` : '_Insufficient data for ranking._',
-    runnerUp ? `- Runner-up: ${runnerUp.item.overview?.name || runnerUp.item.symbol} (${runnerUp.item.symbol}) — ${runnerUp.score?.toFixed(1)}/100` : null,
+    top ? `**Top Pick: ${topName} (${topSymbol})** — ${formatScoreSummary(comparisonScoreSourceLabel(top.item), topScore)}` : '_Insufficient data for ranking._',
+    runnerUp ? `- Runner-up: ${runnerUp.item.overview?.name || runnerUp.item.symbol} (${runnerUp.item.symbol}) — ${formatScoreSummary(comparisonScoreSourceLabel(runnerUp.item), runnerUp.score)}` : null,
     freshEntryBuys.length ? `- Fresh-entry buys: ${freshEntryBuys.slice(0, 3).join(', ')}` : '- Fresh-entry buys: none at current thresholds',
     cautionNames.length ? `- Highest-caution names: ${cautionNames.slice(0, 3).join(', ')}` : null,
-    moatLeader ? `- Strongest moat: **${moatLeader.overview?.name || moatLeader.symbol} (${moatLeader.symbol})** — ${moatLeader.moatAnalysis?.moatType ?? 'N/A'} (${moatLeader.moatAnalysis?.moatScore ?? 'N/A'}/100)` : null,
+    moatLeader ? `- Strongest moat: **${moatLeader.overview?.name || moatLeader.symbol} (${moatLeader.symbol})** — ${formatMoatSummary(moatLeader.moatAnalysis)}` : null,
     outlookLabel,
+    '- Score source: Decision Snapshot overall score when available; otherwise the data-only composite score.',
     `- Strategy: ${strategyAdvice}`,
   ].filter(Boolean).join('\n\n');
 
-  if (llmConclusion) {
+  const llmNarrative = sanitizeLlmConclusionNarrative(llmConclusion);
+  if (llmNarrative) {
     return [
       '## 🎯 Investment Conclusion',
       `> _Analysis grounded in real market-data API responses. Not financial advice._`,
-      llmConclusion,
+      llmNarrative,
       '### 📊 Company Quick Reference',
       ...companyRefLines,
       summaryLines,

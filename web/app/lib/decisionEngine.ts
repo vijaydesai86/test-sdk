@@ -86,12 +86,40 @@ function actionToLegacyLabel(action: DecisionAction): ActionLabel {
 }
 
 function actionToSummaryLabel(action: DecisionAction): string {
-  if (action === 'Initiate') return 'Start a new position';
+  if (action === 'Initiate') return 'Start a position';
   if (action === 'Add') return 'Add to the position';
   if (action === 'Hold') return 'Keep holding';
   if (action === 'Trim') return 'Trim the position';
   if (action === 'Exit') return 'Exit the position';
   return 'Wait for a better setup';
+}
+
+function describeTechnicalSupport(args: {
+  technicalScore: number | null;
+  momentum: number | null;
+  targetUpside: number | null;
+  supportive: boolean;
+}): string | null {
+  const { technicalScore, momentum, targetUpside, supportive } = args;
+  if (technicalScore === null) return null;
+
+  const scoreLabel = `(${technicalScore.toFixed(0)}/100).`;
+  if (momentum !== null && targetUpside !== null) {
+    return supportive
+      ? `Momentum and target upside are supportive ${scoreLabel}`
+      : `Momentum and target upside are not supportive ${scoreLabel}`;
+  }
+  if (momentum !== null) {
+    return supportive
+      ? `Price momentum is supportive ${scoreLabel}`
+      : `Price momentum is not supportive ${scoreLabel}`;
+  }
+  if (targetUpside !== null) {
+    return supportive
+      ? `Analyst target upside is supportive ${scoreLabel}`
+      : `Analyst target upside is not supportive ${scoreLabel}`;
+  }
+  return null;
 }
 
 export function buildDecisionSnapshot(input: DecisionInput): DecisionSnapshot {
@@ -175,7 +203,13 @@ export function buildDecisionSnapshot(input: DecisionInput): DecisionSnapshot {
 
   if (qualityScore !== null && qualityScore >= 65) whyNow.push(`Business quality scores well (${qualityScore.toFixed(0)}/100) across margin and return metrics.`);
   if (valuationScore !== null && valuationScore >= 58) whyNow.push(`Valuation/reward-to-risk is supportive (${valuationScore.toFixed(0)}/100) with ${targetUpside !== null ? `${targetUpside.toFixed(1)}% target upside` : 'reasonable upside'}.`);
-  if (technicalScore !== null && technicalScore >= 58) whyNow.push(`Trend and momentum are supportive (${technicalScore.toFixed(0)}/100).`);
+  const supportiveTechnicalReason = describeTechnicalSupport({
+    technicalScore,
+    momentum,
+    targetUpside,
+    supportive: true,
+  });
+  if (technicalScore !== null && technicalScore >= 58 && supportiveTechnicalReason) whyNow.push(supportiveTechnicalReason);
   if (desiredEntryMin !== null && desiredEntryMax !== null && price !== null) {
     if (price >= desiredEntryMin && price <= desiredEntryMax) {
       whyNow.push(`Price is inside your preferred entry range of $${desiredEntryMin}-${desiredEntryMax}.`);
@@ -187,7 +221,13 @@ export function buildDecisionSnapshot(input: DecisionInput): DecisionSnapshot {
   if (staleCritical) whyNot.push(`Critical data is stale for: ${(trust?.staleLabels || []).join(', ')}.`);
   if (qualityScore !== null && qualityScore < 45) whyNot.push(`Business quality is only ${qualityScore.toFixed(0)}/100.`);
   if (valuationScore !== null && valuationScore < 45) whyNot.push(`Valuation support is weak at ${valuationScore.toFixed(0)}/100.`);
-  if (technicalScore !== null && technicalScore < 40) whyNot.push(`Trend/momentum is not supportive (${technicalScore.toFixed(0)}/100).`);
+  const unsupportiveTechnicalReason = describeTechnicalSupport({
+    technicalScore,
+    momentum,
+    targetUpside,
+    supportive: false,
+  });
+  if (technicalScore !== null && technicalScore < 40 && unsupportiveTechnicalReason) whyNot.push(unsupportiveTechnicalReason);
   if (ownershipStatus === 'owned' && currentWeight !== null && maxWeight !== null && currentWeight > maxWeight) {
     whyNot.push(`Position size ${currentWeight}% is already above your max-weight guardrail of ${maxWeight}%.`);
   }

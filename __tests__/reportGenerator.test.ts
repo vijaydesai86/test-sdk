@@ -148,6 +148,19 @@ const twoCompanyItems = (): ComparisonReportData['items'] => [
   },
 ];
 
+const duplicateHeadings = (report: string): string[] => {
+  const counts = new Map<string, number>();
+  for (const line of report.split(/\r?\n/)) {
+    const match = line.match(/^(#{1,6}\s+.+)$/);
+    if (!match) continue;
+    const heading = match[1];
+    counts.set(heading, (counts.get(heading) || 0) + 1);
+  }
+  return Array.from(counts.entries())
+    .filter(([, count]) => count > 1)
+    .map(([heading]) => heading);
+};
+
 // ─── buildStockReport ─────────────────────────────────────────────────────────
 
 describe('buildStockReport', () => {
@@ -159,7 +172,7 @@ describe('buildStockReport', () => {
   it('contains key structural sections', () => {
     const report = buildStockReport(richStock());
     expect(report).toContain('## 🏢 Business Overview');
-    expect(report).toContain('## 💰 Financials');
+    expect(report).toContain('## 🧾 Financial Deep Dive');
     expect(report).toContain('## 🚀 Growth Drivers');
     expect(report).toContain('## ⚠️ Risks & Headwinds');
     expect(report).toContain('## 🧭 Investment Highlights');
@@ -230,7 +243,7 @@ describe('buildStockReport', () => {
       },
     });
 
-    expect(report).toContain('| Buy Me Inc. (BUYME) | Buy | High | Add | Buy |');
+    expect(report).toContain('| Buy Me Inc. (BUYME) | Buy | High | Add | Start a position |');
   });
 
   it('assigns sell guidance for weak quality with broken reward-to-risk', () => {
@@ -291,7 +304,7 @@ describe('buildStockReport', () => {
       },
     });
 
-    expect(report).toContain('| Exit Corp. (EXIT) | Sell | High | Sell | Avoid |');
+    expect(report).toContain('| Exit Corp. (EXIT) | Sell | High | Sell | Avoid new entry |');
   });
 
   it('lowers confidence when the recommendation relies on partial data', () => {
@@ -313,6 +326,11 @@ describe('buildStockReport', () => {
   it('renders scorecard section when data allows composite computation', () => {
     const report = buildStockReport(richStock());
     expect(report).toContain('Composite Score');
+  });
+
+  it('normalizes ratio-style percentages consistently across stock report sections', () => {
+    const report = buildStockReport(richStock());
+    expect(report).toContain('| ROE (TTM) | 150.0% |');
   });
 
   it('includes investment conclusion section', () => {
@@ -385,6 +403,12 @@ describe('buildStockReport', () => {
     expect(report).toContain('## 📊 Revenue & Margin Trends');
   });
 
+  it('keeps growth drivers focused on business growth rather than duplicating timing and target lines', () => {
+    const report = buildStockReport(richStock());
+    expect(report).not.toContain('Price vs 50D MA');
+    expect(report).not.toContain('Analyst target upside:');
+  });
+
   it('handles NaN/undefined financial values gracefully', () => {
     const data: StockReportData = {
       symbol: 'XYZ',
@@ -429,6 +453,11 @@ describe('buildComparisonReport', () => {
   it('includes analyst view section', () => {
     const report = buildComparisonReport(baseComparison());
     expect(report).toContain('## 🧠 Analyst View');
+  });
+
+  it('formats analyst targets consistently with currency and signed upside in comparison reports', () => {
+    const report = buildComparisonReport(baseComparison());
+    expect(report).toContain('| NVIDIA (NVDA) | $600.00 | +20.0% |');
   });
 
   it('uses decision snapshots when present for comparison guidance', () => {
@@ -888,6 +917,87 @@ describe('LLM conclusion integration', () => {
     expect(report).toContain('**Composite Score:**');
   });
 
+  it('ignores malformed llmConclusion payloads and falls back to the structured conclusion', () => {
+    const report = buildStockReport({ ...richStock(), llmConclusion: '{}' });
+    expect(report).not.toContain('{}');
+    expect(report).not.toContain('### 📋 Quick Reference');
+    expect(report).toContain('## 🎯 Investment Conclusion');
+  });
+
+  it('ignores llmConclusion text that contradicts the structured decision rating', () => {
+    const llmText = 'Given the available evidence, the appropriate recommendation is BUY.';
+    const report = buildStockReport({
+      ...richStock(),
+      llmConclusion: llmText,
+      decisionSnapshot: {
+        action: 'Wait',
+        confidence: 'High',
+        freshness: 'fresh',
+        overallScore: 71,
+        qualityScore: 80,
+        valuationScore: 60,
+        technicalScore: 55,
+        portfolioFitScore: 70,
+        whyNow: ['Snapshot says wait'],
+        whyNot: [],
+        missingInputs: [],
+        changed: [],
+        summary: 'Wait with high confidence from snapshot.',
+        portfolioImpact: 'Snapshot impact',
+        invalidation: 'Snapshot invalidation',
+        nextTrigger: 'Snapshot trigger',
+      },
+    });
+
+    expect(report).not.toContain(llmText);
+    expect(report).not.toContain('### 📋 Quick Reference');
+    expect(report).toContain('WATCH');
+  });
+
+  it('maps add decisions to add-for-owners and buy-for-non-owners', () => {
+    const report = buildStockReport({
+      ...richStock(),
+      decisionSnapshot: {
+        action: 'Add',
+        confidence: 'High',
+        freshness: 'fresh',
+        overallScore: 78,
+        qualityScore: 82,
+        valuationScore: 68,
+        technicalScore: 74,
+        portfolioFitScore: 70,
+        whyNow: ['Strong setup'],
+        whyNot: [],
+        missingInputs: [],
+        changed: [],
+        summary: 'Add to the position with high confidence.',
+        portfolioImpact: 'Snapshot impact',
+        invalidation: 'Snapshot invalidation',
+        nextTrigger: 'Snapshot trigger',
+      },
+    });
+
+    expect(report).toContain('| Apple Inc. (AAPL) | Buy | High | Add | Start a position | Add to the position with high confidence. |');
+    expect(report).toContain('Decision Score');
+    expect(report).not.toContain('Overall Score');
+    expect(report).toContain('**Decision Score:** 78.0/100');
+  });
+
+  it('sanitizes malformed comparison llm conclusions and falls back to the structured summary', () => {
+    const data: ComparisonReportData = {
+      generatedAt: '2025-01-01T00:00:00Z',
+      range: '1y',
+      universe: ['NVDA', 'AMD'],
+      items: twoCompanyItems(),
+      notes: [],
+      llmConclusion: '{}',
+    };
+    const report = buildComparisonReport(data);
+    expect(report).not.toContain('{}');
+    expect(report).toContain('### 📊 Company Quick Reference');
+    expect(report).toContain('Score source: Decision Snapshot overall score when available; otherwise the data-only composite score.');
+  });
+
   it('comparison report uses llmConclusion narrative when provided', () => {
     const llmText = 'Based on the real API data collected, NVDA leads the AI chip sector with superior margins. BUY NVDA as a core position.';
     const data: ComparisonReportData = {
@@ -983,6 +1093,19 @@ describe('indicative allocation sorting', () => {
     const report = buildComparisonReport(data);
     expect(report).toContain('NVDA');
     expect(report).toContain('AMD');
+  });
+
+  it('allocation note uses the mixed report score wording', () => {
+    const report = buildComparisonReport({
+      generatedAt: '2025-01-01T00:00:00Z',
+      range: '1y',
+      universe: ['NVDA', 'AMD'],
+      items: twoCompanyItems(),
+      notes: [],
+    });
+
+    expect(report).toContain('normalized report scores');
+    expect(report).not.toContain('normalized composite scores');
   });
 });
 
@@ -1120,12 +1243,34 @@ describe('buildWatchlistDailyReport', () => {
 
     expect(report).toContain('# Watchlist Daily Report: Core Watchlist');
     expect(report).toContain('| Company | Signal | Confidence | For owners | For non-owners | Why |');
-    expect(report).toContain('| Apple Inc. (AAPL) | Buy | Medium | Add | Buy | Strong profitability and supportive target upside. |');
-    expect(report).toContain('| NVIDIA (NVDA) | Hold | Medium | Hold | Watch | Signals are constructive, but the fresh entry is less compelling. |');
+    expect(report).toContain('| Apple Inc. (AAPL) | Buy | Medium | Add | Start a position | Strong profitability and supportive target upside. |');
+    expect(report).toContain('| NVIDIA (NVDA) | Hold | Medium | Hold | Stay on watchlist | Signals are constructive, but the fresh entry is less compelling. |');
     expect(report).toContain('_For owners = you already hold the stock. For non-owners = you are considering a fresh entry. Confidence reflects data completeness and signal alignment._');
     expect(report).toContain('## 1. Apple Inc. (AAPL)');
     expect(report).toContain('## 2. NVIDIA (NVDA)');
     expect(report).toContain('### 🏢 Business Overview');
+  });
+
+  it('treats explicit watch actions as hold-for-owners and watch-for-non-owners', () => {
+    const report = buildWatchlistDailyReport({
+      generatedAt: '2025-01-02T00:00:00Z',
+      watchlistName: 'Core Watchlist',
+      items: [
+        {
+          symbol: 'AMD',
+          companyName: 'Advanced Micro Devices',
+          stock: {
+            ...richStock(),
+            symbol: 'AMD',
+            companyOverview: { ...richStock().companyOverview, name: 'Advanced Micro Devices' },
+          },
+          action: 'Watch',
+          reason: 'Wait for a better setup.',
+        },
+      ],
+    });
+
+    expect(report).toContain('| Advanced Micro Devices (AMD) | Watch | Medium | Hold | Stay on watchlist | Wait for a better setup. |');
   });
 
   it('prefers explicit watchlist actions over embedded decision snapshots when both are supplied', () => {
@@ -1163,7 +1308,120 @@ describe('buildWatchlistDailyReport', () => {
       ],
     });
 
-    expect(report).toContain('| Apple Inc. (AAPL) | Buy | Medium | Add | Buy | Explicit watchlist override. |');
+    expect(report).toContain('| Apple Inc. (AAPL) | Buy | Medium | Add | Start a position | Explicit watchlist override. |');
     expect(report).not.toContain('Wait with high confidence from snapshot.');
+  });
+
+  it('removes embedded stock position-guidance sections from watchlist company detail blocks', () => {
+    const report = buildWatchlistDailyReport({
+      generatedAt: '2025-01-02T00:00:00Z',
+      watchlistName: 'Core Watchlist',
+      items: [
+        {
+          symbol: 'AAPL',
+          companyName: 'Apple Inc.',
+          stock: richStock(),
+          action: 'Buy',
+          reason: 'Strong profitability and supportive target upside.',
+        },
+      ],
+    });
+
+    expect(report).toContain('## 🎯 Position Guidance');
+    expect(report).not.toContain('### 🎯 Position Guidance');
+  });
+});
+
+describe('report section redundancy', () => {
+  it('does not duplicate section headings across the main report builders', () => {
+    const stock = buildStockReport(richStock());
+    const comparison = buildComparisonReport({
+      generatedAt: '2025-01-01T00:00:00Z',
+      range: '1y',
+      universe: ['NVDA', 'AMD'],
+      items: twoCompanyItems(),
+      notes: [],
+    });
+    const sector = buildSectorReport({
+      sectorQuery: 'AI chips',
+      selectedBy: 'llm',
+      generatedAt: '2025-01-01T00:00:00Z',
+      range: '1y',
+      universe: ['NVDA', 'AMD'],
+      items: twoCompanyItems(),
+      notes: [],
+    });
+    const deepSector = buildDeepSectorReport({
+      sectorQuery: 'AI chips',
+      selectedBy: 'llm',
+      generatedAt: '2025-01-01T00:00:00Z',
+      range: '1y',
+      universe: ['NVDA', 'AMD'],
+      items: twoCompanyItems(),
+      notes: [],
+      initialCandidates: ['NVDA', 'AMD', 'AVGO'],
+      dependencyAnalysis: '### Supply Chain\nChips depend on foundries.',
+      ecosystemDiagram: 'graph LR\nA-->B',
+      refinementNotes: '✅ NVDA — leader\n✅ AMD — challenger\n❌ AVGO — excluded for example',
+      companySnapshots: {
+        NVDA: 'Leader in AI accelerators.',
+        AMD: 'Competitive alternative.',
+      },
+    });
+    const watchlist = buildWatchlistDailyReport({
+      generatedAt: '2025-01-02T00:00:00Z',
+      watchlistName: 'Core Watchlist',
+      items: [
+        {
+          symbol: 'AAPL',
+          companyName: 'Apple Inc.',
+          stock: richStock(),
+          action: 'Buy',
+          reason: 'Strong profitability and supportive target upside.',
+        },
+      ],
+    });
+    const deepStock = buildDeepStockReport({
+      query: 'Apple research',
+      symbol: 'AAPL',
+      generatedAt: '2025-01-03T00:00:00Z',
+      baseContent: stock,
+    });
+    const deepComparison = buildDeepComparisonReport({
+      query: 'NVDA vs AMD',
+      symbols: ['NVDA', 'AMD'],
+      generatedAt: '2025-01-03T00:00:00Z',
+      baseContent: comparison,
+      items: twoCompanyItems(),
+    });
+
+    expect(duplicateHeadings(stock)).toEqual([]);
+    expect(duplicateHeadings(comparison)).toEqual([]);
+    expect(duplicateHeadings(sector)).toEqual([]);
+    expect(duplicateHeadings(deepSector)).toEqual([]);
+    expect(duplicateHeadings(watchlist)).toEqual([]);
+    expect(duplicateHeadings(deepStock)).toEqual([]);
+    expect(duplicateHeadings(deepComparison)).toEqual([]);
+  });
+
+  it('deep comparison detail section does not repeat ownership bullets already covered earlier', () => {
+    const deepComparison = buildDeepComparisonReport({
+      query: 'NVDA vs AMD',
+      symbols: ['NVDA', 'AMD'],
+      generatedAt: '2025-01-03T00:00:00Z',
+      baseContent: buildComparisonReport({
+        generatedAt: '2025-01-01T00:00:00Z',
+        range: '1y',
+        universe: ['NVDA', 'AMD'],
+        items: twoCompanyItems(),
+        notes: [],
+      }),
+      items: twoCompanyItems(),
+    });
+
+    expect(deepComparison).toContain('## 🧾 Insider Transaction Detail');
+    expect(deepComparison).not.toContain('Insider ownership:');
+    expect(deepComparison).not.toContain('Institutional ownership:');
+    expect(deepComparison).not.toContain('Short float:');
   });
 });

@@ -178,7 +178,7 @@ describe('generate_stock_report via executeTool', () => {
     const content = result.data?.content as string;
     expect(content).toContain('## 📈 Price & EPS Trends');
     expect(content).toContain('## 📊 Revenue & Margin Trends');
-    expect(content).toContain('## 💰 Financials');
+    expect(content).toContain('## 🧾 Financial Deep Dive');
     expect(content).toContain('```chart');
   });
 
@@ -394,6 +394,19 @@ describe('generate_comparison_report via executeTool', () => {
     );
     expect(result.success).toBe(true);
     expect(result.data?.content).toContain('## 🎯 Investment Conclusion');
+  });
+
+  it('comparison summary uses report-facing watch wording instead of wait wording', async () => {
+    const llmFill = vi.fn().mockResolvedValue('{"AAPL":"AAPL","MSFT":"MSFT"}');
+    const result = await executeTool(
+      'generate_comparison_report',
+      { companies: ['AAPL', 'MSFT'], range: '1y' },
+      service,
+      { llmFill }
+    );
+    expect(result.success).toBe(true);
+    expect(result.data?.summary).toContain('watch');
+    expect(result.data?.summary).not.toContain(' wait');
   });
 });
 

@@ -2,7 +2,7 @@
 import { promises as fs } from 'fs';
 import path from 'path';
 import { StockDataService, SecEdgarService, FredService } from './stockDataService';
-import { buildStockReport, buildComparisonReport, buildSectorReport, buildDeepSectorReport, buildDeepStockReport, buildDeepComparisonReport, buildWatchlistDailyReport, saveReport, MoatAnalysis, computeTechnicalSnapshot, computeVolumeAnalysis } from './reportGenerator';
+import { buildStockReport, buildComparisonReport, buildSectorReport, buildDeepSectorReport, buildDeepStockReport, buildDeepComparisonReport, buildWatchlistDailyReport, saveReport, MoatAnalysis, computeScorecard, computeTechnicalSnapshot, computeVolumeAnalysis } from './reportGenerator';
 import { getDefaultWatchlist } from './watchlistStore';
 import { buildDecisionSnapshot, decisionSnapshotToLegacyAction } from './decisionEngine';
 import { createTrustEntry, getTtlMinutesForKey, summarizeTrust } from './dataTrust';
@@ -414,6 +414,16 @@ function parseMoatEntry(m: any): MoatAnalysis | null {
  *
  * CRITICAL: The LLM must base every statement on the data provided — no training memory.
  */
+function formatPromptMetric(value: any): string {
+  if (value === null || value === undefined || value === 'N/A' || value === '') return 'N/A';
+  const n = Number(value);
+  if (Number.isFinite(n)) {
+    if (Math.abs(n) <= 2) return `${(n * 100).toFixed(1)}%`;
+    return n.toFixed(2);
+  }
+  return String(value);
+}
+
 function buildStockConclusionPrompt(
   symbol: string,
   price: any,
@@ -428,19 +438,10 @@ function buildStockConclusionPrompt(
   priceHistory: any,
   newsSentiment: any,
   companyNews: any,
-  moatAnalysis: any
+  moatAnalysis: any,
+  decisionSnapshot?: DecisionSnapshot
 ): string {
   const name = companyOverview?.name || symbol;
-  const fmt = (v: any): string => {
-    if (v === null || v === undefined || v === 'N/A' || v === '') return 'N/A';
-    const n = Number(v);
-    if (Number.isFinite(n)) {
-      // Heuristic: if abs(n) <= 2, treat as a ratio (e.g. 0.25 → 25%)
-      const pct = Math.abs(n) <= 2 ? (n * 100).toFixed(1) + '%' : n.toFixed(2);
-      return pct;
-    }
-    return String(v);
-  };
 
   const currentPrice = price?.price ?? 'N/A';
   const changePercent = price?.changePercent ?? 'N/A';
@@ -451,16 +452,16 @@ function buildStockConclusionPrompt(
   const ev = companyOverview?.evToEbitda ?? basicFinancials?.metric?.evToEbitda ?? 'N/A';
   const beta = companyOverview?.beta ?? 'N/A';
   const revTTM = companyOverview?.revenueTTM ?? 'N/A';
-  const grossMargin = fmt(basicFinancials?.metric?.grossMarginTTM ?? companyOverview?.profitMargin);
-  const opMargin = fmt(basicFinancials?.metric?.operatingMarginTTM ?? companyOverview?.operatingMargin);
-  const netMargin = fmt(companyOverview?.profitMargin);
-  const roe = fmt(basicFinancials?.metric?.roeTTM ?? companyOverview?.returnOnEquity);
-  const roa = fmt(basicFinancials?.metric?.roaTTM ?? companyOverview?.returnOnAssets);
-  const revenueGrowth = fmt(basicFinancials?.metric?.revenueGrowthTTM ?? companyOverview?.quarterlyRevenueGrowth);
-  const epsGrowth = fmt(basicFinancials?.metric?.epsGrowthTTM ?? basicFinancials?.metric?.epsGrowth5Y);
-  const debtToEquity = fmt(basicFinancials?.metric?.totalDebt_totalEquityAnnual);
-  const currentRatio = fmt(basicFinancials?.metric?.currentRatioAnnual);
-  const fcfPerShare = fmt(basicFinancials?.metric?.fcfPerShareTTM);
+  const grossMargin = formatPromptMetric(basicFinancials?.metric?.grossMarginTTM ?? companyOverview?.profitMargin);
+  const opMargin = formatPromptMetric(basicFinancials?.metric?.operatingMarginTTM ?? companyOverview?.operatingMargin);
+  const netMargin = formatPromptMetric(companyOverview?.profitMargin);
+  const roe = formatPromptMetric(basicFinancials?.metric?.roeTTM ?? companyOverview?.returnOnEquity);
+  const roa = formatPromptMetric(basicFinancials?.metric?.roaTTM ?? companyOverview?.returnOnAssets);
+  const revenueGrowth = formatPromptMetric(basicFinancials?.metric?.revenueGrowthTTM ?? companyOverview?.quarterlyRevenueGrowth);
+  const epsGrowth = formatPromptMetric(basicFinancials?.metric?.epsGrowthTTM ?? basicFinancials?.metric?.epsGrowth5Y);
+  const debtToEquity = formatPromptMetric(basicFinancials?.metric?.totalDebt_totalEquityAnnual);
+  const currentRatio = formatPromptMetric(basicFinancials?.metric?.currentRatioAnnual);
+  const fcfPerShare = formatPromptMetric(basicFinancials?.metric?.fcfPerShareTTM);
 
   // Latest quarterly earnings
   const latestQ = earningsHistory?.quarterlyEarnings?.[0];
@@ -518,6 +519,10 @@ function buildStockConclusionPrompt(
   const moatSummary = moatAnalysis
     ? `Type: ${moatAnalysis.moatType}, Strength: ${moatAnalysis.moatStrength}, Score: ${moatAnalysis.moatScore}/100. ${moatAnalysis.narrative}`
     : 'Not assessed';
+  const requiredRecommendation = decisionSnapshot ? decisionSnapshotToLegacyAction(decisionSnapshot).toUpperCase() : 'DERIVE FROM DATA';
+  const decisionSummary = decisionSnapshot?.summary || 'Unavailable';
+  const decisionAction = decisionSnapshot?.action || 'Unavailable';
+  const decisionConfidence = decisionSnapshot?.confidence || 'Unavailable';
 
   return (
     `You are a top-tier equity research analyst writing a definitive investment conclusion for a professional investment report.\n\n` +
@@ -527,8 +532,14 @@ function buildStockConclusionPrompt(
     `3. Write a COMPREHENSIVE, well-structured narrative of 5-7 paragraphs — NOT bullet points.\n` +
     `4. Each paragraph should build on the previous to form a coherent investment thesis.\n` +
     `5. Be specific: reference actual numbers from the data. Vague statements like "revenue is growing" are unacceptable.\n` +
-    `6. Conclude with a clear investment recommendation: BUY / HOLD / WATCH / SELL with specific rationale.\n` +
-    `7. Output ONLY the narrative paragraphs in plain markdown — no JSON, no section headers, no preamble.\n\n` +
+    `6. The final recommendation MUST align with the structured decision below. Do not contradict the required recommendation label.\n` +
+    `7. Conclude with a clear investment recommendation: BUY / HOLD / WATCH / SELL with specific rationale.\n` +
+    `8. Output ONLY the narrative paragraphs in plain markdown — no JSON, no section headers, no preamble.\n\n` +
+    `═══ STRUCTURED DECISION TO MATCH ═══\n` +
+    `Required Recommendation Label: ${requiredRecommendation}\n` +
+    `Decision Action: ${decisionAction}\n` +
+    `Decision Confidence: ${decisionConfidence}\n` +
+    `Decision Summary: ${decisionSummary}\n\n` +
     `═══ COMPANY DATA ═══\n` +
     `Company: ${name} (${symbol})\n` +
     `Sector: ${companyOverview?.sector || 'N/A'} | Industry: ${companyOverview?.industry || 'N/A'}\n` +
@@ -593,6 +604,12 @@ function buildComparisonConclusionPrompt(
     reportType === 'comparison' ? 'Peer Comparison'
     : reportType === 'sector' ? `Sector: ${sectorQuery || 'Unknown'}`
     : `Deep Sector Research: ${sectorQuery || 'Unknown'}`;
+  const rankedSummary = (scored || [])
+    .filter((entry) => entry.score !== null && entry.score !== undefined)
+    .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
+    .slice(0, 3)
+    .map((entry, index) => `${index + 1}. ${entry.symbol}: ${entry.score!.toFixed(1)}/100`)
+    .join('\n');
 
   const companySummaries = items.map((item) => {
     const sym = item.symbol;
@@ -601,17 +618,17 @@ function buildComparisonConclusionPrompt(
     const pe = item.overview?.peRatio ?? item.basicFinancials?.metric?.peBasicExclExtraTTM ?? 'N/A';
     const mc = item.overview?.marketCapitalization ?? 'N/A';
     const rev = item.overview?.revenueTTM ?? 'N/A';
-    const opMargin = item.overview?.operatingMargin ?? item.basicFinancials?.metric?.operatingMarginTTM ?? 'N/A';
-    const grossMargin = item.overview?.profitMargin ?? item.basicFinancials?.metric?.grossMarginTTM ?? 'N/A';
-    const roe = item.overview?.returnOnEquity ?? item.basicFinancials?.metric?.roeTTM ?? 'N/A';
-    const revGrowth = item.basicFinancials?.metric?.revenueGrowthTTM ?? item.overview?.quarterlyRevenueGrowth ?? 'N/A';
+    const opMargin = formatPromptMetric(item.overview?.operatingMargin ?? item.basicFinancials?.metric?.operatingMarginTTM);
+    const grossMargin = formatPromptMetric(item.overview?.profitMargin ?? item.basicFinancials?.metric?.grossMarginTTM);
+    const roe = formatPromptMetric(item.overview?.returnOnEquity ?? item.basicFinancials?.metric?.roeTTM);
+    const revGrowth = formatPromptMetric(item.basicFinancials?.metric?.revenueGrowthTTM ?? item.overview?.quarterlyRevenueGrowth);
     const targetMean = item.priceTargets?.targetMean
       ?? (item.analystRatings?.analystTargetPrice !== 'N/A' ? item.analystRatings?.analystTargetPrice : null)
       ?? item.overview?.analystTargetPrice ?? 'N/A';
     const upside = Number(price) && Number(targetMean)
       ? `${(((Number(targetMean) - Number(price)) / Number(price)) * 100).toFixed(1)}%`
       : 'N/A';
-    const compositeScore = scored?.find((s) => s.symbol === sym)?.score;
+    const score = scored?.find((s) => s.symbol === sym)?.score;
     const moat = item.moatAnalysis
       ? `${item.moatAnalysis.moatType} (${item.moatAnalysis.moatStrength}, ${item.moatAnalysis.moatScore}/100)`
       : 'Not assessed';
@@ -624,8 +641,8 @@ function buildComparisonConclusionPrompt(
       `  Price: $${price} | Market Cap: ${mc} | P/E: ${pe}\n` +
       `  Revenue TTM: ${rev} | Rev Growth: ${revGrowth} | ${latestRevLine}\n` +
       `  Gross Margin: ${grossMargin} | Op Margin: ${opMargin} | ROE: ${roe}\n` +
-      `  Analyst Target: $${targetMean} | Upside: ${upside}\n` +
-      `  Composite Score: ${compositeScore !== null && compositeScore !== undefined ? compositeScore.toFixed(1) + '/100' : 'N/A'}\n` +
+      `  Analyst Target: ${targetMean === 'N/A' ? 'N/A' : `$${targetMean}`} | Upside: ${upside}\n` +
+      `  Score: ${score !== null && score !== undefined ? score.toFixed(1) + '/100' : 'N/A'} (Decision Score when available; otherwise Composite Score)\n` +
       `  Moat: ${moat}`
     );
   }).join('\n\n');
@@ -638,8 +655,11 @@ function buildComparisonConclusionPrompt(
     `3. Write a COMPREHENSIVE narrative of 5-7 paragraphs — NOT bullet points.\n` +
     `4. Cover: (a) sector/group context, (b) comparative financial performance, (c) valuation, (d) moats and competitive dynamics, (e) top pick(s) with clear evidence-based rationale, (f) risks, (g) portfolio strategy.\n` +
     `5. Reference specific numbers from each company. Be precise — avoid vague generalisations.\n` +
-    `6. End with a clear recommendation: which company(ies) to buy, hold, or avoid, and why.\n` +
-    `7. Output ONLY the narrative paragraphs in plain markdown — no JSON, no headers, no preamble.\n\n` +
+    `6. When structured scores are available, keep any top-pick recommendation aligned with the highest-scored company shown below.\n` +
+    `7. End with a clear recommendation: which company(ies) to buy, hold, or avoid, and why.\n` +
+    `8. Output ONLY the narrative paragraphs in plain markdown — no JSON, no headers, no preamble.\n\n` +
+    `═══ STRUCTURED SCORE SUMMARY ═══\n` +
+    `${rankedSummary || 'No structured scores available.'}\n\n` +
     `═══ COMPANY DATA ═══\n\n` +
     companySummaries + '\n\n' +
     `═══ END OF DATA ═══\n\n` +
@@ -692,6 +712,10 @@ const getProviderFromValue = (value: any, cacheEntry?: CacheEntry | null) =>
   cacheEntry?.provider
   || (value && typeof value === 'object' && '__source' in value ? String((value as any).__source) : DEFAULT_SOURCE);
 
+function formatSignalMix(counts: Record<string, number>): string {
+  return `Signal mix: Buy ${counts.Buy || 0} | Hold ${counts.Hold || 0} | Watch ${counts.Watch || 0} | Sell ${counts.Sell || 0}.`;
+}
+
 const buildTrustSummaryFromCache = (
   cache: SymbolCache,
   entries: Array<{ key: string; label: string; data: any }>
@@ -723,7 +747,7 @@ const buildUniverseSummary = (
   if (actionable.length === 0) return undefined;
 
   const actionCounts = actionable.reduce<Record<string, number>>((acc, item) => {
-    const action = item.decisionSnapshot?.action || 'Wait';
+    const action = decisionSnapshotToLegacyAction(item.decisionSnapshot!);
     acc[action] = (acc[action] || 0) + 1;
     return acc;
   }, {});
@@ -731,12 +755,10 @@ const buildUniverseSummary = (
   const weakest = actionable[actionable.length - 1];
   const topName = top.overview?.name || top.symbol;
   const weakestName = weakest.overview?.name || weakest.symbol;
-  const bullish = (actionCounts.Initiate || 0) + (actionCounts.Add || 0);
-  const defensive = (actionCounts.Trim || 0) + (actionCounts.Exit || 0);
 
   return [
     `Top setup: ${topName} (${top.symbol}) - ${top.decisionSnapshot?.summary}`,
-    `Breadth: ${bullish} bullish, ${actionCounts.Hold || 0} hold, ${actionCounts.Wait || 0} wait, ${defensive} defensive.`,
+    formatSignalMix(actionCounts),
     weakest !== top ? `Weakest setup: ${weakestName} (${weakest.symbol}) - ${weakest.decisionSnapshot?.summary}` : null,
   ].filter(Boolean).join(' ');
 };
@@ -762,9 +784,32 @@ const buildWatchlistSummary = (
   const strongestName = strongest.companyName || strongest.symbol;
 
   return [
-    `Daily watchlist view: ${counts.Buy || 0} buy, ${counts.Hold || 0} hold, ${counts.Watch || 0} watch, ${counts.Sell || 0} sell.`,
+    `Daily watchlist view. ${formatSignalMix(counts)}`,
     `Strongest setup: ${strongestName} (${strongest.symbol}) - ${strongest.stock?.decisionSnapshot?.summary}`,
   ].join(' ');
+};
+
+const getComparisonPromptScore = (item: any) => {
+  if (item?.decisionSnapshot?.overallScore !== null && item?.decisionSnapshot?.overallScore !== undefined) {
+    return item.decisionSnapshot.overallScore;
+  }
+
+  return computeScorecard({
+    symbol: item?.symbol || 'N/A',
+    generatedAt: new Date(0).toISOString(),
+    price: item?.price || {},
+    priceHistory: item?.priceHistory,
+    companyOverview: item?.overview,
+    basicFinancials: item?.basicFinancials,
+    incomeStatement: item?.incomeStatement,
+    balanceSheet: item?.balanceSheet,
+    cashFlow: item?.cashFlow,
+    analystRatings: item?.analystRatings,
+    priceTargets: item?.priceTargets,
+    moatAnalysis: item?.moatAnalysis,
+    dataTrust: item?.dataTrust,
+    decisionSnapshot: item?.decisionSnapshot,
+  }).composite;
 };
 
 // Score a search result against the user query.
@@ -1934,32 +1979,6 @@ export async function executeTool(
           }
         }
 
-        // LLM investment conclusion — rich narrative, best-effort
-        let llmConclusion: string | undefined;
-        if (options?.llmFill) {
-          try {
-            const conclusionPrompt = buildStockConclusionPrompt(
-              symbol,
-              price,
-              companyOverview,
-              finalBasicFinancials,
-              finalEarningsHistory,
-              finalIncomeStatement,
-              finalBalanceSheet,
-              finalCashFlow,
-              analystRatings,
-              priceTargets,
-              priceHistory,
-              newsSentiment,
-              companyNews,
-              moatAnalysis
-            );
-            llmConclusion = (await options.llmFill(conclusionPrompt)).trim();
-          } catch {
-            // LLM unavailable — use structured fallback
-          }
-        }
-
         const decisionSnapshot = buildDecisionSnapshot({
           symbol: symbol.toUpperCase(),
           price,
@@ -1978,6 +1997,33 @@ export async function executeTool(
           portfolioProfile,
           previousDecision,
         });
+
+        // LLM investment conclusion — rich narrative, best-effort
+        let llmConclusion: string | undefined;
+        if (options?.llmFill) {
+          try {
+            const conclusionPrompt = buildStockConclusionPrompt(
+              symbol,
+              price,
+              companyOverview,
+              finalBasicFinancials,
+              finalEarningsHistory,
+              finalIncomeStatement,
+              finalBalanceSheet,
+              finalCashFlow,
+              analystRatings,
+              priceTargets,
+              priceHistory,
+              newsSentiment,
+              companyNews,
+              moatAnalysis,
+              decisionSnapshot
+            );
+            llmConclusion = (await options.llmFill(conclusionPrompt)).trim();
+          } catch {
+            // LLM unavailable — use structured fallback
+          }
+        }
 
         const reportBody = buildStockReport({
           symbol: symbol.toUpperCase(),
@@ -2378,7 +2424,7 @@ export async function executeTool(
               undefined,
               items.map((item) => ({
                 symbol: item.symbol,
-                score: item.decisionSnapshot?.overallScore ?? null,
+                score: getComparisonPromptScore(item),
               }))
             );
             llmConclusionComparison = (await options.llmFill(conclusionPrompt)).trim();
@@ -2493,8 +2539,8 @@ export async function executeTool(
         const reportBody = buildWatchlistDailyReport(reportData);
         const content = failures.length
           ? reportBody.replace(
-              '## Position Guidance',
-              `## Partial Coverage\n${failures.map((item) => `- ${item}`).join("\n")}\n\n## Position Guidance`
+              '## 🎯 Position Guidance',
+              `## Partial Coverage\n${failures.map((item) => `- ${item}`).join("\n")}\n\n## 🎯 Position Guidance`
             )
           : reportBody;
         const summary = buildWatchlistSummary(reportData.items);
@@ -2785,7 +2831,7 @@ export async function executeTool(
               sector,
               items.map((item) => ({
                 symbol: item.symbol,
-                score: item.decisionSnapshot?.overallScore ?? null,
+                score: getComparisonPromptScore(item),
               }))
             );
             llmConclusionSector = (await options.llmFill(conclusionPrompt)).trim();
@@ -3292,7 +3338,7 @@ export async function executeTool(
               sector,
               items.map((item) => ({
                 symbol: item.symbol,
-                score: item.decisionSnapshot?.overallScore ?? null,
+                score: getComparisonPromptScore(item),
               }))
             );
             llmConclusionDeep = (await options.llmFill(conclusionPrompt)).trim();

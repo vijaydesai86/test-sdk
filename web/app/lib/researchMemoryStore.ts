@@ -78,6 +78,15 @@ function normalizeContent(content: string | null) {
   return content.length > 6000 ? `${content.slice(0, 6000)}… [truncated]` : content;
 }
 
+function summarizeDecisionAction(action: DecisionJournalRecord['action']): string {
+  if (action === 'Initiate') return 'Start a position';
+  if (action === 'Add') return 'Add to the position';
+  if (action === 'Hold') return 'Keep holding';
+  if (action === 'Trim') return 'Trim the position';
+  if (action === 'Exit') return 'Exit the position';
+  return 'Wait for a better setup';
+}
+
 function isSchemaMismatch(message: string) {
   return /does not exist|schema cache|Could not find the table/i.test(message);
 }
@@ -455,7 +464,7 @@ export async function buildResearchContext(args: {
     lines.push(
       `Recent decisions: ${recentDecisions
         .slice(0, 5)
-        .map((decision) => `${decision.symbol || 'portfolio'} ${decision.action} (${decision.confidence}) - ${decision.summary}`)
+        .map((decision) => `${decision.symbol || 'portfolio'} ${summarizeDecisionAction(decision.action)} (${decision.confidence}) - ${decision.summary}`)
         .join(' | ')}`
     );
   }

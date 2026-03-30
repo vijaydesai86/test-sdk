@@ -77,6 +77,7 @@ describe('decisionEngine', () => {
     expect(snapshot.action).toBe('Initiate');
     expect(snapshot.confidence).toBe('High');
     expect(snapshot.whyNow.join(' ')).toContain('preferred entry range');
+    expect(snapshot.portfolioImpact).toContain('Start a position');
   });
 
   it('trims an owned position that is oversized and weak', () => {
@@ -106,5 +107,19 @@ describe('decisionEngine', () => {
 
     expect(['Trim', 'Exit']).toContain(snapshot.action);
     expect(snapshot.whyNot.join(' ')).toContain('above your max-weight guardrail');
+  });
+
+  it('describes target support accurately when no price-momentum history is available', () => {
+    const snapshot = buildDecisionSnapshot({
+      symbol: 'AVGO',
+      price: { price: '100' },
+      companyOverview: { analystTargetPrice: '150', peRatio: '18', operatingMargin: '0.34', profitMargin: '0.32', returnOnEquity: '0.95' },
+      basicFinancials: { metric: { grossMarginTTM: 0.68, operatingMarginTTM: 0.34, roeTTM: 0.95, revenueGrowthTTM: 0.18, epsGrowthTTM: 0.2 } },
+      companyNews: { articles: [{ headline: 'Positive catalyst' }] },
+      trust: freshTrust,
+    });
+
+    expect(snapshot.whyNow.join(' ')).toContain('Analyst target upside is supportive');
+    expect(snapshot.whyNow.join(' ')).not.toContain('Trend and momentum are supportive');
   });
 });
