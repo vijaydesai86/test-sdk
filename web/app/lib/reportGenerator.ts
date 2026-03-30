@@ -650,7 +650,14 @@ function hasMeaningfulTableValue(value: string): boolean {
 function buildPositionGuidanceTable(rows: Array<{ company: string; guidance: PositionGuidance }>): string {
   return buildTable(
     ['Company', 'Signal', 'Confidence', 'For owners', 'For non-owners', 'Why'],
-    rows.map(({ company, guidance }) => [company, guidance.stance, guidance.confidence, guidance.forOwners, guidance.forNonOwners, guidance.rationale]),
+    rows.map(({ company, guidance }) => [
+      company,
+      guidance.stance,
+      guidance.confidence,
+      guidance.forOwners,
+      describeNonOwnerAction(guidance.forNonOwners),
+      guidance.rationale,
+    ]),
     ['left', 'left', 'left', 'left', 'left', 'left']
   );
 }
@@ -1085,11 +1092,68 @@ function actionFromDecisionSnapshot(action?: DecisionSnapshot['action']): Action
   return 'Watch';
 }
 
+function describeDecisionAction(action?: DecisionSnapshot['action']): string {
+  if (action === 'Initiate') return 'Start a position';
+  if (action === 'Add') return 'Add to the position';
+  if (action === 'Hold') return 'Keep holding';
+  if (action === 'Trim') return 'Trim the position';
+  if (action === 'Exit') return 'Exit the position';
+  return 'Wait for a better setup';
+}
+
+function describeNonOwnerAction(action: NonOwnerAction): string {
+  if (action === 'Buy') return 'Start a position';
+  if (action === 'Watch') return 'Stay on watchlist';
+  return 'Avoid new entry';
+}
+
+function derivePortfolioRoleLabel(data: StockReportData, scorecard: ReturnType<typeof computeScorecard>, guidance: PositionGuidance): string {
+  if (data.decisionSnapshot) {
+    switch (data.decisionSnapshot.action) {
+      case 'Initiate':
+        return 'Starter position candidate — begin with measured sizing if it fits your portfolio limits';
+      case 'Add':
+        return 'Accumulation candidate — add only toward your target weight, not beyond it';
+      case 'Hold':
+        return 'Existing position to keep — maintain exposure, but this is not a forced add';
+      case 'Trim':
+        return 'Risk reduction candidate — trim exposure and rebalance sizing';
+      case 'Exit':
+        return 'Capital preservation candidate — exit or avoid until the thesis improves';
+      case 'Wait':
+      default:
+        return 'Watchlist candidate — wait for a better setup or fresher confirmation';
+    }
+  }
+
+  const composite = scorecard.composite;
+  const moatScore = data.moatAnalysis?.moatScore ?? 0;
+  if (composite !== null && composite >= 65 && moatScore >= 61) {
+    return 'Core holding — quality compounder with durable competitive advantage';
+  }
+  if (composite !== null && composite >= 65) {
+    return 'Growth tilt — strong fundamentals; monitor entry valuation';
+  }
+  if (composite !== null && composite >= 45 && moatScore >= 31) {
+    return 'Hold — stable business with narrow moat; revisit on meaningful pullback';
+  }
+  if (composite !== null && composite < 40) {
+    return 'Speculative / avoid — fundamentals under pressure';
+  }
+  return guidance.stance === 'Buy'
+    ? 'Starter position candidate — positive setup, but size with discipline'
+    : guidance.stance === 'Hold'
+      ? 'General equity exposure — hold existing position'
+      : guidance.stance === 'Watch'
+        ? 'Watchlist candidate — wait for a better entry'
+        : 'Avoid / reduce exposure';
+}
+
 function buildDecisionActionTable(snapshot: DecisionSnapshot): string {
   return buildTable(
     ['Field', 'Value'],
     [
-      ['Action', snapshot.action],
+      ['Action', describeDecisionAction(snapshot.action)],
       ['Confidence', snapshot.confidence],
       ['Freshness', snapshot.freshness],
       ['Overall Score', snapshot.overallScore !== null ? `${snapshot.overallScore}/100` : 'Unavailable'],
@@ -3572,19 +3636,9 @@ function buildStockConclusion(data: StockReportData, scorecard: ReturnType<typeo
   const upside = price && targetMean ? ((targetMean - price) / price) * 100 : null;
 
   // ── Suggested portfolio role ──────────────────────────────────────────────
-  const composite = scorecard.composite;
   const moat = data.moatAnalysis;
-  const moatScore = moat?.moatScore ?? 0;
-  let portfolioRole = 'General equity exposure';
-  if (composite !== null && composite >= 65 && moatScore >= 61) {
-    portfolioRole = 'Core holding — quality compounder with durable competitive advantage';
-  } else if (composite !== null && composite >= 65) {
-    portfolioRole = 'Growth tilt — strong fundamentals; monitor entry valuation';
-  } else if (composite !== null && composite >= 45 && moatScore >= 31) {
-    portfolioRole = 'Hold — stable business with narrow moat; revisit on meaningful pullback';
-  } else if (composite !== null && composite < 40) {
-    portfolioRole = 'Speculative / avoid — fundamentals under pressure';
-  }
+  const composite = data.decisionSnapshot?.overallScore ?? scorecard.composite;
+  const portfolioRole = derivePortfolioRoleLabel(data, scorecard, positionGuidance);
 
   // ── Data-derived quick-reference metrics ─────────────────────────────────
   const revenueGrowth = getStockRevenueGrowth(data);
@@ -3607,7 +3661,7 @@ function buildStockConclusion(data: StockReportData, scorecard: ReturnType<typeo
     `- **Suggested Portfolio Role:** ${portfolioRole}`,
     `- **Confidence:** ${positionGuidance.confidence}`,
     `- **For Owners:** ${positionGuidance.forOwners}`,
-    `- **For Non-Owners:** ${positionGuidance.forNonOwners}`,
+    `- **For Non-Owners:** ${describeNonOwnerAction(positionGuidance.forNonOwners)}`,
     `- **Why:** ${positionGuidance.rationale}`,
     positionGuidance.missingInputs.length ? `- **Decision Inputs Missing:** ${formatMissingInputs(positionGuidance.missingInputs, 3)}` : null,
     composite !== null ? `- **Composite Score:** ${composite.toFixed(1)}/100` : null,

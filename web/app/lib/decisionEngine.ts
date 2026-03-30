@@ -84,6 +84,15 @@ function actionToLegacyLabel(action: DecisionAction): ActionLabel {
   return action === 'Hold' ? 'Hold' : 'Watch';
 }
 
+function actionToSummaryLabel(action: DecisionAction): string {
+  if (action === 'Initiate') return 'Start a new position';
+  if (action === 'Add') return 'Add to the position';
+  if (action === 'Hold') return 'Keep holding';
+  if (action === 'Trim') return 'Trim the position';
+  if (action === 'Exit') return 'Exit the position';
+  return 'Wait for a better setup';
+}
+
 export function buildDecisionSnapshot(input: DecisionInput): DecisionSnapshot {
   const price = toNumber(input.price?.price);
   const targetMean = toNumber(
@@ -251,7 +260,7 @@ export function buildDecisionSnapshot(input: DecisionInput): DecisionSnapshot {
       ? `Revisit if price trades into $${desiredEntryMin}-${desiredEntryMax} with fresh supporting data.`
       : 'Revisit after the next material catalyst, fresh data refresh, or a meaningful move in valuation/revisions.';
 
-  const summary = `${action} with ${confidence.toLowerCase()} confidence. ${whyNow[0] || 'The setup is mixed.'} ${whyNot[0] || ''}`.trim();
+  const summary = `${actionToSummaryLabel(action)} with ${confidence.toLowerCase()} confidence. ${whyNow[0] || 'The setup is mixed.'} ${whyNot[0] || ''}`.trim();
 
   return {
     action,
