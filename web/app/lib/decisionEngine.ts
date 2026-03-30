@@ -218,18 +218,21 @@ export function buildDecisionSnapshot(input: DecisionInput): DecisionSnapshot {
   const confidence: ConfidenceLabel = confidenceScore >= 75 ? 'High' : confidenceScore >= 55 ? 'Medium' : 'Low';
 
   const changed: string[] = [];
-  if (input.previousDecision?.action && input.previousDecision.action !== action) {
-    changed.push(`Action changed from ${input.previousDecision.action} to ${action}.`);
+  const previousAction = input.previousDecision?.action;
+  const previousPrice = input.previousDecision?.price ?? null;
+  const previousScore = input.previousDecision?.score ?? null;
+  if (previousAction && previousAction !== action) {
+    changed.push(`Action changed from ${previousAction} to ${action}.`);
   }
-  if (input.previousDecision?.price !== null && price !== null) {
-    const delta = price - (input.previousDecision.price || 0);
+  if (previousPrice !== null && price !== null) {
+    const delta = price - previousPrice;
     if (Math.abs(delta) > 0.01) {
-      const pct = input.previousDecision.price ? (delta / input.previousDecision.price) * 100 : 0;
+      const pct = previousPrice !== 0 ? (delta / previousPrice) * 100 : 0;
       changed.push(`Price moved ${pct >= 0 ? '+' : ''}${pct.toFixed(1)}% since the last saved review.`);
     }
   }
-  if (input.previousDecision?.score !== null && overallScore !== null) {
-    const delta = overallScore - (input.previousDecision.score || 0);
+  if (previousScore !== null && overallScore !== null) {
+    const delta = overallScore - previousScore;
     if (Math.abs(delta) >= 5) {
       changed.push(`Overall score changed ${delta >= 0 ? '+' : ''}${delta.toFixed(1)} points versus the last review.`);
     }
