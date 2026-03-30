@@ -2087,7 +2087,6 @@ export async function executeTool(
             content: finalContent,
             symbol: symbol.toUpperCase(),
             range,
-            summary: decisionSnapshot.summary,
             decisionSnapshot,
             dataTrust: trustSummary,
             ...saved,
@@ -2370,7 +2369,7 @@ export async function executeTool(
         });
         return {
           success: true,
-          data: { content, universe, range, summary, ...saved, downloadUrl: `/api/reports/${saved.storagePath ?? saved.filename}` },
+          data: { content, universe, range, ...saved, downloadUrl: `/api/reports/${saved.storagePath ?? saved.filename}` },
           message: `Saved comparison report to ${saved.filePath}`,
         };
       }
@@ -2473,7 +2472,7 @@ export async function executeTool(
         });
         return {
           success: true,
-          data: { content, watchlist, range, summary, ...saved, downloadUrl: `/api/reports/${saved.storagePath ?? saved.filename}` },
+          data: { content, watchlist, range, ...saved, downloadUrl: `/api/reports/${saved.storagePath ?? saved.filename}` },
           message: `Saved daily watchlist report to ${saved.filePath}`
         };
       }
@@ -2732,7 +2731,7 @@ export async function executeTool(
         });
         return {
           success: true,
-          data: { content, summary, ...saved, downloadUrl: `/api/reports/${saved.storagePath ?? saved.filename}` },
+          data: { content, ...saved, downloadUrl: `/api/reports/${saved.storagePath ?? saved.filename}` },
           message: `Saved sector report for "${sector}" to ${saved.filePath}`,
         };
       }
@@ -2795,7 +2794,7 @@ export async function executeTool(
           });
           return {
             success: true,
-            data: { content, summary, ...saved, downloadUrl: `/api/reports/${saved.storagePath ?? saved.filename}` },
+            data: { content, ...saved, downloadUrl: `/api/reports/${saved.storagePath ?? saved.filename}` },
             message: `Saved deep research comparison report for "${sector}" to ${saved.filePath}`,
           };
         }
@@ -2832,7 +2831,7 @@ export async function executeTool(
           });
           return {
             success: true,
-            data: { content, summary, ...saved, downloadUrl: `/api/reports/${saved.storagePath ?? saved.filename}` },
+            data: { content, ...saved, downloadUrl: `/api/reports/${saved.storagePath ?? saved.filename}` },
             message: `Saved deep research company report for "${sector}" to ${saved.filePath}`,
           };
         }
@@ -3199,7 +3198,7 @@ export async function executeTool(
         });
         return {
           success: true,
-          data: { content, summary, ...saved, downloadUrl: `/api/reports/${saved.storagePath ?? saved.filename}` },
+          data: { content, ...saved, downloadUrl: `/api/reports/${saved.storagePath ?? saved.filename}` },
           message: `Saved deep sector report for "${sector}" to ${saved.filePath}`,
         };
       }
