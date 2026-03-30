@@ -123,6 +123,9 @@ export function buildDecisionSnapshot(input: DecisionInput): DecisionSnapshot {
   const targetWeight = input.position?.targetWeight ?? null;
   const maxWeight = input.position?.maxWeight ?? input.portfolioProfile?.maxPositionWeight ?? null;
   const ownershipStatus = input.position?.ownershipStatus ?? 'watching';
+  const desiredEntryMin = input.position?.desiredEntryMin ?? null;
+  const desiredEntryMax = input.position?.desiredEntryMax ?? null;
+  const trimAbove = input.position?.trimAbove ?? null;
 
   let portfolioFitScore: number | null = 55;
   if (ownershipStatus === 'owned' && currentWeight !== null && maxWeight !== null && currentWeight > maxWeight) {
@@ -163,11 +166,11 @@ export function buildDecisionSnapshot(input: DecisionInput): DecisionSnapshot {
   if (qualityScore !== null && qualityScore >= 65) whyNow.push(`Business quality scores well (${qualityScore.toFixed(0)}/100) across margin and return metrics.`);
   if (valuationScore !== null && valuationScore >= 58) whyNow.push(`Valuation/reward-to-risk is supportive (${valuationScore.toFixed(0)}/100) with ${targetUpside !== null ? `${targetUpside.toFixed(1)}% target upside` : 'reasonable upside'}.`);
   if (technicalScore !== null && technicalScore >= 58) whyNow.push(`Trend and momentum are supportive (${technicalScore.toFixed(0)}/100).`);
-  if (input.position?.desiredEntryMin !== null && input.position?.desiredEntryMax !== null && price !== null) {
-    if (price >= (input.position?.desiredEntryMin ?? 0) && price <= (input.position?.desiredEntryMax ?? Number.MAX_SAFE_INTEGER)) {
-      whyNow.push(`Price is inside your preferred entry range of $${input.position.desiredEntryMin}-${input.position.desiredEntryMax}.`);
+  if (desiredEntryMin !== null && desiredEntryMax !== null && price !== null) {
+    if (price >= desiredEntryMin && price <= desiredEntryMax) {
+      whyNow.push(`Price is inside your preferred entry range of $${desiredEntryMin}-${desiredEntryMax}.`);
     } else {
-      whyNot.push(`Price is outside your preferred entry range of $${input.position.desiredEntryMin}-${input.position.desiredEntryMax}.`);
+      whyNot.push(`Price is outside your preferred entry range of $${desiredEntryMin}-${desiredEntryMax}.`);
     }
   }
 
@@ -239,10 +242,10 @@ export function buildDecisionSnapshot(input: DecisionInput): DecisionSnapshot {
     || (ownershipStatus === 'owned'
       ? 'Reassess if fundamentals deteriorate, trust data turns stale around a catalyst, or the thesis weakens relative to better alternatives.'
       : 'Only act when the setup is both fresh and attractive relative to alternatives in the portfolio.');
-  const nextTrigger = input.position?.trimAbove && price !== null && price > input.position.trimAbove
-    ? `Price is above your trim trigger of $${input.position.trimAbove}; reassess sizing now.`
-    : input.position?.desiredEntryMin !== null && input.position?.desiredEntryMax !== null
-      ? `Revisit if price trades into $${input.position.desiredEntryMin}-${input.position.desiredEntryMax} with fresh supporting data.`
+  const nextTrigger = trimAbove !== null && price !== null && price > trimAbove
+    ? `Price is above your trim trigger of $${trimAbove}; reassess sizing now.`
+    : desiredEntryMin !== null && desiredEntryMax !== null
+      ? `Revisit if price trades into $${desiredEntryMin}-${desiredEntryMax} with fresh supporting data.`
       : 'Revisit after the next material catalyst, fresh data refresh, or a meaningful move in valuation/revisions.';
 
   const summary = `${action} with ${confidence.toLowerCase()} confidence. ${whyNow[0] || 'The setup is mixed.'} ${whyNot[0] || ''}`.trim();
