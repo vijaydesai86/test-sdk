@@ -227,28 +227,30 @@ async function loadDefaultSupabaseWatchlist(): Promise<Watchlist | null> {
   const basicItemsColumns = 'id, symbol, company_name, display_order, created_at';
   const isSchemaMismatch = (message: string) => /column .* does not exist|schema cache/i.test(message);
 
-  let watchlistsQuery = await supabase
+  const detailedWatchlistsQuery = await supabase
     .from('watchlists')
     .select(detailedWatchlistColumns)
     .eq('slug', DEFAULT_WATCHLIST_SLUG)
     .limit(1);
+  let watchlists = detailedWatchlistsQuery.data as any[] | null;
+  let watchlistError = detailedWatchlistsQuery.error;
 
-  if (watchlistsQuery.error && isSchemaMismatch(watchlistsQuery.error.message)) {
-    watchlistsQuery = await supabase
+  if (watchlistError && isSchemaMismatch(watchlistError.message)) {
+    const fallbackWatchlistsQuery = await supabase
       .from('watchlists')
       .select(basicWatchlistColumns)
       .eq('slug', DEFAULT_WATCHLIST_SLUG)
       .limit(1);
+    watchlists = fallbackWatchlistsQuery.data as any[] | null;
+    watchlistError = fallbackWatchlistsQuery.error;
   }
-
-  const { data: watchlists, error: watchlistError } = watchlistsQuery;
 
   if (watchlistError) return null;
 
   let watchlist = watchlists?.[0];
   if (!watchlist) {
     const createdAt = nowIso();
-    let insertQuery = await supabase
+    const detailedInsertQuery = await supabase
       .from('watchlists')
       .insert({
         name: DEFAULT_WATCHLIST_NAME,
@@ -265,9 +267,11 @@ async function loadDefaultSupabaseWatchlist(): Promise<Watchlist | null> {
       })
       .select(detailedWatchlistColumns)
       .single();
+    let inserted = detailedInsertQuery.data as any;
+    let insertError = detailedInsertQuery.error;
 
-    if (insertQuery.error && isSchemaMismatch(insertQuery.error.message)) {
-      insertQuery = await supabase
+    if (insertError && isSchemaMismatch(insertError.message)) {
+      const fallbackInsertQuery = await supabase
         .from('watchlists')
         .insert({
           name: DEFAULT_WATCHLIST_NAME,
@@ -278,31 +282,33 @@ async function loadDefaultSupabaseWatchlist(): Promise<Watchlist | null> {
         })
         .select(basicWatchlistColumns)
         .single();
+      inserted = fallbackInsertQuery.data as any;
+      insertError = fallbackInsertQuery.error;
     }
-
-    const { data: inserted, error: insertError } = insertQuery;
 
     if (insertError || !inserted) return null;
     watchlist = inserted;
   }
 
-  let itemsQuery = await supabase
+  const detailedItemsQuery = await supabase
     .from('watchlist_items')
     .select(detailedItemsColumns)
     .eq('watchlist_id', watchlist.id)
     .order('display_order', { ascending: true })
     .order('created_at', { ascending: true });
+  let items = detailedItemsQuery.data as any[] | null;
+  let itemError = detailedItemsQuery.error;
 
-  if (itemsQuery.error && isSchemaMismatch(itemsQuery.error.message)) {
-    itemsQuery = await supabase
+  if (itemError && isSchemaMismatch(itemError.message)) {
+    const fallbackItemsQuery = await supabase
       .from('watchlist_items')
       .select(basicItemsColumns)
       .eq('watchlist_id', watchlist.id)
       .order('display_order', { ascending: true })
       .order('created_at', { ascending: true });
+    items = fallbackItemsQuery.data as any[] | null;
+    itemError = fallbackItemsQuery.error;
   }
-
-  const { data: items, error: itemError } = itemsQuery;
 
   if (itemError) return null;
 
@@ -320,19 +326,21 @@ async function loadDefaultSupabaseWatchlist(): Promise<Watchlist | null> {
       notes: '',
     }));
 
-    let seedQuery = await supabase
+    const detailedSeedQuery = await supabase
       .from('watchlist_items')
       .insert(seedRows)
       .select(detailedItemsColumns);
+    let insertedItems = detailedSeedQuery.data as any[] | null;
+    let seedError = detailedSeedQuery.error;
 
-    if (seedQuery.error && isSchemaMismatch(seedQuery.error.message)) {
-      seedQuery = await supabase
+    if (seedError && isSchemaMismatch(seedError.message)) {
+      const fallbackSeedQuery = await supabase
         .from('watchlist_items')
         .insert(seedRows)
         .select(basicItemsColumns);
+      insertedItems = fallbackSeedQuery.data as any[] | null;
+      seedError = fallbackSeedQuery.error;
     }
-
-    const { data: insertedItems, error: seedError } = seedQuery;
 
     if (seedError) return null;
 
