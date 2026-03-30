@@ -28,7 +28,11 @@ type FileStore = {
   watchlists: Watchlist[];
 };
 
-type SeedItem = { symbol: string; companyName: string };
+type SeedItem = {
+  symbol: string;
+  companyName: string;
+  position?: Partial<WatchlistPositionMeta>;
+};
 
 const WATCHLISTS_FILE =
   process.env.WATCHLISTS_FILE
@@ -46,10 +50,22 @@ export const DEFAULT_PORTFOLIO_PROFILE: PortfolioProfile = {
   strategyNotes: 'Focus on high-quality businesses, maintain valuation discipline, and prefer waiting over forcing a trade.',
 };
 export const DEFAULT_WATCHLIST_SEED: SeedItem[] = [
-  { symbol: 'NVDA', companyName: 'NVIDIA' },
-  { symbol: 'ARM', companyName: 'Arm Holdings' },
+  {
+    symbol: 'NVDA',
+    companyName: 'NVIDIA',
+    position: { ownershipStatus: 'owned' },
+  },
+  {
+    symbol: 'ARM',
+    companyName: 'Arm Holdings',
+    position: { ownershipStatus: 'owned' },
+  },
   { symbol: 'AMD', companyName: 'Advanced Micro Devices' },
-  { symbol: 'AVGO', companyName: 'Broadcom' },
+  {
+    symbol: 'AVGO',
+    companyName: 'Broadcom',
+    position: { ownershipStatus: 'owned' },
+  },
   { symbol: 'QCOM', companyName: 'Qualcomm' },
   { symbol: 'MSFT', companyName: 'Microsoft' },
   { symbol: 'DELL', companyName: 'Dell Technologies' },
@@ -60,7 +76,11 @@ export const DEFAULT_WATCHLIST_SEED: SeedItem[] = [
   { symbol: 'ASML', companyName: 'ASML Holding' },
   { symbol: 'AMAT', companyName: 'Applied Materials' },
   { symbol: 'TSM', companyName: 'Taiwan Semiconductor Manufacturing' },
-  { symbol: 'META', companyName: 'Meta Platforms' },
+  {
+    symbol: 'META',
+    companyName: 'Meta Platforms',
+    position: { ownershipStatus: 'owned' },
+  },
 ];
 
 function nowIso() {
@@ -117,6 +137,7 @@ function toSeedItems(seed = DEFAULT_WATCHLIST_SEED): WatchlistItem[] {
     displayOrder: index,
     createdAt,
     ...buildDefaultPositionMeta(),
+    ...item.position,
   }));
 }
 
