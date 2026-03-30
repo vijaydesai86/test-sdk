@@ -2233,6 +2233,7 @@ export async function executeTool(
           cache: SymbolCache;
           price: any;
           overview: any;
+          basicFinancials: any;
           priceHistory: any;
           incomeStatement: any;
           balanceSheet: any;
@@ -2240,6 +2241,9 @@ export async function executeTool(
           analystRatings: any;
           insiderTrading: any;
           priceTargets: any;
+          peers: any;
+          newsSentiment: any;
+          companyNews: any;
         };
         const rawItems = await mapWithConcurrency<string, RawCompanyData>(
           universe,
@@ -2248,6 +2252,7 @@ export async function executeTool(
             const cache = await loadSymbolCache(symbol);
             const price = await safeFetch(symbol, cache, 'Price', 'price', stockService.getStockPrice(symbol));
             const overview = await safeFetch(symbol, cache, 'Company overview', 'overview', stockService.getCompanyOverview(symbol));
+            const basicFinancials = await safeFetch(symbol, cache, 'Basic financials', 'basicFinancials', stockService.getBasicFinancials(symbol));
             const priceHistory = await safeFetch(symbol, cache, 'Price history', `priceHistory:${range}`, stockService.getPriceHistory(symbol, range));
             const incomeStatement = await safeFetch(symbol, cache, 'Income statement', 'incomeStatement', stockService.getIncomeStatement(symbol));
             const balanceSheet = await safeFetch(symbol, cache, 'Balance sheet', 'balanceSheet', stockService.getBalanceSheet(symbol));
@@ -2255,7 +2260,26 @@ export async function executeTool(
             const analystRatings = await safeFetch(symbol, cache, 'Analyst ratings', 'analystRatings', stockService.getAnalystRatings(symbol));
             const insiderTrading = await safeFetch(symbol, cache, 'Insider trading', 'insiderTrading', stockService.getInsiderTrading(symbol));
             const priceTargets = await safeFetch(symbol, cache, 'Price targets', 'priceTargets', stockService.getPriceTargets(symbol));
-            return { symbol, cache, price, overview, priceHistory, incomeStatement, balanceSheet, cashFlow, analystRatings, insiderTrading, priceTargets };
+            const peers = await safeFetch(symbol, cache, 'Peers', 'peers', stockService.getPeers(symbol));
+            const newsSentiment = await safeFetch(symbol, cache, 'News sentiment', 'newsSentiment', stockService.getNewsSentiment(symbol));
+            const companyNews = await safeFetch(symbol, cache, 'Company news', 'companyNews', stockService.getCompanyNews(symbol, 14));
+            return {
+              symbol,
+              cache,
+              price,
+              overview,
+              basicFinancials,
+              priceHistory,
+              incomeStatement,
+              balanceSheet,
+              cashFlow,
+              analystRatings,
+              insiderTrading,
+              priceTargets,
+              peers,
+              newsSentiment,
+              companyNews,
+            };
           }
         );
 
@@ -2263,12 +2287,13 @@ export async function executeTool(
         const items: any[] = [];
         for (const item of rawItems) {
           const { symbol } = item;
-          const basicFinancials = item.overview ? buildBasicFinancialsFallback(item.overview) : undefined;
+          const basicFinancials = item.basicFinancials || (item.overview ? buildBasicFinancialsFallback(item.overview) : undefined);
           const watchlistItem = watchlist?.items.find((entry) => entry.symbol === symbol.toUpperCase());
           const previousDecision = await getLatestDecision(symbol).catch(() => null);
           const trustSummary = buildTrustSummaryFromCache(item.cache, [
             { key: 'price', label: 'Price', data: item.price },
             { key: 'overview', label: 'Company overview', data: item.overview },
+            { key: 'basicFinancials', label: 'Basic financials', data: item.basicFinancials },
             { key: `priceHistory:${range}`, label: 'Price history', data: item.priceHistory },
             { key: 'incomeStatement', label: 'Income statement', data: item.incomeStatement },
             { key: 'balanceSheet', label: 'Balance sheet', data: item.balanceSheet },
@@ -2276,6 +2301,9 @@ export async function executeTool(
             { key: 'analystRatings', label: 'Analyst ratings', data: item.analystRatings },
             { key: 'insiderTrading', label: 'Insider trading', data: item.insiderTrading },
             { key: 'priceTargets', label: 'Price targets', data: item.priceTargets },
+            { key: 'peers', label: 'Peers', data: item.peers },
+            { key: 'newsSentiment', label: 'News sentiment', data: item.newsSentiment },
+            { key: 'companyNews', label: 'Company news', data: item.companyNews },
           ]);
           const decisionSnapshot = buildDecisionSnapshot({
             symbol,
@@ -2288,6 +2316,8 @@ export async function executeTool(
             cashFlow: item.cashFlow,
             analystRatings: item.analystRatings,
             priceTargets: item.priceTargets,
+            newsSentiment: item.newsSentiment,
+            companyNews: item.companyNews,
             trust: trustSummary,
             position: watchlistItem,
             portfolioProfile,
@@ -2305,6 +2335,9 @@ export async function executeTool(
             analystRatings: item.analystRatings,
             insiderTrading: item.insiderTrading,
             priceTargets: item.priceTargets,
+            peers: item.peers,
+            newsSentiment: item.newsSentiment,
+            companyNews: item.companyNews,
             dataTrust: trustSummary,
             decisionSnapshot,
           });
@@ -2339,7 +2372,15 @@ export async function executeTool(
         let llmConclusionComparison: string | undefined;
         if (options?.llmFill && items.length > 0) {
           try {
-            const conclusionPrompt = buildComparisonConclusionPrompt(items, 'comparison');
+            const conclusionPrompt = buildComparisonConclusionPrompt(
+              items,
+              'comparison',
+              undefined,
+              items.map((item) => ({
+                symbol: item.symbol,
+                score: item.decisionSnapshot?.overallScore ?? null,
+              }))
+            );
             llmConclusionComparison = (await options.llmFill(conclusionPrompt)).trim();
           } catch {
             // LLM unavailable — use structured fallback
@@ -2452,8 +2493,8 @@ export async function executeTool(
         const reportBody = buildWatchlistDailyReport(reportData);
         const content = failures.length
           ? reportBody.replace(
-              '## Daily Summary',
-              `## Partial Coverage\n${failures.map((item) => `- ${item}`).join("\n")}\n\n## Daily Summary`
+              '## Position Guidance',
+              `## Partial Coverage\n${failures.map((item) => `- ${item}`).join("\n")}\n\n## Position Guidance`
             )
           : reportBody;
         const summary = buildWatchlistSummary(reportData.items);
@@ -2600,6 +2641,7 @@ export async function executeTool(
           cache: SymbolCache;
           price: any;
           overview: any;
+          basicFinancials: any;
           priceHistory: any;
           incomeStatement: any;
           balanceSheet: any;
@@ -2607,6 +2649,9 @@ export async function executeTool(
           analystRatings: any;
           insiderTrading: any;
           priceTargets: any;
+          peers: any;
+          newsSentiment: any;
+          companyNews: any;
         };
         const rawItems = await mapWithConcurrency<string, RawSectorItem>(
           universe,
@@ -2615,6 +2660,7 @@ export async function executeTool(
             const cache = await loadSymbolCache(symbol);
             const price = await safeFetch(symbol, cache, 'Price', 'price', stockService.getStockPrice(symbol));
             const overview = await safeFetch(symbol, cache, 'Company overview', 'overview', stockService.getCompanyOverview(symbol));
+            const basicFinancials = await safeFetch(symbol, cache, 'Basic financials', 'basicFinancials', stockService.getBasicFinancials(symbol));
             const priceHistory = await safeFetch(symbol, cache, 'Price history', `priceHistory:${range}`, stockService.getPriceHistory(symbol, range));
             const incomeStatement = await safeFetch(symbol, cache, 'Income statement', 'incomeStatement', stockService.getIncomeStatement(symbol));
             const balanceSheet = await safeFetch(symbol, cache, 'Balance sheet', 'balanceSheet', stockService.getBalanceSheet(symbol));
@@ -2622,19 +2668,39 @@ export async function executeTool(
             const analystRatings = await safeFetch(symbol, cache, 'Analyst ratings', 'analystRatings', stockService.getAnalystRatings(symbol));
             const insiderTrading = await safeFetch(symbol, cache, 'Insider trading', 'insiderTrading', stockService.getInsiderTrading(symbol));
             const priceTargets = await safeFetch(symbol, cache, 'Price targets', 'priceTargets', stockService.getPriceTargets(symbol));
-            return { symbol, cache, price, overview, priceHistory, incomeStatement, balanceSheet, cashFlow, analystRatings, insiderTrading, priceTargets };
+            const peers = await safeFetch(symbol, cache, 'Peers', 'peers', stockService.getPeers(symbol));
+            const newsSentiment = await safeFetch(symbol, cache, 'News sentiment', 'newsSentiment', stockService.getNewsSentiment(symbol));
+            const companyNews = await safeFetch(symbol, cache, 'Company news', 'companyNews', stockService.getCompanyNews(symbol, 14));
+            return {
+              symbol,
+              cache,
+              price,
+              overview,
+              basicFinancials,
+              priceHistory,
+              incomeStatement,
+              balanceSheet,
+              cashFlow,
+              analystRatings,
+              insiderTrading,
+              priceTargets,
+              peers,
+              newsSentiment,
+              companyNews,
+            };
           }
         );
 
         const items: any[] = [];
         for (const item of rawItems) {
           const { symbol } = item;
-          const basicFinancials = item.overview ? buildBasicFinancialsFallbackSector(item.overview) : undefined;
+          const basicFinancials = item.basicFinancials || (item.overview ? buildBasicFinancialsFallbackSector(item.overview) : undefined);
           const watchlistItem = watchlist?.items.find((entry) => entry.symbol === symbol.toUpperCase());
           const previousDecision = await getLatestDecision(symbol).catch(() => null);
           const trustSummary = buildTrustSummaryFromCache(item.cache, [
             { key: 'price', label: 'Price', data: item.price },
             { key: 'overview', label: 'Company overview', data: item.overview },
+            { key: 'basicFinancials', label: 'Basic financials', data: item.basicFinancials },
             { key: `priceHistory:${range}`, label: 'Price history', data: item.priceHistory },
             { key: 'incomeStatement', label: 'Income statement', data: item.incomeStatement },
             { key: 'balanceSheet', label: 'Balance sheet', data: item.balanceSheet },
@@ -2642,6 +2708,9 @@ export async function executeTool(
             { key: 'analystRatings', label: 'Analyst ratings', data: item.analystRatings },
             { key: 'insiderTrading', label: 'Insider trading', data: item.insiderTrading },
             { key: 'priceTargets', label: 'Price targets', data: item.priceTargets },
+            { key: 'peers', label: 'Peers', data: item.peers },
+            { key: 'newsSentiment', label: 'News sentiment', data: item.newsSentiment },
+            { key: 'companyNews', label: 'Company news', data: item.companyNews },
           ]);
           const decisionSnapshot = buildDecisionSnapshot({
             symbol,
@@ -2654,6 +2723,8 @@ export async function executeTool(
             cashFlow: item.cashFlow,
             analystRatings: item.analystRatings,
             priceTargets: item.priceTargets,
+            newsSentiment: item.newsSentiment,
+            companyNews: item.companyNews,
             trust: trustSummary,
             position: watchlistItem,
             portfolioProfile,
@@ -2671,6 +2742,9 @@ export async function executeTool(
             analystRatings: item.analystRatings,
             insiderTrading: item.insiderTrading,
             priceTargets: item.priceTargets,
+            peers: item.peers,
+            newsSentiment: item.newsSentiment,
+            companyNews: item.companyNews,
             dataTrust: trustSummary,
             decisionSnapshot,
           });
@@ -2705,7 +2779,15 @@ export async function executeTool(
         let llmConclusionSector: string | undefined;
         if (options?.llmFill && items.length > 0) {
           try {
-            const conclusionPrompt = buildComparisonConclusionPrompt(items, 'sector', sector);
+            const conclusionPrompt = buildComparisonConclusionPrompt(
+              items,
+              'sector',
+              sector,
+              items.map((item) => ({
+                symbol: item.symbol,
+                score: item.decisionSnapshot?.overallScore ?? null,
+              }))
+            );
             llmConclusionSector = (await options.llmFill(conclusionPrompt)).trim();
           } catch {
             // LLM unavailable — use structured fallback
@@ -3046,6 +3128,7 @@ export async function executeTool(
           cache: SymbolCache;
           price: any;
           overview: any;
+          basicFinancials: any;
           priceHistory: any;
           incomeStatement: any;
           balanceSheet: any;
@@ -3053,6 +3136,9 @@ export async function executeTool(
           analystRatings: any;
           insiderTrading: any;
           priceTargets: any;
+          peers: any;
+          newsSentiment: any;
+          companyNews: any;
         };
         const rawItems = await mapWithConcurrency<string, RawDeepSectorItem>(
           universe,
@@ -3065,6 +3151,7 @@ export async function executeTool(
                 cache: {},
                 price: undefined,
                 overview: undefined,
+                basicFinancials: undefined,
                 priceHistory: undefined,
                 incomeStatement: undefined,
                 balanceSheet: undefined,
@@ -3072,11 +3159,15 @@ export async function executeTool(
                 analystRatings: undefined,
                 insiderTrading: undefined,
                 priceTargets: undefined,
+                peers: undefined,
+                newsSentiment: undefined,
+                companyNews: undefined,
               };
             }
             const cache = await loadSymbolCache(symbol);
             const price = await safeFetch(symbol, cache, 'Price', 'price', stockService.getStockPrice(symbol));
             const overview = await safeFetch(symbol, cache, 'Company overview', 'overview', stockService.getCompanyOverview(symbol));
+            const basicFinancials = await safeFetch(symbol, cache, 'Basic financials', 'basicFinancials', stockService.getBasicFinancials(symbol));
             const priceHistory = await safeFetch(symbol, cache, 'Price history', `priceHistory:${range}`, stockService.getPriceHistory(symbol, range));
             const incomeStatement = await safeFetch(symbol, cache, 'Income statement', 'incomeStatement', stockService.getIncomeStatement(symbol));
             const balanceSheet = await safeFetch(symbol, cache, 'Balance sheet', 'balanceSheet', stockService.getBalanceSheet(symbol));
@@ -3084,19 +3175,39 @@ export async function executeTool(
             const analystRatings = await safeFetch(symbol, cache, 'Analyst ratings', 'analystRatings', stockService.getAnalystRatings(symbol));
             const insiderTrading = await safeFetch(symbol, cache, 'Insider trading', 'insiderTrading', stockService.getInsiderTrading(symbol));
             const priceTargets = await safeFetch(symbol, cache, 'Price targets', 'priceTargets', stockService.getPriceTargets(symbol));
-            return { symbol, cache, price, overview, priceHistory, incomeStatement, balanceSheet, cashFlow, analystRatings, insiderTrading, priceTargets };
+            const peers = await safeFetch(symbol, cache, 'Peers', 'peers', stockService.getPeers(symbol));
+            const newsSentiment = await safeFetch(symbol, cache, 'News sentiment', 'newsSentiment', stockService.getNewsSentiment(symbol));
+            const companyNews = await safeFetch(symbol, cache, 'Company news', 'companyNews', stockService.getCompanyNews(symbol, 14));
+            return {
+              symbol,
+              cache,
+              price,
+              overview,
+              basicFinancials,
+              priceHistory,
+              incomeStatement,
+              balanceSheet,
+              cashFlow,
+              analystRatings,
+              insiderTrading,
+              priceTargets,
+              peers,
+              newsSentiment,
+              companyNews,
+            };
           }
         );
 
         const items: any[] = [];
         for (const item of rawItems) {
           const { symbol } = item;
-          const basicFinancials = item.overview ? buildBasicFinancialsFallbackDeep(item.overview) : undefined;
+          const basicFinancials = item.basicFinancials || (item.overview ? buildBasicFinancialsFallbackDeep(item.overview) : undefined);
           const watchlistItem = watchlist?.items.find((entry) => entry.symbol === symbol.toUpperCase());
           const previousDecision = await getLatestDecision(symbol).catch(() => null);
           const trustSummary = buildTrustSummaryFromCache(item.cache, [
             { key: 'price', label: 'Price', data: item.price },
             { key: 'overview', label: 'Company overview', data: item.overview },
+            { key: 'basicFinancials', label: 'Basic financials', data: item.basicFinancials },
             { key: `priceHistory:${range}`, label: 'Price history', data: item.priceHistory },
             { key: 'incomeStatement', label: 'Income statement', data: item.incomeStatement },
             { key: 'balanceSheet', label: 'Balance sheet', data: item.balanceSheet },
@@ -3104,6 +3215,9 @@ export async function executeTool(
             { key: 'analystRatings', label: 'Analyst ratings', data: item.analystRatings },
             { key: 'insiderTrading', label: 'Insider trading', data: item.insiderTrading },
             { key: 'priceTargets', label: 'Price targets', data: item.priceTargets },
+            { key: 'peers', label: 'Peers', data: item.peers },
+            { key: 'newsSentiment', label: 'News sentiment', data: item.newsSentiment },
+            { key: 'companyNews', label: 'Company news', data: item.companyNews },
           ]);
           const decisionSnapshot = buildDecisionSnapshot({
             symbol,
@@ -3116,6 +3230,8 @@ export async function executeTool(
             cashFlow: item.cashFlow,
             analystRatings: item.analystRatings,
             priceTargets: item.priceTargets,
+            newsSentiment: item.newsSentiment,
+            companyNews: item.companyNews,
             trust: trustSummary,
             position: watchlistItem,
             portfolioProfile,
@@ -3133,6 +3249,9 @@ export async function executeTool(
             analystRatings: item.analystRatings,
             insiderTrading: item.insiderTrading,
             priceTargets: item.priceTargets,
+            peers: item.peers,
+            newsSentiment: item.newsSentiment,
+            companyNews: item.companyNews,
             dataTrust: trustSummary,
             decisionSnapshot,
           });
@@ -3167,7 +3286,15 @@ export async function executeTool(
         let llmConclusionDeep: string | undefined;
         if (options?.llmFill && items.length > 0) {
           try {
-            const conclusionPrompt = buildComparisonConclusionPrompt(items, 'deep-sector', sector);
+            const conclusionPrompt = buildComparisonConclusionPrompt(
+              items,
+              'deep-sector',
+              sector,
+              items.map((item) => ({
+                symbol: item.symbol,
+                score: item.decisionSnapshot?.overallScore ?? null,
+              }))
+            );
             llmConclusionDeep = (await options.llmFill(conclusionPrompt)).trim();
           } catch {
             // LLM unavailable — use structured fallback

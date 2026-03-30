@@ -465,6 +465,26 @@ describe('buildComparisonReport', () => {
     expect(report).toContain('## 🎯 Investment Conclusion');
   });
 
+  it('uses the multi-source legend in debug output when multi provider mode is enabled', () => {
+    const previousDebug = process.env.DEBUG;
+    const previousProvider = process.env.STOCK_DATA_PROVIDER;
+    process.env.DEBUG = 'true';
+    process.env.STOCK_DATA_PROVIDER = 'multi';
+    try {
+      const report = buildComparisonReport({
+        ...baseComparison(),
+        sources: {
+          NVDA: { Price: 'Finnhub' },
+          AMD: { Price: 'Alpha Vantage' },
+        },
+      });
+      expect(report).toContain('_Legend: Multi-source chain: Alpha Vantage → Finnhub → Financial Modeling Prep → Twelve Data → Stooq._');
+    } finally {
+      process.env.DEBUG = previousDebug;
+      process.env.STOCK_DATA_PROVIDER = previousProvider;
+    }
+  });
+
   it('conclusion names a top pick when data is available', () => {
     const report = buildComparisonReport(baseComparison());
     expect(report).toContain('Top Pick:');
@@ -1106,5 +1126,44 @@ describe('buildWatchlistDailyReport', () => {
     expect(report).toContain('## 1. Apple Inc. (AAPL)');
     expect(report).toContain('## 2. NVIDIA (NVDA)');
     expect(report).toContain('### 🏢 Business Overview');
+  });
+
+  it('prefers explicit watchlist actions over embedded decision snapshots when both are supplied', () => {
+    const report = buildWatchlistDailyReport({
+      generatedAt: '2025-01-02T00:00:00Z',
+      watchlistName: 'Core Watchlist',
+      items: [
+        {
+          symbol: 'AAPL',
+          companyName: 'Apple Inc.',
+          stock: {
+            ...richStock(),
+            decisionSnapshot: {
+              action: 'Wait',
+              confidence: 'High',
+              freshness: 'fresh',
+              overallScore: 71,
+              qualityScore: 80,
+              valuationScore: 60,
+              technicalScore: 55,
+              portfolioFitScore: 70,
+              whyNow: ['Snapshot says wait'],
+              whyNot: [],
+              missingInputs: [],
+              changed: [],
+              summary: 'Wait with high confidence from snapshot.',
+              portfolioImpact: 'Snapshot impact',
+              invalidation: 'Snapshot invalidation',
+              nextTrigger: 'Snapshot trigger',
+            },
+          },
+          action: 'Buy',
+          reason: 'Explicit watchlist override.',
+        },
+      ],
+    });
+
+    expect(report).toContain('| Apple Inc. (AAPL) | Buy | Medium | Add | Buy | Explicit watchlist override. |');
+    expect(report).not.toContain('Wait with high confidence from snapshot.');
   });
 });

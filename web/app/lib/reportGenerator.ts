@@ -2783,7 +2783,15 @@ export function buildComparisonReport(data: ComparisonReportData): string {
     ? '_Legend: Alpha Vantage is primary; Finnhub fills gaps._'
     : provider === 'finnhub'
       ? '_Legend: Finnhub provider._'
-      : '_Legend: Alpha Vantage provider._';
+      : provider === 'fmp'
+        ? '_Legend: Financial Modeling Prep provider._'
+        : provider === 'twelvedata'
+          ? '_Legend: Twelve Data provider._'
+          : provider === 'stooq'
+            ? '_Legend: Stooq provider._'
+            : provider === 'multi'
+              ? '_Legend: Multi-source chain: Alpha Vantage → Finnhub → Financial Modeling Prep → Twelve Data → Stooq._'
+              : '_Legend: Alpha Vantage provider._';
   const items = data.items;
 
   const sourceRows = Object.entries(sources).map(([symbol, map]) => {
@@ -2794,6 +2802,7 @@ export function buildComparisonReport(data: ComparisonReportData): string {
       `${name} (${symbol})`,
       pick('Price'),
       pick('Company overview'),
+      pick('Basic financials'),
       pick('Price history'),
       pick('Income statement'),
       pick('Balance sheet'),
@@ -2801,13 +2810,16 @@ export function buildComparisonReport(data: ComparisonReportData): string {
       pick('Insider trading'),
       pick('Analyst ratings'),
       pick('Price targets'),
+      pick('Peers'),
+      pick('News sentiment'),
+      pick('Company news'),
     ];
   });
   const sourceTable = sourceRows.length
     ? buildTable(
-        ['Company', 'Price', 'Overview', 'Price History', 'Income', 'Balance', 'Cash Flow', 'Insider', 'Analyst', 'Targets'],
+        ['Company', 'Price', 'Overview', 'Basic', 'Price History', 'Income', 'Balance', 'Cash Flow', 'Insider', 'Analyst', 'Targets', 'Peers', 'News Sentiment', 'Company News'],
         sourceRows,
-        ['left', 'center', 'center', 'center', 'center', 'center', 'center', 'center', 'center', 'center']
+        ['left', 'center', 'center', 'center', 'center', 'center', 'center', 'center', 'center', 'center', 'center', 'center', 'center', 'center']
       )
     : '';
 
@@ -3375,16 +3387,20 @@ function shiftMarkdownHeadings(body: string, levels = 1): string {
 }
 
 function buildWatchlistDecision(item: WatchlistDailyReportItem): { action: ActionLabel; reason: string; score: number | null } {
+  const scorecard = computeScorecard(item.stock);
+  if (item.action && item.reason) {
+    return {
+      action: normalizeActionLabel(item.action),
+      reason: item.reason,
+      score: item.stock.decisionSnapshot?.overallScore ?? scorecard.composite,
+    };
+  }
   if (item.stock.decisionSnapshot) {
     return {
       action: actionFromDecisionSnapshot(item.stock.decisionSnapshot.action),
       reason: item.stock.decisionSnapshot.summary,
       score: item.stock.decisionSnapshot.overallScore,
     };
-  }
-  const scorecard = computeScorecard(item.stock);
-  if (item.action && item.reason) {
-    return { action: normalizeActionLabel(item.action), reason: item.reason, score: scorecard.composite };
   }
 
   const guidance = derivePositionGuidanceFromStock(item.stock, scorecard.composite);

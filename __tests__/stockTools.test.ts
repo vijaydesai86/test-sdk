@@ -365,6 +365,25 @@ describe('generate_comparison_report via executeTool', () => {
     expect(service.getStockPrice).toHaveBeenCalledWith('MSFT');
   });
 
+  it('comparison report fetches the same financial and news context used by single-stock reports', async () => {
+    const llmFill = vi.fn().mockResolvedValue('{"AAPL":"AAPL","MSFT":"MSFT"}');
+    const result = await executeTool(
+      'generate_comparison_report',
+      { companies: ['AAPL', 'MSFT'], range: '1y' },
+      service,
+      { llmFill }
+    );
+    expect(result.success).toBe(true);
+    expect(service.getBasicFinancials).toHaveBeenCalledWith('AAPL');
+    expect(service.getBasicFinancials).toHaveBeenCalledWith('MSFT');
+    expect(service.getPeers).toHaveBeenCalledWith('AAPL');
+    expect(service.getPeers).toHaveBeenCalledWith('MSFT');
+    expect(service.getNewsSentiment).toHaveBeenCalledWith('AAPL');
+    expect(service.getNewsSentiment).toHaveBeenCalledWith('MSFT');
+    expect(service.getCompanyNews).toHaveBeenCalledWith('AAPL', 14);
+    expect(service.getCompanyNews).toHaveBeenCalledWith('MSFT', 14);
+  });
+
   it('comparison report includes investment conclusion', async () => {
     const llmFill = vi.fn().mockResolvedValue('{"AAPL":"AAPL","MSFT":"MSFT"}');
     const result = await executeTool(
@@ -443,6 +462,20 @@ describe('LLM conclusion integration in executeTool', () => {
     expect(result.data?.content).toContain('## 🎯 Investment Conclusion');
   });
 
+  it('sector report fetches financial and news context for each selected company', async () => {
+    const llmFill = vi.fn().mockResolvedValue('["NVDA","AMD"]');
+    const result = await executeTool('generate_sector_report', { sector: 'Semiconductors', count: 2 }, service, { llmFill });
+    expect(result.success).toBe(true);
+    expect(service.getBasicFinancials).toHaveBeenCalledWith('NVDA');
+    expect(service.getBasicFinancials).toHaveBeenCalledWith('AMD');
+    expect(service.getPeers).toHaveBeenCalledWith('NVDA');
+    expect(service.getPeers).toHaveBeenCalledWith('AMD');
+    expect(service.getNewsSentiment).toHaveBeenCalledWith('NVDA');
+    expect(service.getNewsSentiment).toHaveBeenCalledWith('AMD');
+    expect(service.getCompanyNews).toHaveBeenCalledWith('NVDA', 14);
+    expect(service.getCompanyNews).toHaveBeenCalledWith('AMD', 14);
+  });
+
   it('deep sector report: LLM conclusion narrative appears in report', async () => {
     const conclusionText = 'Deep sector AI analysis based on real API data shows NVDA dominates with 85% market share. Strong BUY.';
     let callCount = 0;
@@ -468,6 +501,38 @@ describe('LLM conclusion integration in executeTool', () => {
     const result = await executeTool('generate_deep_sector_report', { sector: 'AI chips', count: 2 }, service, { llmFill });
     expect(result.success).toBe(true);
     expect(result.data?.content).toContain('## 🎯 Investment Conclusion');
+  });
+
+  it('deep sector report fetches the refined universe with financial and news context', async () => {
+    let callCount = 0;
+    const llmFill = vi.fn().mockImplementation((prompt: string) => {
+      callCount++;
+      if (prompt.includes('moatType')) {
+        return Promise.resolve('{}');
+      }
+      if (prompt.includes('dependencyAnalysis') || prompt.includes('refinedList')) {
+        return Promise.resolve(JSON.stringify({
+          refinedList: ['NVDA', 'AMD'],
+          dependencyAnalysis: 'NVDA dominates',
+          ecosystemDiagram: 'graph LR\n  NVDA --> AMD',
+          refinementNotes: '✅ NVDA (NVIDIA) — market leader',
+        }));
+      }
+      if (callCount === 1) {
+        return Promise.resolve('["NVDA","AMD"]');
+      }
+      return Promise.resolve('Deep sector conclusion.');
+    });
+    const result = await executeTool('generate_deep_sector_report', { sector: 'AI chips', count: 2 }, service, { llmFill });
+    expect(result.success).toBe(true);
+    expect(service.getBasicFinancials).toHaveBeenCalledWith('NVDA');
+    expect(service.getBasicFinancials).toHaveBeenCalledWith('AMD');
+    expect(service.getPeers).toHaveBeenCalledWith('NVDA');
+    expect(service.getPeers).toHaveBeenCalledWith('AMD');
+    expect(service.getNewsSentiment).toHaveBeenCalledWith('NVDA');
+    expect(service.getNewsSentiment).toHaveBeenCalledWith('AMD');
+    expect(service.getCompanyNews).toHaveBeenCalledWith('NVDA', 14);
+    expect(service.getCompanyNews).toHaveBeenCalledWith('AMD', 14);
   });
 });
 
@@ -754,7 +819,7 @@ describe('generate_watchlist_daily_report via executeTool', () => {
 
     expect(result.success).toBe(true);
     expect(result.data?.content).toContain('# Watchlist Daily Report: Core Watchlist');
-    expect(result.data?.content).toContain('| Company | Action | Reason |');
+    expect(result.data?.content).toContain('| Company | Signal | Confidence | For owners | For non-owners | Why |');
     expect(result.data?.content).toContain('## 1. NVIDIA (NVDA)');
     expect(result.data?.content).toContain('## 2. AMD (AMD)');
     expect(service.getStockPrice).toHaveBeenCalledWith('NVDA');
