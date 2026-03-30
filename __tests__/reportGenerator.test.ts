@@ -431,6 +431,30 @@ describe('buildComparisonReport', () => {
     expect(report).toContain('## 🧠 Analyst View');
   });
 
+  it('uses decision snapshots when present for comparison guidance', () => {
+    const items = twoCompanyItems();
+    items[0].decisionSnapshot = {
+      action: 'Add',
+      confidence: 'High',
+      freshness: 'fresh',
+      overallScore: 88,
+      qualityScore: 85,
+      valuationScore: 80,
+      technicalScore: 78,
+      portfolioFitScore: 82,
+      whyNow: ['Strong setup'],
+      whyNot: [],
+      missingInputs: [],
+      changed: ['Action changed from Hold to Add.'],
+      summary: 'Add with high confidence. Setup remains differentiated.',
+      portfolioImpact: 'Below target weight.',
+      invalidation: 'Demand weakens.',
+      nextTrigger: 'Review after earnings.',
+    };
+    const report = buildComparisonReport({ ...baseComparison(), items });
+    expect(report).toContain('Add with high confidence. Setup remains differentiated.');
+  });
+
   it('includes indicative allocation table', () => {
     const report = buildComparisonReport(baseComparison());
     expect(report).toContain('## 🧭 Indicative Allocation');

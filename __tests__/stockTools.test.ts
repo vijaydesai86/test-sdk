@@ -194,6 +194,19 @@ describe('generate_stock_report via executeTool', () => {
     expect(content).toContain('## 🎯 Investment Conclusion');
   });
 
+  it('includes decision and freshness sections in generated stock report', async () => {
+    const llmFill = vi.fn()
+      .mockResolvedValueOnce('{"AAPL":"AAPL"}')
+      .mockResolvedValueOnce('{}');
+
+    const result = await executeTool('generate_stock_report', { symbol: 'AAPL', range: '1y' }, service, { llmFill });
+
+    expect(result.success).toBe(true);
+    const content = result.data?.content as string;
+    expect(content).toContain('## Decision Snapshot');
+    expect(content).toContain('## Data Freshness');
+  });
+
   it('moat section absent when LLM returns invalid moat JSON', async () => {
     const llmFill = vi.fn()
       .mockResolvedValueOnce('{"AAPL":"AAPL"}')

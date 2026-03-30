@@ -2,6 +2,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getToolDefinitionsByName, executeTool, type LLMFiller } from '@/app/lib/stockTools';
 import { createStockService, StockDataService } from '@/app/lib/stockDataService';
+import { buildResearchContext, deleteSession, loadSessionMessages, saveSessionMessages } from '@/app/lib/researchMemoryStore';
+import { getDefaultWatchlist } from '@/app/lib/watchlistStore';
+import { selectChatToolNames } from '@/app/lib/chatToolPolicy';
 import {
   getConfiguredGeminiModel,
   getGeminiFallbackModels,
@@ -81,8 +84,14 @@ interface ChatMessage {
   tool_call_id?: string;
 }
 
-// Store conversation history per session
-const sessions = new Map<string, ChatMessage[]>();
+function toPersistentMessages(messages: ChatMessage[]): Array<{ role: 'user' | 'assistant' | 'tool'; content: string | null }> {
+  return messages
+    .filter((message) => message.role !== 'system')
+    .map((message) => ({
+      role: message.role as 'user' | 'assistant' | 'tool',
+      content: message.content,
+    }));
+}
 
 const SYSTEM_PROMPT = `You are an elite buy-side equity research analyst. Produce institutional-quality, data-driven financial research — thorough, precise, and immediately actionable.
 
@@ -370,33 +379,6 @@ function buildLLMExecutionStrategies(
   return strategies;
 }
 
-function selectToolNames() {
-  const toolNames = [
-    'search_stock',
-    'get_stock_price',
-    'get_company_overview',
-    'get_basic_financials',
-    'get_analyst_ratings',
-    'get_analyst_recommendations',
-    'get_price_targets',
-    'get_news_sentiment',
-    'get_company_news',
-    'get_price_history',
-    'get_earnings_history',
-    'get_income_statement',
-    'get_balance_sheet',
-    'get_cash_flow',
-    'get_peers',
-    'get_insider_trading',
-    'generate_stock_report',
-    'generate_comparison_report',
-    'generate_deep_sector_report',
-    'generate_watchlist_daily_report',
-    'get_sector_performance',
-    'get_top_gainers_losers',
-  ];
-  return { toolNames };
-}
 async function callGitHubModelsAPI(
   messages: ChatMessage[],
   githubToken: string,
@@ -818,18 +800,44 @@ export async function POST(request: NextRequest) {
       );
     }
     const stockService: StockDataService = createStockService(alphaVantageKey);
+    const currentSessionId = typeof sessionId === 'string' && sessionId.trim()
+      ? sessionId
+      : Math.random().toString(36).substring(7);
+    const persistedMessages = await loadSessionMessages(currentSessionId);
+    const baseConversationMessages: ChatMessage[] = persistedMessages.map((message) => ({
+      role: message.role,
+      content: message.content,
+    }));
+    const watchlist = await getDefaultWatchlist().catch(() => null);
+    const memoryContext = await buildResearchContext({
+      sessionId: currentSessionId,
+      userMessage: String(message),
+      watchlist: watchlist ? {
+        name: watchlist.name,
+        profile: watchlist.profile,
+        items: watchlist.items.map((item) => ({
+          symbol: item.symbol,
+          companyName: item.companyName,
+          position: item,
+        })),
+      } : undefined,
+    });
 
     const reportRequest = parseReportRequest(message);
     const timeframe = parseTimeframe(message);
     if (reportRequest) {
-      const currentSessionId = sessionId || Math.random().toString(36).substring(7);
-      const conversationMessages: ChatMessage[] = sessionId ? sessions.get(sessionId) || [] : [];
       const systemPrompt = process.env.USE_FULL_SYSTEM_PROMPT === 'true'
         ? SYSTEM_PROMPT
         : COMPACT_SYSTEM_PROMPT;
-      if (conversationMessages.length === 0) {
-        conversationMessages.push({ role: 'system', content: systemPrompt });
-      }
+      const conversationMessages: ChatMessage[] = [
+        {
+          role: 'system',
+          content: memoryContext.summary
+            ? `${systemPrompt}\n\nPERSISTENT INVESTOR CONTEXT:\n${memoryContext.summary}`
+            : systemPrompt,
+        },
+        ...baseConversationMessages,
+      ];
 
       conversationMessages.push({ role: 'user', content: message });
 
@@ -838,27 +846,27 @@ export async function POST(request: NextRequest) {
       const toolResult = reportRequest.type === 'compare'
         ? await executeTool(
             'generate_comparison_report',
-            { companies: reportRequest.companies, range: timeframe || '1y' },
+            { companies: reportRequest.companies, range: timeframe || '1y', sessionId: currentSessionId },
             stockService,
             { llmFill }
           )
         : reportRequest.type === 'deep-sector'
           ? await executeTool(
               'generate_deep_sector_report',
-              { sector: reportRequest.query, range: timeframe || '1y' },
+              { sector: reportRequest.query, range: timeframe || '1y', sessionId: currentSessionId },
               stockService,
               { llmFill }
             )
           : reportRequest.type === 'watchlist-daily'
             ? await executeTool(
                 'generate_watchlist_daily_report',
-                { range: timeframe || '1y' },
+                { range: timeframe || '1y', sessionId: currentSessionId },
                 stockService,
                 { llmFill }
               )
             : await executeTool(
                 'generate_stock_report',
-                { symbol: (reportRequest as any).symbol, range: timeframe || '5y' },
+                { symbol: (reportRequest as any).symbol, range: timeframe || '5y', sessionId: currentSessionId },
                 stockService,
                 { llmFill }
               );
@@ -878,10 +886,18 @@ export async function POST(request: NextRequest) {
       const reportDate = toolResult.data?.reportDate as string | undefined;
       const reportKind = toolResult.data?.reportKind as string | undefined;
       const storagePath = toolResult.data?.storagePath as string | undefined;
-      const responseText = 'Report ready — open the **Artifacts** panel to view it.';
+      const decisionSnapshot = toolResult.data?.decisionSnapshot as { action?: string; confidence?: string; summary?: string } | undefined;
+      const responseText = decisionSnapshot?.summary
+        ? `Report ready. ${decisionSnapshot.summary} Open the **Artifacts** panel for the full report.`
+        : summary
+          ? `Report ready. ${summary} Open the **Artifacts** panel for the full report.`
+          : 'Report ready — open the **Artifacts** panel to view it.';
 
       conversationMessages.push({ role: 'assistant', content: responseText });
-      sessions.set(currentSessionId, conversationMessages);
+      await saveSessionMessages(currentSessionId, toPersistentMessages(conversationMessages), {
+        title: title || reportKind || 'Research Session',
+        summary: responseText,
+      });
 
       console.info('Chat request stats', {
         provider: activeProvider,
@@ -910,16 +926,20 @@ export async function POST(request: NextRequest) {
     }
 
     // Get or create conversation history
-    let conversationMessages: ChatMessage[] = sessionId ? sessions.get(sessionId) || [] : [];
-    const currentSessionId = sessionId || Math.random().toString(36).substring(7);
-
     const preferCompactPrompt = isSmallContextModel(requestedModel);
     const systemPrompt = process.env.USE_FULL_SYSTEM_PROMPT === 'true' && !preferCompactPrompt
       ? SYSTEM_PROMPT
       : COMPACT_SYSTEM_PROMPT;
-    if (conversationMessages.length === 0) {
-      conversationMessages.push({ role: 'system', content: systemPrompt });
-    } else {
+    let conversationMessages: ChatMessage[] = [
+      {
+        role: 'system',
+        content: memoryContext.summary
+          ? `${systemPrompt}\n\nPERSISTENT INVESTOR CONTEXT:\n${memoryContext.summary}`
+          : systemPrompt,
+      },
+      ...baseConversationMessages,
+    ];
+    if (conversationMessages.length > 1) {
       // Trim accumulated tool messages from previous turns to stay within
       // the model's input token limit (8,000 tokens for high/low tier models,
       // minus ~5,500 tokens of fixed overhead = only ~2,500 tokens for history).
@@ -930,7 +950,7 @@ export async function POST(request: NextRequest) {
     // Add user message
     conversationMessages.push({ role: 'user', content: message });
 
-    const { toolNames } = selectToolNames();
+    const { toolNames } = selectChatToolNames();
     const toolDefinitions = getToolDefinitionsByName(toolNames);
 
     // Call the LLM with a provider/model strategy chain.
@@ -1051,7 +1071,7 @@ export async function POST(request: NextRequest) {
               { role: 'system', content: COMPACT_SYSTEM_PROMPT },
               { role: 'user', content: message },
             ];
-            retryTools = getToolDefinitionsByName(selectToolNames().toolNames);
+            retryTools = getToolDefinitionsByName(selectChatToolNames().toolNames);
             attempt++;
             continue;
           }
@@ -1077,7 +1097,7 @@ export async function POST(request: NextRequest) {
           assistantMessage.tool_calls.map(async (toolCall: { id: string; function: { name: string; arguments: string } }) => {
             const toolName = toolCall.function.name;
             const toolArgs = JSON.parse(toolCall.function.arguments);
-            const toolResult = await executeTool(toolName, toolArgs, stockService, { llmFill: loopLLMFill });
+            const toolResult = await executeTool(toolName, { ...toolArgs, sessionId: currentSessionId }, stockService, { llmFill: loopLLMFill });
             // Collect report artifacts; strip full content from model response to avoid echoing
             if (
               (toolName === 'generate_stock_report' || toolName === 'generate_comparison_report' || toolName === 'generate_sector_report' || toolName === 'generate_deep_sector_report' || toolName === 'generate_watchlist_daily_report') &&
@@ -1127,7 +1147,9 @@ export async function POST(request: NextRequest) {
     }
 
     // Save conversation history
-    sessions.set(currentSessionId, conversationMessages);
+    await saveSessionMessages(currentSessionId, toPersistentMessages(conversationMessages), {
+      summary: assistantContent || 'Investment research exchange',
+    });
 
     console.info('Chat request stats', {
       provider: activeProvider,
@@ -1206,8 +1228,8 @@ export async function DELETE(request: NextRequest) {
   try {
     const { sessionId } = await request.json();
 
-    if (sessionId && sessions.has(sessionId)) {
-      sessions.delete(sessionId);
+    if (sessionId) {
+      await deleteSession(String(sessionId));
     }
 
     return NextResponse.json({ success: true });

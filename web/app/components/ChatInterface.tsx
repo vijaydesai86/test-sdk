@@ -49,6 +49,30 @@ interface WatchlistItemMeta {
   companyName: string;
   displayOrder: number;
   createdAt: string;
+  ownershipStatus: 'watching' | 'owned' | 'exited';
+  currentWeight: number | null;
+  targetWeight: number | null;
+  maxWeight: number | null;
+  costBasis: number | null;
+  conviction: 'low' | 'medium' | 'high';
+  thesis: string;
+  desiredEntryMin: number | null;
+  desiredEntryMax: number | null;
+  trimAbove: number | null;
+  invalidation: string;
+  reviewDate: string | null;
+  lastReviewedAt: string | null;
+  notes: string;
+}
+
+interface PortfolioProfileMeta {
+  riskTolerance: 'low' | 'medium' | 'high';
+  holdingHorizon: 'weeks' | 'months' | 'years';
+  maxPositionWeight: number | null;
+  targetCashPct: number | null;
+  concentrationLimit: number | null;
+  strategyNotes: string;
+  updatedAt?: string;
 }
 
 interface WatchlistMeta {
@@ -56,6 +80,7 @@ interface WatchlistMeta {
   name: string;
   slug: string;
   items: WatchlistItemMeta[];
+  profile: PortfolioProfileMeta;
 }
 
 interface ModelOption {
@@ -363,6 +388,8 @@ export default function ChatInterface() {
   const [watchlistBusy, setWatchlistBusy] = useState(false);
   const [watchlistError, setWatchlistError] = useState<string | null>(null);
   const [watchlistInput, setWatchlistInput] = useState('');
+  const [portfolioProfileDraft, setPortfolioProfileDraft] = useState<PortfolioProfileMeta | null>(null);
+  const [watchlistItemDrafts, setWatchlistItemDrafts] = useState<Record<string, WatchlistItemMeta>>({});
 
   const selectedProvider = availableProviders.find((item) => item.id === provider) ?? null;
   const selectedModel = availableModels.find((item) => item.value === model) ?? null;
@@ -429,6 +456,17 @@ export default function ChatInterface() {
     fetchSupabaseReports();
     fetchWatchlist();
   }, []);
+
+  useEffect(() => {
+    if (!watchlist) return;
+    setPortfolioProfileDraft(watchlist.profile);
+    setWatchlistItemDrafts(
+      watchlist.items.reduce<Record<string, WatchlistItemMeta>>((acc, item) => {
+        acc[item.symbol] = item;
+        return acc;
+      }, {})
+    );
+  }, [watchlist]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
@@ -758,6 +796,61 @@ export default function ChatInterface() {
     }
   };
 
+  const handlePortfolioProfileSave = async () => {
+    if (!portfolioProfileDraft || watchlistBusy) return;
+    setWatchlistBusy(true);
+    setWatchlistError(null);
+    try {
+      const res = await fetch('/api/watchlist', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(portfolioProfileDraft),
+      });
+      const payload = (await res.json()) as { watchlist?: WatchlistMeta; error?: string };
+      if (!res.ok) throw new Error(payload.error || 'Failed to update portfolio profile');
+      setWatchlist(payload.watchlist ?? null);
+    } catch (err: unknown) {
+      setWatchlistError(err instanceof Error ? err.message : 'Failed to update portfolio profile');
+    } finally {
+      setWatchlistBusy(false);
+    }
+  };
+
+  const updateItemDraft = (symbol: string, patch: Partial<WatchlistItemMeta>) => {
+    setWatchlistItemDrafts((prev) => ({
+      ...prev,
+      [symbol]: {
+        ...(prev[symbol] || watchlist?.items.find((item) => item.symbol === symbol) || {} as WatchlistItemMeta),
+        ...patch,
+      },
+    }));
+  };
+
+  const handleWatchlistItemSave = async (symbol: string) => {
+    const draft = watchlistItemDrafts[symbol];
+    if (!draft || watchlistBusy) return;
+    setWatchlistBusy(true);
+    setWatchlistError(null);
+    const requestBody = {
+      ...draft,
+      lastReviewedAt: new Date().toISOString(),
+    };
+    try {
+      const res = await fetch(`/api/watchlist/items/${encodeURIComponent(symbol)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(requestBody),
+      });
+      const payload = (await res.json()) as { watchlist?: WatchlistMeta; error?: string };
+      if (!res.ok) throw new Error(payload.error || 'Failed to update watchlist item');
+      setWatchlist(payload.watchlist ?? null);
+    } catch (err: unknown) {
+      setWatchlistError(err instanceof Error ? err.message : 'Failed to update watchlist item');
+    } finally {
+      setWatchlistBusy(false);
+    }
+  };
+
   const handleGenerateDailyReport = () => {
     setSidebarOpen(false);
     void sendPrompt('Generate daily report for my watchlist');
@@ -828,6 +921,95 @@ export default function ChatInterface() {
             </div>
           </div>
 
+          <div className="rounded-[26px] border border-white/10 bg-white/7 p-4 shadow-[0_18px_40px_-30px_rgba(15,23,42,0.9)]">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <p className="text-[11px] uppercase tracking-[0.28em] text-cyan-200/70">Portfolio Context</p>
+                <h3 className="mt-1 text-lg font-semibold text-white">Investor profile used in decisions</h3>
+                <p className="mt-1 text-sm text-slate-300">
+                  These settings feed the recommendation layer so actions are sized for your portfolio, not generic market commentary.
+                </p>
+                {portfolioProfileDraft?.updatedAt && (
+                  <p className="mt-2 text-xs text-slate-400">
+                    Last updated {formatShortDate(portfolioProfileDraft.updatedAt) || portfolioProfileDraft.updatedAt}
+                  </p>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => void handlePortfolioProfileSave()}
+                disabled={watchlistBusy || !portfolioProfileDraft}
+                className="rounded-full border border-white/15 bg-white/10 px-4 py-2 text-sm font-medium text-white transition hover:bg-white/16 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Save profile
+              </button>
+            </div>
+            {portfolioProfileDraft && (
+              <div className="mt-4 grid gap-3 md:grid-cols-2">
+                <label className="space-y-2 text-sm text-slate-200">
+                  <span className="block text-xs uppercase tracking-[0.18em] text-slate-400">Risk tolerance</span>
+                  <select
+                    value={portfolioProfileDraft.riskTolerance}
+                    onChange={(e) => setPortfolioProfileDraft((prev) => prev ? { ...prev, riskTolerance: e.target.value as PortfolioProfileMeta['riskTolerance'] } : prev)}
+                    className="w-full rounded-2xl border border-white/10 bg-slate-950/50 px-4 py-3 text-sm text-white focus:outline-none focus:ring-2 focus:ring-teal-300"
+                  >
+                    <option value="low">Low</option>
+                    <option value="medium">Medium</option>
+                    <option value="high">High</option>
+                  </select>
+                </label>
+                <label className="space-y-2 text-sm text-slate-200">
+                  <span className="block text-xs uppercase tracking-[0.18em] text-slate-400">Holding horizon</span>
+                  <select
+                    value={portfolioProfileDraft.holdingHorizon}
+                    onChange={(e) => setPortfolioProfileDraft((prev) => prev ? { ...prev, holdingHorizon: e.target.value as PortfolioProfileMeta['holdingHorizon'] } : prev)}
+                    className="w-full rounded-2xl border border-white/10 bg-slate-950/50 px-4 py-3 text-sm text-white focus:outline-none focus:ring-2 focus:ring-teal-300"
+                  >
+                    <option value="weeks">Weeks</option>
+                    <option value="months">Months</option>
+                    <option value="years">Years</option>
+                  </select>
+                </label>
+                <label className="space-y-2 text-sm text-slate-200">
+                  <span className="block text-xs uppercase tracking-[0.18em] text-slate-400">Max position %</span>
+                  <input
+                    type="number"
+                    value={portfolioProfileDraft.maxPositionWeight ?? ''}
+                    onChange={(e) => setPortfolioProfileDraft((prev) => prev ? { ...prev, maxPositionWeight: e.target.value ? Number(e.target.value) : null } : prev)}
+                    className="w-full rounded-2xl border border-white/10 bg-slate-950/50 px-4 py-3 text-sm text-white focus:outline-none focus:ring-2 focus:ring-teal-300"
+                  />
+                </label>
+                <label className="space-y-2 text-sm text-slate-200">
+                  <span className="block text-xs uppercase tracking-[0.18em] text-slate-400">Target cash %</span>
+                  <input
+                    type="number"
+                    value={portfolioProfileDraft.targetCashPct ?? ''}
+                    onChange={(e) => setPortfolioProfileDraft((prev) => prev ? { ...prev, targetCashPct: e.target.value ? Number(e.target.value) : null } : prev)}
+                    className="w-full rounded-2xl border border-white/10 bg-slate-950/50 px-4 py-3 text-sm text-white focus:outline-none focus:ring-2 focus:ring-teal-300"
+                  />
+                </label>
+                <label className="space-y-2 text-sm text-slate-200">
+                  <span className="block text-xs uppercase tracking-[0.18em] text-slate-400">Concentration limit %</span>
+                  <input
+                    type="number"
+                    value={portfolioProfileDraft.concentrationLimit ?? ''}
+                    onChange={(e) => setPortfolioProfileDraft((prev) => prev ? { ...prev, concentrationLimit: e.target.value ? Number(e.target.value) : null } : prev)}
+                    className="w-full rounded-2xl border border-white/10 bg-slate-950/50 px-4 py-3 text-sm text-white focus:outline-none focus:ring-2 focus:ring-teal-300"
+                  />
+                </label>
+                <label className="space-y-2 text-sm text-slate-200 md:col-span-2">
+                  <span className="block text-xs uppercase tracking-[0.18em] text-slate-400">Strategy notes</span>
+                  <textarea
+                    value={portfolioProfileDraft.strategyNotes}
+                    onChange={(e) => setPortfolioProfileDraft((prev) => prev ? { ...prev, strategyNotes: e.target.value } : prev)}
+                    rows={3}
+                    className="w-full rounded-2xl border border-white/10 bg-slate-950/50 px-4 py-3 text-sm text-white focus:outline-none focus:ring-2 focus:ring-teal-300"
+                  />
+                </label>
+              </div>
+            )}
+          </div>
+
           <form
             onSubmit={handleWatchlistAdd}
             className="rounded-[26px] border border-white/10 bg-white/7 p-4 shadow-[0_18px_40px_-30px_rgba(15,23,42,0.9)]"
@@ -874,6 +1056,10 @@ export default function ChatInterface() {
                   key={item.id}
                   className="rounded-[24px] border border-white/10 bg-white/7 p-4 shadow-[0_16px_35px_-30px_rgba(15,23,42,0.9)]"
                 >
+                  {(() => {
+                    const draft = watchlistItemDrafts[item.symbol] || item;
+                    return (
+                      <>
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <div className="flex items-center gap-2">
@@ -885,20 +1071,171 @@ export default function ChatInterface() {
                         )}
                       </div>
                       <p className="mt-3 truncate text-sm text-slate-200">{item.companyName}</p>
+                      <p className="mt-2 text-xs text-slate-400">
+                        {draft.ownershipStatus === 'owned' ? 'Owned position' : draft.ownershipStatus === 'exited' ? 'Exited / archived thesis' : 'Watching for entry'}
+                        {' · '}
+                        Conviction {draft.conviction}
+                      </p>
+                      {draft.lastReviewedAt && (
+                        <p className="mt-2 text-xs text-slate-500">
+                          Last reviewed {formatShortDate(draft.lastReviewedAt) || draft.lastReviewedAt}
+                        </p>
+                      )}
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => void handleWatchlistRemove(item.symbol)}
-                      disabled={watchlistBusy}
-                      title="Remove"
-                      className="rounded-full border border-white/10 bg-slate-950/45 p-2 text-slate-300 transition hover:border-rose-300/35 hover:text-rose-200 disabled:opacity-40"
-                    >
-                      <Icon className="h-4 w-4">
-                        <path d="M18 6 6 18" />
-                        <path d="m6 6 12 12" />
-                      </Icon>
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void handleWatchlistItemSave(item.symbol)}
+                        disabled={watchlistBusy}
+                        title="Save item context"
+                        className="rounded-full border border-white/10 bg-slate-950/45 p-2 text-slate-300 transition hover:border-teal-300/35 hover:text-teal-100 disabled:opacity-40"
+                      >
+                        <Icon className="h-4 w-4">
+                          <path d="m5 12 4 4L19 6" />
+                        </Icon>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleWatchlistRemove(item.symbol)}
+                        disabled={watchlistBusy}
+                        title="Remove"
+                        className="rounded-full border border-white/10 bg-slate-950/45 p-2 text-slate-300 transition hover:border-rose-300/35 hover:text-rose-200 disabled:opacity-40"
+                      >
+                        <Icon className="h-4 w-4">
+                          <path d="M18 6 6 18" />
+                          <path d="m6 6 12 12" />
+                        </Icon>
+                      </button>
+                    </div>
                   </div>
+                  <div className="mt-4 grid gap-3 md:grid-cols-2">
+                    <label className="space-y-2 text-xs text-slate-300">
+                      <span className="uppercase tracking-[0.18em] text-slate-500">Status</span>
+                      <select
+                        value={draft.ownershipStatus}
+                        onChange={(e) => updateItemDraft(item.symbol, { ownershipStatus: e.target.value as WatchlistItemMeta['ownershipStatus'] })}
+                        className="w-full rounded-2xl border border-white/10 bg-slate-950/45 px-3 py-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-teal-300"
+                      >
+                        <option value="watching">Watching</option>
+                        <option value="owned">Owned</option>
+                        <option value="exited">Exited</option>
+                      </select>
+                    </label>
+                    <label className="space-y-2 text-xs text-slate-300">
+                      <span className="uppercase tracking-[0.18em] text-slate-500">Conviction</span>
+                      <select
+                        value={draft.conviction}
+                        onChange={(e) => updateItemDraft(item.symbol, { conviction: e.target.value as WatchlistItemMeta['conviction'] })}
+                        className="w-full rounded-2xl border border-white/10 bg-slate-950/45 px-3 py-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-teal-300"
+                      >
+                        <option value="low">Low</option>
+                        <option value="medium">Medium</option>
+                        <option value="high">High</option>
+                      </select>
+                    </label>
+                    <label className="space-y-2 text-xs text-slate-300">
+                      <span className="uppercase tracking-[0.18em] text-slate-500">Current weight %</span>
+                      <input
+                        type="number"
+                        value={draft.currentWeight ?? ''}
+                        onChange={(e) => updateItemDraft(item.symbol, { currentWeight: e.target.value ? Number(e.target.value) : null })}
+                        className="w-full rounded-2xl border border-white/10 bg-slate-950/45 px-3 py-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-teal-300"
+                      />
+                    </label>
+                    <label className="space-y-2 text-xs text-slate-300">
+                      <span className="uppercase tracking-[0.18em] text-slate-500">Target weight %</span>
+                      <input
+                        type="number"
+                        value={draft.targetWeight ?? ''}
+                        onChange={(e) => updateItemDraft(item.symbol, { targetWeight: e.target.value ? Number(e.target.value) : null })}
+                        className="w-full rounded-2xl border border-white/10 bg-slate-950/45 px-3 py-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-teal-300"
+                      />
+                    </label>
+                    <label className="space-y-2 text-xs text-slate-300">
+                      <span className="uppercase tracking-[0.18em] text-slate-500">Max weight %</span>
+                      <input
+                        type="number"
+                        value={draft.maxWeight ?? ''}
+                        onChange={(e) => updateItemDraft(item.symbol, { maxWeight: e.target.value ? Number(e.target.value) : null })}
+                        className="w-full rounded-2xl border border-white/10 bg-slate-950/45 px-3 py-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-teal-300"
+                      />
+                    </label>
+                    <label className="space-y-2 text-xs text-slate-300">
+                      <span className="uppercase tracking-[0.18em] text-slate-500">Cost basis</span>
+                      <input
+                        type="number"
+                        value={draft.costBasis ?? ''}
+                        onChange={(e) => updateItemDraft(item.symbol, { costBasis: e.target.value ? Number(e.target.value) : null })}
+                        className="w-full rounded-2xl border border-white/10 bg-slate-950/45 px-3 py-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-teal-300"
+                      />
+                    </label>
+                    <label className="space-y-2 text-xs text-slate-300">
+                      <span className="uppercase tracking-[0.18em] text-slate-500">Entry min</span>
+                      <input
+                        type="number"
+                        value={draft.desiredEntryMin ?? ''}
+                        onChange={(e) => updateItemDraft(item.symbol, { desiredEntryMin: e.target.value ? Number(e.target.value) : null })}
+                        className="w-full rounded-2xl border border-white/10 bg-slate-950/45 px-3 py-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-teal-300"
+                      />
+                    </label>
+                    <label className="space-y-2 text-xs text-slate-300">
+                      <span className="uppercase tracking-[0.18em] text-slate-500">Entry max</span>
+                      <input
+                        type="number"
+                        value={draft.desiredEntryMax ?? ''}
+                        onChange={(e) => updateItemDraft(item.symbol, { desiredEntryMax: e.target.value ? Number(e.target.value) : null })}
+                        className="w-full rounded-2xl border border-white/10 bg-slate-950/45 px-3 py-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-teal-300"
+                      />
+                    </label>
+                    <label className="space-y-2 text-xs text-slate-300">
+                      <span className="uppercase tracking-[0.18em] text-slate-500">Trim above</span>
+                      <input
+                        type="number"
+                        value={draft.trimAbove ?? ''}
+                        onChange={(e) => updateItemDraft(item.symbol, { trimAbove: e.target.value ? Number(e.target.value) : null })}
+                        className="w-full rounded-2xl border border-white/10 bg-slate-950/45 px-3 py-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-teal-300"
+                      />
+                    </label>
+                    <label className="space-y-2 text-xs text-slate-300">
+                      <span className="uppercase tracking-[0.18em] text-slate-500">Review date</span>
+                      <input
+                        type="date"
+                        value={draft.reviewDate ?? ''}
+                        onChange={(e) => updateItemDraft(item.symbol, { reviewDate: e.target.value || null })}
+                        className="w-full rounded-2xl border border-white/10 bg-slate-950/45 px-3 py-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-teal-300"
+                      />
+                    </label>
+                    <label className="space-y-2 text-xs text-slate-300 md:col-span-2">
+                      <span className="uppercase tracking-[0.18em] text-slate-500">Thesis</span>
+                      <textarea
+                        value={draft.thesis}
+                        onChange={(e) => updateItemDraft(item.symbol, { thesis: e.target.value })}
+                        rows={2}
+                        className="w-full rounded-2xl border border-white/10 bg-slate-950/45 px-3 py-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-teal-300"
+                      />
+                    </label>
+                    <label className="space-y-2 text-xs text-slate-300 md:col-span-2">
+                      <span className="uppercase tracking-[0.18em] text-slate-500">Invalidation</span>
+                      <textarea
+                        value={draft.invalidation}
+                        onChange={(e) => updateItemDraft(item.symbol, { invalidation: e.target.value })}
+                        rows={2}
+                        className="w-full rounded-2xl border border-white/10 bg-slate-950/45 px-3 py-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-teal-300"
+                      />
+                    </label>
+                    <label className="space-y-2 text-xs text-slate-300 md:col-span-2">
+                      <span className="uppercase tracking-[0.18em] text-slate-500">Notes</span>
+                      <textarea
+                        value={draft.notes}
+                        onChange={(e) => updateItemDraft(item.symbol, { notes: e.target.value })}
+                        rows={2}
+                        className="w-full rounded-2xl border border-white/10 bg-slate-950/45 px-3 py-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-teal-300"
+                      />
+                    </label>
+                  </div>
+                      </>
+                    );
+                  })()}
                 </div>
               ))
             )}

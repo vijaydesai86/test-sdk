@@ -4,6 +4,10 @@ import path from 'path';
 import { StockDataService, SecEdgarService, FredService } from './stockDataService';
 import { buildStockReport, buildComparisonReport, buildSectorReport, buildDeepSectorReport, buildDeepStockReport, buildDeepComparisonReport, buildWatchlistDailyReport, saveReport, MoatAnalysis, computeTechnicalSnapshot, computeVolumeAnalysis } from './reportGenerator';
 import { getDefaultWatchlist } from './watchlistStore';
+import { buildDecisionSnapshot, decisionSnapshotToLegacyAction } from './decisionEngine';
+import { createTrustEntry, getTtlMinutesForKey, summarizeTrust } from './dataTrust';
+import { appendDecisionJournal, getLatestDecision, upsertCompanyThesis } from './researchMemoryStore';
+import type { DataTrustEntry, DecisionSnapshot } from './investmentTypes';
 
 /**
  * OpenAI-compatible tool definitions for stock information
@@ -370,7 +374,12 @@ function buildBatchMoatAnalysisPrompt(
 }
 
 
-type CacheEntry = { updatedAt: string; data: any };
+type CacheEntry = {
+  updatedAt: string;
+  data: any;
+  provider?: string;
+  asOf?: string | null;
+};
 type SymbolCache = Record<string, CacheEntry>;
 
 /** Normalises a raw ticker string from LLM output to uppercase alphanumeric. */
@@ -658,12 +667,104 @@ const getCachedValue = (cache: SymbolCache, key: string) => {
   const entry = cache[key];
   if (!entry) return null;
   const ageMs = Date.now() - new Date(entry.updatedAt).getTime();
-  if (Number.isNaN(ageMs) || ageMs > CACHE_TTL_MS) return null;
+  const keyTtlMs = Math.min(CACHE_TTL_MS, getTtlMinutesForKey(key) * 60 * 1000);
+  if (Number.isNaN(ageMs) || ageMs > keyTtlMs) return null;
   return entry.data;
 };
 
-const setCachedValue = (cache: SymbolCache, key: string, data: any) => {
-  cache[key] = { updatedAt: new Date().toISOString(), data };
+const getCachedEntry = (cache: SymbolCache, key: string) => cache[key] || null;
+
+const setCachedValue = (
+  cache: SymbolCache,
+  key: string,
+  data: any,
+  meta?: { provider?: string; asOf?: string | null }
+) => {
+  cache[key] = {
+    updatedAt: new Date().toISOString(),
+    data,
+    provider: meta?.provider,
+    asOf: meta?.asOf ?? null,
+  };
+};
+
+const getProviderFromValue = (value: any, cacheEntry?: CacheEntry | null) =>
+  cacheEntry?.provider
+  || (value && typeof value === 'object' && '__source' in value ? String((value as any).__source) : DEFAULT_SOURCE);
+
+const buildTrustSummaryFromCache = (
+  cache: SymbolCache,
+  entries: Array<{ key: string; label: string; data: any }>
+) => summarizeTrust(
+  entries
+    .filter((entry) => entry.data !== undefined && entry.data !== null)
+    .map((entry) => {
+      const cacheEntry = getCachedEntry(cache, entry.key);
+      return createTrustEntry({
+        key: entry.key,
+        label: entry.label,
+        provider: getProviderFromValue(entry.data, cacheEntry),
+        fetchedAt: cacheEntry?.updatedAt || new Date().toISOString(),
+        data: entry.data,
+      });
+    })
+);
+
+const buildUniverseSummary = (
+  items: Array<{
+    symbol: string;
+    overview?: any;
+    decisionSnapshot?: DecisionSnapshot;
+  }>
+) => {
+  const actionable = items
+    .filter((item) => item.decisionSnapshot)
+    .sort((a, b) => (b.decisionSnapshot?.overallScore ?? -Infinity) - (a.decisionSnapshot?.overallScore ?? -Infinity));
+  if (actionable.length === 0) return undefined;
+
+  const actionCounts = actionable.reduce<Record<string, number>>((acc, item) => {
+    const action = item.decisionSnapshot?.action || 'Wait';
+    acc[action] = (acc[action] || 0) + 1;
+    return acc;
+  }, {});
+  const top = actionable[0];
+  const weakest = actionable[actionable.length - 1];
+  const topName = top.overview?.name || top.symbol;
+  const weakestName = weakest.overview?.name || weakest.symbol;
+  const bullish = (actionCounts.Initiate || 0) + (actionCounts.Add || 0);
+  const defensive = (actionCounts.Trim || 0) + (actionCounts.Exit || 0);
+
+  return [
+    `Top setup: ${topName} (${top.symbol}) - ${top.decisionSnapshot?.summary}`,
+    `Breadth: ${bullish} bullish, ${actionCounts.Hold || 0} hold, ${actionCounts.Wait || 0} wait, ${defensive} defensive.`,
+    weakest !== top ? `Weakest setup: ${weakestName} (${weakest.symbol}) - ${weakest.decisionSnapshot?.summary}` : null,
+  ].filter(Boolean).join(' ');
+};
+
+const buildWatchlistSummary = (
+  items: Array<{
+    symbol: string;
+    companyName?: string;
+    stock?: { decisionSnapshot?: DecisionSnapshot };
+  }>
+) => {
+  const actionable = items
+    .filter((item) => item.stock?.decisionSnapshot)
+    .sort((a, b) => (b.stock?.decisionSnapshot?.overallScore ?? -Infinity) - (a.stock?.decisionSnapshot?.overallScore ?? -Infinity));
+  if (actionable.length === 0) return undefined;
+
+  const counts = actionable.reduce<Record<string, number>>((acc, item) => {
+    const action = decisionSnapshotToLegacyAction(item.stock!.decisionSnapshot!);
+    acc[action] = (acc[action] || 0) + 1;
+    return acc;
+  }, {});
+  const strongest = actionable[0];
+  const strongestName = strongest.companyName || strongest.symbol;
+
+  return [
+    `Daily watchlist view: ${counts.Buy || 0} buy, ${counts.Hold || 0} hold, ${counts.Watch || 0} watch, ${counts.Sell || 0} sell.`,
+    `Strongest setup: ${strongestName} (${strongest.symbol}) - ${strongest.stock?.decisionSnapshot?.summary}`,
+  ].join(' ');
 };
 
 // Score a search result against the user query.
@@ -1680,27 +1781,39 @@ export async function executeTool(
         const notes: string[] = [];
         const sources = new Map<string, string>();
         const cache = await loadSymbolCache(symbol);
+        const trustEntries: DataTrustEntry[] = [];
         let rateLimitHit = false;
+        const watchlist = await getDefaultWatchlist().catch(() => null);
+        const watchlistItem = watchlist?.items.find((item) => item.symbol === symbol.toUpperCase());
+        const portfolioProfile = watchlist?.profile;
+        const previousDecision = await getLatestDecision(symbol).catch(() => null);
         const isRateLimit = (message: string) => isRateLimitError(message);
         const safeFetch = async <T>(label: string, key: string, request: Promise<T>) => {
+          const cachedEntry = getCachedEntry(cache, key);
           const cachedValue = getCachedValue(cache, key);
+          const registerTrust = (value: any, fetchedAt: string, provider: string) => {
+            trustEntries.push(createTrustEntry({ key, label, provider, fetchedAt, data: value }));
+          };
           if (cachedValue !== null) {
-            if (cachedValue && typeof cachedValue === 'object' && '__source' in cachedValue) {
-              sources.set(label, String((cachedValue as any).__source));
-            } else if (cachedValue && typeof cachedValue === 'object') {
-              sources.set(label, DEFAULT_SOURCE);
+            const provider = cachedEntry?.provider
+              || (cachedValue && typeof cachedValue === 'object' && '__source' in cachedValue ? String((cachedValue as any).__source) : DEFAULT_SOURCE);
+            if (cachedValue && typeof cachedValue === 'object') {
+              sources.set(label, provider);
             }
+            registerTrust(cachedValue, cachedEntry?.updatedAt || new Date().toISOString(), provider);
             return cachedValue as T;
           }
           if (rateLimitHit) return undefined as T;
           try {
             const result = await request;
-            if (result && typeof result === 'object' && '__source' in result) {
-              sources.set(label, String((result as any).__source));
-            } else if (result && typeof result === 'object') {
-              sources.set(label, DEFAULT_SOURCE);
+            const provider = result && typeof result === 'object' && '__source' in result
+              ? String((result as any).__source)
+              : DEFAULT_SOURCE;
+            if (result && typeof result === 'object') {
+              sources.set(label, provider);
             }
-            setCachedValue(cache, key, result);
+            setCachedValue(cache, key, result, { provider });
+            registerTrust(result, new Date().toISOString(), provider);
             return result;
           } catch (error: any) {
             const message = error?.message || 'Unavailable';
@@ -1713,10 +1826,11 @@ export async function executeTool(
             if (!isSuppressedProviderError(message)) {
               notes.push(`${label}: ${message}`);
             }
-            if (cachedValue && typeof cachedValue === 'object' && '__source' in cachedValue) {
-              sources.set(label, String((cachedValue as any).__source));
-            } else if (cachedValue && typeof cachedValue === 'object') {
-              sources.set(label, DEFAULT_SOURCE);
+            if (cachedValue && typeof cachedValue === 'object') {
+              const provider = cachedEntry?.provider
+                || ('__source' in cachedValue ? String((cachedValue as any).__source) : DEFAULT_SOURCE);
+              sources.set(label, provider);
+              registerTrust(cachedValue, cachedEntry?.updatedAt || new Date().toISOString(), provider);
             }
             return cachedValue !== null ? (cachedValue as T) : (undefined as T);
           }
@@ -1801,6 +1915,11 @@ export async function executeTool(
           notes.push('Quarterly EPS history unavailable from providers; no synthetic EPS series was generated.');
         }
 
+        const trustSummary = summarizeTrust(trustEntries);
+        if (!trustSummary.criticalFresh && trustSummary.staleLabels.length > 0) {
+          notes.push(`Critical inputs are stale: ${trustSummary.staleLabels.join(', ')}. Recommendation confidence has been reduced.`);
+        }
+
         // LLM moat analysis — best-effort; report still builds without it
         let moatAnalysis: MoatAnalysis | undefined;
         if (options?.llmFill) {
@@ -1841,6 +1960,25 @@ export async function executeTool(
           }
         }
 
+        const decisionSnapshot = buildDecisionSnapshot({
+          symbol: symbol.toUpperCase(),
+          price,
+          priceHistory,
+          companyOverview,
+          basicFinancials: finalBasicFinancials,
+          incomeStatement: finalIncomeStatement,
+          balanceSheet: finalBalanceSheet,
+          cashFlow: finalCashFlow,
+          analystRatings,
+          priceTargets,
+          newsSentiment,
+          companyNews,
+          trust: trustSummary,
+          position: watchlistItem,
+          portfolioProfile,
+          previousDecision,
+        });
+
         const reportBody = buildStockReport({
           symbol: symbol.toUpperCase(),
           generatedAt: new Date().toISOString(),
@@ -1861,6 +1999,10 @@ export async function executeTool(
           companyNews,
           moatAnalysis,
           llmConclusion,
+          dataTrust: trustSummary,
+          decisionSnapshot,
+          portfolioProfile,
+          watchlistPosition: watchlistItem,
         });
 
         const content = notes.length
@@ -1885,6 +2027,9 @@ export async function executeTool(
               content: finalContent,
               symbol: symbol.toUpperCase(),
               range,
+              summary: decisionSnapshot.summary,
+              decisionSnapshot,
+              dataTrust: trustSummary,
               rawData: args.includeRawData ? {
                 symbol: symbol.toUpperCase(),
                 generatedAt: new Date().toISOString(),
@@ -1905,15 +2050,49 @@ export async function executeTool(
                 companyNews,
                 moatAnalysis,
                 llmConclusion,
+                dataTrust: trustSummary,
+                decisionSnapshot,
+                portfolioProfile,
+                watchlistPosition: watchlistItem,
               } : undefined,
             },
             message: `Built stock report content for ${symbol}`,
           };
         }
-        const saved = await saveReport(finalContent, `${symbol}-stock-report`, undefined, { reportKind: 'stock' });
+        const saved = await saveReport(finalContent, `${symbol}-stock-report`, undefined, {
+          reportKind: 'stock',
+          summary: decisionSnapshot.summary,
+        });
+        await appendDecisionJournal({
+          sessionId: typeof args.sessionId === 'string' ? args.sessionId : undefined,
+          symbol: symbol.toUpperCase(),
+          action: decisionSnapshot.action,
+          confidence: decisionSnapshot.confidence,
+          summary: decisionSnapshot.summary,
+          score: decisionSnapshot.overallScore,
+          price,
+        }).catch(() => {});
+        await upsertCompanyThesis({
+          symbol: symbol.toUpperCase(),
+          thesis: watchlistItem?.thesis || decisionSnapshot.summary,
+          conviction: watchlistItem?.conviction || 'medium',
+          invalidation: watchlistItem?.invalidation || decisionSnapshot.invalidation,
+          lastAction: decisionSnapshot.action,
+          summary: decisionSnapshot.summary,
+          updatedAt: new Date().toISOString(),
+        }).catch(() => {});
         return {
           success: true,
-          data: { content: finalContent, symbol: symbol.toUpperCase(), range, ...saved, downloadUrl: `/api/reports/${saved.storagePath ?? saved.filename}` },
+          data: {
+            content: finalContent,
+            symbol: symbol.toUpperCase(),
+            range,
+            summary: decisionSnapshot.summary,
+            decisionSnapshot,
+            dataTrust: trustSummary,
+            ...saved,
+            downloadUrl: `/api/reports/${saved.storagePath ?? saved.filename}`,
+          },
           message: `Saved stock report to ${saved.filePath}`,
         };
       }
@@ -1971,6 +2150,8 @@ export async function executeTool(
         const universe = companies.map((q) => resolvedMap.get(q) as string);
         const notes: string[] = [];
         const sourceMap: Record<string, Record<string, string>> = {};
+        const watchlist = await getDefaultWatchlist().catch(() => null);
+        const portfolioProfile = watchlist?.profile;
         let rateLimitHit = false;
         const isRateLimit = (message: string) => isRateLimitError(message);
         const safeFetch = async <T>(
@@ -1998,8 +2179,10 @@ export async function executeTool(
             const sourceValue = '__source' in result ? String((result as any).__source) : DEFAULT_SOURCE;
             sourceMap[symbol] = sourceMap[symbol] || {};
             sourceMap[symbol][label] = sourceValue;
+            setCachedValue(cache, key, result, { provider: sourceValue });
+          } else {
+            setCachedValue(cache, key, result);
           }
-          setCachedValue(cache, key, result);
           return result;
         } catch (error: any) {
             const message = error?.message || 'Unavailable';
@@ -2082,6 +2265,35 @@ export async function executeTool(
         for (const item of rawItems) {
           const { symbol } = item;
           const basicFinancials = item.overview ? buildBasicFinancialsFallback(item.overview) : undefined;
+          const watchlistItem = watchlist?.items.find((entry) => entry.symbol === symbol.toUpperCase());
+          const previousDecision = await getLatestDecision(symbol).catch(() => null);
+          const trustSummary = buildTrustSummaryFromCache(item.cache, [
+            { key: 'price', label: 'Price', data: item.price },
+            { key: 'overview', label: 'Company overview', data: item.overview },
+            { key: `priceHistory:${range}`, label: 'Price history', data: item.priceHistory },
+            { key: 'incomeStatement', label: 'Income statement', data: item.incomeStatement },
+            { key: 'balanceSheet', label: 'Balance sheet', data: item.balanceSheet },
+            { key: 'cashFlow', label: 'Cash flow', data: item.cashFlow },
+            { key: 'analystRatings', label: 'Analyst ratings', data: item.analystRatings },
+            { key: 'insiderTrading', label: 'Insider trading', data: item.insiderTrading },
+            { key: 'priceTargets', label: 'Price targets', data: item.priceTargets },
+          ]);
+          const decisionSnapshot = buildDecisionSnapshot({
+            symbol,
+            price: item.price,
+            priceHistory: item.priceHistory,
+            companyOverview: item.overview,
+            basicFinancials,
+            incomeStatement: item.incomeStatement,
+            balanceSheet: item.balanceSheet,
+            cashFlow: item.cashFlow,
+            analystRatings: item.analystRatings,
+            priceTargets: item.priceTargets,
+            trust: trustSummary,
+            position: watchlistItem,
+            portfolioProfile,
+            previousDecision,
+          });
           items.push({
             symbol,
             price: item.price,
@@ -2094,6 +2306,8 @@ export async function executeTool(
             analystRatings: item.analystRatings,
             insiderTrading: item.insiderTrading,
             priceTargets: item.priceTargets,
+            dataTrust: trustSummary,
+            decisionSnapshot,
           });
           await saveSymbolCache(symbol, item.cache);
         }
@@ -2142,17 +2356,21 @@ export async function executeTool(
           sources: sourceMap,
           llmConclusion: llmConclusionComparison,
         });
+        const summary = buildUniverseSummary(items);
         if (args.skipSave) {
           return {
             success: true,
-            data: { content, universe, range, items },
+            data: { content, universe, range, items, summary },
             message: `Built comparison report content for ${universe.join(', ')}`,
           };
         }
-        const saved = await saveReport(content, `${universe.join('-')}-comparison-report`, undefined, { reportKind: 'comparison' });
+        const saved = await saveReport(content, `${universe.join('-')}-comparison-report`, undefined, {
+          reportKind: 'comparison',
+          summary,
+        });
         return {
           success: true,
-          data: { content, universe, range, ...saved, downloadUrl: `/api/reports/${saved.storagePath ?? saved.filename}` },
+          data: { content, universe, range, summary, ...saved, downloadUrl: `/api/reports/${saved.storagePath ?? saved.filename}` },
           message: `Saved comparison report to ${saved.filePath}`,
         };
       }
@@ -2170,7 +2388,8 @@ export async function executeTool(
             const result = await executeTool(
               'generate_stock_report',
               { symbol: item.symbol, range, skipSave: true, includeRawData: true },
-              stockService
+              stockService,
+              options
             );
             return { item, result };
           }
@@ -2238,19 +2457,23 @@ export async function executeTool(
               `## Partial Coverage\n${failures.map((item) => `- ${item}`).join("\n")}\n\n## Daily Summary`
             )
           : reportBody;
+        const summary = buildWatchlistSummary(reportData.items);
 
         if (args.skipSave) {
           return {
             success: true,
-            data: { content, watchlist, range },
+            data: { content, watchlist, range, summary },
             message: `Built daily watchlist report for ${watchlist.name}`
           };
         }
 
-        const saved = await saveReport(content, `${watchlist.slug}-daily-report`, undefined, { reportKind: 'watchlist-daily' });
+        const saved = await saveReport(content, `${watchlist.slug}-daily-report`, undefined, {
+          reportKind: 'watchlist-daily',
+          summary,
+        });
         return {
           success: true,
-          data: { content, watchlist, range, ...saved, downloadUrl: `/api/reports/${saved.storagePath ?? saved.filename}` },
+          data: { content, watchlist, range, summary, ...saved, downloadUrl: `/api/reports/${saved.storagePath ?? saved.filename}` },
           message: `Saved daily watchlist report to ${saved.filePath}`
         };
       }
@@ -2294,6 +2517,8 @@ export async function executeTool(
         // (same logic as generate_comparison_report).
         const notes: string[] = [`Universe identified by AI for sector: "${sector}"`];
         const sourceMap: Record<string, Record<string, string>> = {};
+        const watchlist = await getDefaultWatchlist().catch(() => null);
+        const portfolioProfile = watchlist?.profile;
         let rateLimitHit = false;
         const isRateLimit = (message: string) => isRateLimitError(message);
         const safeFetch = async <T>(
@@ -2321,8 +2546,10 @@ export async function executeTool(
               const sourceValue = '__source' in result ? String((result as any).__source) : DEFAULT_SOURCE;
               sourceMap[symbol] = sourceMap[symbol] || {};
               sourceMap[symbol][label] = sourceValue;
+              setCachedValue(cache, key, result, { provider: sourceValue });
+            } else {
+              setCachedValue(cache, key, result);
             }
-            setCachedValue(cache, key, result);
             return result;
           } catch (error: any) {
             const message = error?.message || 'Unavailable';
@@ -2404,6 +2631,35 @@ export async function executeTool(
         for (const item of rawItems) {
           const { symbol } = item;
           const basicFinancials = item.overview ? buildBasicFinancialsFallbackSector(item.overview) : undefined;
+          const watchlistItem = watchlist?.items.find((entry) => entry.symbol === symbol.toUpperCase());
+          const previousDecision = await getLatestDecision(symbol).catch(() => null);
+          const trustSummary = buildTrustSummaryFromCache(item.cache, [
+            { key: 'price', label: 'Price', data: item.price },
+            { key: 'overview', label: 'Company overview', data: item.overview },
+            { key: `priceHistory:${range}`, label: 'Price history', data: item.priceHistory },
+            { key: 'incomeStatement', label: 'Income statement', data: item.incomeStatement },
+            { key: 'balanceSheet', label: 'Balance sheet', data: item.balanceSheet },
+            { key: 'cashFlow', label: 'Cash flow', data: item.cashFlow },
+            { key: 'analystRatings', label: 'Analyst ratings', data: item.analystRatings },
+            { key: 'insiderTrading', label: 'Insider trading', data: item.insiderTrading },
+            { key: 'priceTargets', label: 'Price targets', data: item.priceTargets },
+          ]);
+          const decisionSnapshot = buildDecisionSnapshot({
+            symbol,
+            price: item.price,
+            priceHistory: item.priceHistory,
+            companyOverview: item.overview,
+            basicFinancials,
+            incomeStatement: item.incomeStatement,
+            balanceSheet: item.balanceSheet,
+            cashFlow: item.cashFlow,
+            analystRatings: item.analystRatings,
+            priceTargets: item.priceTargets,
+            trust: trustSummary,
+            position: watchlistItem,
+            portfolioProfile,
+            previousDecision,
+          });
           items.push({
             symbol,
             price: item.price,
@@ -2416,6 +2672,8 @@ export async function executeTool(
             analystRatings: item.analystRatings,
             insiderTrading: item.insiderTrading,
             priceTargets: item.priceTargets,
+            dataTrust: trustSummary,
+            decisionSnapshot,
           });
           await saveSymbolCache(symbol, item.cache);
         }
@@ -2466,11 +2724,15 @@ export async function executeTool(
           sources: sourceMap,
           llmConclusion: llmConclusionSector,
         });
+        const summary = buildUniverseSummary(items);
         const safeTitle = sector.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
-        const saved = await saveReport(content, `${safeTitle}-sector-report`, undefined, { reportKind: 'sector' });
+        const saved = await saveReport(content, `${safeTitle}-sector-report`, undefined, {
+          reportKind: 'sector',
+          summary,
+        });
         return {
           success: true,
-          data: { content, ...saved, downloadUrl: `/api/reports/${saved.storagePath ?? saved.filename}` },
+          data: { content, summary, ...saved, downloadUrl: `/api/reports/${saved.storagePath ?? saved.filename}` },
           message: `Saved sector report for "${sector}" to ${saved.filePath}`,
         };
       }
@@ -2523,11 +2785,17 @@ export async function executeTool(
             baseContent: String(comparisonResult.data.content),
             items: Array.isArray(comparisonResult.data?.items) ? comparisonResult.data.items : undefined,
           });
+          const summary = typeof comparisonResult.data?.summary === 'string'
+            ? comparisonResult.data.summary
+            : 'Deep comparison report built from the latest multi-company research set.';
           const safeTitle = sector.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
-          const saved = await saveReport(content, `${safeTitle}-deep-research-report`, undefined, { reportKind: 'deep-research' });
+          const saved = await saveReport(content, `${safeTitle}-deep-research-report`, undefined, {
+            reportKind: 'deep-research',
+            summary,
+          });
           return {
             success: true,
-            data: { content, ...saved, downloadUrl: `/api/reports/${saved.storagePath ?? saved.filename}` },
+            data: { content, summary, ...saved, downloadUrl: `/api/reports/${saved.storagePath ?? saved.filename}` },
             message: `Saved deep research comparison report for "${sector}" to ${saved.filePath}`,
           };
         }
@@ -2552,11 +2820,19 @@ export async function executeTool(
             generatedAt,
             baseContent: String(stockResult.data.content),
           });
+          const summary = typeof stockResult.data?.decisionSnapshot?.summary === 'string'
+            ? stockResult.data.decisionSnapshot.summary
+            : typeof stockResult.data?.summary === 'string'
+              ? stockResult.data.summary
+              : 'Deep company report built from the latest single-stock research set.';
           const safeTitle = sector.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
-          const saved = await saveReport(content, `${safeTitle}-deep-research-report`, undefined, { reportKind: 'deep-research' });
+          const saved = await saveReport(content, `${safeTitle}-deep-research-report`, undefined, {
+            reportKind: 'deep-research',
+            summary,
+          });
           return {
             success: true,
-            data: { content, ...saved, downloadUrl: `/api/reports/${saved.storagePath ?? saved.filename}` },
+            data: { content, summary, ...saved, downloadUrl: `/api/reports/${saved.storagePath ?? saved.filename}` },
             message: `Saved deep research company report for "${sector}" to ${saved.filePath}`,
           };
         }
@@ -2687,6 +2963,8 @@ export async function executeTool(
           ...timeNotes,
         ];
         const sourceMap: Record<string, Record<string, string>> = {};
+        const watchlist = await getDefaultWatchlist().catch(() => null);
+        const portfolioProfile = watchlist?.profile;
         let rateLimitHit = false;
         const isRateLimit = (message: string) => isRateLimitError(message);
         const safeFetch = async <T>(
@@ -2714,8 +2992,10 @@ export async function executeTool(
               const sourceValue = '__source' in result ? String((result as any).__source) : DEFAULT_SOURCE;
               sourceMap[symbol] = sourceMap[symbol] || {};
               sourceMap[symbol][label] = sourceValue;
+              setCachedValue(cache, key, result, { provider: sourceValue });
+            } else {
+              setCachedValue(cache, key, result);
             }
-            setCachedValue(cache, key, result);
             return result;
           } catch (error: any) {
             const message = error?.message || 'Unavailable';
@@ -2813,6 +3093,35 @@ export async function executeTool(
         for (const item of rawItems) {
           const { symbol } = item;
           const basicFinancials = item.overview ? buildBasicFinancialsFallbackDeep(item.overview) : undefined;
+          const watchlistItem = watchlist?.items.find((entry) => entry.symbol === symbol.toUpperCase());
+          const previousDecision = await getLatestDecision(symbol).catch(() => null);
+          const trustSummary = buildTrustSummaryFromCache(item.cache, [
+            { key: 'price', label: 'Price', data: item.price },
+            { key: 'overview', label: 'Company overview', data: item.overview },
+            { key: `priceHistory:${range}`, label: 'Price history', data: item.priceHistory },
+            { key: 'incomeStatement', label: 'Income statement', data: item.incomeStatement },
+            { key: 'balanceSheet', label: 'Balance sheet', data: item.balanceSheet },
+            { key: 'cashFlow', label: 'Cash flow', data: item.cashFlow },
+            { key: 'analystRatings', label: 'Analyst ratings', data: item.analystRatings },
+            { key: 'insiderTrading', label: 'Insider trading', data: item.insiderTrading },
+            { key: 'priceTargets', label: 'Price targets', data: item.priceTargets },
+          ]);
+          const decisionSnapshot = buildDecisionSnapshot({
+            symbol,
+            price: item.price,
+            priceHistory: item.priceHistory,
+            companyOverview: item.overview,
+            basicFinancials,
+            incomeStatement: item.incomeStatement,
+            balanceSheet: item.balanceSheet,
+            cashFlow: item.cashFlow,
+            analystRatings: item.analystRatings,
+            priceTargets: item.priceTargets,
+            trust: trustSummary,
+            position: watchlistItem,
+            portfolioProfile,
+            previousDecision,
+          });
           items.push({
             symbol,
             price: item.price,
@@ -2825,6 +3134,8 @@ export async function executeTool(
             analystRatings: item.analystRatings,
             insiderTrading: item.insiderTrading,
             priceTargets: item.priceTargets,
+            dataTrust: trustSummary,
+            decisionSnapshot,
           });
           await saveSymbolCache(symbol, item.cache);
         }
@@ -2880,11 +3191,15 @@ export async function executeTool(
           companySnapshots,
           llmConclusion: llmConclusionDeep,
         });
+        const summary = buildUniverseSummary(items);
         const safeTitle = sector.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
-        const saved = await saveReport(content, `${safeTitle}-deep-sector-report`, undefined, { reportKind: 'deep-sector' });
+        const saved = await saveReport(content, `${safeTitle}-deep-sector-report`, undefined, {
+          reportKind: 'deep-sector',
+          summary,
+        });
         return {
           success: true,
-          data: { content, ...saved, downloadUrl: `/api/reports/${saved.storagePath ?? saved.filename}` },
+          data: { content, summary, ...saved, downloadUrl: `/api/reports/${saved.storagePath ?? saved.filename}` },
           message: `Saved deep sector report for "${sector}" to ${saved.filePath}`,
         };
       }

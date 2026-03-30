@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { promises as fs } from 'fs';
 import path from 'path';
+import type { DataTrustSummary, DecisionSnapshot, PortfolioProfile, WatchlistPositionMeta } from './investmentTypes';
 
 type PricePoint = { date: string; close: string | number };
 type EarningsPoint = { fiscalQuarter: string; reportedEPS: string | number };
@@ -30,6 +31,10 @@ export interface StockReportData {
   moatAnalysis?: MoatAnalysis;
   /** LLM-generated rich investment conclusion narrative (full markdown text) */
   llmConclusion?: string;
+  dataTrust?: DataTrustSummary;
+  decisionSnapshot?: DecisionSnapshot;
+  portfolioProfile?: PortfolioProfile;
+  watchlistPosition?: Partial<WatchlistPositionMeta>;
 }
 
 export interface ComparisonReportItem {
@@ -49,6 +54,8 @@ export interface ComparisonReportItem {
   companyNews?: { articles?: any[] };
   /** LLM-generated competitive moat assessment */
   moatAnalysis?: MoatAnalysis;
+  dataTrust?: DataTrustSummary;
+  decisionSnapshot?: DecisionSnapshot;
 }
 
 export interface ComparisonReportData {
@@ -1070,6 +1077,79 @@ function normalizeActionLabel(label?: string | null): ActionLabel {
   return 'Hold';
 }
 
+function actionFromDecisionSnapshot(action?: DecisionSnapshot['action']): ActionLabel {
+  if (action === 'Initiate' || action === 'Add') return 'Buy';
+  if (action === 'Trim') return 'Watch';
+  if (action === 'Exit') return 'Sell';
+  if (action === 'Hold') return 'Hold';
+  return 'Watch';
+}
+
+function buildDecisionActionTable(snapshot: DecisionSnapshot): string {
+  return buildTable(
+    ['Field', 'Value'],
+    [
+      ['Action', snapshot.action],
+      ['Confidence', snapshot.confidence],
+      ['Freshness', snapshot.freshness],
+      ['Overall Score', snapshot.overallScore !== null ? `${snapshot.overallScore}/100` : 'Unavailable'],
+      ['Portfolio Impact', snapshot.portfolioImpact],
+      ['Invalidation', snapshot.invalidation],
+      ['Next Trigger', snapshot.nextTrigger],
+    ],
+    ['left', 'left']
+  );
+}
+
+function buildWhatChangedSection(snapshot?: DecisionSnapshot): string {
+  if (!snapshot) return '';
+  return [
+    '## What Changed',
+    ...snapshot.changed.map((item) => `- ${item}`),
+  ].join('\n');
+}
+
+function buildFreshnessSection(trust?: DataTrustSummary): string {
+  if (!trust || trust.entries.length === 0) return '';
+  return [
+    '## Data Freshness',
+    buildTable(
+      ['Input', 'Provider', 'Fetched', 'As Of', 'Freshness'],
+      trust.entries.map((entry) => [
+        entry.label,
+        entry.provider,
+        entry.fetchedAt.replace('T', ' ').slice(0, 16),
+        entry.asOf || 'Unavailable',
+        entry.freshness,
+      ]),
+      ['left', 'left', 'left', 'left', 'left']
+    ),
+  ].join('\n\n');
+}
+
+function buildDecisionSection(snapshot?: DecisionSnapshot): string {
+  if (!snapshot) return '';
+  const whyNow = snapshot.whyNow.length
+    ? snapshot.whyNow.map((item) => `- ${item}`).join('\n')
+    : '- No strong positive catalyst is currently differentiated.';
+  const whyNot = snapshot.whyNot.length
+    ? snapshot.whyNot.map((item) => `- ${item}`).join('\n')
+    : '- No major disqualifying risk was detected from the current data bundle.';
+  const missing = snapshot.missingInputs.length
+    ? snapshot.missingInputs.map((item) => `- ${item}`).join('\n')
+    : '- None';
+  return [
+    '## Decision Snapshot',
+    buildDecisionActionTable(snapshot),
+    '### Why Now',
+    whyNow,
+    '### Why Not',
+    whyNot,
+    '### Missing Inputs',
+    missing,
+  ].join('\n\n');
+}
+
 function formatMissingInputs(inputs: string[], maxItems = 2): string {
   if (inputs.length === 0) return '';
   const shown = inputs.slice(0, maxItems);
@@ -1391,10 +1471,32 @@ function asStockReportData(item: ComparisonReportItem, generatedAt: string): Sto
     newsSentiment: item.newsSentiment,
     companyNews: item.companyNews,
     moatAnalysis: item.moatAnalysis,
+    dataTrust: item.dataTrust,
+    decisionSnapshot: item.decisionSnapshot,
   };
 }
 
 function derivePositionGuidanceFromStock(data: StockReportData, score: number | null = computeScorecard(data).composite): PositionGuidance {
+  if (data.decisionSnapshot) {
+    const stance = actionFromDecisionSnapshot(data.decisionSnapshot.action);
+    const forOwners: OwnerAction =
+      data.decisionSnapshot.action === 'Add' ? 'Add'
+      : data.decisionSnapshot.action === 'Trim' ? 'Trim'
+      : data.decisionSnapshot.action === 'Exit' ? 'Sell'
+      : 'Hold';
+    const forNonOwners: NonOwnerAction =
+      data.decisionSnapshot.action === 'Initiate' ? 'Buy'
+      : data.decisionSnapshot.action === 'Exit' ? 'Avoid'
+      : 'Watch';
+    return {
+      stance,
+      rationale: data.decisionSnapshot.summary,
+      forOwners,
+      forNonOwners,
+      confidence: data.decisionSnapshot.confidence,
+      missingInputs: data.decisionSnapshot.missingInputs,
+    };
+  }
   const overview = data.companyOverview || {};
   const price = toNumber(data.price?.price);
   const targetUpside = getTargetUpsideStock(data);
@@ -2289,6 +2391,9 @@ export function buildStockReport(data: StockReportData): string {
   const sections: string[] = [
     headline,
     `Generated: ${data.generatedAt}`,
+    buildDecisionSection(data.decisionSnapshot),
+    buildWhatChangedSection(data.decisionSnapshot),
+    buildFreshnessSection(data.dataTrust),
     '## 📊 Snapshot',
     ...(snapshotLines.length ? snapshotLines : ['- Snapshot data unavailable']),
   ];
@@ -2849,28 +2954,7 @@ export function buildComparisonReport(data: ComparisonReportData): string {
     .sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
   const topRating = ratingLeaders[0];
 
-  const scored = items.map((item) => {
-    const scoreData: StockReportData = {
-      symbol: item.symbol,
-      generatedAt: data.generatedAt,
-      price: item.price || {},
-      priceHistory: item.priceHistory,
-      companyOverview: item.overview,
-      basicFinancials: item.basicFinancials,
-      earningsHistory: undefined,
-      incomeStatement: item.incomeStatement,
-      balanceSheet: item.balanceSheet,
-      cashFlow: item.cashFlow,
-      analystRatings: item.analystRatings,
-      analystRecommendations: undefined,
-      priceTargets: item.priceTargets,
-      peers: item.peers,
-      newsSentiment: item.newsSentiment,
-      companyNews: item.companyNews,
-    };
-    const scorecard = computeScorecard(scoreData);
-    return { item, score: scorecard.composite };
-  });
+  const scored = scoreComparisonItems(items, data.generatedAt);
 
   const timingRows = scored.map((row) => {
     const stockData = asStockReportData(row.item, data.generatedAt);
@@ -3045,6 +3129,9 @@ function scoreComparisonItems(
   generatedAt: string
 ): Array<{ item: ComparisonReportItem; score: number | null }> {
   return items.map((item) => {
+    if (item.decisionSnapshot?.overallScore !== null && item.decisionSnapshot?.overallScore !== undefined) {
+      return { item, score: item.decisionSnapshot.overallScore };
+    }
     const scorecard = computeScorecard({
       symbol: item.symbol,
       generatedAt,
@@ -3224,6 +3311,13 @@ function shiftMarkdownHeadings(body: string, levels = 1): string {
 }
 
 function buildWatchlistDecision(item: WatchlistDailyReportItem): { action: ActionLabel; reason: string; score: number | null } {
+  if (item.stock.decisionSnapshot) {
+    return {
+      action: actionFromDecisionSnapshot(item.stock.decisionSnapshot.action),
+      reason: item.stock.decisionSnapshot.summary,
+      score: item.stock.decisionSnapshot.overallScore,
+    };
+  }
   const scorecard = computeScorecard(item.stock);
   if (item.action && item.reason) {
     return { action: normalizeActionLabel(item.action), reason: item.reason, score: scorecard.composite };

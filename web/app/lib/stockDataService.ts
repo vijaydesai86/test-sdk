@@ -1859,6 +1859,65 @@ const PROVIDER_LABELS: Record<ProviderId, string> = {
   stooq: 'Stooq',
 };
 
+const METHOD_PROVIDER_PRIORITY: Partial<Record<keyof StockDataService, ProviderId[]>> = {
+  getStockPrice: ['finnhub', 'fmp', 'twelvedata', 'alphavantage', 'stooq'],
+  getPriceHistory: ['finnhub', 'fmp', 'twelvedata', 'alphavantage', 'stooq'],
+  getCompanyOverview: ['fmp', 'alphavantage', 'finnhub', 'twelvedata', 'stooq'],
+  getBasicFinancials: ['fmp', 'finnhub', 'alphavantage', 'twelvedata', 'stooq'],
+  getAnalystRatings: ['finnhub', 'alphavantage', 'fmp', 'twelvedata', 'stooq'],
+  getAnalystRecommendations: ['finnhub', 'fmp', 'alphavantage', 'twelvedata', 'stooq'],
+  getPriceTargets: ['finnhub', 'fmp', 'alphavantage', 'twelvedata', 'stooq'],
+  getPeers: ['finnhub', 'fmp', 'alphavantage', 'twelvedata', 'stooq'],
+  searchStock: ['alphavantage', 'finnhub', 'fmp', 'twelvedata', 'stooq'],
+  getEarningsHistory: ['finnhub', 'alphavantage', 'fmp', 'twelvedata', 'stooq'],
+  getIncomeStatement: ['fmp', 'finnhub', 'alphavantage', 'twelvedata', 'stooq'],
+  getBalanceSheet: ['fmp', 'finnhub', 'alphavantage', 'twelvedata', 'stooq'],
+  getCashFlow: ['fmp', 'finnhub', 'alphavantage', 'twelvedata', 'stooq'],
+  getNewsSentiment: ['finnhub', 'alphavantage', 'fmp', 'twelvedata', 'stooq'],
+  getCompanyNews: ['finnhub', 'fmp', 'alphavantage', 'twelvedata', 'stooq'],
+  searchNews: ['fmp', 'finnhub', 'alphavantage', 'twelvedata', 'stooq'],
+};
+
+const MERGEABLE_METHODS = new Set<keyof StockDataService>([
+  'getCompanyOverview',
+  'getBasicFinancials',
+  'getIncomeStatement',
+  'getBalanceSheet',
+  'getCashFlow',
+]);
+
+function hasMeaningfulValue(value: any): boolean {
+  if (value === null || value === undefined) return false;
+  if (typeof value === 'string') return value.trim() !== '' && value !== 'N/A';
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === 'object') return Object.values(value).some((entry) => hasMeaningfulValue(entry));
+  return true;
+}
+
+function mergeProviderPayload(base: any, incoming: any): any {
+  if (base === null || base === undefined) return incoming;
+  if (incoming === null || incoming === undefined) return base;
+  if (Array.isArray(base) || Array.isArray(incoming)) {
+    return hasMeaningfulValue(base) ? base : incoming;
+  }
+  if (typeof base !== 'object' || typeof incoming !== 'object') {
+    return hasMeaningfulValue(base) ? base : incoming;
+  }
+
+  const merged: Record<string, any> = { ...base };
+  for (const [key, value] of Object.entries(incoming)) {
+    if (key === '__source') continue;
+    if (!(key in merged) || !hasMeaningfulValue(merged[key])) {
+      merged[key] = value;
+      continue;
+    }
+    if (typeof merged[key] === 'object' && typeof value === 'object' && !Array.isArray(merged[key]) && !Array.isArray(value)) {
+      merged[key] = mergeProviderPayload(merged[key], value);
+    }
+  }
+  return merged;
+}
+
 class MultiSourceStockDataService implements StockDataService {
   private disabledProviders = new Map<ProviderId, { until: number; reason: string }>();
   private cooldownMs = Number(process.env.STOCK_PROVIDER_COOLDOWN_MS || 5 * 60 * 1000);
@@ -1883,16 +1942,37 @@ class MultiSourceStockDataService implements StockDataService {
     return /rate limit|429|too many requests|quota|forbidden|unauthorized|api key|plan limitation/i.test(message);
   }
 
+  private getOrderedProviders(method: keyof StockDataService) {
+    const priority = METHOD_PROVIDER_PRIORITY[method] || [];
+    const rank = new Map(priority.map((id, index) => [id, index]));
+    return [...this.providers].sort((a, b) => {
+      const aRank = rank.has(a.id) ? (rank.get(a.id) as number) : Number.MAX_SAFE_INTEGER;
+      const bRank = rank.has(b.id) ? (rank.get(b.id) as number) : Number.MAX_SAFE_INTEGER;
+      return aRank - bRank;
+    });
+  }
+
   private async callProviders<T>(method: keyof StockDataService, args: any[]): Promise<T> {
     let lastError: any;
-    for (const provider of this.providers) {
+    let mergedResult: any = null;
+    let mergeSources: string[] = [];
+    let mergeCount = 0;
+    for (const provider of this.getOrderedProviders(method)) {
       if (this.isDisabled(provider.id)) continue;
       try {
         const result = await (provider.service[method] as (...params: any[]) => Promise<T>)(...args);
-        if (result && typeof result === 'object' && !Array.isArray(result)) {
-          return { ...(result as object), __source: PROVIDER_LABELS[provider.id] } as T;
+        const labeledResult = result && typeof result === 'object' && !Array.isArray(result)
+          ? { ...(result as object), __source: PROVIDER_LABELS[provider.id] } as T
+          : result;
+        if (!MERGEABLE_METHODS.has(method)) {
+          return labeledResult;
         }
-        return result;
+        mergedResult = mergeProviderPayload(mergedResult, labeledResult);
+        mergeSources.push(PROVIDER_LABELS[provider.id]);
+        mergeCount += 1;
+        if (mergeCount >= 2) {
+          break;
+        }
       } catch (error: any) {
         lastError = error;
         const message = error?.message || 'Unavailable';
@@ -1900,6 +1980,12 @@ class MultiSourceStockDataService implements StockDataService {
           this.markDisabled(provider.id, message);
         }
       }
+    }
+    if (mergedResult && typeof mergedResult === 'object' && !Array.isArray(mergedResult)) {
+      return {
+        ...mergedResult,
+        __source: mergeSources.length > 1 ? `Composite (${mergeSources.join(' + ')})` : mergeSources[0] || 'Multi-source',
+      } as T;
     }
     throw lastError || new Error('All providers unavailable');
   }
