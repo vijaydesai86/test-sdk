@@ -335,17 +335,32 @@ async function loadDefaultSupabaseWatchlist(): Promise<Watchlist | null> {
 
   const existingItems = Array.isArray(items) ? items : [];
   if (existingItems.length === 0) {
-    const seedRows = DEFAULT_WATCHLIST_SEED.map((item, index) => ({
-      watchlist_id: watchlist.id,
-      symbol: normalizeSymbol(item.symbol),
-      company_name: item.companyName,
-      display_order: index,
-      ownership_status: 'watching',
-      conviction: 'medium',
-      thesis: '',
-      invalidation: '',
-      notes: '',
-    }));
+    const seedRows = DEFAULT_WATCHLIST_SEED.map((item, index) => {
+      const position = {
+        ...buildDefaultPositionMeta(),
+        ...item.position,
+      };
+      return {
+        watchlist_id: watchlist.id,
+        symbol: normalizeSymbol(item.symbol),
+        company_name: item.companyName,
+        display_order: index,
+        ownership_status: position.ownershipStatus,
+        current_weight: position.currentWeight,
+        target_weight: position.targetWeight,
+        max_weight: position.maxWeight,
+        cost_basis: position.costBasis,
+        conviction: position.conviction,
+        thesis: position.thesis,
+        desired_entry_min: position.desiredEntryMin,
+        desired_entry_max: position.desiredEntryMax,
+        trim_above: position.trimAbove,
+        invalidation: position.invalidation,
+        review_date: position.reviewDate,
+        last_reviewed_at: position.lastReviewedAt,
+        notes: position.notes,
+      };
+    });
 
     const detailedSeedQuery = await supabase
       .from('watchlist_items')

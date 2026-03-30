@@ -1135,7 +1135,7 @@ function derivePortfolioRoleLabel(data: StockReportData, scorecard: ReturnType<t
     return 'Growth tilt — strong fundamentals; monitor entry valuation';
   }
   if (composite !== null && composite >= 45 && moatScore >= 31) {
-    return 'Hold — stable business with narrow moat; revisit on meaningful pullback';
+    return 'Stable business candidate — narrower moat; revisit on meaningful pullback';
   }
   if (composite !== null && composite < 40) {
     return 'Speculative / avoid — fundamentals under pressure';

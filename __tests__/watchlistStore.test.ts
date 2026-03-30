@@ -47,6 +47,21 @@ describe('watchlistStore', () => {
     expect(reloaded.profile.strategyNotes).toBe('Concentrate in best ideas.');
   });
 
+  it('seeds owned names with owned ownership status', async () => {
+    const store = await import('../web/app/lib/watchlistStore');
+    const watchlist = await store.getDefaultWatchlist();
+
+    const ownedByDefault = new Map(
+      watchlist.items.map((item) => [item.symbol, item.ownershipStatus])
+    );
+
+    expect(ownedByDefault.get('NVDA')).toBe('owned');
+    expect(ownedByDefault.get('ARM')).toBe('owned');
+    expect(ownedByDefault.get('AVGO')).toBe('owned');
+    expect(ownedByDefault.get('META')).toBe('owned');
+    expect(ownedByDefault.get('AMD')).toBe('watching');
+  });
+
   it('updates watchlist item position metadata in filesystem mode', async () => {
     const store = await import('../web/app/lib/watchlistStore');
     const watchlist = await store.getDefaultWatchlist();

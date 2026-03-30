@@ -70,11 +70,12 @@ function buildPortfolioImpact(args: {
   const currentWeight = position?.currentWeight;
   const targetWeight = position?.targetWeight;
   const maxWeight = position?.maxWeight ?? portfolioProfile?.maxPositionWeight;
+  const summaryAction = actionToSummaryLabel(action);
 
   if (ownership === 'owned') {
-    return `Current position ${currentWeight ?? 'n/a'}% vs target ${targetWeight ?? 'n/a'}% and max ${maxWeight ?? 'n/a'}%. Recommended action: ${action}.`;
+    return `Current position ${currentWeight ?? 'n/a'}% vs target ${targetWeight ?? 'n/a'}% and max ${maxWeight ?? 'n/a'}%. Recommended action: ${summaryAction}.`;
   }
-  return `No active position recorded. Portfolio guardrail max size ${maxWeight ?? portfolioProfile?.maxPositionWeight ?? 'n/a'}%. Recommended action: ${action}.`;
+  return `No active position recorded. Portfolio guardrail max size ${maxWeight ?? portfolioProfile?.maxPositionWeight ?? 'n/a'}%. Recommended action: ${summaryAction}.`;
 }
 
 function actionToLegacyLabel(action: DecisionAction): ActionLabel {
