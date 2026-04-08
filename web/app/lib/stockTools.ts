@@ -403,6 +403,102 @@ function parseMoatEntry(m: any): MoatAnalysis | null {
 }
 
 /**
+ * Builds a batch LLM prompt that generates a 1-2 sentence plain-English "Why"
+ * rationale for the Position Guidance table in watchlist / comparison reports.
+ *
+ * Each rationale must:
+ *   - Cite real score values (quality, valuation, momentum) from the provided data
+ *   - Reference at least one concrete metric (e.g. "34% operating margin", "$135 target")
+ *   - State clearly why the action (Buy / Hold / Watch / Sell) follows from those numbers
+ *   - Be brief (1-2 sentences) and free of vague filler
+ *
+ * CRITICAL: The LLM must not invent any figures — only use data from the prompt.
+ */
+function buildBatchPositionRationalePrompt(
+  companies: Array<{
+    symbol: string;
+    name: string;
+    action: string;
+    confidence: string;
+    overallScore: number | null;
+    qualityScore: number | null;
+    valuationScore: number | null;
+    technicalScore: number | null;
+    whyNow: string[];
+    whyNot: string[];
+    missingInputs: string[];
+    overview: any;
+    basicFinancials: any;
+    priceTargets: any;
+    analystRatings: any;
+    price: any;
+  }>
+): string {
+  const fmt = (v: any): string => {
+    if (v === null || v === undefined || v === 'N/A' || v === '') return 'N/A';
+    const n = Number(v);
+    if (!Number.isFinite(n)) return String(v);
+    if (Math.abs(n) <= 2) return `${(n * 100).toFixed(1)}%`;
+    return n.toFixed(2);
+  };
+
+  const companySections = companies.map(({ symbol, name, action, confidence, overallScore, qualityScore, valuationScore, technicalScore, whyNow, whyNot, missingInputs, overview, basicFinancials, priceTargets, analystRatings, price: priceData }) => {
+    const currentPrice = priceData?.price ?? 'N/A';
+    const targetMean = priceTargets?.targetMean ?? analystRatings?.analystTargetPrice ?? overview?.analystTargetPrice ?? 'N/A';
+    const pe = overview?.peRatio ?? basicFinancials?.metric?.peBasicExclExtraTTM ?? 'N/A';
+    const opMargin = fmt(basicFinancials?.metric?.operatingMarginTTM ?? overview?.operatingMargin);
+    const roe = fmt(basicFinancials?.metric?.roeTTM ?? overview?.returnOnEquity);
+    const revGrowth = fmt(basicFinancials?.metric?.revenueGrowthTTM ?? overview?.quarterlyRevenueGrowth);
+    const grossMargin = fmt(basicFinancials?.metric?.grossMarginTTM ?? overview?.profitMargin);
+
+    const reasons = [...whyNow, ...whyNot].slice(0, 4).join(' | ') || 'No specific signals computed.';
+    const missing = missingInputs.length ? `Missing: ${missingInputs.join(', ')}.` : 'All key inputs present.';
+
+    return (
+      `${symbol}: ${name}\n` +
+      `  Action: ${action} | Confidence: ${confidence}\n` +
+      `  Scores — Overall: ${overallScore?.toFixed(1) ?? 'N/A'}/100 | Quality: ${qualityScore?.toFixed(1) ?? 'N/A'}/100 | Valuation: ${valuationScore?.toFixed(1) ?? 'N/A'}/100 | Momentum: ${technicalScore?.toFixed(1) ?? 'N/A'}/100\n` +
+      `  Key Metrics — Price: $${currentPrice} | Target: $${targetMean} | P/E: ${pe} | Op Margin: ${opMargin} | Gross Margin: ${grossMargin} | ROE: ${roe} | Rev Growth: ${revGrowth}\n` +
+      `  Signal Drivers: ${reasons}\n` +
+      `  ${missing}`
+    );
+  }).join('\n\n');
+
+  const exampleTicker = companies[0]?.symbol || 'TICK';
+  const shapeExample = `{"${exampleTicker}":{"rationale":"Quality score 67/100 driven by 34% operating margin and 95% ROE; valuation attractive at 23x P/E with $135 analyst target (35% upside). Hold — thesis intact but not at a high-conviction add point."}}`;
+
+  return (
+    `You are a senior equity research analyst writing the "Why" column for a position guidance table in a professional investment report.\n\n` +
+    `CRITICAL RULES:\n` +
+    `1. Base every claim STRICTLY on the real data provided below — do NOT use training-memory values for any financial figures.\n` +
+    `2. Write EXACTLY 1-2 sentences per stock. Be brief but specific.\n` +
+    `3. Cite the actual scores (e.g. "quality 67/100") AND at least one concrete metric (e.g. "34% operating margin", "$135 price target", "26x P/E").\n` +
+    `4. Explain directly why the recommended action (Buy/Hold/Watch/Sell) follows from those numbers.\n` +
+    `5. Do NOT write vague phrases like "mixed setup", "some positives and negatives", "room for improvement", or "further research needed".\n` +
+    `6. When key data is missing (score is N/A), say explicitly which input is absent and how it limits conviction.\n` +
+    `7. Write in active, professional voice. No filler words.\n\n` +
+    `SCORING SCALE (0-100):\n` +
+    `- Quality score: measures business fundamentals — margins, ROE, revenue/EPS growth. ≥65 = strong, 45-64 = adequate, <45 = weak.\n` +
+    `- Valuation score: measures price vs fair value — P/E vs history, analyst target upside. ≥60 = attractive, 40-59 = fair, <40 = stretched.\n` +
+    `- Momentum score: measures price trend strength. ≥60 = trending up, 40-59 = neutral, <40 = declining.\n` +
+    `- Overall score ≥68 → Buy/Initiate; 48-67 → Hold/Watch; <48 → Watch/Sell.\n\n` +
+    `COMPANY DATA:\n${companySections}\n\n` +
+    `Respond ONLY with valid JSON keyed by ticker symbol — no markdown, no extra text:\n` +
+    shapeExample
+  );
+}
+
+/**
+ * Parses one entry from an LLM batch position rationale response.
+ * Returns the rationale string, or null when the entry is missing or invalid.
+ */
+function parsePositionRationaleEntry(entry: any): string | null {
+  if (!entry || typeof entry.rationale !== 'string') return null;
+  const text = entry.rationale.trim();
+  return text.length >= 10 ? text : null;
+}
+
+/**
  * Builds a rich LLM prompt for a state-of-the-art investment conclusion for a
  * single stock. The LLM receives ALL real API data collected and must produce a
  * 5-7 paragraph research-quality narrative covering:
@@ -2414,6 +2510,51 @@ export async function executeTool(
           }
         }
 
+        // LLM position rationale — clear 1-2 sentence "Why" for the guidance table
+        if (options?.llmFill && items.length > 0) {
+          try {
+            const rationalePrompt = buildBatchPositionRationalePrompt(
+              items.map((item) => {
+                const ds = item.decisionSnapshot;
+                return {
+                  symbol: item.symbol,
+                  name: item.overview?.name || item.symbol,
+                  action: ds?.action ?? 'Wait',
+                  confidence: ds?.confidence ?? 'Medium',
+                  overallScore: ds?.overallScore ?? null,
+                  qualityScore: ds?.qualityScore ?? null,
+                  valuationScore: ds?.valuationScore ?? null,
+                  technicalScore: ds?.technicalScore ?? null,
+                  whyNow: ds?.whyNow ?? [],
+                  whyNot: ds?.whyNot ?? [],
+                  missingInputs: ds?.missingInputs ?? [],
+                  overview: item.overview,
+                  basicFinancials: item.basicFinancials,
+                  priceTargets: item.priceTargets,
+                  analystRatings: item.analystRatings,
+                  price: item.price,
+                };
+              })
+            );
+            const raw = await options.llmFill(rationalePrompt);
+            const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+            const parsed = JSON.parse(cleaned);
+            if (parsed && typeof parsed === 'object') {
+              for (const sym of Object.keys(parsed)) {
+                const rationale = parsePositionRationaleEntry(parsed[sym]);
+                if (!rationale) continue;
+                const ticker = cleanTicker(sym);
+                const target = items.find((it) => it.symbol === ticker);
+                if (target?.decisionSnapshot) {
+                  target.decisionSnapshot = { ...target.decisionSnapshot, summary: rationale };
+                }
+              }
+            }
+          } catch {
+            // Proceed without LLM rationale — structured summary is the fallback
+          }
+        }
+
         // Phase 4: LLM investment conclusion — rich narrative, best-effort
         let llmConclusionComparison: string | undefined;
         if (options?.llmFill && items.length > 0) {
@@ -2523,6 +2664,50 @@ export async function executeTool(
             }
           } catch {
             // Proceed without moat analysis if the batch call fails
+          }
+        }
+
+        // LLM position rationale — clear 1-2 sentence "Why" for the guidance table
+        if (options?.llmFill && successfulItems.length > 0) {
+          try {
+            const rationalePrompt = buildBatchPositionRationalePrompt(
+              successfulItems.map((item) => {
+                const ds = item.stock.decisionSnapshot;
+                return {
+                  symbol: item.symbol,
+                  name: item.stock.companyOverview?.name || item.companyName,
+                  action: ds?.action ?? 'Wait',
+                  confidence: ds?.confidence ?? 'Medium',
+                  overallScore: ds?.overallScore ?? null,
+                  qualityScore: ds?.qualityScore ?? null,
+                  valuationScore: ds?.valuationScore ?? null,
+                  technicalScore: ds?.technicalScore ?? null,
+                  whyNow: ds?.whyNow ?? [],
+                  whyNot: ds?.whyNot ?? [],
+                  missingInputs: ds?.missingInputs ?? [],
+                  overview: item.stock.companyOverview,
+                  basicFinancials: item.stock.basicFinancials,
+                  priceTargets: item.stock.priceTargets,
+                  analystRatings: item.stock.analystRatings,
+                  price: item.stock.price,
+                };
+              })
+            );
+            const raw = await options.llmFill(rationalePrompt);
+            const cleaned = raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+            const parsed = JSON.parse(cleaned);
+            if (parsed && typeof parsed === "object") {
+              for (const sym of Object.keys(parsed)) {
+                const rationale = parsePositionRationaleEntry(parsed[sym]);
+                if (!rationale) continue;
+                const target = successfulItems.find((item) => item.symbol === cleanTicker(sym));
+                if (target?.stock.decisionSnapshot) {
+                  target.stock.decisionSnapshot = { ...target.stock.decisionSnapshot, summary: rationale };
+                }
+              }
+            }
+          } catch {
+            // Proceed without LLM rationale — structured summary is the fallback
           }
         }
 
@@ -2818,6 +3003,51 @@ export async function executeTool(
             }
           } catch {
             // LLM unavailable or invalid JSON — proceed without moat analysis
+          }
+        }
+
+        // LLM position rationale — clear 1-2 sentence "Why" for the guidance table
+        if (options?.llmFill && items.length > 0) {
+          try {
+            const rationalePrompt = buildBatchPositionRationalePrompt(
+              items.map((item) => {
+                const ds = item.decisionSnapshot;
+                return {
+                  symbol: item.symbol,
+                  name: item.overview?.name || item.symbol,
+                  action: ds?.action ?? 'Wait',
+                  confidence: ds?.confidence ?? 'Medium',
+                  overallScore: ds?.overallScore ?? null,
+                  qualityScore: ds?.qualityScore ?? null,
+                  valuationScore: ds?.valuationScore ?? null,
+                  technicalScore: ds?.technicalScore ?? null,
+                  whyNow: ds?.whyNow ?? [],
+                  whyNot: ds?.whyNot ?? [],
+                  missingInputs: ds?.missingInputs ?? [],
+                  overview: item.overview,
+                  basicFinancials: item.basicFinancials,
+                  priceTargets: item.priceTargets,
+                  analystRatings: item.analystRatings,
+                  price: item.price,
+                };
+              })
+            );
+            const raw = await options.llmFill(rationalePrompt);
+            const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+            const parsed = JSON.parse(cleaned);
+            if (parsed && typeof parsed === 'object') {
+              for (const sym of Object.keys(parsed)) {
+                const rationale = parsePositionRationaleEntry(parsed[sym]);
+                if (!rationale) continue;
+                const ticker = cleanTicker(sym);
+                const target = items.find((it) => it.symbol === ticker);
+                if (target?.decisionSnapshot) {
+                  target.decisionSnapshot = { ...target.decisionSnapshot, summary: rationale };
+                }
+              }
+            }
+          } catch {
+            // Proceed without LLM rationale — structured summary is the fallback
           }
         }
 
@@ -3325,6 +3555,51 @@ export async function executeTool(
             }
           } catch {
             // LLM unavailable or invalid JSON — proceed without moat analysis
+          }
+        }
+
+        // LLM position rationale — clear 1-2 sentence "Why" for the guidance table
+        if (options?.llmFill && items.length > 0) {
+          try {
+            const rationalePrompt = buildBatchPositionRationalePrompt(
+              items.map((item) => {
+                const ds = item.decisionSnapshot;
+                return {
+                  symbol: item.symbol,
+                  name: item.overview?.name || item.symbol,
+                  action: ds?.action ?? 'Wait',
+                  confidence: ds?.confidence ?? 'Medium',
+                  overallScore: ds?.overallScore ?? null,
+                  qualityScore: ds?.qualityScore ?? null,
+                  valuationScore: ds?.valuationScore ?? null,
+                  technicalScore: ds?.technicalScore ?? null,
+                  whyNow: ds?.whyNow ?? [],
+                  whyNot: ds?.whyNot ?? [],
+                  missingInputs: ds?.missingInputs ?? [],
+                  overview: item.overview,
+                  basicFinancials: item.basicFinancials,
+                  priceTargets: item.priceTargets,
+                  analystRatings: item.analystRatings,
+                  price: item.price,
+                };
+              })
+            );
+            const raw = await options.llmFill(rationalePrompt);
+            const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+            const parsed = JSON.parse(cleaned);
+            if (parsed && typeof parsed === 'object') {
+              for (const sym of Object.keys(parsed)) {
+                const rationale = parsePositionRationaleEntry(parsed[sym]);
+                if (!rationale) continue;
+                const ticker = cleanTicker(sym);
+                const target = items.find((it) => it.symbol === ticker);
+                if (target?.decisionSnapshot) {
+                  target.decisionSnapshot = { ...target.decisionSnapshot, summary: rationale };
+                }
+              }
+            }
+          } catch {
+            // Proceed without LLM rationale — structured summary is the fallback
           }
         }
 

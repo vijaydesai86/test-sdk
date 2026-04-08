@@ -301,7 +301,18 @@ export function buildDecisionSnapshot(input: DecisionInput): DecisionSnapshot {
       ? `Revisit if price trades into $${desiredEntryMin}-${desiredEntryMax} with fresh supporting data.`
       : 'Revisit after the next material catalyst, fresh data refresh, or a meaningful move in valuation/revisions.';
 
-  const summary = `${actionToSummaryLabel(action)} with ${confidence.toLowerCase()} confidence. ${whyNow[0] || 'The setup is mixed.'} ${whyNot[0] || ''}`.trim();
+  const scoreLabels: string[] = [];
+  if (qualityScore !== null) scoreLabels.push(`quality ${qualityScore.toFixed(0)}/100`);
+  if (valuationScore !== null) scoreLabels.push(`valuation ${valuationScore.toFixed(0)}/100`);
+  if (technicalScore !== null) scoreLabels.push(`momentum ${technicalScore.toFixed(0)}/100`);
+  const scoreSuffix = scoreLabels.length ? ` [${scoreLabels.join(', ')}]` : '';
+
+  const allReasons = [...whyNow, ...whyNot];
+  const reasonText = allReasons.length
+    ? ` ${allReasons.join(' ')}`
+    : ' The setup is mixed with no strong signals in either direction.';
+
+  const summary = `${actionToSummaryLabel(action)} — ${confidence.toLowerCase()} confidence${scoreSuffix}.${reasonText}`.trim();
 
   return {
     action,
