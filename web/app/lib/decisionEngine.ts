@@ -1,4 +1,19 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
+/**
+ * Multi-factor equity decision engine.
+ *
+ * Design based on research synthesis of:
+ * - Seeking Alpha Quant Ratings (5-pillar model: profitability, growth, value, momentum, revisions)
+ * - Piotroski F-Score (9-signal financial quality framework)
+ * - Academic insider-trading research (Seyhun, 2iq Research) — market-cap normalized, cluster-weighted
+ * - S&P Global / Refinitiv consensus studies — analyst consensus as confirmatory signal
+ *
+ * Architecture:
+ * 1. Each PILLAR computes a 0–100 score AND a human-readable detail string showing the real data.
+ * 2. Pillars are combined via explicit weighted average (weights documented).
+ * 3. The summary shows every pillar's score + data so the user sees exactly HOW the decision was made.
+ * 4. Missing data reduces CONFIDENCE only, never the score itself.
+ */
 import type {
   ActionLabel,
   ConfidenceLabel,
@@ -30,6 +45,8 @@ type DecisionInput = {
   previousDecision?: DecisionJournalRecord | null;
 };
 
+// ─── Utility helpers ────────────────────────────────────────────────────────
+
 function toNumber(value: unknown): number | null {
   if (value === null || value === undefined || value === '') return null;
   const parsed = Number(value);
@@ -46,56 +63,183 @@ function clamp(value: number, min = 0, max = 100) {
   return Math.max(min, Math.min(max, value));
 }
 
-function average(values: Array<number | null>): number | null {
-  const filtered = values.filter((value) => value !== null) as number[];
-  if (filtered.length === 0) return null;
-  return filtered.reduce((sum, value) => sum + value, 0) / filtered.length;
+function fmtPct(v: number): string {
+  return `${v >= 0 ? '+' : ''}${v.toFixed(0)}%`;
 }
 
-function computeMomentum(prices?: Array<{ date: string; close: string | number }>): number | null {
+function fmtMoney(v: number): string {
+  const abs = Math.abs(v);
+  if (abs >= 1e12) return `$${(v / 1e12).toFixed(1)}T`;
+  if (abs >= 1e9) return `$${(v / 1e9).toFixed(1)}B`;
+  if (abs >= 1e6) return `$${(v / 1e6).toFixed(1)}M`;
+  if (abs >= 1e3) return `$${(v / 1e3).toFixed(0)}K`;
+  return `$${v.toFixed(0)}`;
+}
+
+// ─── Pillar result type ─────────────────────────────────────────────────────
+type PillarResult = {
+  score: number;       // 0–100
+  detail: string;      // human-readable: "72 — 56% gross margin, 30% op margin, 35% ROE"
+  metrics: string[];   // individual metric citations for whyNow/whyNot
+};
+
+// ─── PILLAR 1: Profitability & Quality (weight 25%) ─────────────────────────
+// Inspired by Piotroski + Seeking Alpha profitability pillar.
+// Scores each metric on 0–100, averages available ones.
+function scoreProfitability(input: DecisionInput): PillarResult | null {
+  const grossMargin = normalizePercent(input.basicFinancials?.metric?.grossMarginTTM ?? input.companyOverview?.profitMargin);
+  const operatingMargin = normalizePercent(input.basicFinancials?.metric?.operatingMarginTTM ?? input.companyOverview?.operatingMargin);
+  const roe = normalizePercent(input.basicFinancials?.metric?.roeTTM ?? input.companyOverview?.returnOnEquity);
+  const roa = normalizePercent(input.basicFinancials?.metric?.roaTTM ?? input.companyOverview?.returnOnAssets);
+  const netMargin = normalizePercent(input.basicFinancials?.metric?.netProfitMarginTTM ?? input.companyOverview?.profitMargin);
+
+  // Score each metric: higher margin / return = higher score
+  // Gross margin: 0% → 0, 60%+ → 100 (linear)
+  // Operating margin: -10% → 0, 35%+ → 100
+  // ROE: 0% → 0, 30%+ → 100
+  // ROA: 0% → 0, 15%+ → 100
+  const components: Array<{ score: number; label: string }> = [];
+  if (grossMargin !== null) {
+    components.push({ score: clamp((grossMargin / 60) * 100), label: `${grossMargin.toFixed(0)}% gross margin` });
+  }
+  if (operatingMargin !== null) {
+    components.push({ score: clamp(((operatingMargin + 10) / 45) * 100), label: `${operatingMargin.toFixed(0)}% op margin` });
+  }
+  if (roe !== null) {
+    components.push({ score: clamp((roe / 30) * 100), label: `${roe.toFixed(0)}% ROE` });
+  }
+  if (roa !== null) {
+    components.push({ score: clamp((roa / 15) * 100), label: `${roa.toFixed(0)}% ROA` });
+  }
+  if (netMargin !== null && grossMargin === null) {
+    // Only use net margin if gross margin isn't available (avoid double-counting)
+    components.push({ score: clamp((netMargin / 25) * 100), label: `${netMargin.toFixed(0)}% net margin` });
+  }
+
+  if (components.length === 0) return null;
+  const score = components.reduce((s, c) => s + c.score, 0) / components.length;
+  const detail = `${score.toFixed(0)} — ${components.map(c => c.label).join(', ')}`;
+  return { score, detail, metrics: components.map(c => c.label) };
+}
+
+// ─── PILLAR 2: Growth (weight 15%) ──────────────────────────────────────────
+// Revenue growth + EPS growth. Forward-looking.
+function scoreGrowth(input: DecisionInput): PillarResult | null {
+  const revenueGrowth = normalizePercent(input.basicFinancials?.metric?.revenueGrowthTTM ?? input.companyOverview?.quarterlyRevenueGrowth);
+  const epsGrowth = normalizePercent(input.basicFinancials?.metric?.epsGrowthTTM ?? input.basicFinancials?.metric?.epsGrowth5Y ?? input.companyOverview?.quarterlyEarningsGrowth);
+
+  // Revenue growth: -20% → 0, +30%+ → 100 (center at 50 = ~5% growth)
+  // EPS growth: same scale
+  const components: Array<{ score: number; label: string }> = [];
+  if (revenueGrowth !== null) {
+    components.push({ score: clamp(((revenueGrowth + 20) / 50) * 100), label: `${fmtPct(revenueGrowth)} rev growth` });
+  }
+  if (epsGrowth !== null) {
+    components.push({ score: clamp(((epsGrowth + 20) / 50) * 100), label: `${fmtPct(epsGrowth)} EPS growth` });
+  }
+
+  if (components.length === 0) return null;
+  const score = components.reduce((s, c) => s + c.score, 0) / components.length;
+  const detail = `${score.toFixed(0)} — ${components.map(c => c.label).join(', ')}`;
+  return { score, detail, metrics: components.map(c => c.label) };
+}
+
+// ─── PILLAR 3: Valuation (weight 20%) ───────────────────────────────────────
+// P/E relative scoring + analyst target upside.
+function scoreValuation(input: DecisionInput, price: number | null): PillarResult | null {
+  const pe = toNumber(input.companyOverview?.peRatio ?? input.basicFinancials?.metric?.peBasicExclExtraTTM);
+  const forwardPE = toNumber(input.companyOverview?.forwardPE ?? input.basicFinancials?.metric?.peNormalizedAnnual);
+  const targetMean = toNumber(
+    input.priceTargets?.targetMean
+    ?? (input.analystRatings?.analystTargetPrice !== 'N/A' ? input.analystRatings?.analystTargetPrice : null)
+    ?? input.companyOverview?.analystTargetPrice
+  );
+  const targetUpside = price !== null && targetMean !== null && price !== 0
+    ? ((targetMean - price) / price) * 100
+    : null;
+
+  // P/E: lower = better value. P/E 5 → 100, P/E 25 → ~64, P/E 60+ → 0
+  // Linear scale centered around market average (~20-25 P/E = fair value)
+  // Target upside: -20% → 0, 0% → 40, +20% → 80, +40%+ → 100
+  const components: Array<{ score: number; label: string }> = [];
+  const activePE = forwardPE ?? pe;
+  if (activePE !== null && activePE > 0) {
+    const peScore = clamp(100 - ((activePE - 5) / 55) * 100);
+    const peLabel = forwardPE !== null ? `fwd P/E ${forwardPE.toFixed(1)}` : `P/E ${pe!.toFixed(1)}`;
+    components.push({ score: peScore, label: peLabel });
+  }
+  if (targetUpside !== null) {
+    const upsideScore = clamp(40 + targetUpside * 2);
+    components.push({ score: upsideScore, label: `${targetUpside.toFixed(1)}% target upside` });
+  }
+
+  if (components.length === 0) return null;
+  const score = components.reduce((s, c) => s + c.score, 0) / components.length;
+  const detail = `${score.toFixed(0)} — ${components.map(c => c.label).join(', ')}`;
+  return { score, detail, metrics: components.map(c => c.label) };
+}
+
+// ─── PILLAR 4: Momentum (weight 15%) ────────────────────────────────────────
+// Price return over observation period.
+function scoreMomentum(input: DecisionInput): PillarResult | null {
+  const prices = input.priceHistory?.prices;
   if (!prices || prices.length < 2) return null;
   const sorted = [...prices].sort((a, b) => a.date.localeCompare(b.date));
   const first = toNumber(sorted[0].close);
   const last = toNumber(sorted[sorted.length - 1].close);
   if (first === null || last === null || first === 0) return null;
-  return clamp(50 + ((last - first) / first) * 100);
+
+  const returnPct = ((last - first) / first) * 100;
+  // Map: -30% → 0, 0% → 50, +30% → 100
+  const score = clamp(50 + (returnPct / 30) * 50);
+  const trendLabel = returnPct >= 5 ? 'uptrend' : returnPct <= -5 ? 'downtrend' : 'flat';
+  const detail = `${score.toFixed(0)} — ${fmtPct(returnPct)} price change (${trendLabel})`;
+  return { score, detail, metrics: [`${fmtPct(returnPct)} price change`] };
 }
 
-/**
- * Analyst consensus score (0–100).
- * Converts strongBuy/buy/hold/sell/strongSell counts into a weighted sentiment.
- * Weights: strongBuy=2, buy=1, hold=0, sell=-1, strongSell=-2.
- * Result maps a –2…+2 range to 0…100. Null if no ratings available.
- */
-function computeAnalystConsensusScore(ratings: any): { score: number | null; detail: string | null } {
-  if (!ratings) return { score: null, detail: null };
-  const sb = toNumber(ratings.strongBuy);
-  const b = toNumber(ratings.buy);
-  const h = toNumber(ratings.hold);
-  const s = toNumber(ratings.sell);
-  const ss = toNumber(ratings.strongSell);
+// ─── PILLAR 5: Analyst Consensus (weight 15%) ───────────────────────────────
+// Weighted sentiment from strongBuy/buy/hold/sell/strongSell counts.
+// Research: analyst consensus aggregation reduces noise; upgrades/downgrades are predictive.
+// Data sources: Finnhub analystRatings.strongBuy, AV companyOverview.analystRatingStrongBuy,
+// FMP analystRecommendations — we check all paths.
+function scoreAnalystConsensus(input: DecisionInput): PillarResult | null {
+  const ratings = input.analystRatings;
+  const overview = input.companyOverview;
+
+  // Try multiple field-name conventions across providers
+  const sb = toNumber(ratings?.strongBuy) ?? toNumber(overview?.analystRatingStrongBuy);
+  const b = toNumber(ratings?.buy) ?? toNumber(overview?.analystRatingBuy);
+  const h = toNumber(ratings?.hold) ?? toNumber(overview?.analystRatingHold);
+  const s = toNumber(ratings?.sell) ?? toNumber(overview?.analystRatingSell);
+  const ss = toNumber(ratings?.strongSell) ?? toNumber(overview?.analystRatingStrongSell);
   const counts = [sb, b, h, s, ss].filter(v => v !== null) as number[];
   const total = counts.reduce((a, c) => a + c, 0);
-  if (total === 0) return { score: null, detail: null };
-  // Weighted average: -2 (all strong sell) to +2 (all strong buy)
+  if (total === 0) return null;
+
+  // Weighted average: strongBuy=2, buy=1, hold=0, sell=-1, strongSell=-2
+  // Range: -2 (all strong sell) to +2 (all strong buy)
   const weighted = ((sb ?? 0) * 2 + (b ?? 0) * 1 + (h ?? 0) * 0 + (s ?? 0) * -1 + (ss ?? 0) * -2) / total;
-  // Map -2..+2 to 0..100
+  // Map -2..+2 → 0..100
   const score = clamp((weighted + 2) * 25);
+
   const buyTotal = (sb ?? 0) + (b ?? 0);
   const sellTotal = (s ?? 0) + (ss ?? 0);
-  const detail = `${buyTotal} buy vs ${sellTotal} sell (${total} analysts)`;
-  return { score, detail };
+  const holdTotal = h ?? 0;
+  const label = `${buyTotal} buy, ${holdTotal} hold, ${sellTotal} sell (${total} analysts)`;
+  const detail = `${score.toFixed(0)} — ${label}`;
+  return { score, detail, metrics: [label] };
 }
 
-/**
- * Insider trading score (0–100), normalized by market cap.
- * Net buying as % of market cap: strongly positive = bullish, negative = bearish.
- * Uses thresholds relative to market cap so $5M means different things for $10B vs $1T.
- */
-function computeInsiderScore(insiderTrading: any, marketCapStr: string | number | null | undefined): { score: number | null; detail: string | null } {
-  const txns = insiderTrading?.recentTransactions;
-  if (!Array.isArray(txns) || txns.length === 0) return { score: null, detail: null };
-  const marketCap = toNumber(marketCapStr);
+// ─── PILLAR 6: Insider Activity (weight 5%) ─────────────────────────────────
+// Research: insider buying clusters are predictive, especially in smaller companies.
+// ALL normalization is by market cap — no fixed dollar thresholds.
+// Without market cap, this pillar returns null (we can't evaluate significance).
+function scoreInsiderActivity(input: DecisionInput): PillarResult | null {
+  const txns = input.insiderTrading?.recentTransactions;
+  if (!Array.isArray(txns) || txns.length === 0) return null;
+  const marketCap = toNumber(input.companyOverview?.marketCapitalization ?? input.companyOverview?.MarketCapitalization);
+  // Without market cap we cannot normalize — return null rather than guess
+  if (marketCap === null || marketCap <= 0) return null;
 
   let netBuyValue = 0;
   let buyCount = 0;
@@ -111,33 +255,107 @@ function computeInsiderScore(insiderTrading: any, marketCapStr: string | number 
       sellCount++;
     }
   }
+  if (buyCount === 0 && sellCount === 0) return null;
 
-  if (buyCount === 0 && sellCount === 0) return { score: null, detail: null };
+  // Normalize: net buying as basis points of market cap
+  // Academic research: 1bp (0.01%) of net insider buying is a meaningful signal
+  const bps = (netBuyValue / marketCap) * 10000;
+  // Map: -10bps → 0, 0bps → 50, +10bps → 100
+  const score = clamp(50 + bps * 5);
 
-  // Format the net value
-  const absNet = Math.abs(netBuyValue);
-  const netLabel = absNet >= 1e9 ? `$${(absNet / 1e9).toFixed(1)}B`
-    : absNet >= 1e6 ? `$${(absNet / 1e6).toFixed(1)}M`
-    : `$${absNet.toFixed(0)}`;
   const direction = netBuyValue >= 0 ? 'net buying' : 'net selling';
+  const pctOfMktCap = (Math.abs(netBuyValue) / marketCap) * 100;
+  const label = `insider ${direction} ${fmtMoney(Math.abs(netBuyValue))} (${pctOfMktCap.toFixed(4)}% of mkt cap, ${buyCount} buys, ${sellCount} sells)`;
+  const detail = `${score.toFixed(0)} — ${label}`;
+  return { score, detail, metrics: [label] };
+}
 
-  let score: number;
-  if (marketCap !== null && marketCap > 0) {
-    // Normalize: insider net buying as basis points of market cap
-    // 0.01% of mkt cap net buying = meaningful signal
-    const bps = (netBuyValue / marketCap) * 10000; // basis points
-    // Map: -10bps..+10bps → 0..100 (center at 50 = neutral)
-    score = clamp(50 + bps * 5);
-    const pctOfMktCap = Math.abs(netBuyValue / marketCap) * 100;
-    const detail = `Insider ${direction} ${netLabel} (${pctOfMktCap.toFixed(3)}% of mkt cap); ${buyCount} buys, ${sellCount} sells`;
-    return { score, detail };
+// ─── PILLAR 7: Financial Health (weight 5%) ─────────────────────────────────
+// Inspired by Piotroski leverage/liquidity signals.
+// Uses balance sheet data: debt-to-equity, positive operating cash flow.
+function scoreFinancialHealth(input: DecisionInput): PillarResult | null {
+  const bs = input.balanceSheet;
+  const cf = input.cashFlow;
+  const overview = input.companyOverview;
+  const bfMetric = input.basicFinancials?.metric;
+
+  const components: Array<{ score: number; label: string }> = [];
+
+  // Debt-to-equity: from Finnhub metric or computed from balance sheet
+  const debtToEquity = toNumber(bfMetric?.totalDebtToEquityQuarterly ?? bfMetric?.longTermDebtToEquityQuarterly);
+  if (debtToEquity !== null) {
+    // D/E 0 → 100, D/E 1.0 → 50, D/E 3+ → 0
+    const deScore = clamp(100 - (debtToEquity / 3) * 100);
+    components.push({ score: deScore, label: `${debtToEquity.toFixed(2)}x debt/equity` });
+  } else {
+    // Try computing from balance sheet reports
+    const reports = Array.isArray(bs?.annualReports) ? bs.annualReports : Array.isArray(bs?.quarterlyReports) ? bs.quarterlyReports : [];
+    const latest = reports[0];
+    if (latest) {
+      const totalDebt = toNumber(latest.longTermDebt) ?? toNumber(latest.totalLiabilities);
+      const equity = toNumber(latest.totalShareholderEquity);
+      if (totalDebt !== null && equity !== null && equity > 0) {
+        const ratio = totalDebt / equity;
+        const deScore = clamp(100 - (ratio / 3) * 100);
+        components.push({ score: deScore, label: `${ratio.toFixed(2)}x debt/equity` });
+      }
+    }
   }
 
-  // Without market cap, use absolute value heuristic (less reliable)
-  score = netBuyValue > 1e6 ? 70 : netBuyValue > 0 ? 60 : netBuyValue > -1e6 ? 45 : 30;
-  const detail = `Insider ${direction} ${netLabel}; ${buyCount} buys, ${sellCount} sells`;
-  return { score, detail };
+  // Current ratio from Finnhub metric
+  const currentRatio = toNumber(bfMetric?.currentRatioQuarterly);
+  if (currentRatio !== null) {
+    // CR 0.5 → 10, 1.5 → 75, 3+ → 100
+    const crScore = clamp((currentRatio / 3) * 100);
+    components.push({ score: crScore, label: `${currentRatio.toFixed(1)}x current ratio` });
+  }
+
+  // Positive operating cash flow (Piotroski signal)
+  const cfReports = Array.isArray(cf?.annualReports) ? cf.annualReports : Array.isArray(cf?.quarterlyReports) ? cf.quarterlyReports : [];
+  const latestCF = cfReports[0];
+  const ocf = toNumber(latestCF?.operatingCashflow);
+  if (ocf !== null) {
+    components.push({ score: ocf > 0 ? 75 : 20, label: `${ocf > 0 ? 'positive' : 'negative'} operating cash flow (${fmtMoney(ocf)})` });
+  }
+
+  // Free cash flow yield (if we have FCF and market cap)
+  const fcf = toNumber(latestCF?.freeCashFlow);
+  const mktCap = toNumber(overview?.marketCapitalization ?? overview?.MarketCapitalization);
+  if (fcf !== null && mktCap !== null && mktCap > 0) {
+    const fcfYield = (fcf / mktCap) * 100;
+    // Yield: -5% → 0, 0% → 30, 5% → 80, 10%+ → 100
+    const fcfScore = clamp(30 + fcfYield * 10);
+    components.push({ score: fcfScore, label: `${fcfYield.toFixed(1)}% FCF yield` });
+  }
+
+  if (components.length === 0) return null;
+  const score = components.reduce((s, c) => s + c.score, 0) / components.length;
+  const detail = `${score.toFixed(0)} — ${components.map(c => c.label).join(', ')}`;
+  return { score, detail, metrics: components.map(c => c.label) };
 }
+
+// ─── Portfolio fit (not a market signal — separate modifier) ────────────────
+function computePortfolioFit(input: DecisionInput): { score: number; detail: string } {
+  const ownershipStatus = input.position?.ownershipStatus ?? 'watching';
+  const currentWeight = input.position?.currentWeight ?? null;
+  const targetWeight = input.position?.targetWeight ?? null;
+  const maxWeight = input.position?.maxWeight ?? input.portfolioProfile?.maxPositionWeight ?? null;
+
+  if (ownershipStatus === 'owned' && currentWeight !== null && maxWeight !== null && currentWeight > maxWeight) {
+    return { score: 20, detail: `over max weight (${currentWeight}% vs max ${maxWeight}%)` };
+  }
+  if (ownershipStatus === 'owned' && currentWeight !== null && targetWeight !== null) {
+    return currentWeight <= targetWeight
+      ? { score: 70, detail: `below target (${currentWeight}% vs target ${targetWeight}%)` }
+      : { score: 45, detail: `above target (${currentWeight}% vs target ${targetWeight}%)` };
+  }
+  if (ownershipStatus === 'watching') {
+    return { score: 60, detail: 'watching — no active position' };
+  }
+  return { score: 55, detail: 'position data incomplete' };
+}
+
+// ─── Legacy helpers ─────────────────────────────────────────────────────────
 
 function buildPortfolioImpact(args: {
   action: DecisionAction;
@@ -173,95 +391,68 @@ function actionToSummaryLabel(action: DecisionAction): string {
   return 'Wait for a better setup';
 }
 
-function describeTechnicalSupport(args: {
-  technicalScore: number | null;
-  momentum: number | null;
-  targetUpside: number | null;
-  supportive: boolean;
-}): string | null {
-  const { technicalScore, momentum, targetUpside, supportive } = args;
-  if (technicalScore === null) return null;
+// ─── MAIN: Build the decision snapshot ──────────────────────────────────────
 
-  const scoreLabel = `(${technicalScore.toFixed(0)}/100).`;
-  if (momentum !== null && targetUpside !== null) {
-    return supportive
-      ? `Momentum and target upside are supportive ${scoreLabel}`
-      : `Momentum and target upside are not supportive ${scoreLabel}`;
-  }
-  if (momentum !== null) {
-    return supportive
-      ? `Price momentum is supportive ${scoreLabel}`
-      : `Price momentum is not supportive ${scoreLabel}`;
-  }
-  if (targetUpside !== null) {
-    return supportive
-      ? `Analyst target upside is supportive ${scoreLabel}`
-      : `Analyst target upside is not supportive ${scoreLabel}`;
-  }
-  return null;
-}
+/**
+ * Pillar weights (must sum to 100):
+ *
+ * | Pillar              | Weight | Rationale                                               |
+ * |---------------------|--------|---------------------------------------------------------|
+ * | Profitability       |   25%  | Strongest predictor of long-term returns (Piotroski, SA) |
+ * | Growth              |   15%  | Revenue/EPS trajectory; forward-looking                 |
+ * | Valuation           |   20%  | Price vs fair value; avoids overpaying                  |
+ * | Momentum            |   15%  | Price trend confirmation (Fama-French, SA)              |
+ * | Analyst Consensus   |   15%  | Aggregate Wall Street view; confirmatory                |
+ * | Insider Activity    |    5%  | Confirmatory signal; market-cap normalized (Seyhun)     |
+ * | Financial Health    |    5%  | Leverage & liquidity guard (Piotroski)                  |
+ */
+const PILLAR_WEIGHTS = {
+  profitability: 25,
+  growth: 15,
+  valuation: 20,
+  momentum: 15,
+  analystConsensus: 15,
+  insiderActivity: 5,
+  financialHealth: 5,
+} as const;
 
 export function buildDecisionSnapshot(input: DecisionInput): DecisionSnapshot {
   const price = toNumber(input.price?.price);
-  const targetMean = toNumber(
-    input.priceTargets?.targetMean
-    ?? (input.analystRatings?.analystTargetPrice !== 'N/A' ? input.analystRatings?.analystTargetPrice : null)
-    ?? input.companyOverview?.analystTargetPrice
-  );
-  const targetUpside = price !== null && targetMean !== null && price !== 0
-    ? ((targetMean - price) / price) * 100
+
+  // ── Compute every pillar ──
+  const profitability = scoreProfitability(input);
+  const growth = scoreGrowth(input);
+  const valuation = scoreValuation(input, price);
+  const momentum = scoreMomentum(input);
+  const analystConsensus = scoreAnalystConsensus(input);
+  const insiderActivity = scoreInsiderActivity(input);
+  const financialHealth = scoreFinancialHealth(input);
+  const portfolioFit = computePortfolioFit(input);
+
+  // ── Weighted overall score ──
+  // Only pillars that returned non-null contribute. Weight is redistributed proportionally.
+  const pillars: Array<{ name: string; result: PillarResult | null; weight: number }> = [
+    { name: 'Profitability', result: profitability, weight: PILLAR_WEIGHTS.profitability },
+    { name: 'Growth', result: growth, weight: PILLAR_WEIGHTS.growth },
+    { name: 'Valuation', result: valuation, weight: PILLAR_WEIGHTS.valuation },
+    { name: 'Momentum', result: momentum, weight: PILLAR_WEIGHTS.momentum },
+    { name: 'Analysts', result: analystConsensus, weight: PILLAR_WEIGHTS.analystConsensus },
+    { name: 'Insiders', result: insiderActivity, weight: PILLAR_WEIGHTS.insiderActivity },
+    { name: 'Fin. Health', result: financialHealth, weight: PILLAR_WEIGHTS.financialHealth },
+  ];
+
+  const activePillars = pillars.filter(p => p.result !== null);
+  const totalWeight = activePillars.reduce((s, p) => s + p.weight, 0);
+  const overallScore = totalWeight > 0
+    ? activePillars.reduce((s, p) => s + p.result!.score * p.weight, 0) / totalWeight
     : null;
 
-  const grossMargin = normalizePercent(input.basicFinancials?.metric?.grossMarginTTM ?? input.companyOverview?.profitMargin);
-  const operatingMargin = normalizePercent(input.basicFinancials?.metric?.operatingMarginTTM ?? input.companyOverview?.operatingMargin);
-  const roe = normalizePercent(input.basicFinancials?.metric?.roeTTM ?? input.companyOverview?.returnOnEquity);
-  const revenueGrowth = normalizePercent(input.basicFinancials?.metric?.revenueGrowthTTM ?? input.companyOverview?.quarterlyRevenueGrowth);
-  const epsGrowth = normalizePercent(input.basicFinancials?.metric?.epsGrowthTTM ?? input.basicFinancials?.metric?.epsGrowth5Y ?? input.companyOverview?.quarterlyEarningsGrowth);
-  const pe = toNumber(input.companyOverview?.peRatio ?? input.basicFinancials?.metric?.peBasicExclExtraTTM);
-  const momentum = computeMomentum(input.priceHistory?.prices);
+  // Legacy sub-scores (for backward compatibility with report generators)
+  const qualityScore = profitability?.score ?? null;
+  const valuationScore = valuation?.score ?? null;
+  const technicalScore = momentum?.score ?? null;
 
-  // ── Analyst consensus ──
-  const analystConsensus = computeAnalystConsensusScore(input.analystRatings);
-  const analystConsensusScore = analystConsensus.score;
-
-  // ── Insider trading (market-cap normalized) ──
-  const marketCap = input.companyOverview?.marketCapitalization ?? input.companyOverview?.MarketCapitalization;
-  const insiderResult = computeInsiderScore(input.insiderTrading, marketCap);
-  const insiderScore = insiderResult.score;
-
-  const qualityScore = average([
-    grossMargin !== null ? clamp(grossMargin) : null,
-    operatingMargin !== null ? clamp(operatingMargin) : null,
-    roe !== null ? clamp(roe) : null,
-    revenueGrowth !== null ? clamp(50 + revenueGrowth) : null,
-    epsGrowth !== null ? clamp(50 + epsGrowth) : null,
-  ]);
-  const valuationScore = average([
-    pe !== null && pe > 0 ? clamp(100 - (pe / 45) * 100) : null,
-    targetUpside !== null ? clamp(50 + targetUpside * 1.5) : null,
-  ]);
-  const technicalScore = average([
-    momentum,
-    targetUpside !== null ? clamp(50 + targetUpside) : null,
-  ]);
-
-  const currentWeight = input.position?.currentWeight ?? null;
-  const targetWeight = input.position?.targetWeight ?? null;
-  const maxWeight = input.position?.maxWeight ?? input.portfolioProfile?.maxPositionWeight ?? null;
-  const ownershipStatus = input.position?.ownershipStatus ?? 'watching';
-  const desiredEntryMin = input.position?.desiredEntryMin ?? null;
-  const desiredEntryMax = input.position?.desiredEntryMax ?? null;
-  const trimAbove = input.position?.trimAbove ?? null;
-
-  let portfolioFitScore: number | null = 55;
-  if (ownershipStatus === 'owned' && currentWeight !== null && maxWeight !== null && currentWeight > maxWeight) {
-    portfolioFitScore = 20;
-  } else if (ownershipStatus === 'owned' && currentWeight !== null && targetWeight !== null) {
-    portfolioFitScore = currentWeight <= targetWeight ? 70 : 45;
-  } else if (ownershipStatus === 'watching') {
-    portfolioFitScore = 60;
-  }
-
+  // ── Freshness & trust ──
   const trust = input.trust;
   const freshness = trust?.criticalFresh
     ? 'fresh'
@@ -270,163 +461,106 @@ export function buildDecisionSnapshot(input: DecisionInput): DecisionSnapshot {
       : 'aging';
   const staleCritical = freshness === 'stale';
 
+  // ── Missing data (affects confidence only) ──
   const missingInputs: string[] = [];
   if (price === null) missingInputs.push('current price');
-  if (revenueGrowth === null) missingInputs.push('revenue growth');
-  if (operatingMargin === null) missingInputs.push('operating margin');
-  if (targetUpside === null) missingInputs.push('price target');
-  if (!input.companyNews?.articles?.length) missingInputs.push('recent company news');
+  if (!profitability) missingInputs.push('profitability metrics');
+  if (!growth) missingInputs.push('growth metrics');
+  if (!valuation) missingInputs.push('valuation data');
+  if (!momentum) missingInputs.push('price history');
+  if (!analystConsensus) missingInputs.push('analyst ratings');
   if (!input.trust?.entries.length) missingInputs.push('freshness metadata');
 
-  // Weighted overall score. Primary pillars get 20% each, secondary signals get 10%.
-  // Quality (20%) + Valuation (20%) + Technical (20%) + PortfolioFit (10%) + Freshness (10%) + Analyst consensus (10%) + Insider (10%)
-  const weightedParts: Array<{ value: number; weight: number }> = [];
-  if (qualityScore !== null) weightedParts.push({ value: qualityScore, weight: 20 });
-  if (valuationScore !== null) weightedParts.push({ value: valuationScore, weight: 20 });
-  if (technicalScore !== null) weightedParts.push({ value: technicalScore, weight: 20 });
-  weightedParts.push({ value: portfolioFitScore ?? 55, weight: 10 });
-  weightedParts.push({ value: staleCritical ? 15 : freshness === 'aging' ? 45 : 75, weight: 10 });
-  if (analystConsensusScore !== null) weightedParts.push({ value: analystConsensusScore, weight: 10 });
-  if (insiderScore !== null) weightedParts.push({ value: insiderScore, weight: 10 });
-
-  const totalWeight = weightedParts.reduce((s, p) => s + p.weight, 0);
-  const overallScore = totalWeight > 0
-    ? weightedParts.reduce((s, p) => s + p.value * p.weight, 0) / totalWeight
-    : null;
-
-  const whyNow: string[] = [];
-  const whyNot: string[] = [];
-
-  // ── whyNow: highlight the best available real metrics ──
-  // Use actual metric values to build stock-specific rationale, not just abstract scores.
-  // This ensures every stock reads differently based on its real data.
-  {
-    const strengths: string[] = [];
-    if (grossMargin !== null && grossMargin >= 40) strengths.push(`${grossMargin.toFixed(0)}% gross margin`);
-    if (operatingMargin !== null && operatingMargin >= 15) strengths.push(`${operatingMargin.toFixed(0)}% op margin`);
-    if (roe !== null && roe >= 15) strengths.push(`${roe.toFixed(0)}% ROE`);
-    if (revenueGrowth !== null && revenueGrowth > 5) strengths.push(`${revenueGrowth > 0 ? '+' : ''}${revenueGrowth.toFixed(0)}% rev growth`);
-    if (epsGrowth !== null && epsGrowth > 5) strengths.push(`${epsGrowth > 0 ? '+' : ''}${epsGrowth.toFixed(0)}% EPS growth`);
-    if (strengths.length >= 3) {
-      whyNow.push(`Strong fundamentals (${strengths.join(', ')}).`);
-    } else if (strengths.length >= 1) {
-      whyNow.push(`Solid on ${strengths.join(', ')}.`);
-    }
-  }
-
-  if (valuationScore !== null && valuationScore >= 58) {
-    const parts: string[] = [];
-    if (targetUpside !== null) parts.push(`${targetUpside.toFixed(1)}% target upside`);
-    if (pe !== null && pe > 0) parts.push(`P/E ${pe.toFixed(1)}`);
-    const detail = parts.length ? `: ${parts.join(', ')}` : '';
-    whyNow.push(`Supportive valuation${detail}.`);
-  } else if (pe !== null && pe > 0 && pe < 20 && valuationScore === null) {
-    // Even without a full valuation score, a low P/E is noteworthy
-    whyNow.push(`Low P/E of ${pe.toFixed(1)} suggests value.`);
-  }
-
-  const supportiveTechnicalReason = describeTechnicalSupport({
-    technicalScore,
-    momentum,
-    targetUpside,
-    supportive: true,
-  });
-  if (technicalScore !== null && technicalScore >= 58 && supportiveTechnicalReason) whyNow.push(supportiveTechnicalReason);
-
-  // ── Analyst consensus signal ──
-  if (analystConsensusScore !== null && analystConsensus.detail) {
-    if (analystConsensusScore >= 65) {
-      whyNow.push(`Analyst consensus is bullish: ${analystConsensus.detail}.`);
-    } else if (analystConsensusScore < 40) {
-      whyNot.push(`Analyst consensus is bearish: ${analystConsensus.detail}.`);
-    }
-  }
-
-  // ── Insider trading signal ──
-  if (insiderScore !== null && insiderResult.detail) {
-    if (insiderScore >= 60) {
-      whyNow.push(`${insiderResult.detail}.`);
-    } else if (insiderScore < 40) {
-      whyNot.push(`${insiderResult.detail}.`);
-    }
-  }
-
-  if (desiredEntryMin !== null && desiredEntryMax !== null && price !== null) {
-    if (price >= desiredEntryMin && price <= desiredEntryMax) {
-      whyNow.push(`Price is inside your preferred entry range of $${desiredEntryMin}–${desiredEntryMax}.`);
-    } else {
-      whyNot.push(`Price is outside your preferred entry range of $${desiredEntryMin}–${desiredEntryMax}.`);
-    }
-  }
-
-  // ── whyNot: concrete metric-level concerns ──
-  // These are real investment concerns, NOT data-gap complaints.
-  if (staleCritical) whyNot.push(`Critical data is stale for: ${(trust?.staleLabels || []).join(', ')}.`);
-  {
-    const weaknesses: string[] = [];
-    if (operatingMargin !== null && operatingMargin < 5) weaknesses.push(`${operatingMargin.toFixed(0)}% op margin`);
-    if (roe !== null && roe < 8) weaknesses.push(`${roe.toFixed(0)}% ROE`);
-    if (revenueGrowth !== null && revenueGrowth < -5) weaknesses.push(`${revenueGrowth.toFixed(0)}% rev growth`);
-    if (grossMargin !== null && grossMargin < 25) weaknesses.push(`${grossMargin.toFixed(0)}% gross margin`);
-    if (weaknesses.length) {
-      whyNot.push(`Weak fundamentals (${weaknesses.join(', ')}).`);
-    }
-  }
-  if (valuationScore !== null && valuationScore < 45) {
-    const concerns: string[] = [];
-    if (pe !== null && pe > 35) concerns.push(`P/E ${pe.toFixed(1)}`);
-    if (targetUpside !== null && targetUpside < 5) concerns.push(`only ${targetUpside.toFixed(1)}% target upside`);
-    const detail = concerns.length ? ` (${concerns.join(', ')})` : '';
-    whyNot.push(`Stretched valuation${detail}.`);
-  }
-  const unsupportiveTechnicalReason = describeTechnicalSupport({
-    technicalScore,
-    momentum,
-    targetUpside,
-    supportive: false,
-  });
-  if (technicalScore !== null && technicalScore < 40 && unsupportiveTechnicalReason) whyNot.push(unsupportiveTechnicalReason);
-  if (ownershipStatus === 'owned' && currentWeight !== null && maxWeight !== null && currentWeight > maxWeight) {
-    whyNot.push(`Position size ${currentWeight}% is already above your max-weight guardrail of ${maxWeight}%.`);
-  }
-
-  // Missing data only affects confidence (already computed above), NOT whyNot.
-  // This keeps the rationale focused on the investment case.
+  // ── Determine action ──
+  const ownershipStatus = input.position?.ownershipStatus ?? 'watching';
+  const currentWeight = input.position?.currentWeight ?? null;
+  const targetWeight = input.position?.targetWeight ?? null;
+  const maxWeight = input.position?.maxWeight ?? input.portfolioProfile?.maxPositionWeight ?? null;
+  const desiredEntryMin = input.position?.desiredEntryMin ?? null;
+  const desiredEntryMax = input.position?.desiredEntryMax ?? null;
+  const trimAbove = input.position?.trimAbove ?? null;
 
   let action: DecisionAction = 'Wait';
   if (!staleCritical && overallScore !== null) {
     if (ownershipStatus === 'owned') {
       if (currentWeight !== null && maxWeight !== null && currentWeight > maxWeight && overallScore < 60) {
         action = overallScore < 35 ? 'Exit' : 'Trim';
-      } else if (overallScore >= 68 && (targetWeight === null || currentWeight === null || currentWeight < targetWeight)) {
+      } else if (overallScore >= 65 && (targetWeight === null || currentWeight === null || currentWeight < targetWeight)) {
         action = 'Add';
-      } else if (overallScore >= 48) {
+      } else if (overallScore >= 45) {
         action = 'Hold';
-      } else if (overallScore < 32) {
+      } else if (overallScore < 30) {
         action = 'Trim';
       } else {
         action = 'Wait';
       }
-    } else if (overallScore >= 68) {
+    } else if (overallScore >= 65) {
       action = 'Initiate';
-    } else if (overallScore >= 48) {
+    } else if (overallScore >= 45) {
       action = 'Wait';
     } else {
       action = 'Wait';
     }
   }
+  if (staleCritical) action = 'Wait';
 
-  if (staleCritical) {
-    action = 'Wait';
+  // ── Confidence (separate from score — based on data completeness & freshness) ──
+  const pillarCoverage = activePillars.length / pillars.length; // 0..1
+  const freshnessModifier = staleCritical ? 0.3 : freshness === 'aging' ? 0.7 : 1.0;
+  const confidenceScore = (pillarCoverage * 0.6 + freshnessModifier * 0.4) * 100;
+  const confidence: ConfidenceLabel = confidenceScore >= 72 ? 'High' : confidenceScore >= 50 ? 'Medium' : 'Low';
+
+  // ── whyNow / whyNot (built from pillar metrics) ──
+  const whyNow: string[] = [];
+  const whyNot: string[] = [];
+
+  // Strong/weak pillar contributions
+  for (const p of activePillars) {
+    if (p.result!.score >= 65) {
+      whyNow.push(`${p.name} ${p.result!.detail}.`);
+    } else if (p.result!.score < 35) {
+      whyNot.push(`${p.name} ${p.result!.detail}.`);
+    }
   }
 
-  const confidenceScore = average([
-    overallScore,
-    staleCritical ? 20 : freshness === 'aging' ? 55 : 85,
-    clamp(100 - missingInputs.length * 12),
-  ]) ?? 35;
-  const confidence: ConfidenceLabel = confidenceScore >= 75 ? 'High' : confidenceScore >= 55 ? 'Medium' : 'Low';
+  // Portfolio-specific signals
+  if (desiredEntryMin !== null && desiredEntryMax !== null && price !== null) {
+    if (price >= desiredEntryMin && price <= desiredEntryMax) {
+      whyNow.push(`Price inside preferred entry range $${desiredEntryMin}–${desiredEntryMax}.`);
+    } else {
+      whyNot.push(`Price outside preferred entry range $${desiredEntryMin}–${desiredEntryMax}.`);
+    }
+  }
+  if (staleCritical) {
+    whyNot.push(`Critical data is stale: ${(trust?.staleLabels || []).join(', ')}.`);
+  }
+  if (ownershipStatus === 'owned' && currentWeight !== null && maxWeight !== null && currentWeight > maxWeight) {
+    whyNot.push(`Position ${currentWeight}% exceeds max-weight guardrail ${maxWeight}%.`);
+  }
 
+  // ── Build transparent summary: action + score + every pillar's score + data ──
+  const pillarSummaryParts = activePillars.map(p =>
+    `${p.name} ${p.result!.score.toFixed(0)}/100`
+  );
+  const pillarLine = pillarSummaryParts.length ? ` [${pillarSummaryParts.join(' · ')}]` : '';
+  const scoreTag = overallScore !== null ? ` Score ${overallScore.toFixed(0)}/100.` : '';
+
+  // Lead with the most impactful signal
+  const topPro = whyNow[0] || null;
+  const topCon = whyNot[0] || null;
+  let leadReason = '';
+  if (topPro && topCon) {
+    leadReason = ` ${topPro} ${topCon}`;
+  } else if (topPro) {
+    leadReason = ` ${topPro}`;
+  } else if (topCon) {
+    leadReason = ` ${topCon}`;
+  } else if (activePillars.length === 0) {
+    leadReason = ' Insufficient data to form a view.';
+  }
+  const summary = `${actionToSummaryLabel(action)}.${scoreTag}${leadReason}${pillarLine}`.trim();
+
+  // ── Changed (vs previous decision) ──
   const changed: string[] = [];
   const previousAction = input.previousDecision?.action;
   const previousPrice = input.previousDecision?.price ?? null;
@@ -461,33 +595,6 @@ export function buildDecisionSnapshot(input: DecisionInput): DecisionSnapshot {
       ? `Revisit if price trades into $${desiredEntryMin}-${desiredEntryMax} with fresh supporting data.`
       : 'Revisit after the next material catalyst, fresh data refresh, or a meaningful move in valuation/revisions.';
 
-  // Build a concise summary: top reason for + top reason against, with scores.
-  // Kept short so it fits in table cells and card layouts without horizontal overflow.
-  const topPro = whyNow[0] || null;
-  const topCon = whyNot[0] || null;
-  const reasonParts: string[] = [];
-  if (topPro) reasonParts.push(topPro);
-  if (topCon) reasonParts.push(topCon);
-  // When neither whyNow nor whyNot has entries, build a mini fact-set from available data
-  if (!reasonParts.length) {
-    const facts: string[] = [];
-    if (pe !== null) facts.push(`P/E ${pe.toFixed(1)}`);
-    if (grossMargin !== null) facts.push(`gross margin ${grossMargin.toFixed(0)}%`);
-    if (roe !== null) facts.push(`ROE ${roe.toFixed(0)}%`);
-    if (momentum !== null) {
-      const momReturn = (momentum - 50);
-      facts.push(`trend ${momReturn >= 0 ? '+' : ''}${momReturn.toFixed(0)}%`);
-    }
-    if (facts.length) {
-      reasonParts.push(`Mixed signals (${facts.join(', ')}).`);
-    }
-  }
-  const reasonText = reasonParts.length
-    ? reasonParts.join(' ')
-    : 'Insufficient data to form a view.';
-  const scoreTag = overallScore !== null ? ` Score ${overallScore.toFixed(0)}/100.` : '';
-  const summary = `${actionToSummaryLabel(action)}.${scoreTag} ${reasonText}`.trim();
-
   return {
     action,
     confidence,
@@ -496,9 +603,9 @@ export function buildDecisionSnapshot(input: DecisionInput): DecisionSnapshot {
     qualityScore: qualityScore !== null ? Number(qualityScore.toFixed(1)) : null,
     valuationScore: valuationScore !== null ? Number(valuationScore.toFixed(1)) : null,
     technicalScore: technicalScore !== null ? Number(technicalScore.toFixed(1)) : null,
-    portfolioFitScore: portfolioFitScore !== null ? Number(portfolioFitScore.toFixed(1)) : null,
-    analystConsensusScore: analystConsensusScore !== null ? Number(analystConsensusScore.toFixed(1)) : null,
-    insiderScore: insiderScore !== null ? Number(insiderScore.toFixed(1)) : null,
+    portfolioFitScore: portfolioFit ? Number(portfolioFit.score.toFixed(1)) : null,
+    analystConsensusScore: analystConsensus ? Number(analystConsensus.score.toFixed(1)) : null,
+    insiderScore: insiderActivity ? Number(insiderActivity.score.toFixed(1)) : null,
     whyNow,
     whyNot,
     missingInputs,

@@ -424,6 +424,8 @@ function buildBatchPositionRationalePrompt(
     qualityScore: number | null;
     valuationScore: number | null;
     technicalScore: number | null;
+    analystConsensusScore?: number | null;
+    insiderScore?: number | null;
     whyNow: string[];
     whyNot: string[];
     missingInputs: string[];
@@ -442,7 +444,7 @@ function buildBatchPositionRationalePrompt(
     return n.toFixed(2);
   };
 
-  const companySections = companies.map(({ symbol, name, action, confidence, overallScore, qualityScore, valuationScore, technicalScore, whyNow, whyNot, missingInputs, overview, basicFinancials, priceTargets, analystRatings, price: priceData }) => {
+  const companySections = companies.map(({ symbol, name, action, confidence, overallScore, qualityScore, valuationScore, technicalScore, analystConsensusScore, insiderScore, whyNow, whyNot, missingInputs, overview, basicFinancials, priceTargets, analystRatings, price: priceData }) => {
     const currentPrice = priceData?.price ?? 'N/A';
     const targetMean = priceTargets?.targetMean ?? analystRatings?.analystTargetPrice ?? overview?.analystTargetPrice ?? 'N/A';
     const pe = overview?.peRatio ?? basicFinancials?.metric?.peBasicExclExtraTTM ?? 'N/A';
@@ -457,7 +459,7 @@ function buildBatchPositionRationalePrompt(
     return (
       `${symbol}: ${name}\n` +
       `  Action: ${action} | Confidence: ${confidence}\n` +
-      `  Scores — Overall: ${overallScore?.toFixed(1) ?? 'N/A'}/100 | Quality: ${qualityScore?.toFixed(1) ?? 'N/A'}/100 | Valuation: ${valuationScore?.toFixed(1) ?? 'N/A'}/100 | Momentum: ${technicalScore?.toFixed(1) ?? 'N/A'}/100\n` +
+      `  Scores — Overall: ${overallScore?.toFixed(1) ?? 'N/A'}/100 | Quality: ${qualityScore?.toFixed(1) ?? 'N/A'}/100 | Valuation: ${valuationScore?.toFixed(1) ?? 'N/A'}/100 | Momentum: ${technicalScore?.toFixed(1) ?? 'N/A'}/100 | Analysts: ${analystConsensusScore?.toFixed(1) ?? 'N/A'}/100 | Insiders: ${insiderScore?.toFixed(1) ?? 'N/A'}/100\n` +
       `  Key Metrics — Price: $${currentPrice} | Target: $${targetMean} | P/E: ${pe} | Op Margin: ${opMargin} | Gross Margin: ${grossMargin} | ROE: ${roe} | Rev Growth: ${revGrowth}\n` +
       `  Signal Drivers: ${reasons}\n` +
       `  ${missing}`
@@ -465,7 +467,7 @@ function buildBatchPositionRationalePrompt(
   }).join('\n\n');
 
   const exampleTicker = companies[0]?.symbol || 'TICK';
-  const shapeExample = `{"${exampleTicker}":{"rationale":"Quality score 67/100 driven by 34% operating margin and 18% ROE; valuation attractive at 23x P/E with $135 analyst target (35% upside). Hold — thesis intact but not at a high-conviction add point."}}`;
+  const shapeExample = `{"${exampleTicker}":{"rationale":"Quality 72/100 (34% op margin, 18% ROE) with attractive valuation at 23x P/E and 35% target upside (valuation 68/100). Analyst consensus bullish (12 buy vs 2 sell, score 78/100). Hold — thesis intact but not at a high-conviction add point."}}`;
 
   return (
     `You are a senior equity research analyst writing the "Why" column for a position guidance table in a professional investment report.\n\n` +
@@ -473,15 +475,20 @@ function buildBatchPositionRationalePrompt(
     `1. Base every claim STRICTLY on the real data provided below — do NOT use training-memory values for any financial figures.\n` +
     `2. Write EXACTLY 1-2 sentences per stock. Be brief but specific.\n` +
     `3. Cite the actual scores (e.g. "quality 67/100") AND at least one concrete metric (e.g. "34% operating margin", "$135 price target", "26x P/E").\n` +
-    `4. Explain directly why the recommended action (Buy/Hold/Watch/Sell) follows from those numbers.\n` +
-    `5. Do NOT write vague phrases like "mixed setup", "some positives and negatives", "room for improvement", or "further research needed".\n` +
-    `6. When key data is missing (score is N/A), say explicitly which input is absent and how it limits conviction.\n` +
-    `7. Write in active, professional voice. No filler words.\n\n` +
-    `SCORING SCALE (0-100):\n` +
-    `- Quality score: measures business fundamentals — margins, ROE, revenue/EPS growth. ≥65 = strong, 45-64 = adequate, <45 = weak.\n` +
-    `- Valuation score: measures price vs fair value — P/E vs history, analyst target upside. ≥60 = attractive, 40-59 = fair, <40 = stretched.\n` +
-    `- Momentum score: measures price trend strength. ≥60 = trending up, 40-59 = neutral, <40 = declining.\n` +
-    `- Overall score ≥68 → Buy/Initiate; 48-67 → Hold/Watch; <48 → Watch/Sell.\n\n` +
+    `4. When analyst consensus or insider data is available, mention it (e.g. "12 buy vs 2 sell", "insider net buying 0.005% of mkt cap").\n` +
+    `5. Explain directly why the recommended action (Buy/Hold/Watch/Sell) follows from those numbers.\n` +
+    `6. Do NOT write vague phrases like "mixed setup", "some positives and negatives", "room for improvement", or "further research needed".\n` +
+    `7. When key data is missing (score is N/A), say explicitly which input is absent and how it limits conviction.\n` +
+    `8. Write in active, professional voice. No filler words.\n\n` +
+    `SCORING SCALE (0-100, 7-pillar weighted model):\n` +
+    `- Quality (25% weight): margins, ROE, ROA. ≥65 = strong, 45-64 = adequate, <45 = weak.\n` +
+    `- Growth (15% weight): revenue/EPS growth. ≥65 = fast-growing, <40 = declining.\n` +
+    `- Valuation (20% weight): P/E, analyst target upside. ≥60 = attractive, <40 = stretched.\n` +
+    `- Momentum (15% weight): price trend. ≥60 = uptrend, <40 = downtrend.\n` +
+    `- Analysts (15% weight): consensus buy/sell distribution. ≥65 = bullish, <40 = bearish.\n` +
+    `- Insiders (5% weight): net insider buying as % of mkt cap. ≥60 = net buying, <40 = net selling.\n` +
+    `- Fin. Health (5% weight): debt/equity, cash flow, FCF yield.\n` +
+    `- Overall score ≥65 → Buy/Initiate; 45-64 → Hold/Watch; <45 → Watch/Sell.\n\n` +
     `COMPANY DATA:\n${companySections}\n\n` +
     `Respond ONLY with valid JSON keyed by ticker symbol — no markdown, no extra text:\n` +
     shapeExample
@@ -2086,6 +2093,7 @@ export async function executeTool(
           cashFlow: finalCashFlow,
           analystRatings,
           priceTargets,
+          insiderTrading,
           newsSentiment,
           companyNews,
           trust: trustSummary,
@@ -2457,6 +2465,7 @@ export async function executeTool(
             cashFlow: item.cashFlow,
             analystRatings: item.analystRatings,
             priceTargets: item.priceTargets,
+            insiderTrading: item.insiderTrading,
             newsSentiment: item.newsSentiment,
             companyNews: item.companyNews,
             trust: trustSummary,
@@ -2524,6 +2533,8 @@ export async function executeTool(
                   qualityScore: ds?.qualityScore ?? null,
                   valuationScore: ds?.valuationScore ?? null,
                   technicalScore: ds?.technicalScore ?? null,
+                  analystConsensusScore: ds?.analystConsensusScore ?? null,
+                  insiderScore: ds?.insiderScore ?? null,
                   whyNow: ds?.whyNow ?? [],
                   whyNot: ds?.whyNot ?? [],
                   missingInputs: ds?.missingInputs ?? [],
@@ -2681,6 +2692,8 @@ export async function executeTool(
                   qualityScore: ds?.qualityScore ?? null,
                   valuationScore: ds?.valuationScore ?? null,
                   technicalScore: ds?.technicalScore ?? null,
+                  analystConsensusScore: ds?.analystConsensusScore ?? null,
+                  insiderScore: ds?.insiderScore ?? null,
                   whyNow: ds?.whyNow ?? [],
                   whyNot: ds?.whyNot ?? [],
                   missingInputs: ds?.missingInputs ?? [],
@@ -2953,6 +2966,7 @@ export async function executeTool(
             cashFlow: item.cashFlow,
             analystRatings: item.analystRatings,
             priceTargets: item.priceTargets,
+            insiderTrading: item.insiderTrading,
             newsSentiment: item.newsSentiment,
             companyNews: item.companyNews,
             trust: trustSummary,
@@ -3020,6 +3034,8 @@ export async function executeTool(
                   qualityScore: ds?.qualityScore ?? null,
                   valuationScore: ds?.valuationScore ?? null,
                   technicalScore: ds?.technicalScore ?? null,
+                  analystConsensusScore: ds?.analystConsensusScore ?? null,
+                  insiderScore: ds?.insiderScore ?? null,
                   whyNow: ds?.whyNow ?? [],
                   whyNot: ds?.whyNot ?? [],
                   missingInputs: ds?.missingInputs ?? [],
@@ -3505,6 +3521,7 @@ export async function executeTool(
             cashFlow: item.cashFlow,
             analystRatings: item.analystRatings,
             priceTargets: item.priceTargets,
+            insiderTrading: item.insiderTrading,
             newsSentiment: item.newsSentiment,
             companyNews: item.companyNews,
             trust: trustSummary,
@@ -3572,6 +3589,8 @@ export async function executeTool(
                   qualityScore: ds?.qualityScore ?? null,
                   valuationScore: ds?.valuationScore ?? null,
                   technicalScore: ds?.technicalScore ?? null,
+                  analystConsensusScore: ds?.analystConsensusScore ?? null,
+                  insiderScore: ds?.insiderScore ?? null,
                   whyNow: ds?.whyNow ?? [],
                   whyNot: ds?.whyNot ?? [],
                   missingInputs: ds?.missingInputs ?? [],

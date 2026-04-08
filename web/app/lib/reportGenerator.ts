@@ -1676,12 +1676,12 @@ function deriveRecommendationProfile(args: {
   const brokenTrend = trendScore !== null && trendScore < 32;
 
   let signal: ActionLabel;
-  if ((overallScore !== null && overallScore >= 50 && (qualityScore === null || qualityScore >= 40) && (valuationScore === null || valuationScore >= 48) && (trendScore === null || trendScore >= 45))
+  if ((overallScore !== null && overallScore >= 50 && (qualityScore === null || qualityScore >= 40) && (valuationScore === null || valuationScore >= 45) && (trendScore === null || trendScore >= 42))
     || (strongQuality && attractiveValuation && supportiveTrend && confidence.label !== 'Low')) {
     signal = 'Buy';
   } else if ((overallScore !== null && overallScore < 28 && weakQuality && (brokenTrend || weakValuation)) && confidence.label !== 'Low') {
     signal = 'Sell';
-  } else if ((overallScore !== null && overallScore >= 46) || strongQuality || (qualityScore !== null && qualityScore >= 45 && !brokenTrend)) {
+  } else if ((overallScore !== null && overallScore >= 42) || strongQuality || (qualityScore !== null && qualityScore >= 45 && !brokenTrend)) {
     signal = 'Hold';
   } else if ((overallScore !== null && overallScore >= 30) || weakValuation || brokenTrend) {
     signal = 'Watch';

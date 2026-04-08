@@ -378,7 +378,19 @@ async function loadDefaultSupabaseWatchlist(): Promise<Watchlist | null> {
       seedError = fallbackSeedQuery.error;
     }
 
-    if (seedError) return null;
+    if (seedError) {
+      // Seed insert failed (column mismatch, permissions, etc.)
+      // Return the watchlist with in-memory seed items so the user still sees companies.
+      const fallbackItems = toSeedItems(DEFAULT_WATCHLIST_SEED);
+      return normalizeWatchlistRecord({ ...watchlist, items: fallbackItems.map((fi, i) => ({
+        id: `seed-${i}`,
+        symbol: fi.symbol,
+        company_name: fi.companyName,
+        display_order: i,
+        created_at: fi.createdAt,
+        ownership_status: fi.position?.ownershipStatus ?? 'watching',
+      })) }, 'supabase');
+    }
 
     return normalizeWatchlistRecord({ ...watchlist, items: insertedItems || [] }, 'supabase');
   }
@@ -441,7 +453,30 @@ export async function addWatchlistItem(input: { symbol: string; companyName: str
       .single();
 
     if (error || !data) {
-      throw new Error(error?.message || 'Failed to add watchlist item.');
+      // Try with basic columns as fallback (schema may not have all columns yet)
+      const basicInsert = await supabase
+        .from('watchlist_items')
+        .insert({ watchlist_id: watchlist.id, symbol, company_name: companyName, display_order: watchlist.items.length })
+        .select('id, symbol, company_name, display_order, created_at')
+        .single();
+      if (basicInsert.error || !basicInsert.data) {
+        throw new Error(basicInsert.error?.message || error?.message || 'Failed to add watchlist item.');
+      }
+      const d = basicInsert.data as any;
+      return {
+        ...watchlist,
+        items: sortItems([
+          ...watchlist.items,
+          {
+            id: String(d.id),
+            symbol,
+            companyName: String(d.company_name),
+            displayOrder: Number(d.display_order),
+            createdAt: String(d.created_at),
+            ...buildDefaultPositionMeta(),
+          },
+        ]),
+      };
     }
     return {
       ...watchlist,

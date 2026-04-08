@@ -106,7 +106,7 @@ describe('decisionEngine', () => {
     });
 
     expect(['Trim', 'Exit']).toContain(snapshot.action);
-    expect(snapshot.whyNot.join(' ')).toContain('above your max-weight guardrail');
+    expect(snapshot.whyNot.join(' ')).toContain('exceeds max-weight guardrail');
   });
 
   it('describes target support accurately when no price-momentum history is available', () => {
@@ -119,7 +119,7 @@ describe('decisionEngine', () => {
       trust: freshTrust,
     });
 
-    expect(snapshot.whyNow.join(' ')).toContain('Analyst target upside is supportive');
-    expect(snapshot.whyNow.join(' ')).not.toContain('Trend and momentum are supportive');
+    expect(snapshot.whyNow.join(' ')).toContain('target upside');
+    expect(snapshot.whyNow.join(' ')).not.toContain('price change');
   });
 });
