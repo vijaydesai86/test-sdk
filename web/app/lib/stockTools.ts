@@ -128,69 +128,6 @@ function parseLLMFillJSON(response: string): any | null {
 }
 
 /**
- * Fallback sector-to-tickers map for common sectors/themes.
- * Used when the LLM fails to return a valid ticker list (bad JSON, timeout, etc.)
- * so that sector and deep-research reports can still proceed.
- * Keys are lowercased, fuzzy-matched via substring.
- */
-const SECTOR_FALLBACK_TICKERS: Record<string, string[]> = {
-  semiconductor: ['NVDA', 'AMD', 'INTC', 'AVGO', 'QCOM', 'TXN', 'MU', 'MRVL', 'LRCX', 'AMAT', 'KLAC', 'ON', 'NXPI', 'ADI', 'ASML'],
-  'artificial intelligence': ['NVDA', 'MSFT', 'GOOGL', 'META', 'AMZN', 'CRM', 'PLTR', 'AMD', 'SNOW', 'AI'],
-  'ai ': ['NVDA', 'MSFT', 'GOOGL', 'META', 'AMZN', 'CRM', 'PLTR', 'AMD', 'SNOW', 'AI'],
-  'cloud computing': ['AMZN', 'MSFT', 'GOOGL', 'CRM', 'SNOW', 'NET', 'DDOG', 'MDB', 'ZS', 'WDAY'],
-  'electric vehicle': ['TSLA', 'RIVN', 'NIO', 'LI', 'XPEV', 'LCID', 'GM', 'F', 'BYD', 'QS'],
-  'ev ': ['TSLA', 'RIVN', 'NIO', 'LI', 'XPEV', 'LCID', 'GM', 'F', 'BYD', 'QS'],
-  cybersecurity: ['CRWD', 'PANW', 'ZS', 'FTNT', 'S', 'OKTA', 'NET', 'QLYS', 'TENB', 'RPD'],
-  fintech: ['V', 'MA', 'PYPL', 'SQ', 'SOFI', 'AFRM', 'COIN', 'INTU', 'FIS', 'GPN'],
-  'data center': ['NVDA', 'AMD', 'AVGO', 'EQIX', 'DLR', 'VRT', 'ANET', 'SMCI', 'DELL', 'HPE'],
-  biotech: ['AMGN', 'GILD', 'VRTX', 'REGN', 'MRNA', 'BIIB', 'ALNY', 'BMRN', 'SGEN', 'ILMN'],
-  'social media': ['META', 'SNAP', 'PINS', 'RDDT', 'GOOGL', 'MTCH'],
-  'big tech': ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'NVDA', 'TSLA'],
-  technology: ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'NVDA', 'CRM', 'ORCL', 'ADBE', 'INTC'],
-  banking: ['JPM', 'BAC', 'WFC', 'C', 'GS', 'MS', 'USB', 'PNC', 'TFC', 'SCHW'],
-  healthcare: ['UNH', 'JNJ', 'PFE', 'ABBV', 'LLY', 'MRK', 'TMO', 'ABT', 'BMY', 'AMGN'],
-  pharmaceutical: ['JNJ', 'PFE', 'ABBV', 'LLY', 'MRK', 'BMY', 'AZN', 'NVO', 'GSK', 'SNY'],
-  energy: ['XOM', 'CVX', 'COP', 'EOG', 'SLB', 'MPC', 'PSX', 'OXY', 'PXD', 'VLO'],
-  'renewable energy': ['ENPH', 'SEDG', 'FSLR', 'RUN', 'NEE', 'AES', 'BEP', 'CSIQ', 'NOVA', 'DQ'],
-  solar: ['ENPH', 'SEDG', 'FSLR', 'RUN', 'CSIQ', 'NOVA', 'DQ', 'JKS', 'MAXN', 'ARRY'],
-  retail: ['AMZN', 'WMT', 'COST', 'HD', 'TGT', 'LOW', 'TJX', 'ROST', 'DG', 'DLTR'],
-  ecommerce: ['AMZN', 'SHOP', 'EBAY', 'ETSY', 'MELI', 'SE', 'PDD', 'BABA', 'WMT', 'JD'],
-  'real estate': ['AMT', 'PLD', 'EQIX', 'SPG', 'O', 'DLR', 'WELL', 'AVB', 'EQR', 'VICI'],
-  aerospace: ['BA', 'LMT', 'RTX', 'NOC', 'GD', 'HII', 'TDG', 'HWM', 'LHX', 'AXON'],
-  defense: ['LMT', 'RTX', 'NOC', 'GD', 'HII', 'BA', 'LHX', 'AXON', 'PLTR', 'LDOS'],
-  automotive: ['TSLA', 'GM', 'F', 'TM', 'RIVN', 'STLA', 'HMC', 'NIO', 'LCID', 'BWA'],
-  streaming: ['NFLX', 'DIS', 'CMCSA', 'WBD', 'PARA', 'ROKU', 'SPOT', 'FUBO'],
-  gaming: ['NVDA', 'MSFT', 'SONY', 'EA', 'TTWO', 'RBLX', 'U', 'DKNG'],
-  'quantum computing': ['IONQ', 'RGTI', 'QBTS', 'IBM', 'GOOGL', 'HON'],
-  robotics: ['ISRG', 'ROK', 'TER', 'PATH', 'NVDA', 'ABB'],
-  cannabis: ['TLRY', 'CGC', 'ACB', 'CRON', 'OGI', 'SNDL', 'MO', 'STZ'],
-  space: ['RKLB', 'BA', 'LMT', 'NOC', 'SPCE', 'ASTS', 'BKSY'],
-  insurance: ['BRK.B', 'UNH', 'PGR', 'AIG', 'MET', 'ALL', 'TRV', 'CB', 'AFL', 'HIG'],
-  payments: ['V', 'MA', 'PYPL', 'SQ', 'GPN', 'FIS', 'FISV', 'ADYEN', 'AFRM'],
-  saas: ['CRM', 'NOW', 'WDAY', 'ZS', 'DDOG', 'SNOW', 'MDB', 'HUBS', 'TEAM', 'PANW'],
-  'food & beverage': ['KO', 'PEP', 'MDLZ', 'GIS', 'K', 'HSY', 'SJM', 'MKC', 'CAG', 'CPB'],
-  consumer: ['AAPL', 'AMZN', 'NKE', 'SBUX', 'MCD', 'PG', 'KO', 'PEP', 'HD', 'TGT'],
-  transportation: ['UPS', 'FDX', 'UNP', 'CSX', 'DAL', 'UAL', 'LUV', 'UBER', 'LYFT', 'JBHT'],
-  telecom: ['T', 'VZ', 'TMUS', 'CMCSA', 'CHTR', 'LUMN', 'DISH', 'SATS'],
-  mining: ['BHP', 'RIO', 'NEM', 'FCX', 'GOLD', 'AEM', 'VALE', 'SCCO'],
-  luxury: ['LVMH', 'RMS', 'RACE', 'TPR', 'RL', 'CPRI', 'BURL'],
-};
-
-/**
- * Look up fallback tickers for a sector query using fuzzy substring matching.
- * Returns at most `count` tickers, or an empty array if no match.
- */
-function getSectorFallbackTickers(sector: string, count: number): string[] {
-  const lower = sector.toLowerCase();
-  for (const [key, tickers] of Object.entries(SECTOR_FALLBACK_TICKERS)) {
-    if (lower.includes(key) || key.includes(lower)) {
-      return tickers.slice(0, count);
-    }
-  }
-  return [];
-}
-
-/**
  * Attempts to parse an LLM response as a JSON array of ticker strings.
  * Returns an empty array if the response is invalid.
  */
@@ -211,15 +148,21 @@ function parseLLMTickerArray(raw: string, maxCount: number): string[] {
 }
 
 /**
- * Identifies companies for a sector using LLM with fallback to hardcoded sectors.
- * Tries the LLM first; if it fails or returns < 2 tickers, falls back to
- * SECTOR_FALLBACK_TICKERS for common sector queries.
+ * Identifies companies for a sector/theme query.
+ *
+ * Strategy (all sources are live — no hardcoded lists):
+ *   1. LLM call — primary resolver via buildSectorCompaniesPrompt.
+ *   2. LLM retry — a shorter, more explicit prompt if the first attempt returned < 2 tickers.
+ *   3. API search fallback — calls stockService.searchStock(sector) to find related
+ *      real tickers from the live data provider.
  */
 async function resolveSectorTickers(
   sector: string,
   count: number,
   llmFill?: LLMFiller,
+  stockService?: StockDataService,
 ): Promise<string[]> {
+  // Attempt 1: LLM with the standard sector prompt
   if (llmFill) {
     const prompt = buildSectorCompaniesPrompt(sector, count);
     try {
@@ -227,11 +170,39 @@ async function resolveSectorTickers(
       const tickers = parseLLMTickerArray(raw, count);
       if (tickers.length >= 2) return tickers;
     } catch {
-      // LLM unavailable or returned invalid JSON
+      // LLM unavailable or returned invalid JSON — try retry
+    }
+
+    // Attempt 2: LLM retry with a shorter, more direct prompt
+    try {
+      const retryPrompt =
+        `List exactly ${count} US-listed stock ticker symbols for the top companies in the "${sector}" sector. ` +
+        `Return ONLY a JSON array of ticker strings, nothing else. Example: ["AAPL","MSFT"]`;
+      const raw = await llmFill(retryPrompt);
+      const tickers = parseLLMTickerArray(raw, count);
+      if (tickers.length >= 2) return tickers;
+    } catch {
+      // LLM retry also failed — try API search
     }
   }
-  // Fallback to hardcoded sector map
-  return getSectorFallbackTickers(sector, count);
+
+  // Attempt 3: API search fallback — extract tickers from live search results
+  if (stockService) {
+    try {
+      const results = await stockService.searchStock(sector);
+      const candidates = (results?.results || []) as any[];
+      if (candidates.length >= 2) {
+        return candidates
+          .map((c: any) => String(c.symbol || '').toUpperCase())
+          .filter((s) => s.length > 0 && /^[A-Z0-9.]+$/.test(s))
+          .slice(0, count);
+      }
+    } catch {
+      // API search also failed
+    }
+  }
+
+  return [];
 }
 
 /**
@@ -2887,7 +2858,7 @@ export async function executeTool(
         const range = args.range || '1y';
 
         // Step 1: Use LLM (with hardcoded fallback) to identify the top companies.
-        const universe = await resolveSectorTickers(sector, count, options?.llmFill);
+        const universe = await resolveSectorTickers(sector, count, options?.llmFill, stockService);
 
         if (universe.length < 2) {
           return {
@@ -3312,7 +3283,7 @@ export async function executeTool(
         }
 
         // ── Phase 1: LLM identifies initial broad candidate list (with fallback) ──
-        const initialCandidates = await resolveSectorTickers(sector, initialCount, options.llmFill);
+        const initialCandidates = await resolveSectorTickers(sector, initialCount, options.llmFill, stockService);
 
         if (initialCandidates.length < 2) {
           return {
