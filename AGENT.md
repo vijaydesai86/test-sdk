@@ -63,7 +63,12 @@ User message
 | `web/app/lib/stockDataService.ts` | All data provider implementations: `AlphaVantageService`, `FinnhubService`, `FinancialModelingPrepService`, `TwelveDataService`, `StooqService`, `HybridStockDataService`, `MultiSourceStockDataService`. Also standalone services: `SecEdgarService` (SEC EDGAR filings), `FredService` (FRED economic data). `createStockService()` factory selects the active provider from `STOCK_DATA_PROVIDER`. |
 | `web/app/lib/reportGenerator.ts` | Report builders (`buildStockReport`, `buildComparisonReport`, `buildSectorReport`, `buildDeepSectorReport`, `buildDeepStockReport`, `buildDeepComparisonReport`, `buildWatchlistDailyReport`), technical indicator computations (RSI, MACD, Bollinger, Stochastic, ATR, EMA), ECharts and Mermaid chart builders, `saveReport()` persistence. |
 | `web/app/lib/llmProviderConfig.ts` | LLM provider/model selection, GitHub Models catalog fetching, Gemini model fallback list. |
-| `web/app/lib/watchlistStore.ts` | Watchlist CRUD backed by Supabase (primary) or JSON file (fallback). Default watchlist seeded with 15 semiconductor/tech companies (max 25 items). |
+| `web/app/lib/decisionEngine.ts` | 7-pillar multi-factor equity decision engine. Computes weighted pillar scores (Profitability 25%, Growth 15%, Valuation 20%, Momentum 15%, Analyst Consensus 15%, Insider Activity 5%, Financial Health 5%), derives action (Initiate/Add/Hold/Trim/Exit/Wait), confidence, and a transparent summary showing the real data behind each score. Insider activity is market-cap normalized (basis points, no fixed $ thresholds). |
+| `web/app/lib/investmentTypes.ts` | Shared TypeScript types and interfaces for the decision framework: `DecisionSnapshot`, `DecisionAction`, `PortfolioProfile`, `WatchlistPositionMeta`, `DataTrustSummary`, `CompanyThesisRecord`, `DecisionJournalRecord`, `ResearchSessionRecord`. |
+| `web/app/lib/dataTrust.ts` | Data freshness tracker. Computes `DataTrustSummary` per report: each data source gets a freshness class (fresh/aging/stale) based on age vs configurable TTL. Used by the decision engine to set confidence levels. |
+| `web/app/lib/chatToolPolicy.ts` | Declares the allowlist of tool names (`CHAT_TOOL_NAMES`) that the LLM is permitted to call during a chat session. |
+| `web/app/lib/researchMemoryStore.ts` | Persistence layer for research sessions, company theses, and decision journal records. Backed by Supabase when available, otherwise filesystem JSON. |
+| `web/app/lib/watchlistStore.ts` | Watchlist CRUD backed by Supabase (primary) or JSON file (fallback). Default watchlist seeded with 15 semiconductor/tech companies (max 25 items). Supabase seed failures return in-memory defaults (never empty). |
 | `web/app/lib/supabaseClient.ts` | Lazy Supabase client singleton; returns `null` when env vars are absent. |
 | `web/app/components/ChatInterface.tsx` | Full single-page UI: chat pane, workspace sidebar (Watchlist / Artifacts / Saved tabs), 4 themes (Aurora, Solstice, Ember, Graphite), ECharts and Mermaid rendering, quick prompts, model/provider picker. |
 | `web/app/api/health/route.ts` | Provider health check. Reports which API keys are configured and whether the service is ready. Supports optional live price check via `HEALTH_CHECK_SYMBOL`. |
@@ -338,3 +343,46 @@ When improving reports, prefer additions that come from real data:
 - SEC filings context from EDGAR when due-diligence depth is needed
 - Macroeconomic context from FRED when market-level analysis is relevant
 - Market sentiment (Fear & Greed) indicators computed from real sector and market breadth data
+
+---
+
+## Decision engine (`decisionEngine.ts`)
+
+The decision engine produces a `DecisionSnapshot` for every company analysed. It runs automatically inside all four report types and in comparison/sector/deep-sector per-company loops.
+
+### 7-pillar scoring model
+
+Each pillar returns a 0–100 score **and** a human-readable detail string showing the real numbers behind the score. Missing data makes a pillar return `null` — its weight is redistributed to available pillars, and overall confidence is lowered rather than the score being penalised.
+
+| Pillar | Weight | Inputs | Rationale |
+|---|---|---|---|
+| Profitability | 25% | Gross margin, operating margin, ROE, ROA | Strongest long-term predictor (Piotroski, Seeking Alpha Quant) |
+| Growth | 15% | Revenue growth, EPS growth | Forward-looking trajectory |
+| Valuation | 20% | P/E (linear scale), analyst target upside | Price vs fair value; avoids overpaying |
+| Momentum | 15% | Price return over observation period | Price trend confirmation (Fama-French) |
+| Analyst Consensus | 15% | Weighted strongBuy/buy/hold/sell/strongSell counts | Aggregate Wall Street view; reduces noise |
+| Insider Activity | 5% | Net insider buying as basis points of market cap | Confirmatory signal; market-cap normalised only — **no fixed $ thresholds** (Seyhun research) |
+| Financial Health | 5% | Debt/equity, current ratio, OCF, FCF yield | Leverage & liquidity guard (Piotroski) |
+
+### Multi-provider field support
+
+Analyst rating counts are read from whichever provider returned data:
+- Finnhub: `analystRatings.strongBuy`, `analystRatings.buy`, etc.
+- Alpha Vantage: `companyOverview.analystRatingStrongBuy`, etc.
+- FMP: `getAnalystRecommendations` response
+
+Market capitalisation: `marketCapitalization` (Finnhub/FMP lowercase) or `MarketCapitalization` (AV uppercase).
+
+### Action thresholds
+
+| Overall score | Action (not owned) | Action (owned) |
+|---|---|---|
+| ≥ 65 | Initiate / Buy | Add |
+| 45–64 | Wait / Watch | Hold |
+| < 45 | Wait | Trim / Exit |
+
+Position-size guardrails (max weight, concentration limit) can override scores to force a Trim.
+
+### Transparency principle
+
+The `summary` field of `DecisionSnapshot` always shows **what data drove the decision**, not what is missing. Example: `"Profitability 82 — 56% gross margin, 30% op margin, 35% ROE. Analysts 78 — 12 buy, 3 hold, 2 sell."` Missing inputs are listed separately in `missingInputs[]` and reduce `confidence` (High → Medium → Low) but do not appear in the main summary.

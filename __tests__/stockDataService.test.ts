@@ -2,13 +2,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import axios from 'axios';
 import { AlphaVantageService, FinnhubService } from '../web/app/lib/stockDataService';
 
-vi.mock('axios', () => ({
-  default: {
-    get: vi.fn(),
-  },
-}));
+vi.mock('axios');
 
-const mockedAxios = axios as unknown as { get: ReturnType<typeof vi.fn> };
+const mockedAxios = vi.mocked(axios);
 
 const weeklyTimeSeriesResponse = {
   'Meta Data': { '2. Symbol': 'AAPL' },

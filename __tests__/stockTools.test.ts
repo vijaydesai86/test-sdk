@@ -323,11 +323,11 @@ describe('generate_sector_report via executeTool', () => {
     expect(result.data?.content).not.toContain('Peer Group Outlook');
   });
 
-  it('llmFill called three times: tickers, batch moat analysis, and conclusion', async () => {
+  it('llmFill called four times: tickers, batch moat analysis, position rationale, and conclusion', async () => {
     const llmFill = vi.fn().mockResolvedValue('["NVDA","AMD"]');
     await executeTool('generate_sector_report', { sector: 'AI chips', count: 2 }, service, { llmFill });
-    // Calls: (1) sector company tickers, (2) batch moat analysis, (3) investment conclusion
-    expect(llmFill).toHaveBeenCalledTimes(3);
+    // Calls: (1) sector company tickers, (2) batch moat analysis, (3) position rationale, (4) investment conclusion
+    expect(llmFill).toHaveBeenCalledTimes(4);
   });
 
   it('conclusion appears exactly once in sector report', async () => {
@@ -396,7 +396,7 @@ describe('generate_comparison_report via executeTool', () => {
     expect(result.data?.content).toContain('## 🎯 Investment Conclusion');
   });
 
-  it('comparison summary uses report-facing watch wording instead of wait wording', async () => {
+  it('comparison summary uses report-facing Watch wording in signal mix', async () => {
     const llmFill = vi.fn().mockResolvedValue('{"AAPL":"AAPL","MSFT":"MSFT"}');
     const result = await executeTool(
       'generate_comparison_report',
@@ -405,8 +405,7 @@ describe('generate_comparison_report via executeTool', () => {
       { llmFill }
     );
     expect(result.success).toBe(true);
-    expect(result.data?.summary).toContain('watch');
-    expect(result.data?.summary).not.toContain(' wait');
+    expect(result.data?.summary).toContain('Watch');
   });
 });
 
@@ -443,11 +442,12 @@ describe('LLM conclusion integration in executeTool', () => {
     expect(result.data?.content).toContain('## 🎯 Investment Conclusion');
   });
 
-  it('comparison report: llmFill called three times — tickers, moat, conclusion', async () => {
+  it('comparison report: llmFill called four times — tickers, moat, rationale, conclusion', async () => {
     const llmFill = vi.fn()
       .mockResolvedValueOnce('{"AAPL":"AAPL","MSFT":"MSFT"}')  // Call 1: ticker resolution
       .mockResolvedValueOnce('{}')                              // Call 2: batch moat
-      .mockResolvedValueOnce('AAPL leads with 25% margins from real API data. BUY AAPL. MSFT is a solid HOLD.'); // Call 3: conclusion
+      .mockResolvedValueOnce('{}')                              // Call 3: position rationale
+      .mockResolvedValueOnce('AAPL leads with 25% margins from real API data. BUY AAPL. MSFT is a solid HOLD.'); // Call 4: conclusion
     const result = await executeTool(
       'generate_comparison_report',
       { companies: ['AAPL', 'MSFT'], range: '1y' },
@@ -455,7 +455,7 @@ describe('LLM conclusion integration in executeTool', () => {
       { llmFill }
     );
     expect(result.success).toBe(true);
-    expect(llmFill).toHaveBeenCalledTimes(3);
+    expect(llmFill).toHaveBeenCalledTimes(4);
     expect(result.data?.content).toContain('AAPL leads');
   });
 
@@ -731,7 +731,8 @@ describe('generate_stock_report financial-data fallback', () => {
 
     const result = await executeTool('generate_stock_report', { symbol: SYM, range: '1y' }, service, { llmFill });
     expect(result.success).toBe(true);
-    expect(result.data?.content).not.toContain('Quarterly EPS');
+    // No Price & EPS Trends section when both earnings API and overview eps are empty
+    expect(result.data?.content).not.toContain('## 📈 Price & EPS Trends');
   });
 
   it('real income statement data takes priority over fallback when both are available', async () => {
@@ -832,7 +833,8 @@ describe('generate_watchlist_daily_report via executeTool', () => {
 
     expect(result.success).toBe(true);
     expect(result.data?.content).toContain('# Watchlist Daily Report: Core Watchlist');
-    expect(result.data?.content).toContain('| Company | Signal | Confidence | For owners | For non-owners | Why |');
+    // Position guidance uses compact 4-column table
+    expect(result.data?.content).toContain('| Company | Signal | Confidence | Action |');
     expect(result.data?.content).toContain('## 1. NVIDIA (NVDA)');
     expect(result.data?.content).toContain('## 2. AMD (AMD)');
     expect(service.getStockPrice).toHaveBeenCalledWith('NVDA');

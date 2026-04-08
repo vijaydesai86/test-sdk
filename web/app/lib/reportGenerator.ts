@@ -114,7 +114,7 @@ export interface MoatAnalysis {
   moatStrength: string;
   /** Composite moat score 0-100. 0-30 = none, 31-60 = narrow, 61-100 = wide */
   moatScore: number;
-  /** Specific, concrete barriers, e.g. "Apple ecosystem lock-in", "AWS scale economics" */
+  /** Specific, concrete barriers to competition, e.g. ecosystem lock-in, scale economics */
   barriers: string[];
   /** 2-4 sentence descriptive narrative explaining moat sources and their sustainability */
   narrative: string;
@@ -648,18 +648,31 @@ function hasMeaningfulTableValue(value: string): boolean {
 }
 
 function buildPositionGuidanceTable(rows: Array<{ company: string; guidance: PositionGuidance }>): string {
-  return buildTable(
-    ['Company', 'Signal', 'Confidence', 'For owners', 'For non-owners', 'Why'],
-    rows.map(({ company, guidance }) => [
-      company,
-      guidance.stance,
-      guidance.confidence,
-      guidance.forOwners,
-      describeNonOwnerAction(guidance.forNonOwners),
-      guidance.rationale,
-    ]),
-    ['left', 'left', 'left', 'left', 'left', 'left']
+  // Compact 4-column table: Company | Signal | Confidence | Action
+  // "Why" is rendered as a sub-row beneath each company to avoid horizontal overflow.
+  const signalEmoji = (stance: string) => {
+    if (stance === 'Buy') return '🟢';
+    if (stance === 'Hold') return '🟡';
+    if (stance === 'Watch') return '🟠';
+    if (stance === 'Sell') return '🔴';
+    return '⚪';
+  };
+  const tableRows = rows.map(({ company, guidance }) => [
+    company,
+    `${signalEmoji(guidance.stance)} ${guidance.stance}`,
+    guidance.confidence,
+    `Owners: ${guidance.forOwners} · New: ${describeNonOwnerAction(guidance.forNonOwners)}`,
+  ]);
+  const table = buildTable(
+    ['Company', 'Signal', 'Confidence', 'Action'],
+    tableRows,
+    ['left', 'left', 'left', 'left']
   );
+  // Append a brief Why line for each company below the table
+  const whyLines = rows.map(({ company, guidance }) => {
+    return `- **${company}:** ${guidance.rationale}`;
+  }).join('\n');
+  return `${table}\n\n**Why:**\n${whyLines}`;
 }
 
 function applyAxisTheme(axis: any): any {
@@ -1515,52 +1528,101 @@ function buildRecommendationRationale(profile: {
   qualityScore: number | null;
   valuationScore: number | null;
   trendScore: number | null;
+  overallScore: number | null;
   confidence: 'High' | 'Medium' | 'Low';
   missingInputs: string[];
+  // Real metrics from API data — used to cite concrete numbers
+  metrics: {
+    pe: number | null;
+    grossMargin: number | null;
+    operatingMargin: number | null;
+    roe: number | null;
+    revenueGrowth: number | null;
+    targetUpside: number | null;
+    trend: string;
+  };
 }): string {
+  const { metrics } = profile;
   const positives: string[] = [];
   const cautions: string[] = [];
 
-  if (profile.qualityScore !== null) {
-    if (profile.qualityScore >= 70) positives.push('business quality is strong');
-    else if (profile.qualityScore >= 55) positives.push('business quality is solid');
-    else if (profile.qualityScore < 38) cautions.push('business quality is weak');
+  // ── Strengths: cite real metric values ──
+  {
+    const highlights: string[] = [];
+    if (metrics.grossMargin !== null && metrics.grossMargin >= 40) highlights.push(`${metrics.grossMargin.toFixed(0)}% gross margin`);
+    if (metrics.operatingMargin !== null && metrics.operatingMargin >= 15) highlights.push(`${metrics.operatingMargin.toFixed(0)}% op margin`);
+    if (metrics.roe !== null && metrics.roe >= 15) highlights.push(`${metrics.roe.toFixed(0)}% ROE`);
+    if (metrics.revenueGrowth !== null && metrics.revenueGrowth > 5) highlights.push(`${metrics.revenueGrowth > 0 ? '+' : ''}${metrics.revenueGrowth.toFixed(0)}% rev growth`);
+    if (highlights.length >= 3) positives.push(`strong fundamentals (${highlights.join(', ')})`);
+    else if (highlights.length >= 1) positives.push(`solid on ${highlights.join(', ')}`);
   }
 
-  if (profile.valuationScore !== null) {
-    if (profile.valuationScore >= 60) positives.push('valuation offers room for upside');
-    else if (profile.valuationScore < 40) cautions.push('valuation support is weak');
+  // Valuation — cite P/E and target upside
+  {
+    const parts: string[] = [];
+    if (metrics.pe !== null && metrics.pe > 0) parts.push(`${metrics.pe.toFixed(1)}x P/E`);
+    if (metrics.targetUpside !== null) parts.push(`${metrics.targetUpside.toFixed(1)}% target upside`);
+    if (profile.valuationScore !== null && profile.valuationScore >= 60 && parts.length) {
+      positives.push(`attractive valuation (${parts.join(', ')})`);
+    } else if (profile.valuationScore !== null && profile.valuationScore < 40 && parts.length) {
+      cautions.push(`stretched valuation (${parts.join(', ')})`);
+    }
   }
 
+  // Trend — cite direction
   if (profile.trendScore !== null) {
-    if (profile.trendScore >= 58) positives.push('trend is supportive');
-    else if (profile.trendScore < 35) cautions.push('trend is working against the setup');
+    const trendLabel = metrics.trend !== 'Trend unavailable' ? ` (${metrics.trend.toLowerCase()})` : '';
+    if (profile.trendScore >= 58) positives.push(`supportive price trend${trendLabel}`);
+    else if (profile.trendScore < 35) cautions.push(`weak price trend${trendLabel}`);
   }
 
-  let opening = 'Signals are mixed across quality, valuation, and trend.';
+  // ── Weaknesses: cite actual metric values ──
+  {
+    const weakParts: string[] = [];
+    if (metrics.operatingMargin !== null && metrics.operatingMargin < 5) weakParts.push(`${metrics.operatingMargin.toFixed(0)}% op margin`);
+    if (metrics.roe !== null && metrics.roe < 8) weakParts.push(`${metrics.roe.toFixed(0)}% ROE`);
+    if (metrics.revenueGrowth !== null && metrics.revenueGrowth < -5) weakParts.push(`${metrics.revenueGrowth.toFixed(0)}% rev growth`);
+    if (weakParts.length) cautions.push(`weak fundamentals (${weakParts.join(', ')})`);
+  }
+
+  let opening: string;
   if (profile.signal === 'Buy') {
     opening = positives.length >= 2
       ? `${sentenceCase(positives.slice(0, 2).join(' and '))}.`
-      : 'Quality, valuation, and trend are supportive enough to justify fresh exposure.';
+      : positives.length === 1
+        ? `${sentenceCase(positives[0])}, supporting fresh exposure.`
+        : 'Quality, valuation, and trend support fresh exposure.';
   } else if (profile.signal === 'Hold') {
     opening = positives.length
-      ? `${positives[0][0].toUpperCase()}${positives[0].slice(1)}, but the setup is not attractive enough for an aggressive add.`
-      : 'The thesis is still investable, but this is not a high-conviction entry point.';
+      ? `${sentenceCase(positives[0])}, but not enough for an aggressive add.`
+      : cautions.length
+        ? `${sentenceCase(cautions[0])}, keeping this at hold.`
+        : 'Still investable, but not a high-conviction entry point.';
   } else if (profile.signal === 'Watch') {
     opening = cautions.length
-      ? `${cautions[0][0].toUpperCase()}${cautions[0].slice(1)}, so patience is warranted.`
-      : 'The setup needs a better entry or cleaner confirmation before acting.';
+      ? `${sentenceCase(cautions[0])}, so patience is warranted.`
+      : positives.length
+        ? `${sentenceCase(positives[0])}, but cleaner confirmation needed.`
+        : 'The setup needs a better entry or cleaner confirmation.';
   } else if (profile.signal === 'Sell') {
     opening = cautions.length >= 2
       ? `${sentenceCase(cautions.slice(0, 2).join(' and '))}.`
-      : 'Quality and reward-to-risk are weak enough that capital is better protected elsewhere.';
+      : cautions.length === 1
+        ? `${sentenceCase(cautions[0])}; capital is better protected elsewhere.`
+        : 'Quality and reward-to-risk are weak; capital is better protected elsewhere.';
+  } else {
+    opening = positives.length
+      ? `${sentenceCase(positives[0])}.`
+      : cautions.length
+        ? `${sentenceCase(cautions[0])}.`
+        : 'Signals are mixed.';
   }
 
   if (profile.confidence === 'High' || profile.missingInputs.length === 0) {
     return opening;
   }
 
-  return `${opening} Confidence is ${profile.confidence.toLowerCase()} because ${formatMissingInputs(profile.missingInputs)} are incomplete.`;
+  return `${opening} Confidence limited: ${formatMissingInputs(profile.missingInputs)} unavailable.`;
 }
 
 function deriveRecommendationProfile(args: {
@@ -1570,8 +1632,16 @@ function deriveRecommendationProfile(args: {
   price: number | null;
   hasBalanceSheet: boolean;
   hasCashFlow: boolean;
+  // Real API metrics for stock-specific rationale text
+  realMetrics?: {
+    pe: number | null;
+    grossMargin: number | null;
+    operatingMargin: number | null;
+    roe: number | null;
+    revenueGrowth: number | null;
+  };
 }): RecommendationProfile {
-  const { scorecard, targetUpside, technical, price, hasBalanceSheet, hasCashFlow } = args;
+  const { scorecard, targetUpside, technical, price, hasBalanceSheet, hasCashFlow, realMetrics } = args;
   const qualityScore = weightedAverage([
     { value: scorecard.components.profitability, weight: 0.45 },
     { value: scorecard.components.growth, weight: 0.25 },
@@ -1606,12 +1676,12 @@ function deriveRecommendationProfile(args: {
   const brokenTrend = trendScore !== null && trendScore < 32;
 
   let signal: ActionLabel;
-  if ((overallScore !== null && overallScore >= 50 && (qualityScore === null || qualityScore >= 40) && (valuationScore === null || valuationScore >= 48) && (trendScore === null || trendScore >= 45))
+  if ((overallScore !== null && overallScore >= 50 && (qualityScore === null || qualityScore >= 40) && (valuationScore === null || valuationScore >= 45) && (trendScore === null || trendScore >= 42))
     || (strongQuality && attractiveValuation && supportiveTrend && confidence.label !== 'Low')) {
     signal = 'Buy';
   } else if ((overallScore !== null && overallScore < 28 && weakQuality && (brokenTrend || weakValuation)) && confidence.label !== 'Low') {
     signal = 'Sell';
-  } else if ((overallScore !== null && overallScore >= 46) || strongQuality || (qualityScore !== null && qualityScore >= 45 && !brokenTrend)) {
+  } else if ((overallScore !== null && overallScore >= 42) || strongQuality || (qualityScore !== null && qualityScore >= 45 && !brokenTrend)) {
     signal = 'Hold';
   } else if ((overallScore !== null && overallScore >= 30) || weakValuation || brokenTrend) {
     signal = 'Watch';
@@ -1643,8 +1713,18 @@ function deriveRecommendationProfile(args: {
     qualityScore,
     valuationScore,
     trendScore,
+    overallScore,
     confidence: confidence.label,
     missingInputs: confidence.missingInputs,
+    metrics: {
+      pe: realMetrics?.pe ?? null,
+      grossMargin: realMetrics?.grossMargin ?? null,
+      operatingMargin: realMetrics?.operatingMargin ?? null,
+      roe: realMetrics?.roe ?? null,
+      revenueGrowth: realMetrics?.revenueGrowth ?? null,
+      targetUpside,
+      trend: technical.trend,
+    },
   });
 
   return {
@@ -1764,6 +1844,14 @@ function derivePositionGuidanceFromStock(data: StockReportData, score: number | 
   };
   const balanceReport = getMostCompleteReport(data.balanceSheet, ['cashAndEquivalents', 'longTermDebt', 'totalAssets', 'totalLiabilities', 'totalShareholderEquity']);
   const cashFlowReport = getMostCompleteReport(data.cashFlow, ['operatingCashflow', 'capitalExpenditures', 'freeCashFlow', 'dividendPayout']);
+
+  // Extract real API metric values for stock-specific rationale text
+  const pe = toNumber(overview.peRatio ?? data.basicFinancials?.metric?.peBasicExclExtraTTM);
+  const grossMargin = normalizePercent(data.basicFinancials?.metric?.grossMarginTTM ?? overview.profitMargin);
+  const operatingMargin = normalizePercent(data.basicFinancials?.metric?.operatingMarginTTM ?? overview.operatingMargin);
+  const roe = normalizePercent(data.basicFinancials?.metric?.roeTTM ?? overview.returnOnEquity);
+  const revenueGrowth = normalizePercent(data.basicFinancials?.metric?.revenueGrowthTTM ?? overview.quarterlyRevenueGrowth);
+
   const profile = deriveRecommendationProfile({
     scorecard,
     targetUpside,
@@ -1771,6 +1859,7 @@ function derivePositionGuidanceFromStock(data: StockReportData, score: number | 
     price,
     hasBalanceSheet: balanceReport !== null,
     hasCashFlow: cashFlowReport !== null,
+    realMetrics: { pe, grossMargin, operatingMargin, roe, revenueGrowth },
   });
 
   return toPositionGuidance({
@@ -1867,7 +1956,7 @@ function buildComparisonInsiderSummaryTable(items: ComparisonReportItem[]): stri
   });
 
   return buildTable(
-    ['Company', 'Recent Buys', 'Recent Sells', 'Buy Value', 'Sell Value', 'Latest Filing'],
+    ['Company', 'Buys', 'Sells', 'Buy $', 'Sell $', 'Latest'],
     rows,
     ['left', 'right', 'right', 'right', 'right', 'right']
   );
@@ -1883,17 +1972,15 @@ function buildDeepInsiderSections(items: ComparisonReportItem[]): string {
 
     const transactionTable = metrics.transactions.length
       ? buildTable(
-          ['Date', 'Insider', 'Title', 'Type', 'Shares', 'Share Price', 'Value'],
+          ['Date', 'Insider', 'Type', 'Shares', 'Value'],
           metrics.transactions.slice(0, 10).map((txn: any) => [
             formatDateLabel(String(txn.transactionDate)),
             txn.insider || 'N/A',
-            txn.title || 'N/A',
             txn.transactionType || 'N/A',
             formatCompactNumber(txn.shares),
-            formatPrice(txn.sharePrice),
             formatCurrency(txn.totalValue),
           ]),
-          ['left', 'left', 'left', 'left', 'right', 'right', 'right']
+          ['left', 'left', 'left', 'right', 'right']
         )
       : '_No recent insider transactions were returned by the active data providers._';
 
@@ -2259,7 +2346,7 @@ function buildComparisonMoatSection(items: ComparisonReportItem[]): string {
 
   const moatRows = itemsWithMoat.map((item) => {
     const moat = item.moatAnalysis!;
-    const topBarriers = moat.barriers.slice(0, 3).join('; ') || 'N/A';
+    const topBarriers = moat.barriers.slice(0, 2).join(', ') || 'N/A';
     return [
       `${item.overview?.name || item.symbol} (${item.symbol})`,
       moat.moatType,
@@ -2270,7 +2357,7 @@ function buildComparisonMoatSection(items: ComparisonReportItem[]): string {
   });
 
   const moatTable = buildTable(
-    ['Company', 'Moat Type', 'Strength', 'Score', 'Key Barriers'],
+    ['Company', 'Type', 'Strength', 'Score', 'Barriers'],
     moatRows,
     ['left', 'left', 'left', 'right', 'left']
   );
@@ -2314,7 +2401,18 @@ function buildComparisonMoatSection(items: ComparisonReportItem[]): string {
 
 export function buildStockReport(data: StockReportData): string {
   const priceChart = buildPriceChart(data.priceHistory?.prices || []);
-  const epsChart = buildEpsChart(data.earningsHistory?.quarterlyEarnings || []);
+  // Build EPS chart: prefer real earnings history; fall back to a single-point
+  // chart derived from the overview EPS when the earnings API returns empty.
+  const earningsPoints = data.earningsHistory?.quarterlyEarnings || [];
+  let epsChart = buildEpsChart(earningsPoints);
+  if (!epsChart && earningsPoints.length === 0) {
+    const overviewEps = toNumber(data.companyOverview?.eps);
+    if (overviewEps !== null) {
+      const now = new Date();
+      const q = `${now.getFullYear()}-Q${Math.ceil((now.getMonth() + 1) / 3)}`;
+      epsChart = buildEpsChart([{ fiscalQuarter: q, reportedEPS: String(overviewEps) }]);
+    }
+  }
   const peChart = buildPeChart(data.priceHistory?.prices || [], data.earningsHistory?.quarterlyEarnings || []);
   const revenueChart = buildRevenueChart(data.incomeStatement);
   const marginChart = buildMarginChart(data.incomeStatement);
@@ -2406,7 +2504,7 @@ export function buildStockReport(data: StockReportData): string {
       ])
     : [];
   const recommendationTable = recommendationRows.length
-    ? buildTable(['Period', 'Strong Buy', 'Buy', 'Hold', 'Sell', 'Strong Sell'], recommendationRows, ['left', 'right', 'right', 'right', 'right', 'right'])
+    ? buildTable(['Period', 'Str Buy', 'Buy', 'Hold', 'Sell', 'Str Sell'], recommendationRows, ['left', 'right', 'right', 'right', 'right', 'right'])
     : "";
 
   const alternativeLines = peers.length
@@ -2449,38 +2547,73 @@ export function buildStockReport(data: StockReportData): string {
     riskLines.push(`- Net debt of ${formatCurrency(netDebt)}`);
   }
 
-  const incomeTable = incomeReports.length
-    ? buildTable(
-        ['Period', 'Revenue', 'Gross Profit', 'Operating Income', 'Net Income'],
-        incomeReports.map((report) => [
-          formatPeriodLabel(report),
-          formatCurrency(report.totalRevenue),
-          formatCurrency(report.grossProfit),
-          formatCurrency(report.operatingIncome),
-          formatCurrency(report.netIncome),
-        ]),
+  // Build income table: prefer real quarterly/annual data; fall back to a TTM
+  // estimated row derived from the company overview when the statement API is empty.
+  let incomeTable: string;
+  if (incomeReports.length) {
+    incomeTable = buildTable(
+      ['Period', 'Revenue', 'Gross', 'Op Income', 'Net Income'],
+      incomeReports.map((report) => [
+        formatPeriodLabel(report),
+        formatCurrency(report.totalRevenue),
+        formatCurrency(report.grossProfit),
+        formatCurrency(report.operatingIncome),
+        formatCurrency(report.netIncome),
+      ]),
+      ['left', 'right', 'right', 'right', 'right']
+    );
+  } else {
+    const ttmRevenue = toNumber(overview.revenueTTM);
+    const ttmGross = toNumber(overview.grossProfitTTM);
+    const opMarginRatio = toNumber(overview.operatingMargin);
+    const profitMarginRatio = toNumber(overview.profitMargin);
+    const ttmOpIncome = ttmRevenue !== null && opMarginRatio !== null ? ttmRevenue * opMarginRatio : null;
+    const ttmNetIncome = ttmRevenue !== null && profitMarginRatio !== null ? ttmRevenue * profitMarginRatio : null;
+    if (ttmRevenue !== null) {
+      incomeTable = buildTable(
+        ['Period', 'Revenue', 'Gross', 'Op Income', 'Net Income'],
+        [['TTM (est.)', formatCurrency(ttmRevenue), formatCurrency(ttmGross), formatCurrency(ttmOpIncome), formatCurrency(ttmNetIncome)]],
         ['left', 'right', 'right', 'right', 'right']
-      )
-    : '_Income statement data unavailable (provider or rate limit; no estimated fallback shown)._';
+      );
+    } else {
+      incomeTable = '_Income statement data unavailable (provider or rate limit; no estimated fallback shown)._';
+    }
+  }
 
-  const balanceTable = balanceReports.length
-    ? buildTable(
-        ['Period', 'Cash', 'LT Debt', 'Total Liabilities', 'Total Assets', 'Equity'],
-        balanceReports.map((report) => [
-          formatPeriodLabel(report),
-          formatCurrency(report.cashAndEquivalents),
-          formatCurrency(report.longTermDebt),
-          formatCurrency(report.totalLiabilities),
-          formatCurrency(report.totalAssets),
-          formatCurrency(report.totalShareholderEquity),
-        ]),
+  // Build balance sheet table: prefer real data; fall back to a latest-estimated
+  // row derived from overview when the balance sheet API is empty.
+  let balanceTable: string;
+  if (balanceReports.length) {
+    balanceTable = buildTable(
+      ['Period', 'Cash', 'LT Debt', 'Liabilities', 'Assets', 'Equity'],
+      balanceReports.map((report) => [
+        formatPeriodLabel(report),
+        formatCurrency(report.cashAndEquivalents),
+        formatCurrency(report.longTermDebt),
+        formatCurrency(report.totalLiabilities),
+        formatCurrency(report.totalAssets),
+        formatCurrency(report.totalShareholderEquity),
+      ]),
+      ['left', 'right', 'right', 'right', 'right', 'right']
+    );
+  } else {
+    const bookVal = toNumber(overview.bookValue);
+    const sharesOut = toNumber(overview.sharesOutstanding);
+    const equity = bookVal !== null && sharesOut !== null ? bookVal * sharesOut : null;
+    if (equity !== null) {
+      balanceTable = buildTable(
+        ['Period', 'Cash', 'LT Debt', 'Liabilities', 'Assets', 'Equity'],
+        [['Latest (est.)', '—', '—', '—', '—', formatCurrency(equity)]],
         ['left', 'right', 'right', 'right', 'right', 'right']
-      )
-    : '_Balance sheet data unavailable (provider or rate limit; no estimated fallback shown)._';
+      );
+    } else {
+      balanceTable = '_Balance sheet data unavailable (provider or rate limit; no estimated fallback shown)._';
+    }
+  }
 
   const cashTable = cashReports.length
     ? buildTable(
-        ['Period', 'Operating Cash Flow', 'Capex', 'Free Cash Flow', 'Dividend Payout'],
+        ['Period', 'Op Cash Flow', 'Capex', 'FCF', 'Dividends'],
         cashReports.map((report) => [
           formatPeriodLabel(report),
           formatCurrency(report.operatingCashflow),
@@ -2927,34 +3060,36 @@ export function buildComparisonReport(data: ComparisonReportData): string {
               : '_Legend: Alpha Vantage provider._';
   const items = data.items;
 
-  const sourceRows = Object.entries(sources).map(([symbol, map]) => {
+  // Render data sources as a compact per-company bullet list instead of a 14-column table
+  const sourceList = Object.entries(sources).map(([symbol, map]) => {
     const lookup = items.find((item) => item.symbol === symbol);
     const name = lookup?.overview?.name || symbol;
-    const pick = (key: string) => map[key] || 'N/A';
-    return [
-      `${name} (${symbol})`,
-      pick('Price'),
-      pick('Company overview'),
-      pick('Basic financials'),
-      pick('Price history'),
-      pick('Income statement'),
-      pick('Balance sheet'),
-      pick('Cash flow'),
-      pick('Insider trading'),
-      pick('Analyst ratings'),
-      pick('Price targets'),
-      pick('Peers'),
-      pick('News sentiment'),
-      pick('Company news'),
+    const pick = (key: string) => map[key] || '';
+    const available: string[] = [];
+    const missing: string[] = [];
+    const dataPoints = [
+      { label: 'Price', v: pick('Price') },
+      { label: 'Overview', v: pick('Company overview') },
+      { label: 'Financials', v: pick('Basic financials') },
+      { label: 'History', v: pick('Price history') },
+      { label: 'Income', v: pick('Income statement') },
+      { label: 'Balance', v: pick('Balance sheet') },
+      { label: 'Cash Flow', v: pick('Cash flow') },
+      { label: 'Insider', v: pick('Insider trading') },
+      { label: 'Analyst', v: pick('Analyst ratings') },
+      { label: 'Targets', v: pick('Price targets') },
+      { label: 'Peers', v: pick('Peers') },
+      { label: 'Sentiment', v: pick('News sentiment') },
+      { label: 'News', v: pick('Company news') },
     ];
-  });
-  const sourceTable = sourceRows.length
-    ? buildTable(
-        ['Company', 'Price', 'Overview', 'Basic', 'Price History', 'Income', 'Balance', 'Cash Flow', 'Insider', 'Analyst', 'Targets', 'Peers', 'News Sentiment', 'Company News'],
-        sourceRows,
-        ['left', 'center', 'center', 'center', 'center', 'center', 'center', 'center', 'center', 'center', 'center', 'center', 'center', 'center']
-      )
-    : '';
+    for (const dp of dataPoints) {
+      if (dp.v && dp.v !== 'N/A' && dp.v !== '—') available.push(dp.label);
+      else missing.push(dp.label);
+    }
+    const missingStr = missing.length ? ` · Missing: ${missing.join(', ')}` : '';
+    return `- **${name} (${symbol}):** ${available.length}/${dataPoints.length} sources${missingStr}`;
+  }).join('\n');
+  const sourceSection = sourceList || '';
 
   const snapshotRows = items.map((item) => {
     const overview = item.overview || {};
@@ -2969,16 +3104,14 @@ export function buildComparisonReport(data: ComparisonReportData): string {
       formatPrice(price),
       formatSignedPercentValue(changeValue, 2, { alreadyPercent: changeIsPercent }),
       formatCurrency(overview.marketCapitalization),
-      overview.sector || 'N/A',
-      overview.industry || 'N/A',
       `${formatCurrency(overview['52WeekLow'])} - ${formatCurrency(overview['52WeekHigh'])}`,
     ];
   });
 
   const snapshotTable = buildTable(
-    ['Company', 'Price', 'Day Change', 'Market Cap', 'Sector', 'Industry', '52W Range'],
+    ['Company', 'Price', 'Chg %', 'Mkt Cap', '52W Range'],
     snapshotRows,
-    ['left', 'right', 'right', 'right', 'left', 'left', 'right']
+    ['left', 'right', 'right', 'right', 'right']
   );
 
   const scaleRows = items.map((item) => {
@@ -2992,7 +3125,7 @@ export function buildComparisonReport(data: ComparisonReportData): string {
     ];
   });
   const scaleTable = buildTable(
-    ['Company', 'Revenue (TTM)', 'Gross Margin', 'Operating Margin', 'ROE'],
+    ['Company', 'Revenue', 'Gross Mgn', 'Op Mgn', 'ROE'],
     scaleRows,
     ['left', 'right', 'right', 'right', 'right']
   );
@@ -3021,7 +3154,7 @@ export function buildComparisonReport(data: ComparisonReportData): string {
     ];
   });
   const growthTable = buildTable(
-    ['Company', 'Revenue Growth (TTM)', 'EPS Growth (TTM)', `${data.range} Price Change`],
+    ['Company', 'Rev Growth', 'EPS Growth', `${data.range} Price Chg`],
     growthRows,
     ['left', 'right', 'right', 'right']
   );
@@ -3041,7 +3174,7 @@ export function buildComparisonReport(data: ComparisonReportData): string {
     ];
   });
   const valuationTable = buildTable(
-    ['Company', 'P/E', 'Forward P/E', 'PEG', 'Price/Sales', 'Price/Book'],
+    ['Company', 'P/E', 'Fwd P/E', 'PEG', 'P/S', 'P/B'],
     valuationRows,
     ['left', 'right', 'right', 'right', 'right', 'right']
   );
@@ -3062,7 +3195,7 @@ export function buildComparisonReport(data: ComparisonReportData): string {
     ];
   });
   const balanceTable = buildTable(
-    ['Company', 'Cash', 'LT Debt', 'Net Debt', 'Equity', 'Free Cash Flow'],
+    ['Company', 'Cash', 'LT Debt', 'Net Debt', 'Equity', 'FCF'],
     balanceRows,
     ['left', 'right', 'right', 'right', 'right', 'right']
   );
@@ -3078,7 +3211,7 @@ export function buildComparisonReport(data: ComparisonReportData): string {
     ];
   });
   const ownershipTable = buildTable(
-    ['Company', 'Insider Ownership', 'Institutional Ownership', 'Short Float'],
+    ['Company', 'Insider %', 'Institutional %', 'Short Float'],
     ownershipRows,
     ['left', 'right', 'right', 'right']
   );
@@ -3249,7 +3382,7 @@ export function buildComparisonReport(data: ComparisonReportData): string {
   });
   const allocationRows = allocationEntries.map((e) => e.row);
   const allocationTable = buildTable(
-    ['Company', 'Score', 'Indicative Weight', 'Rationale'],
+    ['Company', 'Score', 'Weight', 'Why'],
     allocationRows,
     ['left', 'right', 'right', 'left']
   );
@@ -3268,8 +3401,8 @@ export function buildComparisonReport(data: ComparisonReportData): string {
     `Generated: ${data.generatedAt}`,
     `Universe: ${data.universe.join(', ')}`,
     notes ? `## ⚠️ Data Gaps\n${notes}` : null,
-    debugMode && sourceTable ? '## 🧾 Data Sources' : null,
-    debugMode && sourceTable ? `${sourceLegend}\n\n${sourceTable}` : null,
+    debugMode && sourceSection ? '## 🧾 Data Sources' : null,
+    debugMode && sourceSection ? `${sourceLegend}\n\n${sourceSection}` : null,
     '## 📊 Snapshot',
     snapshotTable,
     '## 🧾 Scale & Profitability',
@@ -3554,6 +3687,8 @@ function buildWatchlistStockReportData(item: WatchlistDailyReportItem): StockRep
       valuationScore: item.stock.decisionSnapshot?.valuationScore ?? null,
       technicalScore: item.stock.decisionSnapshot?.technicalScore ?? null,
       portfolioFitScore: item.stock.decisionSnapshot?.portfolioFitScore ?? null,
+      analystConsensusScore: item.stock.decisionSnapshot?.analystConsensusScore ?? null,
+      insiderScore: item.stock.decisionSnapshot?.insiderScore ?? null,
       whyNow: action === 'Buy' || action === 'Hold' ? [item.reason] : [],
       whyNot: action === 'Watch' || action === 'Sell' ? [item.reason] : [],
       missingInputs: item.stock.decisionSnapshot?.missingInputs ?? [],

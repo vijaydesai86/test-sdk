@@ -47,25 +47,23 @@ describe('watchlistStore', () => {
     expect(reloaded.profile.strategyNotes).toBe('Concentrate in best ideas.');
   });
 
-  it('seeds owned names with owned ownership status', async () => {
+  it('starts with the default watchlist seed data', async () => {
     const store = await import('../web/app/lib/watchlistStore');
     const watchlist = await store.getDefaultWatchlist();
 
-    const ownedByDefault = new Map(
-      watchlist.items.map((item) => [item.symbol, item.ownershipStatus])
-    );
-
-    expect(ownedByDefault.get('NVDA')).toBe('owned');
-    expect(ownedByDefault.get('ARM')).toBe('owned');
-    expect(ownedByDefault.get('AVGO')).toBe('owned');
-    expect(ownedByDefault.get('META')).toBe('owned');
-    expect(ownedByDefault.get('AMD')).toBe('watching');
+    expect(watchlist.items.length).toBe(15);
+    expect(watchlist.items[0].symbol).toBe('NVDA');
+    expect(watchlist.items[14].symbol).toBe('META');
   });
 
-  it('updates watchlist item position metadata in filesystem mode', async () => {
+  it('adds and updates watchlist item position metadata in filesystem mode', async () => {
     const store = await import('../web/app/lib/watchlistStore');
+
+    // Add an item (watchlist starts with 15 seed items)
+    await store.addWatchlistItem({ symbol: 'AAPL', companyName: 'Apple Inc.' });
     const watchlist = await store.getDefaultWatchlist();
-    const symbol = watchlist.items[0].symbol;
+    expect(watchlist.items.length).toBe(16);
+    const symbol = 'AAPL';
 
     const updated = await store.updateWatchlistItemPosition(symbol, {
       ownershipStatus: 'owned',

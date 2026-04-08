@@ -636,60 +636,62 @@ async function callLLMForDataFill(
       role: 'system',
       content:
         'You are a financial data assistant. ' +
-        'Use ONLY the facts explicitly provided in the prompt. Do not use training data for numeric values. ' +
-        'For ticker-resolution prompts you may rely on publicly listed tickers, but return null if unsure. ' +
+        'Do not use training data for numeric financial values (prices, revenues, market caps, etc.) — those come from live APIs. ' +
+        'For ticker-resolution prompts and sector/theme company-identification prompts, you MUST use your knowledge of publicly listed companies and their ticker symbols to provide accurate results. ' +
         'Return null for any value you cannot confirm. ' +
         'Respond ONLY with valid JSON — no markdown, no explanation.',
     },
     { role: 'user', content: prompt },
   ];
 
-  const attempt = async (): Promise<string> => {
-    let result: any;
-    if (provider === 'gemini') {
-      if (!geminiToken) return '{}';
-      result = await callGeminiWithFallback(fillMessages, geminiToken, []);
-    } else if (provider === 'hybrid') {
-      if (githubToken) {
-        try {
-          result = await callGitHubModelsAPI(fillMessages, githubToken, FILL_MODEL, []);
-        } catch (err: any) {
-          // Hybrid: auto-fall back to Gemini (with model fallback) when GitHub is rate-limited
-          if (err?.statusCode === 429 && geminiToken) {
-            result = await callGeminiWithFallback(fillMessages, geminiToken, []);
-          } else {
-            throw err;
-          }
-        }
-      } else if (geminiToken) {
-        result = await callGeminiWithFallback(fillMessages, geminiToken, []);
-      } else {
-        return '{}';
-      }
-    } else {
-      // Default: github mode
-      if (!githubToken) return '{}';
-      result = await callGitHubModelsAPI(fillMessages, githubToken, FILL_MODEL, []);
-    }
-    return String(result.choices?.[0]?.message?.content || '{}');
+  const extractContent = (result: any): string => {
+    const content = result?.choices?.[0]?.message?.content;
+    return content ? String(content) : '{}';
   };
 
-  try {
-    return await attempt();
-  } catch (err: any) {
-    if (err?.statusCode === 429) {
-      // Honor the provider's requested retry delay; cap at 10 s to avoid stalling requests.
-      // Falls back to 2 s for providers that don't include a retry hint.
-      const delayMs = Math.min(err?.retryAfterMs ?? 2000, 10000);
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
-      try {
-        return await attempt();
-      } catch {
-        return '{}';
-      }
+  // Build ordered list of strategies: try multiple GitHub models, then Gemini models
+  const strategies: Array<() => Promise<string>> = [];
+
+  // GitHub Models — try FILL_MODEL first, then fallback models
+  if (githubToken && (provider === 'github' || provider === 'hybrid')) {
+    const githubModels = [FILL_MODEL, ...DEFAULT_FALLBACK_MODELS].filter(Boolean);
+    const seen = new Set<string>();
+    for (const model of githubModels) {
+      if (seen.has(model)) continue;
+      seen.add(model);
+      strategies.push(async () => {
+        const result = await callGitHubModelsAPI(fillMessages, githubToken, model, []);
+        return extractContent(result);
+      });
     }
-    return '{}';
   }
+
+  // Gemini — always available as final fallback when token exists
+  if (geminiToken && (provider === 'gemini' || provider === 'hybrid' || strategies.length === 0)) {
+    strategies.push(async () => {
+      const result = await callGeminiWithFallback(fillMessages, geminiToken, []);
+      return extractContent(result);
+    });
+  }
+
+  // Try each strategy in order; on retriable errors (429), wait and try next
+  for (let i = 0; i < strategies.length; i++) {
+    try {
+      const content = await strategies[i]();
+      if (content && content !== '{}') return content;
+      // Model returned empty — try next strategy
+      console.info(`[callLLMForDataFill] Strategy ${i + 1}/${strategies.length} returned empty, trying next`);
+    } catch (err: any) {
+      console.info(`[callLLMForDataFill] Strategy ${i + 1}/${strategies.length} failed: ${err?.message || err}`);
+      if (err?.statusCode === 429) {
+        const delayMs = Math.min(err?.retryAfterMs ?? 2000, 10000);
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+      // Continue to next strategy
+    }
+  }
+
+  return '{}';
 }
 
 /** Creates an LLMFiller callback bound to the active tokens. */

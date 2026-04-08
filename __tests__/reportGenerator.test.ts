@@ -4,6 +4,8 @@ import {
   buildComparisonReport,
   buildSectorReport,
   buildDeepSectorReport,
+  buildDeepStockReport,
+  buildDeepComparisonReport,
   buildWatchlistDailyReport,
   saveReport,
   type StockReportData,
@@ -243,7 +245,8 @@ describe('buildStockReport', () => {
       },
     });
 
-    expect(report).toContain('| Buy Me Inc. (BUYME) | Buy | High | Add | Start a position |');
+    expect(report).toContain('| Buy Me Inc. (BUYME) | 🟢 Buy | High |');
+    expect(report).toContain('Owners: Add');
   });
 
   it('assigns sell guidance for weak quality with broken reward-to-risk', () => {
@@ -304,12 +307,13 @@ describe('buildStockReport', () => {
       },
     });
 
-    expect(report).toContain('| Exit Corp. (EXIT) | Sell | High | Sell | Avoid new entry |');
+    expect(report).toContain('| Exit Corp. (EXIT) | 🔴 Sell | High |');
+    expect(report).toContain('Owners: Sell');
   });
 
   it('lowers confidence when the recommendation relies on partial data', () => {
     const report = buildStockReport(minimalStock());
-    expect(report).toContain('| AAPL (AAPL) | Watch | Low |');
+    expect(report).toContain('| AAPL (AAPL) | 🟠 Watch | Low |');
     expect(report).toContain('Confidence reflects data completeness and signal alignment');
   });
 
@@ -977,7 +981,8 @@ describe('LLM conclusion integration', () => {
       },
     });
 
-    expect(report).toContain('| Apple Inc. (AAPL) | Buy | High | Add | Start a position | Add to the position with high confidence. |');
+    expect(report).toContain('| Apple Inc. (AAPL) | 🟢 Buy | High |');
+    expect(report).toContain('Owners: Add');
     expect(report).toContain('Decision Score');
     expect(report).not.toContain('Overall Score');
     expect(report).toContain('**Decision Score:** 78.0/100');
@@ -1242,9 +1247,11 @@ describe('buildWatchlistDailyReport', () => {
     });
 
     expect(report).toContain('# Watchlist Daily Report: Core Watchlist');
-    expect(report).toContain('| Company | Signal | Confidence | For owners | For non-owners | Why |');
-    expect(report).toContain('| Apple Inc. (AAPL) | Buy | Medium | Add | Start a position | Strong profitability and supportive target upside. |');
-    expect(report).toContain('| NVIDIA (NVDA) | Hold | Medium | Hold | Stay on watchlist | Signals are constructive, but the fresh entry is less compelling. |');
+    expect(report).toContain('| Company | Signal | Confidence | Action |');
+    expect(report).toContain('| Apple Inc. (AAPL) | 🟢 Buy | Medium |');
+    expect(report).toContain('| NVIDIA (NVDA) | 🟡 Hold | Medium |');
+    expect(report).toContain('**Apple Inc. (AAPL):**');
+    expect(report).toContain('**NVIDIA (NVDA):**');
     expect(report).toContain('_For owners = you already hold the stock. For non-owners = you are considering a fresh entry. Confidence reflects data completeness and signal alignment._');
     expect(report).toContain('## 1. Apple Inc. (AAPL)');
     expect(report).toContain('## 2. NVIDIA (NVDA)');
@@ -1270,7 +1277,8 @@ describe('buildWatchlistDailyReport', () => {
       ],
     });
 
-    expect(report).toContain('| Advanced Micro Devices (AMD) | Watch | Medium | Hold | Stay on watchlist | Wait for a better setup. |');
+    expect(report).toContain('| Advanced Micro Devices (AMD) | 🟠 Watch | Medium |');
+    expect(report).toContain('**Advanced Micro Devices (AMD):** Wait for a better setup.');
   });
 
   it('prefers explicit watchlist actions over embedded decision snapshots when both are supplied', () => {
@@ -1308,7 +1316,8 @@ describe('buildWatchlistDailyReport', () => {
       ],
     });
 
-    expect(report).toContain('| Apple Inc. (AAPL) | Buy | Medium | Add | Start a position | Explicit watchlist override. |');
+    expect(report).toContain('| Apple Inc. (AAPL) | 🟢 Buy | Medium |');
+    expect(report).toContain('**Apple Inc. (AAPL):** Explicit watchlist override.');
     expect(report).not.toContain('Wait with high confidence from snapshot.');
   });
 

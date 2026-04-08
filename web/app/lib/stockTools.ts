@@ -128,8 +128,162 @@ function parseLLMFillJSON(response: string): any | null {
 }
 
 /**
+ * Attempts to parse an LLM response as a JSON array of ticker strings.
+ * Returns an empty array if the response is invalid.
+ */
+function parseLLMTickerArray(raw: string, maxCount: number): string[] {
+  try {
+    // Strip markdown fences and surrounding whitespace
+    let cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+    // Some LLMs wrap the JSON array in explanatory text — extract the array portion
+    const arrayMatch = cleaned.match(/\[[\s\S]*?\]/);
+    if (arrayMatch) {
+      cleaned = arrayMatch[0];
+    }
+    const parsed = JSON.parse(cleaned);
+    if (Array.isArray(parsed)) {
+      return parsed
+        .map((item: any) => String(item || '').replace(/[^A-Z0-9.]/gi, '').toUpperCase())
+        .filter((t) => t.length > 0 && t.length <= 6)
+        .slice(0, maxCount);
+    }
+    // If the LLM returned an object with a key containing an array (e.g. { tickers: [...] })
+    if (parsed && typeof parsed === 'object') {
+      for (const key of Object.keys(parsed)) {
+        if (Array.isArray(parsed[key])) {
+          return parsed[key]
+            .map((item: any) => String(item || '').replace(/[^A-Z0-9.]/gi, '').toUpperCase())
+            .filter((t: string) => t.length > 0 && t.length <= 6)
+            .slice(0, maxCount);
+        }
+      }
+    }
+  } catch {
+    // Try to extract ticker-like symbols from the raw text as last resort
+    const tickerMatches = raw.match(/\b[A-Z]{1,5}\b/g);
+    if (tickerMatches && tickerMatches.length >= 2) {
+      return [...new Set(tickerMatches)].slice(0, maxCount);
+    }
+  }
+  return [];
+}
+
+/**
+ * Identifies companies for a sector/theme query.
+ *
+ * Strategy (all sources are live — no hardcoded lists):
+ *   1. LLM call — primary resolver via buildSectorCompaniesPrompt.
+ *   2. LLM retry — a shorter, more explicit prompt if the first attempt returned < 2 tickers.
+ *   3. API search fallback — calls stockService.searchStock(sector) to find related
+ *      real tickers from the live data provider.
+ */
+async function resolveSectorTickers(
+  sector: string,
+  count: number,
+  llmFill?: LLMFiller,
+  stockService?: StockDataService,
+): Promise<string[]> {
+  const collectedTickers: string[] = [];
+
+  // Attempt 1: LLM with the standard sector prompt
+  if (llmFill) {
+    const prompt = buildSectorCompaniesPrompt(sector, count);
+    try {
+      const raw = await llmFill(prompt);
+      console.info(`[resolveSectorTickers] LLM attempt 1 raw response (${raw?.length ?? 0} chars):`, raw?.substring(0, 200));
+      const tickers = parseLLMTickerArray(raw, count);
+      if (tickers.length >= 2) return tickers;
+      collectedTickers.push(...tickers);
+      console.info(`[resolveSectorTickers] Attempt 1 parsed only ${tickers.length} tickers — retrying`);
+    } catch (err: any) {
+      console.warn(`[resolveSectorTickers] LLM attempt 1 error:`, err?.message || err);
+    }
+
+    // Attempt 2: LLM retry with a shorter, more direct prompt
+    try {
+      const retryPrompt =
+        `List exactly ${count} US-listed stock ticker symbols for the top companies in the "${sector}" sector. ` +
+        `Return ONLY a JSON array of ticker strings, nothing else. Example: ["AAPL","MSFT"]`;
+      const raw = await llmFill(retryPrompt);
+      console.info(`[resolveSectorTickers] LLM attempt 2 raw response (${raw?.length ?? 0} chars):`, raw?.substring(0, 200));
+      const tickers = parseLLMTickerArray(raw, count);
+      if (tickers.length >= 2) return tickers;
+      collectedTickers.push(...tickers);
+      console.info(`[resolveSectorTickers] Attempt 2 parsed only ${tickers.length} tickers`);
+    } catch (err: any) {
+      console.warn(`[resolveSectorTickers] LLM attempt 2 error:`, err?.message || err);
+    }
+
+    // Attempt 3: LLM with a plain-text company name prompt, then resolve each to ticker
+    try {
+      const namePrompt =
+        `Name the top ${count} publicly traded US companies in the "${sector}" industry. ` +
+        `Return ONLY a JSON array of their stock ticker symbols. Example: ["AAPL","MSFT","GOOGL"]`;
+      const raw = await llmFill(namePrompt);
+      console.info(`[resolveSectorTickers] LLM attempt 3 raw response (${raw?.length ?? 0} chars):`, raw?.substring(0, 200));
+      const tickers = parseLLMTickerArray(raw, count);
+      if (tickers.length >= 2) return tickers;
+      collectedTickers.push(...tickers);
+    } catch (err: any) {
+      console.warn(`[resolveSectorTickers] LLM attempt 3 error:`, err?.message || err);
+    }
+  } else {
+    console.warn(`[resolveSectorTickers] No llmFill provided — cannot resolve sector tickers via LLM`);
+  }
+
+  // Attempt 4: API search fallback — extract tickers from live search results
+  if (stockService) {
+    try {
+      const results = await stockService.searchStock(sector);
+      const candidates = (results?.results || []) as any[];
+      console.info(`[resolveSectorTickers] API search returned ${candidates.length} candidates for "${sector}"`);
+      if (candidates.length >= 2) {
+        return candidates
+          .map((c: any) => String(c.symbol || '').toUpperCase())
+          .filter((s) => s.length > 0 && /^[A-Z0-9.]+$/.test(s))
+          .slice(0, count);
+      }
+      // Even 1 result helps — collect it and also try peers
+      if (candidates.length >= 1) {
+        const firstSymbol = String(candidates[0].symbol || '').toUpperCase();
+        if (firstSymbol) collectedTickers.push(firstSymbol);
+      }
+    } catch (err: any) {
+      console.warn(`[resolveSectorTickers] API search error:`, err?.message || err);
+    }
+
+    // Attempt 5: If we have at least one ticker, get its peers to build the universe
+    const unique = [...new Set(collectedTickers)].filter(Boolean);
+    if (unique.length >= 1) {
+      try {
+        const peers = await stockService.getPeers(unique[0]);
+        const peerSymbols = (Array.isArray(peers) ? peers : (peers as any)?.peers || [])
+          .map((p: any) => typeof p === 'string' ? p.toUpperCase() : String(p?.symbol || '').toUpperCase())
+          .filter((s: string) => s.length > 0 && /^[A-Z0-9.]+$/.test(s));
+        console.info(`[resolveSectorTickers] Peers of ${unique[0]} returned ${peerSymbols.length} peers`);
+        const combined = [...new Set([...unique, ...peerSymbols])].slice(0, count);
+        if (combined.length >= 2) return combined;
+        collectedTickers.push(...peerSymbols);
+      } catch (err: any) {
+        console.warn(`[resolveSectorTickers] Peers lookup error:`, err?.message || err);
+      }
+    }
+  }
+
+  // Final: return whatever we collected, even if < 2
+  const final = [...new Set(collectedTickers)].filter(Boolean);
+  if (final.length > 0) {
+    console.info(`[resolveSectorTickers] Returning ${final.length} partial tickers for "${sector}"`);
+    return final.slice(0, count);
+  }
+
+  console.warn(`[resolveSectorTickers] All attempts failed for sector "${sector}"`);
+  return [];
+}
+
+/**
  * Builds a prompt asking the LLM to map each query to its official US stock ticker.
- * Used when the market-data search API returns no candidates (e.g. 'GOOGLE' → 'GOOGL').
+ * Used when the market-data search API returns no candidates.
  */
 function buildTickerResolutionPrompt(queries: string[]): string {
   const shape = Object.fromEntries(queries.map((q) => [q, 'TICKER | null']));
@@ -138,8 +292,8 @@ function buildTickerResolutionPrompt(queries: string[]): string {
     `identify the correct official US stock exchange ticker symbol.\n\n` +
     `Inputs: ${JSON.stringify(queries)}\n\n` +
     `RULES:\n` +
-    `- Return the primary US-listed ticker (e.g. "GOOGL" for Google/Alphabet, "MSFT" for Microsoft)\n` +
-    `- For share-class ambiguity, prefer the more liquid class (e.g. GOOGL over GOOG)\n` +
+    `- Return the primary US-listed ticker for each company\n` +
+    `- For share-class ambiguity, prefer the more liquid class\n` +
     `- Return null for any input you cannot identify with certainty (do NOT provide financial values)\n` +
     `Respond ONLY with valid JSON:\n` +
     JSON.stringify(shape, null, 2)
@@ -400,6 +554,109 @@ function parseMoatEntry(m: any): MoatAnalysis | null {
     narrative: String(m.narrative || ''),
     bestFor: String(m.bestFor || ''),
   };
+}
+
+/**
+ * Builds a batch LLM prompt that generates a 1-2 sentence plain-English "Why"
+ * rationale for the Position Guidance table in watchlist / comparison reports.
+ *
+ * Each rationale must:
+ *   - Cite real score values (quality, valuation, momentum) from the provided data
+ *   - Reference at least one concrete metric (e.g. "34% operating margin", "$135 target")
+ *   - State clearly why the action (Buy / Hold / Watch / Sell) follows from those numbers
+ *   - Be brief (1-2 sentences) and free of vague filler
+ *
+ * CRITICAL: The LLM must not invent any figures — only use data from the prompt.
+ */
+function buildBatchPositionRationalePrompt(
+  companies: Array<{
+    symbol: string;
+    name: string;
+    action: string;
+    confidence: string;
+    overallScore: number | null;
+    qualityScore: number | null;
+    valuationScore: number | null;
+    technicalScore: number | null;
+    analystConsensusScore?: number | null;
+    insiderScore?: number | null;
+    whyNow: string[];
+    whyNot: string[];
+    missingInputs: string[];
+    overview: any;
+    basicFinancials: any;
+    priceTargets: any;
+    analystRatings: any;
+    price: any;
+  }>
+): string {
+  const fmt = (v: any): string => {
+    if (v === null || v === undefined || v === 'N/A' || v === '') return 'N/A';
+    const n = Number(v);
+    if (!Number.isFinite(n)) return String(v);
+    if (Math.abs(n) <= 2) return `${(n * 100).toFixed(1)}%`;
+    return n.toFixed(2);
+  };
+
+  const companySections = companies.map(({ symbol, name, action, confidence, overallScore, qualityScore, valuationScore, technicalScore, analystConsensusScore, insiderScore, whyNow, whyNot, missingInputs, overview, basicFinancials, priceTargets, analystRatings, price: priceData }) => {
+    const currentPrice = priceData?.price ?? 'N/A';
+    const targetMean = priceTargets?.targetMean ?? analystRatings?.analystTargetPrice ?? overview?.analystTargetPrice ?? 'N/A';
+    const pe = overview?.peRatio ?? basicFinancials?.metric?.peBasicExclExtraTTM ?? 'N/A';
+    const opMargin = fmt(basicFinancials?.metric?.operatingMarginTTM ?? overview?.operatingMargin);
+    const roe = fmt(basicFinancials?.metric?.roeTTM ?? overview?.returnOnEquity);
+    const revGrowth = fmt(basicFinancials?.metric?.revenueGrowthTTM ?? overview?.quarterlyRevenueGrowth);
+    const grossMargin = fmt(basicFinancials?.metric?.grossMarginTTM ?? overview?.profitMargin);
+
+    const reasons = [...whyNow, ...whyNot].slice(0, 4).join(' | ') || 'No specific signals computed.';
+    const missing = missingInputs.length ? `Missing: ${missingInputs.join(', ')}.` : 'All key inputs present.';
+
+    return (
+      `${symbol}: ${name}\n` +
+      `  Action: ${action} | Confidence: ${confidence}\n` +
+      `  Scores — Overall: ${overallScore?.toFixed(1) ?? 'N/A'}/100 | Quality: ${qualityScore?.toFixed(1) ?? 'N/A'}/100 | Valuation: ${valuationScore?.toFixed(1) ?? 'N/A'}/100 | Momentum: ${technicalScore?.toFixed(1) ?? 'N/A'}/100 | Analysts: ${analystConsensusScore?.toFixed(1) ?? 'N/A'}/100 | Insiders: ${insiderScore?.toFixed(1) ?? 'N/A'}/100\n` +
+      `  Key Metrics — Price: $${currentPrice} | Target: $${targetMean} | P/E: ${pe} | Op Margin: ${opMargin} | Gross Margin: ${grossMargin} | ROE: ${roe} | Rev Growth: ${revGrowth}\n` +
+      `  Signal Drivers: ${reasons}\n` +
+      `  ${missing}`
+    );
+  }).join('\n\n');
+
+  const exampleTicker = companies[0]?.symbol || 'TICK';
+  const shapeExample = `{"${exampleTicker}":{"rationale":"Quality 72/100 (34% op margin, 18% ROE) with attractive valuation at 23x P/E and 35% target upside (valuation 68/100). Analyst consensus bullish (12 buy vs 2 sell, score 78/100). Hold — thesis intact but not at a high-conviction add point."}}`;
+
+  return (
+    `You are a senior equity research analyst writing the "Why" column for a position guidance table in a professional investment report.\n\n` +
+    `CRITICAL RULES:\n` +
+    `1. Base every claim STRICTLY on the real data provided below — do NOT use training-memory values for any financial figures.\n` +
+    `2. Write EXACTLY 1-2 sentences per stock. Be brief but specific.\n` +
+    `3. Cite the actual scores (e.g. "quality 67/100") AND at least one concrete metric (e.g. "34% operating margin", "$135 price target", "26x P/E").\n` +
+    `4. When analyst consensus or insider data is available, mention it (e.g. "12 buy vs 2 sell", "insider net buying 0.005% of mkt cap").\n` +
+    `5. Explain directly why the recommended action (Buy/Hold/Watch/Sell) follows from those numbers.\n` +
+    `6. Do NOT write vague phrases like "mixed setup", "some positives and negatives", "room for improvement", or "further research needed".\n` +
+    `7. When key data is missing (score is N/A), say explicitly which input is absent and how it limits conviction.\n` +
+    `8. Write in active, professional voice. No filler words.\n\n` +
+    `SCORING SCALE (0-100, 7-pillar weighted model):\n` +
+    `- Quality (25% weight): margins, ROE, ROA. ≥65 = strong, 45-64 = adequate, <45 = weak.\n` +
+    `- Growth (15% weight): revenue/EPS growth. ≥65 = fast-growing, <40 = declining.\n` +
+    `- Valuation (20% weight): P/E, analyst target upside. ≥60 = attractive, <40 = stretched.\n` +
+    `- Momentum (15% weight): price trend. ≥60 = uptrend, <40 = downtrend.\n` +
+    `- Analysts (15% weight): consensus buy/sell distribution. ≥65 = bullish, <40 = bearish.\n` +
+    `- Insiders (5% weight): net insider buying as % of mkt cap. ≥60 = net buying, <40 = net selling.\n` +
+    `- Fin. Health (5% weight): debt/equity, cash flow, FCF yield.\n` +
+    `- Overall score ≥65 → Buy/Initiate; 45-64 → Hold/Watch; <45 → Watch/Sell.\n\n` +
+    `COMPANY DATA:\n${companySections}\n\n` +
+    `Respond ONLY with valid JSON keyed by ticker symbol — no markdown, no extra text:\n` +
+    shapeExample
+  );
+}
+
+/**
+ * Parses one entry from an LLM batch position rationale response.
+ * Returns the rationale string, or null when the entry is missing or invalid.
+ */
+function parsePositionRationaleEntry(entry: any): string | null {
+  if (!entry || typeof entry.rationale !== 'string') return null;
+  const text = entry.rationale.trim();
+  return text.length >= 10 ? text : null;
 }
 
 /**
@@ -837,7 +1094,7 @@ const scoreSearchMatch = (query: string, item: any, rank = 0) => {
   return score;
 };
 
-// Strip share-class suffixes so "Alphabet Inc Class A" and "Alphabet Inc Class C"
+// Strip share-class suffixes so multi-class listings (e.g. Class A and Class C)
 // are recognised as the same underlying company.
 const baseCompanyName = (name: string) =>
   name
@@ -869,8 +1126,8 @@ export const resolveSymbolFromQuery = async (stockService: StockDataService, que
       .sort((a, b) => b.score - a.score);
     const top = scored[0];
     const second = scored[1];
-    // Two results are considered share-class variants of the same company (e.g.
-    // GOOGL vs GOOG, BRK.A vs BRK.B) when their base names match.  In that case
+    // Two results are considered share-class variants of the same company
+    // when their base names match.  In that case
     // we trust Alpha Vantage's ranking and pick the top result without flagging ambiguity.
     const sameCompany =
       second &&
@@ -910,7 +1167,7 @@ function buildToolDefinitions() {
         parameters: {
           type: 'object',
           properties: {
-            query: { type: 'string', description: 'Company name or ticker (e.g. "Apple" or "AAPL")' },
+            query: { type: 'string', description: 'Company name or ticker symbol' },
           },
           required: ['query'],
         },
@@ -924,7 +1181,7 @@ function buildToolDefinitions() {
         parameters: {
           type: 'object',
           properties: {
-            symbol: { type: 'string', description: 'Ticker symbol (e.g. AAPL)' },
+            symbol: { type: 'string', description: 'Ticker symbol' },
           },
           required: ['symbol'],
         },
@@ -938,7 +1195,7 @@ function buildToolDefinitions() {
         parameters: {
           type: 'object',
           properties: {
-            symbol: { type: 'string', description: 'Ticker symbol (e.g. AAPL)' },
+            symbol: { type: 'string', description: 'Ticker symbol' },
             range: { type: 'string', description: '"daily", "weekly", "monthly", "1w", "1m", "3m", "6m", "1y", "3y", "5y", "max". Default: "daily"' },
           },
           required: ['symbol'],
@@ -953,7 +1210,7 @@ function buildToolDefinitions() {
         parameters: {
           type: 'object',
           properties: {
-            symbol: { type: 'string', description: 'Ticker symbol (e.g. AAPL)' },
+            symbol: { type: 'string', description: 'Ticker symbol' },
           },
           required: ['symbol'],
         },
@@ -967,7 +1224,7 @@ function buildToolDefinitions() {
         parameters: {
           type: 'object',
           properties: {
-            symbol: { type: 'string', description: 'Ticker symbol (e.g. AAPL)' },
+            symbol: { type: 'string', description: 'Ticker symbol' },
           },
           required: ['symbol'],
         },
@@ -981,7 +1238,7 @@ function buildToolDefinitions() {
         parameters: {
           type: 'object',
           properties: {
-            symbol: { type: 'string', description: 'Ticker symbol (e.g. AAPL)' },
+            symbol: { type: 'string', description: 'Ticker symbol' },
           },
           required: ['symbol'],
         },
@@ -995,7 +1252,7 @@ function buildToolDefinitions() {
         parameters: {
           type: 'object',
           properties: {
-            symbol: { type: 'string', description: 'Ticker symbol (e.g. AAPL)' },
+            symbol: { type: 'string', description: 'Ticker symbol' },
           },
           required: ['symbol'],
         },
@@ -1009,7 +1266,7 @@ function buildToolDefinitions() {
         parameters: {
           type: 'object',
           properties: {
-            symbol: { type: 'string', description: 'Ticker symbol (e.g. AAPL)' },
+            symbol: { type: 'string', description: 'Ticker symbol' },
           },
           required: ['symbol'],
         },
@@ -1023,7 +1280,7 @@ function buildToolDefinitions() {
         parameters: {
           type: 'object',
           properties: {
-            symbol: { type: 'string', description: 'Ticker symbol (e.g. AAPL)' },
+            symbol: { type: 'string', description: 'Ticker symbol' },
           },
           required: ['symbol'],
         },
@@ -1037,7 +1294,7 @@ function buildToolDefinitions() {
         parameters: {
           type: 'object',
           properties: {
-            symbol: { type: 'string', description: 'Ticker symbol (e.g. AAPL)' },
+            symbol: { type: 'string', description: 'Ticker symbol' },
           },
           required: ['symbol'],
         },
@@ -1051,7 +1308,7 @@ function buildToolDefinitions() {
         parameters: {
           type: 'object',
           properties: {
-            symbol: { type: 'string', description: 'Ticker symbol (e.g. AAPL)' },
+            symbol: { type: 'string', description: 'Ticker symbol' },
           },
           required: ['symbol'],
         },
@@ -1065,7 +1322,7 @@ function buildToolDefinitions() {
         parameters: {
           type: 'object',
           properties: {
-            symbol: { type: 'string', description: 'Ticker symbol (e.g. AAPL)' },
+            symbol: { type: 'string', description: 'Ticker symbol' },
           },
           required: ['symbol'],
         },
@@ -1079,7 +1336,7 @@ function buildToolDefinitions() {
         parameters: {
           type: 'object',
           properties: {
-            symbol: { type: 'string', description: 'Ticker symbol (e.g. AAPL)' },
+            symbol: { type: 'string', description: 'Ticker symbol' },
           },
           required: ['symbol'],
         },
@@ -1093,7 +1350,7 @@ function buildToolDefinitions() {
         parameters: {
           type: 'object',
           properties: {
-            symbol: { type: 'string', description: 'Ticker symbol (e.g. AAPL)' },
+            symbol: { type: 'string', description: 'Ticker symbol' },
           },
           required: ['symbol'],
         },
@@ -1107,7 +1364,7 @@ function buildToolDefinitions() {
         parameters: {
           type: 'object',
           properties: {
-            symbol: { type: 'string', description: 'Ticker symbol (e.g. AAPL)' },
+            symbol: { type: 'string', description: 'Ticker symbol' },
           },
           required: ['symbol'],
         },
@@ -1121,7 +1378,7 @@ function buildToolDefinitions() {
         parameters: {
           type: 'object',
           properties: {
-            symbol: { type: 'string', description: 'Ticker symbol (e.g. AAPL)' },
+            symbol: { type: 'string', description: 'Ticker symbol' },
             days: { type: 'number', description: 'Lookback window in days (optional)' },
           },
           required: ['symbol'],
@@ -1136,7 +1393,7 @@ function buildToolDefinitions() {
         parameters: {
           type: 'object',
           properties: {
-            symbol: { type: 'string', description: 'Ticker or company name (e.g. AAPL, Apple)' },
+            symbol: { type: 'string', description: 'Ticker or company name' },
             range: { type: 'string', description: 'Price history range for charts (e.g., "1y", "3y", "5y", "max"). Default is "5y"' },
           },
           required: ['symbol'],
@@ -1202,7 +1459,7 @@ function buildToolDefinitions() {
           properties: {
             sector: {
               type: 'string',
-              description: 'Deep research query, e.g. "semiconductors", "Visa vs Mastercard", "Tesla"',
+              description: 'Deep research query (sector, company, or comparison)',
             },
             count: {
               type: 'number',
@@ -1264,7 +1521,7 @@ function buildToolDefinitions() {
         parameters: {
           type: 'object',
           properties: {
-            symbol: { type: 'string', description: 'Stock ticker symbol (e.g. AAPL)' },
+            symbol: { type: 'string', description: 'Stock ticker symbol' },
           },
           required: ['symbol'],
         },
@@ -1278,7 +1535,7 @@ function buildToolDefinitions() {
         parameters: {
           type: 'object',
           properties: {
-            symbol: { type: 'string', description: 'Stock ticker symbol (e.g. AAPL)' },
+            symbol: { type: 'string', description: 'Stock ticker symbol' },
             count: { type: 'number', description: 'Number of filings to return (default 10, max 20)' },
           },
           required: ['symbol'],
@@ -1304,7 +1561,7 @@ function buildToolDefinitions() {
         parameters: {
           type: 'object',
           properties: {
-            symbol: { type: 'string', description: 'Stock ticker symbol (e.g. AAPL)' },
+            symbol: { type: 'string', description: 'Stock ticker symbol' },
           },
           required: ['symbol'],
         },
@@ -1318,7 +1575,7 @@ function buildToolDefinitions() {
         parameters: {
           type: 'object',
           properties: {
-            symbol: { type: 'string', description: 'Stock ticker symbol (e.g. AAPL)' },
+            symbol: { type: 'string', description: 'Stock ticker symbol' },
           },
           required: ['symbol'],
         },
@@ -1787,12 +2044,21 @@ export async function executeTool(
       }
       case 'generate_stock_report': {
         const symbolQuery = args.symbol || '';
+        // When called from watchlist/comparison with a known ticker, skip per-company
+        // LLM calls (ticker resolution, moat, conclusion) to avoid redundant API/LLM
+        // load.  The caller does batch LLM calls afterward.
+        const skipPerCompanyLLM = Boolean(args.skipLLM);
 
         // Step 1: LLM resolves the input to the correct official ticker.
-        // LLM is the primary resolver — it knows that 'GOOGLE' → 'GOOGL',
-        // 'Microsoft' → 'MSFT', etc., without needing an API search call.
+        // LLM is the primary resolver — it maps informal names to official tickers
+        // without needing an API search call.
+        // When skipPerCompanyLLM is set the caller already provides an official ticker.
         let symbol: string | undefined;
-        if (options?.llmFill) {
+        if (skipPerCompanyLLM) {
+          // Caller guarantees the symbol is already an official ticker.
+          const cleaned = symbolQuery.replace(/[^A-Z0-9.]/gi, '').toUpperCase();
+          if (cleaned) symbol = cleaned;
+        } else if (options?.llmFill) {
           const prompt = buildTickerResolutionPrompt([symbolQuery]);
           try {
             const raw = await options.llmFill(prompt);
@@ -1966,8 +2232,9 @@ export async function executeTool(
         }
 
         // LLM moat analysis — best-effort; report still builds without it
+        // Skipped when called from batch callers (watchlist/comparison) that do their own batch moat.
         let moatAnalysis: MoatAnalysis | undefined;
-        if (options?.llmFill) {
+        if (!skipPerCompanyLLM && options?.llmFill) {
           try {
             const moatPrompt = buildMoatAnalysisPrompt(symbol, companyOverview, finalBasicFinancials);
             const raw = await options.llmFill(moatPrompt);
@@ -1990,6 +2257,7 @@ export async function executeTool(
           cashFlow: finalCashFlow,
           analystRatings,
           priceTargets,
+          insiderTrading,
           newsSentiment,
           companyNews,
           trust: trustSummary,
@@ -1999,8 +2267,9 @@ export async function executeTool(
         });
 
         // LLM investment conclusion — rich narrative, best-effort
+        // Skipped when called from batch callers that provide their own summary.
         let llmConclusion: string | undefined;
-        if (options?.llmFill) {
+        if (!skipPerCompanyLLM && options?.llmFill) {
           try {
             const conclusionPrompt = buildStockConclusionPrompt(
               symbol,
@@ -2152,8 +2421,7 @@ export async function executeTool(
         }
 
         // Step 1: LLM resolves ALL inputs to official tickers in one batch call.
-        // LLM is the primary resolver — no API search is needed for well-known names
-        // (e.g. 'GOOGLE' → 'GOOGL', 'Microsoft' → 'MSFT').
+        // LLM is the primary resolver — no API search is needed for well-known names.
         const resolvedMap = new Map<string, string>(); // query → official ticker
         if (options?.llmFill) {
           const prompt = buildTickerResolutionPrompt(companies);
@@ -2362,6 +2630,7 @@ export async function executeTool(
             cashFlow: item.cashFlow,
             analystRatings: item.analystRatings,
             priceTargets: item.priceTargets,
+            insiderTrading: item.insiderTrading,
             newsSentiment: item.newsSentiment,
             companyNews: item.companyNews,
             trust: trustSummary,
@@ -2411,6 +2680,53 @@ export async function executeTool(
             }
           } catch {
             // LLM unavailable or invalid JSON — proceed without moat analysis
+          }
+        }
+
+        // LLM position rationale — clear 1-2 sentence "Why" for the guidance table
+        if (options?.llmFill && items.length > 0) {
+          try {
+            const rationalePrompt = buildBatchPositionRationalePrompt(
+              items.map((item) => {
+                const ds = item.decisionSnapshot;
+                return {
+                  symbol: item.symbol,
+                  name: item.overview?.name || item.symbol,
+                  action: ds?.action ?? 'Wait',
+                  confidence: ds?.confidence ?? 'Medium',
+                  overallScore: ds?.overallScore ?? null,
+                  qualityScore: ds?.qualityScore ?? null,
+                  valuationScore: ds?.valuationScore ?? null,
+                  technicalScore: ds?.technicalScore ?? null,
+                  analystConsensusScore: ds?.analystConsensusScore ?? null,
+                  insiderScore: ds?.insiderScore ?? null,
+                  whyNow: ds?.whyNow ?? [],
+                  whyNot: ds?.whyNot ?? [],
+                  missingInputs: ds?.missingInputs ?? [],
+                  overview: item.overview,
+                  basicFinancials: item.basicFinancials,
+                  priceTargets: item.priceTargets,
+                  analystRatings: item.analystRatings,
+                  price: item.price,
+                };
+              })
+            );
+            const raw = await options.llmFill(rationalePrompt);
+            const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+            const parsed = JSON.parse(cleaned);
+            if (parsed && typeof parsed === 'object') {
+              for (const sym of Object.keys(parsed)) {
+                const rationale = parsePositionRationaleEntry(parsed[sym]);
+                if (!rationale) continue;
+                const ticker = cleanTicker(sym);
+                const target = items.find((it) => it.symbol === ticker);
+                if (target?.decisionSnapshot) {
+                  target.decisionSnapshot = { ...target.decisionSnapshot, summary: rationale };
+                }
+              }
+            }
+          } catch {
+            // Proceed without LLM rationale — structured summary is the fallback
           }
         }
 
@@ -2473,7 +2789,7 @@ export async function executeTool(
           async (item) => {
             const result = await executeTool(
               'generate_stock_report',
-              { symbol: item.symbol, range, skipSave: true, includeRawData: true },
+              { symbol: item.symbol, range, skipSave: true, includeRawData: true, skipLLM: true },
               stockService,
               options
             );
@@ -2493,7 +2809,43 @@ export async function executeTool(
               stock: rawData,
             });
           } else {
-            failures.push(`${entry.item.symbol}: ${entry.result.error || entry.result.message || "Unavailable"}`);
+            failures.push(entry.item.symbol);
+          }
+        }
+
+        // Retry failed items after a brief delay to let rate limits reset
+        if (failures.length > 0 && successfulItems.length > 0) {
+          console.info(`[watchlist] Retrying ${failures.length} failed items after rate-limit cooldown: ${failures.join(', ')}`);
+          await new Promise((resolve) => setTimeout(resolve, 5000));
+          const retryItems = watchlist.items.filter((item) => failures.includes(item.symbol));
+          const retryResults = await mapWithConcurrency(
+            retryItems,
+            1, // Sequential retries to avoid triggering rate limits again
+            async (item) => {
+              const result = await executeTool(
+                'generate_stock_report',
+                { symbol: item.symbol, range, skipSave: true, includeRawData: true, skipLLM: true },
+                stockService,
+                options
+              );
+              return { item, result };
+            }
+          );
+          const retryFailures: string[] = [];
+          for (const entry of retryResults) {
+            const rawData = entry.result.data?.rawData;
+            if (entry.result.success && rawData) {
+              successfulItems.push({
+                symbol: entry.item.symbol,
+                companyName: entry.item.companyName,
+                stock: rawData,
+              });
+            } else {
+              retryFailures.push(`${entry.item.symbol}: ${entry.result.error || entry.result.message || "Unavailable"}`);
+            }
+          }
+          if (retryFailures.length > 0) {
+            console.warn(`[watchlist] ${retryFailures.length} items still failed after retry: ${retryFailures.join('; ')}`);
           }
         }
 
@@ -2523,6 +2875,52 @@ export async function executeTool(
             }
           } catch {
             // Proceed without moat analysis if the batch call fails
+          }
+        }
+
+        // LLM position rationale — clear 1-2 sentence "Why" for the guidance table
+        if (options?.llmFill && successfulItems.length > 0) {
+          try {
+            const rationalePrompt = buildBatchPositionRationalePrompt(
+              successfulItems.map((item) => {
+                const ds = item.stock.decisionSnapshot;
+                return {
+                  symbol: item.symbol,
+                  name: item.stock.companyOverview?.name || item.companyName,
+                  action: ds?.action ?? 'Wait',
+                  confidence: ds?.confidence ?? 'Medium',
+                  overallScore: ds?.overallScore ?? null,
+                  qualityScore: ds?.qualityScore ?? null,
+                  valuationScore: ds?.valuationScore ?? null,
+                  technicalScore: ds?.technicalScore ?? null,
+                  analystConsensusScore: ds?.analystConsensusScore ?? null,
+                  insiderScore: ds?.insiderScore ?? null,
+                  whyNow: ds?.whyNow ?? [],
+                  whyNot: ds?.whyNot ?? [],
+                  missingInputs: ds?.missingInputs ?? [],
+                  overview: item.stock.companyOverview,
+                  basicFinancials: item.stock.basicFinancials,
+                  priceTargets: item.stock.priceTargets,
+                  analystRatings: item.stock.analystRatings,
+                  price: item.stock.price,
+                };
+              })
+            );
+            const raw = await options.llmFill(rationalePrompt);
+            const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+            const parsed = JSON.parse(cleaned);
+            if (parsed && typeof parsed === 'object') {
+              for (const sym of Object.keys(parsed)) {
+                const rationale = parsePositionRationaleEntry(parsed[sym]);
+                if (!rationale) continue;
+                const target = successfulItems.find((item) => item.symbol === cleanTicker(sym));
+                if (target?.stock.decisionSnapshot) {
+                  target.stock.decisionSnapshot = { ...target.stock.decisionSnapshot, summary: rationale };
+                }
+              }
+            }
+          } catch {
+            // Proceed without LLM rationale — structured summary is the fallback
           }
         }
 
@@ -2571,24 +2969,8 @@ export async function executeTool(
         const count = Math.min(NUM_COMPANIES, Math.max(2, Number(args.count) || NUM_COMPANIES));
         const range = args.range || '1y';
 
-        // Step 1: Use LLM to identify the top companies in this sector.
-        let universe: string[] = [];
-        if (options?.llmFill) {
-          const prompt = buildSectorCompaniesPrompt(sector, count);
-          try {
-            const raw = await options.llmFill(prompt);
-            const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
-            const parsed = JSON.parse(cleaned);
-            if (Array.isArray(parsed)) {
-              universe = parsed
-                .map((item: any) => String(item || '').replace(/[^A-Z0-9.]/gi, '').toUpperCase())
-                .filter((t) => t.length > 0)
-                .slice(0, count);
-            }
-          } catch {
-            // LLM unavailable or returned invalid JSON; fall through
-          }
-        }
+        // Step 1: Use LLM (with API search fallback) to identify the top companies.
+        const universe = await resolveSectorTickers(sector, count, options?.llmFill, stockService);
 
         if (universe.length < 2) {
           return {
@@ -2769,6 +3151,7 @@ export async function executeTool(
             cashFlow: item.cashFlow,
             analystRatings: item.analystRatings,
             priceTargets: item.priceTargets,
+            insiderTrading: item.insiderTrading,
             newsSentiment: item.newsSentiment,
             companyNews: item.companyNews,
             trust: trustSummary,
@@ -2818,6 +3201,53 @@ export async function executeTool(
             }
           } catch {
             // LLM unavailable or invalid JSON — proceed without moat analysis
+          }
+        }
+
+        // LLM position rationale — clear 1-2 sentence "Why" for the guidance table
+        if (options?.llmFill && items.length > 0) {
+          try {
+            const rationalePrompt = buildBatchPositionRationalePrompt(
+              items.map((item) => {
+                const ds = item.decisionSnapshot;
+                return {
+                  symbol: item.symbol,
+                  name: item.overview?.name || item.symbol,
+                  action: ds?.action ?? 'Wait',
+                  confidence: ds?.confidence ?? 'Medium',
+                  overallScore: ds?.overallScore ?? null,
+                  qualityScore: ds?.qualityScore ?? null,
+                  valuationScore: ds?.valuationScore ?? null,
+                  technicalScore: ds?.technicalScore ?? null,
+                  analystConsensusScore: ds?.analystConsensusScore ?? null,
+                  insiderScore: ds?.insiderScore ?? null,
+                  whyNow: ds?.whyNow ?? [],
+                  whyNot: ds?.whyNot ?? [],
+                  missingInputs: ds?.missingInputs ?? [],
+                  overview: item.overview,
+                  basicFinancials: item.basicFinancials,
+                  priceTargets: item.priceTargets,
+                  analystRatings: item.analystRatings,
+                  price: item.price,
+                };
+              })
+            );
+            const raw = await options.llmFill(rationalePrompt);
+            const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+            const parsed = JSON.parse(cleaned);
+            if (parsed && typeof parsed === 'object') {
+              for (const sym of Object.keys(parsed)) {
+                const rationale = parsePositionRationaleEntry(parsed[sym]);
+                if (!rationale) continue;
+                const ticker = cleanTicker(sym);
+                const target = items.find((it) => it.symbol === ticker);
+                if (target?.decisionSnapshot) {
+                  target.decisionSnapshot = { ...target.decisionSnapshot, summary: rationale };
+                }
+              }
+            }
+          } catch {
+            // Proceed without LLM rationale — structured summary is the fallback
           }
         }
 
@@ -2964,24 +3394,8 @@ export async function executeTool(
           };
         }
 
-        // ── Phase 1: LLM identifies initial broad candidate list ────────────────
-        let initialCandidates: string[] = [];
-        {
-          const prompt = buildSectorCompaniesPrompt(sector, initialCount);
-          try {
-            const raw = await options.llmFill(prompt);
-            const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
-            const parsed = JSON.parse(cleaned);
-            if (Array.isArray(parsed)) {
-              initialCandidates = parsed
-                .map((item: any) => String(item || '').replace(/[^A-Z0-9.]/gi, '').toUpperCase())
-                .filter((t) => t.length > 0)
-                .slice(0, initialCount);
-            }
-          } catch {
-            // LLM unavailable or returned invalid JSON
-          }
-        }
+        // ── Phase 1: LLM identifies initial broad candidate list (with fallback) ──
+        const initialCandidates = await resolveSectorTickers(sector, initialCount, options.llmFill, stockService);
 
         if (initialCandidates.length < 2) {
           return {
@@ -3276,6 +3690,7 @@ export async function executeTool(
             cashFlow: item.cashFlow,
             analystRatings: item.analystRatings,
             priceTargets: item.priceTargets,
+            insiderTrading: item.insiderTrading,
             newsSentiment: item.newsSentiment,
             companyNews: item.companyNews,
             trust: trustSummary,
@@ -3325,6 +3740,53 @@ export async function executeTool(
             }
           } catch {
             // LLM unavailable or invalid JSON — proceed without moat analysis
+          }
+        }
+
+        // LLM position rationale — clear 1-2 sentence "Why" for the guidance table
+        if (options?.llmFill && items.length > 0) {
+          try {
+            const rationalePrompt = buildBatchPositionRationalePrompt(
+              items.map((item) => {
+                const ds = item.decisionSnapshot;
+                return {
+                  symbol: item.symbol,
+                  name: item.overview?.name || item.symbol,
+                  action: ds?.action ?? 'Wait',
+                  confidence: ds?.confidence ?? 'Medium',
+                  overallScore: ds?.overallScore ?? null,
+                  qualityScore: ds?.qualityScore ?? null,
+                  valuationScore: ds?.valuationScore ?? null,
+                  technicalScore: ds?.technicalScore ?? null,
+                  analystConsensusScore: ds?.analystConsensusScore ?? null,
+                  insiderScore: ds?.insiderScore ?? null,
+                  whyNow: ds?.whyNow ?? [],
+                  whyNot: ds?.whyNot ?? [],
+                  missingInputs: ds?.missingInputs ?? [],
+                  overview: item.overview,
+                  basicFinancials: item.basicFinancials,
+                  priceTargets: item.priceTargets,
+                  analystRatings: item.analystRatings,
+                  price: item.price,
+                };
+              })
+            );
+            const raw = await options.llmFill(rationalePrompt);
+            const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+            const parsed = JSON.parse(cleaned);
+            if (parsed && typeof parsed === 'object') {
+              for (const sym of Object.keys(parsed)) {
+                const rationale = parsePositionRationaleEntry(parsed[sym]);
+                if (!rationale) continue;
+                const ticker = cleanTicker(sym);
+                const target = items.find((it) => it.symbol === ticker);
+                if (target?.decisionSnapshot) {
+                  target.decisionSnapshot = { ...target.decisionSnapshot, summary: rationale };
+                }
+              }
+            }
+          } catch {
+            // Proceed without LLM rationale — structured summary is the fallback
           }
         }
 
