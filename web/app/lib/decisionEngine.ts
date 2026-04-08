@@ -311,7 +311,7 @@ export function buildDecisionSnapshot(input: DecisionInput): DecisionSnapshot {
   const reasonText = reasonParts.length
     ? reasonParts.join(' ')
     : 'No strong signals in either direction.';
-  const scoreTag = overallScore !== null ? ` Score: ${overallScore.toFixed(0)}/100.` : '';
+  const scoreTag = overallScore !== null ? ` Score ${overallScore.toFixed(0)}/100.` : '';
   const summary = `${actionToSummaryLabel(action)}.${scoreTag} ${reasonText}`.trim();
 
   return {

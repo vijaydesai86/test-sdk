@@ -2985,7 +2985,7 @@ export function buildComparisonReport(data: ComparisonReportData): string {
       formatPrice(price),
       formatSignedPercentValue(changeValue, 2, { alreadyPercent: changeIsPercent }),
       formatCurrency(overview.marketCapitalization),
-      `${formatCurrency(overview['52WeekLow'])} – ${formatCurrency(overview['52WeekHigh'])}`,
+      `${formatCurrency(overview['52WeekLow'])} - ${formatCurrency(overview['52WeekHigh'])}`,
     ];
   });
 
