@@ -237,6 +237,7 @@ function scoreAnalystConsensus(input: DecisionInput): PillarResult | null {
 function scoreInsiderActivity(input: DecisionInput): PillarResult | null {
   const txns = input.insiderTrading?.recentTransactions;
   if (!Array.isArray(txns) || txns.length === 0) return null;
+  // MarketCapitalization (capital M) = Alpha Vantage; marketCapitalization (lowercase m) = Finnhub/FMP
   const marketCap = toNumber(input.companyOverview?.marketCapitalization ?? input.companyOverview?.MarketCapitalization);
   // Without market cap we cannot normalize — return null rather than guess
   if (marketCap === null || marketCap <= 0) return null;
