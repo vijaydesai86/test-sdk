@@ -243,6 +243,7 @@ export function buildDecisionSnapshot(input: DecisionInput): DecisionSnapshot {
   }
 
   // ── whyNot: concrete metric-level concerns ──
+  // These are real investment concerns, NOT data-gap complaints.
   if (staleCritical) whyNot.push(`Critical data is stale for: ${(trust?.staleLabels || []).join(', ')}.`);
   if (qualityScore !== null && qualityScore < 45) {
     const concerns: string[] = [];
@@ -256,7 +257,7 @@ export function buildDecisionSnapshot(input: DecisionInput): DecisionSnapshot {
     if (pe !== null && pe > 35) concerns.push(`P/E ${pe.toFixed(1)}`);
     if (targetUpside !== null && targetUpside < 5) concerns.push(`only ${targetUpside.toFixed(1)}% target upside`);
     const detail = concerns.length ? ` (${concerns.join(', ')})` : '';
-    whyNot.push(`Weak valuation support${detail}.`);
+    whyNot.push(`Stretched valuation${detail}.`);
   }
   const unsupportiveTechnicalReason = describeTechnicalSupport({
     technicalScore,
@@ -269,23 +270,8 @@ export function buildDecisionSnapshot(input: DecisionInput): DecisionSnapshot {
     whyNot.push(`Position size ${currentWeight}% is already above your max-weight guardrail of ${maxWeight}%.`);
   }
 
-  // ── When too many inputs are missing, still surface what IS known ──
-  if (missingInputs.length >= 3) {
-    // Instead of just listing missing items, note what we DO have and what's missing
-    const knownParts: string[] = [];
-    if (pe !== null) knownParts.push(`P/E ${pe.toFixed(1)}`);
-    if (grossMargin !== null) knownParts.push(`gross margin ${grossMargin.toFixed(0)}%`);
-    if (roe !== null) knownParts.push(`ROE ${roe.toFixed(0)}%`);
-    if (momentum !== null) {
-      const momReturn = (momentum - 50); // rough % return
-      knownParts.push(`price trend ${momReturn >= 0 ? '+' : ''}${momReturn.toFixed(0)}%`);
-    }
-    if (knownParts.length) {
-      whyNot.push(`Limited data (have ${knownParts.join(', ')}; missing ${missingInputs.slice(0, 3).join(', ')}).`);
-    } else {
-      whyNot.push(`Important inputs are missing: ${missingInputs.slice(0, 3).join(', ')}.`);
-    }
-  }
+  // Missing data only affects confidence (already computed above), NOT whyNot.
+  // This keeps the rationale focused on the investment case.
 
   let action: DecisionAction = 'Wait';
   if (!staleCritical && overallScore !== null) {
