@@ -183,6 +183,8 @@ async function resolveSectorTickers(
   llmFill?: LLMFiller,
   stockService?: StockDataService,
 ): Promise<string[]> {
+  const collectedTickers: string[] = [];
+
   // Attempt 1: LLM with the standard sector prompt
   if (llmFill) {
     const prompt = buildSectorCompaniesPrompt(sector, count);
@@ -191,6 +193,7 @@ async function resolveSectorTickers(
       console.info(`[resolveSectorTickers] LLM attempt 1 raw response (${raw?.length ?? 0} chars):`, raw?.substring(0, 200));
       const tickers = parseLLMTickerArray(raw, count);
       if (tickers.length >= 2) return tickers;
+      collectedTickers.push(...tickers);
       console.info(`[resolveSectorTickers] Attempt 1 parsed only ${tickers.length} tickers — retrying`);
     } catch (err: any) {
       console.warn(`[resolveSectorTickers] LLM attempt 1 error:`, err?.message || err);
@@ -205,15 +208,30 @@ async function resolveSectorTickers(
       console.info(`[resolveSectorTickers] LLM attempt 2 raw response (${raw?.length ?? 0} chars):`, raw?.substring(0, 200));
       const tickers = parseLLMTickerArray(raw, count);
       if (tickers.length >= 2) return tickers;
+      collectedTickers.push(...tickers);
       console.info(`[resolveSectorTickers] Attempt 2 parsed only ${tickers.length} tickers`);
     } catch (err: any) {
       console.warn(`[resolveSectorTickers] LLM attempt 2 error:`, err?.message || err);
+    }
+
+    // Attempt 3: LLM with a plain-text company name prompt, then resolve each to ticker
+    try {
+      const namePrompt =
+        `Name the top ${count} publicly traded US companies in the "${sector}" industry. ` +
+        `Return ONLY a JSON array of their stock ticker symbols. Example: ["AAPL","MSFT","GOOGL"]`;
+      const raw = await llmFill(namePrompt);
+      console.info(`[resolveSectorTickers] LLM attempt 3 raw response (${raw?.length ?? 0} chars):`, raw?.substring(0, 200));
+      const tickers = parseLLMTickerArray(raw, count);
+      if (tickers.length >= 2) return tickers;
+      collectedTickers.push(...tickers);
+    } catch (err: any) {
+      console.warn(`[resolveSectorTickers] LLM attempt 3 error:`, err?.message || err);
     }
   } else {
     console.warn(`[resolveSectorTickers] No llmFill provided — cannot resolve sector tickers via LLM`);
   }
 
-  // Attempt 3: API search fallback — extract tickers from live search results
+  // Attempt 4: API search fallback — extract tickers from live search results
   if (stockService) {
     try {
       const results = await stockService.searchStock(sector);
@@ -225,9 +243,38 @@ async function resolveSectorTickers(
           .filter((s) => s.length > 0 && /^[A-Z0-9.]+$/.test(s))
           .slice(0, count);
       }
+      // Even 1 result helps — collect it and also try peers
+      if (candidates.length >= 1) {
+        const firstSymbol = String(candidates[0].symbol || '').toUpperCase();
+        if (firstSymbol) collectedTickers.push(firstSymbol);
+      }
     } catch (err: any) {
       console.warn(`[resolveSectorTickers] API search error:`, err?.message || err);
     }
+
+    // Attempt 5: If we have at least one ticker, get its peers to build the universe
+    const unique = [...new Set(collectedTickers)].filter(Boolean);
+    if (unique.length >= 1) {
+      try {
+        const peers = await stockService.getPeers(unique[0]);
+        const peerSymbols = (Array.isArray(peers) ? peers : (peers as any)?.peers || [])
+          .map((p: any) => typeof p === 'string' ? p.toUpperCase() : String(p?.symbol || '').toUpperCase())
+          .filter((s: string) => s.length > 0 && /^[A-Z0-9.]+$/.test(s));
+        console.info(`[resolveSectorTickers] Peers of ${unique[0]} returned ${peerSymbols.length} peers`);
+        const combined = [...new Set([...unique, ...peerSymbols])].slice(0, count);
+        if (combined.length >= 2) return combined;
+        collectedTickers.push(...peerSymbols);
+      } catch (err: any) {
+        console.warn(`[resolveSectorTickers] Peers lookup error:`, err?.message || err);
+      }
+    }
+  }
+
+  // Final: return whatever we collected, even if < 2
+  const final = [...new Set(collectedTickers)].filter(Boolean);
+  if (final.length > 0) {
+    console.info(`[resolveSectorTickers] Returning ${final.length} partial tickers for "${sector}"`);
+    return final.slice(0, count);
   }
 
   console.warn(`[resolveSectorTickers] All attempts failed for sector "${sector}"`);
@@ -2762,7 +2809,43 @@ export async function executeTool(
               stock: rawData,
             });
           } else {
-            failures.push(`${entry.item.symbol}: ${entry.result.error || entry.result.message || "Unavailable"}`);
+            failures.push(entry.item.symbol);
+          }
+        }
+
+        // Retry failed items after a brief delay to let rate limits reset
+        if (failures.length > 0 && successfulItems.length > 0) {
+          console.info(`[watchlist] Retrying ${failures.length} failed items after rate-limit cooldown: ${failures.join(', ')}`);
+          await new Promise((resolve) => setTimeout(resolve, 5000));
+          const retryItems = watchlist.items.filter((item) => failures.includes(item.symbol));
+          const retryResults = await mapWithConcurrency(
+            retryItems,
+            1, // Sequential retries to avoid triggering rate limits again
+            async (item) => {
+              const result = await executeTool(
+                'generate_stock_report',
+                { symbol: item.symbol, range, skipSave: true, includeRawData: true, skipLLM: true },
+                stockService,
+                options
+              );
+              return { item, result };
+            }
+          );
+          const retryFailures: string[] = [];
+          for (const entry of retryResults) {
+            const rawData = entry.result.data?.rawData;
+            if (entry.result.success && rawData) {
+              successfulItems.push({
+                symbol: entry.item.symbol,
+                companyName: entry.item.companyName,
+                stock: rawData,
+              });
+            } else {
+              retryFailures.push(`${entry.item.symbol}: ${entry.result.error || entry.result.message || "Unavailable"}`);
+            }
+          }
+          if (retryFailures.length > 0) {
+            console.warn(`[watchlist] ${retryFailures.length} items still failed after retry: ${retryFailures.join('; ')}`);
           }
         }
 
