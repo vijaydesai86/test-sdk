@@ -648,18 +648,34 @@ function hasMeaningfulTableValue(value: string): boolean {
 }
 
 function buildPositionGuidanceTable(rows: Array<{ company: string; guidance: PositionGuidance }>): string {
-  return buildTable(
-    ['Company', 'Signal', 'Confidence', 'For owners', 'For non-owners', 'Why'],
-    rows.map(({ company, guidance }) => [
-      company,
-      guidance.stance,
-      guidance.confidence,
-      guidance.forOwners,
-      describeNonOwnerAction(guidance.forNonOwners),
-      guidance.rationale,
-    ]),
-    ['left', 'left', 'left', 'left', 'left', 'left']
+  // Compact 4-column table: Company | Signal | Confidence | Action
+  // "Why" is rendered as a sub-row beneath each company to avoid horizontal overflow.
+  const signalEmoji = (stance: string) => {
+    if (stance === 'Buy') return '🟢';
+    if (stance === 'Hold') return '🟡';
+    if (stance === 'Watch') return '🟠';
+    if (stance === 'Sell') return '🔴';
+    return '⚪';
+  };
+  const tableRows = rows.map(({ company, guidance }) => [
+    company,
+    `${signalEmoji(guidance.stance)} ${guidance.stance}`,
+    guidance.confidence,
+    `Owners: ${guidance.forOwners} · New: ${describeNonOwnerAction(guidance.forNonOwners)}`,
+  ]);
+  const table = buildTable(
+    ['Company', 'Signal', 'Confidence', 'Action'],
+    tableRows,
+    ['left', 'left', 'left', 'left']
   );
+  // Append a brief Why line for each company below the table
+  const whyLines = rows.map(({ company, guidance }) => {
+    const missing = guidance.missingInputs.length
+      ? ` _(Missing: ${guidance.missingInputs.slice(0, 3).join(', ')})_`
+      : '';
+    return `- **${company}:** ${guidance.rationale}${missing}`;
+  }).join('\n');
+  return `${table}\n\n**Why:**\n${whyLines}`;
 }
 
 function applyAxisTheme(axis: any): any {
@@ -1867,7 +1883,7 @@ function buildComparisonInsiderSummaryTable(items: ComparisonReportItem[]): stri
   });
 
   return buildTable(
-    ['Company', 'Recent Buys', 'Recent Sells', 'Buy Value', 'Sell Value', 'Latest Filing'],
+    ['Company', 'Buys', 'Sells', 'Buy $', 'Sell $', 'Latest'],
     rows,
     ['left', 'right', 'right', 'right', 'right', 'right']
   );
@@ -1883,17 +1899,15 @@ function buildDeepInsiderSections(items: ComparisonReportItem[]): string {
 
     const transactionTable = metrics.transactions.length
       ? buildTable(
-          ['Date', 'Insider', 'Title', 'Type', 'Shares', 'Share Price', 'Value'],
+          ['Date', 'Insider', 'Type', 'Shares', 'Value'],
           metrics.transactions.slice(0, 10).map((txn: any) => [
             formatDateLabel(String(txn.transactionDate)),
             txn.insider || 'N/A',
-            txn.title || 'N/A',
             txn.transactionType || 'N/A',
             formatCompactNumber(txn.shares),
-            formatPrice(txn.sharePrice),
             formatCurrency(txn.totalValue),
           ]),
-          ['left', 'left', 'left', 'left', 'right', 'right', 'right']
+          ['left', 'left', 'left', 'right', 'right']
         )
       : '_No recent insider transactions were returned by the active data providers._';
 
@@ -2259,7 +2273,7 @@ function buildComparisonMoatSection(items: ComparisonReportItem[]): string {
 
   const moatRows = itemsWithMoat.map((item) => {
     const moat = item.moatAnalysis!;
-    const topBarriers = moat.barriers.slice(0, 3).join('; ') || 'N/A';
+    const topBarriers = moat.barriers.slice(0, 2).join(', ') || 'N/A';
     return [
       `${item.overview?.name || item.symbol} (${item.symbol})`,
       moat.moatType,
@@ -2270,7 +2284,7 @@ function buildComparisonMoatSection(items: ComparisonReportItem[]): string {
   });
 
   const moatTable = buildTable(
-    ['Company', 'Moat Type', 'Strength', 'Score', 'Key Barriers'],
+    ['Company', 'Type', 'Strength', 'Score', 'Barriers'],
     moatRows,
     ['left', 'left', 'left', 'right', 'left']
   );
@@ -2406,7 +2420,7 @@ export function buildStockReport(data: StockReportData): string {
       ])
     : [];
   const recommendationTable = recommendationRows.length
-    ? buildTable(['Period', 'Strong Buy', 'Buy', 'Hold', 'Sell', 'Strong Sell'], recommendationRows, ['left', 'right', 'right', 'right', 'right', 'right'])
+    ? buildTable(['Period', 'Str Buy', 'Buy', 'Hold', 'Sell', 'Str Sell'], recommendationRows, ['left', 'right', 'right', 'right', 'right', 'right'])
     : "";
 
   const alternativeLines = peers.length
@@ -2451,7 +2465,7 @@ export function buildStockReport(data: StockReportData): string {
 
   const incomeTable = incomeReports.length
     ? buildTable(
-        ['Period', 'Revenue', 'Gross Profit', 'Operating Income', 'Net Income'],
+        ['Period', 'Revenue', 'Gross', 'Op Income', 'Net Income'],
         incomeReports.map((report) => [
           formatPeriodLabel(report),
           formatCurrency(report.totalRevenue),
@@ -2465,7 +2479,7 @@ export function buildStockReport(data: StockReportData): string {
 
   const balanceTable = balanceReports.length
     ? buildTable(
-        ['Period', 'Cash', 'LT Debt', 'Total Liabilities', 'Total Assets', 'Equity'],
+        ['Period', 'Cash', 'LT Debt', 'Liabilities', 'Assets', 'Equity'],
         balanceReports.map((report) => [
           formatPeriodLabel(report),
           formatCurrency(report.cashAndEquivalents),
@@ -2480,7 +2494,7 @@ export function buildStockReport(data: StockReportData): string {
 
   const cashTable = cashReports.length
     ? buildTable(
-        ['Period', 'Operating Cash Flow', 'Capex', 'Free Cash Flow', 'Dividend Payout'],
+        ['Period', 'Op Cash Flow', 'Capex', 'FCF', 'Dividends'],
         cashReports.map((report) => [
           formatPeriodLabel(report),
           formatCurrency(report.operatingCashflow),
@@ -2927,34 +2941,36 @@ export function buildComparisonReport(data: ComparisonReportData): string {
               : '_Legend: Alpha Vantage provider._';
   const items = data.items;
 
-  const sourceRows = Object.entries(sources).map(([symbol, map]) => {
+  // Render data sources as a compact per-company bullet list instead of a 14-column table
+  const sourceList = Object.entries(sources).map(([symbol, map]) => {
     const lookup = items.find((item) => item.symbol === symbol);
     const name = lookup?.overview?.name || symbol;
-    const pick = (key: string) => map[key] || 'N/A';
-    return [
-      `${name} (${symbol})`,
-      pick('Price'),
-      pick('Company overview'),
-      pick('Basic financials'),
-      pick('Price history'),
-      pick('Income statement'),
-      pick('Balance sheet'),
-      pick('Cash flow'),
-      pick('Insider trading'),
-      pick('Analyst ratings'),
-      pick('Price targets'),
-      pick('Peers'),
-      pick('News sentiment'),
-      pick('Company news'),
+    const pick = (key: string) => map[key] || '';
+    const available: string[] = [];
+    const missing: string[] = [];
+    const dataPoints = [
+      { label: 'Price', v: pick('Price') },
+      { label: 'Overview', v: pick('Company overview') },
+      { label: 'Financials', v: pick('Basic financials') },
+      { label: 'History', v: pick('Price history') },
+      { label: 'Income', v: pick('Income statement') },
+      { label: 'Balance', v: pick('Balance sheet') },
+      { label: 'Cash Flow', v: pick('Cash flow') },
+      { label: 'Insider', v: pick('Insider trading') },
+      { label: 'Analyst', v: pick('Analyst ratings') },
+      { label: 'Targets', v: pick('Price targets') },
+      { label: 'Peers', v: pick('Peers') },
+      { label: 'Sentiment', v: pick('News sentiment') },
+      { label: 'News', v: pick('Company news') },
     ];
-  });
-  const sourceTable = sourceRows.length
-    ? buildTable(
-        ['Company', 'Price', 'Overview', 'Basic', 'Price History', 'Income', 'Balance', 'Cash Flow', 'Insider', 'Analyst', 'Targets', 'Peers', 'News Sentiment', 'Company News'],
-        sourceRows,
-        ['left', 'center', 'center', 'center', 'center', 'center', 'center', 'center', 'center', 'center', 'center', 'center', 'center', 'center']
-      )
-    : '';
+    for (const dp of dataPoints) {
+      if (dp.v && dp.v !== 'N/A' && dp.v !== '—') available.push(dp.label);
+      else missing.push(dp.label);
+    }
+    const missingStr = missing.length ? ` · Missing: ${missing.join(', ')}` : '';
+    return `- **${name} (${symbol}):** ${available.length}/${dataPoints.length} sources${missingStr}`;
+  }).join('\n');
+  const sourceSection = sourceList || '';
 
   const snapshotRows = items.map((item) => {
     const overview = item.overview || {};
@@ -2969,16 +2985,14 @@ export function buildComparisonReport(data: ComparisonReportData): string {
       formatPrice(price),
       formatSignedPercentValue(changeValue, 2, { alreadyPercent: changeIsPercent }),
       formatCurrency(overview.marketCapitalization),
-      overview.sector || 'N/A',
-      overview.industry || 'N/A',
-      `${formatCurrency(overview['52WeekLow'])} - ${formatCurrency(overview['52WeekHigh'])}`,
+      `${formatCurrency(overview['52WeekLow'])} – ${formatCurrency(overview['52WeekHigh'])}`,
     ];
   });
 
   const snapshotTable = buildTable(
-    ['Company', 'Price', 'Day Change', 'Market Cap', 'Sector', 'Industry', '52W Range'],
+    ['Company', 'Price', 'Chg %', 'Mkt Cap', '52W Range'],
     snapshotRows,
-    ['left', 'right', 'right', 'right', 'left', 'left', 'right']
+    ['left', 'right', 'right', 'right', 'right']
   );
 
   const scaleRows = items.map((item) => {
@@ -2992,7 +3006,7 @@ export function buildComparisonReport(data: ComparisonReportData): string {
     ];
   });
   const scaleTable = buildTable(
-    ['Company', 'Revenue (TTM)', 'Gross Margin', 'Operating Margin', 'ROE'],
+    ['Company', 'Revenue', 'Gross Mgn', 'Op Mgn', 'ROE'],
     scaleRows,
     ['left', 'right', 'right', 'right', 'right']
   );
@@ -3021,7 +3035,7 @@ export function buildComparisonReport(data: ComparisonReportData): string {
     ];
   });
   const growthTable = buildTable(
-    ['Company', 'Revenue Growth (TTM)', 'EPS Growth (TTM)', `${data.range} Price Change`],
+    ['Company', 'Rev Growth', 'EPS Growth', `${data.range} Price Chg`],
     growthRows,
     ['left', 'right', 'right', 'right']
   );
@@ -3041,7 +3055,7 @@ export function buildComparisonReport(data: ComparisonReportData): string {
     ];
   });
   const valuationTable = buildTable(
-    ['Company', 'P/E', 'Forward P/E', 'PEG', 'Price/Sales', 'Price/Book'],
+    ['Company', 'P/E', 'Fwd P/E', 'PEG', 'P/S', 'P/B'],
     valuationRows,
     ['left', 'right', 'right', 'right', 'right', 'right']
   );
@@ -3062,7 +3076,7 @@ export function buildComparisonReport(data: ComparisonReportData): string {
     ];
   });
   const balanceTable = buildTable(
-    ['Company', 'Cash', 'LT Debt', 'Net Debt', 'Equity', 'Free Cash Flow'],
+    ['Company', 'Cash', 'LT Debt', 'Net Debt', 'Equity', 'FCF'],
     balanceRows,
     ['left', 'right', 'right', 'right', 'right', 'right']
   );
@@ -3078,7 +3092,7 @@ export function buildComparisonReport(data: ComparisonReportData): string {
     ];
   });
   const ownershipTable = buildTable(
-    ['Company', 'Insider Ownership', 'Institutional Ownership', 'Short Float'],
+    ['Company', 'Insider %', 'Institutional %', 'Short Float'],
     ownershipRows,
     ['left', 'right', 'right', 'right']
   );
@@ -3249,7 +3263,7 @@ export function buildComparisonReport(data: ComparisonReportData): string {
   });
   const allocationRows = allocationEntries.map((e) => e.row);
   const allocationTable = buildTable(
-    ['Company', 'Score', 'Indicative Weight', 'Rationale'],
+    ['Company', 'Score', 'Weight', 'Why'],
     allocationRows,
     ['left', 'right', 'right', 'left']
   );
@@ -3268,8 +3282,8 @@ export function buildComparisonReport(data: ComparisonReportData): string {
     `Generated: ${data.generatedAt}`,
     `Universe: ${data.universe.join(', ')}`,
     notes ? `## ⚠️ Data Gaps\n${notes}` : null,
-    debugMode && sourceTable ? '## 🧾 Data Sources' : null,
-    debugMode && sourceTable ? `${sourceLegend}\n\n${sourceTable}` : null,
+    debugMode && sourceSection ? '## 🧾 Data Sources' : null,
+    debugMode && sourceSection ? `${sourceLegend}\n\n${sourceSection}` : null,
     '## 📊 Snapshot',
     snapshotTable,
     '## 🧾 Scale & Profitability',

@@ -301,18 +301,18 @@ export function buildDecisionSnapshot(input: DecisionInput): DecisionSnapshot {
       ? `Revisit if price trades into $${desiredEntryMin}-${desiredEntryMax} with fresh supporting data.`
       : 'Revisit after the next material catalyst, fresh data refresh, or a meaningful move in valuation/revisions.';
 
-  const scoreLabels: string[] = [];
-  if (qualityScore !== null) scoreLabels.push(`quality ${qualityScore.toFixed(0)}/100`);
-  if (valuationScore !== null) scoreLabels.push(`valuation ${valuationScore.toFixed(0)}/100`);
-  if (technicalScore !== null) scoreLabels.push(`momentum ${technicalScore.toFixed(0)}/100`);
-  const scoreSuffix = scoreLabels.length ? ` [${scoreLabels.join(', ')}]` : '';
-
-  const allReasons = [...whyNow, ...whyNot];
-  const reasonText = allReasons.length
-    ? allReasons.join(' ')
-    : 'The setup is mixed with no strong signals in either direction.';
-
-  const summary = `${actionToSummaryLabel(action)} — ${confidence.toLowerCase()} confidence${scoreSuffix}. ${reasonText}`.trim();
+  // Build a concise summary: top reason for + top reason against, with scores.
+  // Kept short so it fits in table cells and card layouts without horizontal overflow.
+  const topPro = whyNow[0] || null;
+  const topCon = whyNot[0] || null;
+  const reasonParts: string[] = [];
+  if (topPro) reasonParts.push(topPro);
+  if (topCon) reasonParts.push(topCon);
+  const reasonText = reasonParts.length
+    ? reasonParts.join(' ')
+    : 'No strong signals in either direction.';
+  const scoreTag = overallScore !== null ? ` Score: ${overallScore.toFixed(0)}/100.` : '';
+  const summary = `${actionToSummaryLabel(action)}.${scoreTag} ${reasonText}`.trim();
 
   return {
     action,
