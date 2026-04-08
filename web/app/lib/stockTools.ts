@@ -465,7 +465,7 @@ function buildBatchPositionRationalePrompt(
   }).join('\n\n');
 
   const exampleTicker = companies[0]?.symbol || 'TICK';
-  const shapeExample = `{"${exampleTicker}":{"rationale":"Quality score 67/100 driven by 34% operating margin and 95% ROE; valuation attractive at 23x P/E with $135 analyst target (35% upside). Hold — thesis intact but not at a high-conviction add point."}}`;
+  const shapeExample = `{"${exampleTicker}":{"rationale":"Quality score 67/100 driven by 34% operating margin and 18% ROE; valuation attractive at 23x P/E with $135 analyst target (35% upside). Hold — thesis intact but not at a high-conviction add point."}}`;
 
   return (
     `You are a senior equity research analyst writing the "Why" column for a position guidance table in a professional investment report.\n\n` +
@@ -2694,9 +2694,9 @@ export async function executeTool(
               })
             );
             const raw = await options.llmFill(rationalePrompt);
-            const cleaned = raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+            const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
             const parsed = JSON.parse(cleaned);
-            if (parsed && typeof parsed === "object") {
+            if (parsed && typeof parsed === 'object') {
               for (const sym of Object.keys(parsed)) {
                 const rationale = parsePositionRationaleEntry(parsed[sym]);
                 if (!rationale) continue;

@@ -309,10 +309,10 @@ export function buildDecisionSnapshot(input: DecisionInput): DecisionSnapshot {
 
   const allReasons = [...whyNow, ...whyNot];
   const reasonText = allReasons.length
-    ? ` ${allReasons.join(' ')}`
-    : ' The setup is mixed with no strong signals in either direction.';
+    ? allReasons.join(' ')
+    : 'The setup is mixed with no strong signals in either direction.';
 
-  const summary = `${actionToSummaryLabel(action)} — ${confidence.toLowerCase()} confidence${scoreSuffix}.${reasonText}`.trim();
+  const summary = `${actionToSummaryLabel(action)} — ${confidence.toLowerCase()} confidence${scoreSuffix}. ${reasonText}`.trim();
 
   return {
     action,
