@@ -3641,6 +3641,8 @@ function buildWatchlistStockReportData(item: WatchlistDailyReportItem): StockRep
       valuationScore: item.stock.decisionSnapshot?.valuationScore ?? null,
       technicalScore: item.stock.decisionSnapshot?.technicalScore ?? null,
       portfolioFitScore: item.stock.decisionSnapshot?.portfolioFitScore ?? null,
+      analystConsensusScore: item.stock.decisionSnapshot?.analystConsensusScore ?? null,
+      insiderScore: item.stock.decisionSnapshot?.insiderScore ?? null,
       whyNow: action === 'Buy' || action === 'Hold' ? [item.reason] : [],
       whyNot: action === 'Watch' || action === 'Sell' ? [item.reason] : [],
       missingInputs: item.stock.decisionSnapshot?.missingInputs ?? [],
