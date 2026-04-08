@@ -17,6 +17,22 @@ Type a question in plain English and the assistant calls the right data tools, f
 | **Deep research** | `Deep research on semiconductors` or `Tesla vs Rivian` | Ecosystem dependency map (Mermaid diagram), sector universe refinement, full comparison body, multi-pass synthesis |
 | **Watchlist daily** | `Generate daily report for my watchlist` | One combined report covering every company in the saved watchlist |
 
+**Transparent decision engine:**
+
+Every report includes a multi-factor decision for each company, powered by a 7-pillar scoring model:
+
+| Pillar | Weight | What it measures |
+|---|---|---|
+| Profitability | 25% | Gross margin, operating margin, ROE, ROA |
+| Valuation | 20% | P/E ratio, analyst target upside |
+| Growth | 15% | Revenue growth, EPS growth |
+| Momentum | 15% | Price trend over observation period |
+| Analyst Consensus | 15% | Weighted buy/hold/sell distribution |
+| Insider Activity | 5% | Net insider buying as % of market cap (no fixed $ thresholds) |
+| Financial Health | 5% | Debt/equity, current ratio, cash flow |
+
+The decision summary shows the **real data behind each score** so you can see exactly how the Buy/Hold/Sell recommendation was reached. Missing data lowers confidence, never the score.
+
 **Additional research tools** (use via natural language questions):
 
 | Tool | How to ask | What you get |
@@ -172,8 +188,13 @@ test-sdk/
 │   │       ├── stockTools.ts      # 30 tool definitions, executeTool, report orchestration
 │   │       ├── stockDataService.ts# All data providers + SecEdgarService + FredService
 │   │       ├── reportGenerator.ts # Report builders, technical indicators, chart builders
+│   │       ├── decisionEngine.ts  # 7-pillar multi-factor decision engine
+│   │       ├── investmentTypes.ts # Shared types: DecisionSnapshot, PortfolioProfile, etc.
+│   │       ├── dataTrust.ts       # Data freshness tracking (fresh/aging/stale)
 │   │       ├── llmProviderConfig.ts# LLM provider/model configuration
 │   │       ├── watchlistStore.ts  # Watchlist CRUD (Supabase / filesystem)
+│   │       ├── researchMemoryStore.ts # Research session + thesis persistence
+│   │       ├── chatToolPolicy.ts  # Tool name allowlist for LLM calls
 │   │       └── supabaseClient.ts  # Supabase client singleton
 │   └── public/
 │       └── reports/             # Static sample reports
