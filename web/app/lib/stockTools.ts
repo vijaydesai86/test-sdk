@@ -133,16 +133,37 @@ function parseLLMFillJSON(response: string): any | null {
  */
 function parseLLMTickerArray(raw: string, maxCount: number): string[] {
   try {
-    const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+    // Strip markdown fences and surrounding whitespace
+    let cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+    // Some LLMs wrap the JSON array in explanatory text — extract the array portion
+    const arrayMatch = cleaned.match(/\[[\s\S]*?\]/);
+    if (arrayMatch) {
+      cleaned = arrayMatch[0];
+    }
     const parsed = JSON.parse(cleaned);
     if (Array.isArray(parsed)) {
       return parsed
         .map((item: any) => String(item || '').replace(/[^A-Z0-9.]/gi, '').toUpperCase())
-        .filter((t) => t.length > 0)
+        .filter((t) => t.length > 0 && t.length <= 6)
         .slice(0, maxCount);
     }
+    // If the LLM returned an object with a key containing an array (e.g. { tickers: [...] })
+    if (parsed && typeof parsed === 'object') {
+      for (const key of Object.keys(parsed)) {
+        if (Array.isArray(parsed[key])) {
+          return parsed[key]
+            .map((item: any) => String(item || '').replace(/[^A-Z0-9.]/gi, '').toUpperCase())
+            .filter((t: string) => t.length > 0 && t.length <= 6)
+            .slice(0, maxCount);
+        }
+      }
+    }
   } catch {
-    // Invalid JSON
+    // Try to extract ticker-like symbols from the raw text as last resort
+    const tickerMatches = raw.match(/\b[A-Z]{1,5}\b/g);
+    if (tickerMatches && tickerMatches.length >= 2) {
+      return [...new Set(tickerMatches)].slice(0, maxCount);
+    }
   }
   return [];
 }
@@ -167,10 +188,12 @@ async function resolveSectorTickers(
     const prompt = buildSectorCompaniesPrompt(sector, count);
     try {
       const raw = await llmFill(prompt);
+      console.info(`[resolveSectorTickers] LLM attempt 1 raw response (${raw?.length ?? 0} chars):`, raw?.substring(0, 200));
       const tickers = parseLLMTickerArray(raw, count);
       if (tickers.length >= 2) return tickers;
-    } catch {
-      // LLM unavailable or returned invalid JSON — try retry
+      console.info(`[resolveSectorTickers] Attempt 1 parsed only ${tickers.length} tickers — retrying`);
+    } catch (err: any) {
+      console.warn(`[resolveSectorTickers] LLM attempt 1 error:`, err?.message || err);
     }
 
     // Attempt 2: LLM retry with a shorter, more direct prompt
@@ -179,11 +202,15 @@ async function resolveSectorTickers(
         `List exactly ${count} US-listed stock ticker symbols for the top companies in the "${sector}" sector. ` +
         `Return ONLY a JSON array of ticker strings, nothing else. Example: ["AAPL","MSFT"]`;
       const raw = await llmFill(retryPrompt);
+      console.info(`[resolveSectorTickers] LLM attempt 2 raw response (${raw?.length ?? 0} chars):`, raw?.substring(0, 200));
       const tickers = parseLLMTickerArray(raw, count);
       if (tickers.length >= 2) return tickers;
-    } catch {
-      // LLM retry also failed — try API search
+      console.info(`[resolveSectorTickers] Attempt 2 parsed only ${tickers.length} tickers`);
+    } catch (err: any) {
+      console.warn(`[resolveSectorTickers] LLM attempt 2 error:`, err?.message || err);
     }
+  } else {
+    console.warn(`[resolveSectorTickers] No llmFill provided — cannot resolve sector tickers via LLM`);
   }
 
   // Attempt 3: API search fallback — extract tickers from live search results
@@ -191,17 +218,19 @@ async function resolveSectorTickers(
     try {
       const results = await stockService.searchStock(sector);
       const candidates = (results?.results || []) as any[];
+      console.info(`[resolveSectorTickers] API search returned ${candidates.length} candidates for "${sector}"`);
       if (candidates.length >= 2) {
         return candidates
           .map((c: any) => String(c.symbol || '').toUpperCase())
           .filter((s) => s.length > 0 && /^[A-Z0-9.]+$/.test(s))
           .slice(0, count);
       }
-    } catch {
-      // API search also failed
+    } catch (err: any) {
+      console.warn(`[resolveSectorTickers] API search error:`, err?.message || err);
     }
   }
 
+  console.warn(`[resolveSectorTickers] All attempts failed for sector "${sector}"`);
   return [];
 }
 
