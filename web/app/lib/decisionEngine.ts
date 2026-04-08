@@ -21,6 +21,7 @@ type DecisionInput = {
   cashFlow?: any;
   analystRatings?: any;
   priceTargets?: any;
+  insiderTrading?: any;
   newsSentiment?: any;
   companyNews?: { articles?: any[] };
   trust?: DataTrustSummary;
@@ -58,6 +59,84 @@ function computeMomentum(prices?: Array<{ date: string; close: string | number }
   const last = toNumber(sorted[sorted.length - 1].close);
   if (first === null || last === null || first === 0) return null;
   return clamp(50 + ((last - first) / first) * 100);
+}
+
+/**
+ * Analyst consensus score (0–100).
+ * Converts strongBuy/buy/hold/sell/strongSell counts into a weighted sentiment.
+ * Weights: strongBuy=2, buy=1, hold=0, sell=-1, strongSell=-2.
+ * Result maps a –2…+2 range to 0…100. Null if no ratings available.
+ */
+function computeAnalystConsensusScore(ratings: any): { score: number | null; detail: string | null } {
+  if (!ratings) return { score: null, detail: null };
+  const sb = toNumber(ratings.strongBuy);
+  const b = toNumber(ratings.buy);
+  const h = toNumber(ratings.hold);
+  const s = toNumber(ratings.sell);
+  const ss = toNumber(ratings.strongSell);
+  const counts = [sb, b, h, s, ss].filter(v => v !== null) as number[];
+  const total = counts.reduce((a, c) => a + c, 0);
+  if (total === 0) return { score: null, detail: null };
+  // Weighted average: -2 (all strong sell) to +2 (all strong buy)
+  const weighted = ((sb ?? 0) * 2 + (b ?? 0) * 1 + (h ?? 0) * 0 + (s ?? 0) * -1 + (ss ?? 0) * -2) / total;
+  // Map -2..+2 to 0..100
+  const score = clamp((weighted + 2) * 25);
+  const buyTotal = (sb ?? 0) + (b ?? 0);
+  const sellTotal = (s ?? 0) + (ss ?? 0);
+  const detail = `${buyTotal} buy vs ${sellTotal} sell (${total} analysts)`;
+  return { score, detail };
+}
+
+/**
+ * Insider trading score (0–100), normalized by market cap.
+ * Net buying as % of market cap: strongly positive = bullish, negative = bearish.
+ * Uses thresholds relative to market cap so $5M means different things for $10B vs $1T.
+ */
+function computeInsiderScore(insiderTrading: any, marketCapStr: string | number | null | undefined): { score: number | null; detail: string | null } {
+  const txns = insiderTrading?.recentTransactions;
+  if (!Array.isArray(txns) || txns.length === 0) return { score: null, detail: null };
+  const marketCap = toNumber(marketCapStr);
+
+  let netBuyValue = 0;
+  let buyCount = 0;
+  let sellCount = 0;
+  for (const t of txns) {
+    const val = toNumber(t.totalValue);
+    if (val === null || val === 0) continue;
+    if (t.transactionType === 'Purchase') {
+      netBuyValue += val;
+      buyCount++;
+    } else if (t.transactionType === 'Sale') {
+      netBuyValue -= val;
+      sellCount++;
+    }
+  }
+
+  if (buyCount === 0 && sellCount === 0) return { score: null, detail: null };
+
+  // Format the net value
+  const absNet = Math.abs(netBuyValue);
+  const netLabel = absNet >= 1e9 ? `$${(absNet / 1e9).toFixed(1)}B`
+    : absNet >= 1e6 ? `$${(absNet / 1e6).toFixed(1)}M`
+    : `$${absNet.toFixed(0)}`;
+  const direction = netBuyValue >= 0 ? 'net buying' : 'net selling';
+
+  let score: number;
+  if (marketCap !== null && marketCap > 0) {
+    // Normalize: insider net buying as basis points of market cap
+    // 0.01% of mkt cap net buying = meaningful signal
+    const bps = (netBuyValue / marketCap) * 10000; // basis points
+    // Map: -10bps..+10bps → 0..100 (center at 50 = neutral)
+    score = clamp(50 + bps * 5);
+    const pctOfMktCap = Math.abs(netBuyValue / marketCap) * 100;
+    const detail = `Insider ${direction} ${netLabel} (${pctOfMktCap.toFixed(3)}% of mkt cap); ${buyCount} buys, ${sellCount} sells`;
+    return { score, detail };
+  }
+
+  // Without market cap, use absolute value heuristic (less reliable)
+  score = netBuyValue > 1e6 ? 70 : netBuyValue > 0 ? 60 : netBuyValue > -1e6 ? 45 : 30;
+  const detail = `Insider ${direction} ${netLabel}; ${buyCount} buys, ${sellCount} sells`;
+  return { score, detail };
 }
 
 function buildPortfolioImpact(args: {
@@ -141,6 +220,15 @@ export function buildDecisionSnapshot(input: DecisionInput): DecisionSnapshot {
   const pe = toNumber(input.companyOverview?.peRatio ?? input.basicFinancials?.metric?.peBasicExclExtraTTM);
   const momentum = computeMomentum(input.priceHistory?.prices);
 
+  // ── Analyst consensus ──
+  const analystConsensus = computeAnalystConsensusScore(input.analystRatings);
+  const analystConsensusScore = analystConsensus.score;
+
+  // ── Insider trading (market-cap normalized) ──
+  const marketCap = input.companyOverview?.marketCapitalization ?? input.companyOverview?.MarketCapitalization;
+  const insiderResult = computeInsiderScore(input.insiderTrading, marketCap);
+  const insiderScore = insiderResult.score;
+
   const qualityScore = average([
     grossMargin !== null ? clamp(grossMargin) : null,
     operatingMargin !== null ? clamp(operatingMargin) : null,
@@ -190,13 +278,21 @@ export function buildDecisionSnapshot(input: DecisionInput): DecisionSnapshot {
   if (!input.companyNews?.articles?.length) missingInputs.push('recent company news');
   if (!input.trust?.entries.length) missingInputs.push('freshness metadata');
 
-  const overallScore = average([
-    qualityScore,
-    valuationScore,
-    technicalScore,
-    portfolioFitScore,
-    staleCritical ? 15 : freshness === 'aging' ? 45 : 75,
-  ]);
+  // Weighted overall score. Primary pillars get 20% each, secondary signals get 10%.
+  // Quality (20%) + Valuation (20%) + Technical (20%) + PortfolioFit (10%) + Freshness (10%) + Analyst consensus (10%) + Insider (10%)
+  const weightedParts: Array<{ value: number; weight: number }> = [];
+  if (qualityScore !== null) weightedParts.push({ value: qualityScore, weight: 20 });
+  if (valuationScore !== null) weightedParts.push({ value: valuationScore, weight: 20 });
+  if (technicalScore !== null) weightedParts.push({ value: technicalScore, weight: 20 });
+  weightedParts.push({ value: portfolioFitScore ?? 55, weight: 10 });
+  weightedParts.push({ value: staleCritical ? 15 : freshness === 'aging' ? 45 : 75, weight: 10 });
+  if (analystConsensusScore !== null) weightedParts.push({ value: analystConsensusScore, weight: 10 });
+  if (insiderScore !== null) weightedParts.push({ value: insiderScore, weight: 10 });
+
+  const totalWeight = weightedParts.reduce((s, p) => s + p.weight, 0);
+  const overallScore = totalWeight > 0
+    ? weightedParts.reduce((s, p) => s + p.value * p.weight, 0) / totalWeight
+    : null;
 
   const whyNow: string[] = [];
   const whyNot: string[] = [];
@@ -236,6 +332,25 @@ export function buildDecisionSnapshot(input: DecisionInput): DecisionSnapshot {
     supportive: true,
   });
   if (technicalScore !== null && technicalScore >= 58 && supportiveTechnicalReason) whyNow.push(supportiveTechnicalReason);
+
+  // ── Analyst consensus signal ──
+  if (analystConsensusScore !== null && analystConsensus.detail) {
+    if (analystConsensusScore >= 65) {
+      whyNow.push(`Analyst consensus is bullish: ${analystConsensus.detail}.`);
+    } else if (analystConsensusScore < 40) {
+      whyNot.push(`Analyst consensus is bearish: ${analystConsensus.detail}.`);
+    }
+  }
+
+  // ── Insider trading signal ──
+  if (insiderScore !== null && insiderResult.detail) {
+    if (insiderScore >= 60) {
+      whyNow.push(`${insiderResult.detail}.`);
+    } else if (insiderScore < 40) {
+      whyNot.push(`${insiderResult.detail}.`);
+    }
+  }
+
   if (desiredEntryMin !== null && desiredEntryMax !== null && price !== null) {
     if (price >= desiredEntryMin && price <= desiredEntryMax) {
       whyNow.push(`Price is inside your preferred entry range of $${desiredEntryMin}–${desiredEntryMax}.`);
@@ -382,6 +497,8 @@ export function buildDecisionSnapshot(input: DecisionInput): DecisionSnapshot {
     valuationScore: valuationScore !== null ? Number(valuationScore.toFixed(1)) : null,
     technicalScore: technicalScore !== null ? Number(technicalScore.toFixed(1)) : null,
     portfolioFitScore: portfolioFitScore !== null ? Number(portfolioFitScore.toFixed(1)) : null,
+    analystConsensusScore: analystConsensusScore !== null ? Number(analystConsensusScore.toFixed(1)) : null,
+    insiderScore: insiderScore !== null ? Number(insiderScore.toFixed(1)) : null,
     whyNow,
     whyNot,
     missingInputs,

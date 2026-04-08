@@ -49,7 +49,39 @@ export const DEFAULT_PORTFOLIO_PROFILE: PortfolioProfile = {
   concentrationLimit: 35,
   strategyNotes: 'Focus on high-quality businesses, maintain valuation discipline, and prefer waiting over forcing a trade.',
 };
-export const DEFAULT_WATCHLIST_SEED: SeedItem[] = [];
+export const DEFAULT_WATCHLIST_SEED: SeedItem[] = [
+  {
+    symbol: 'NVDA',
+    companyName: 'NVIDIA',
+    position: { ownershipStatus: 'owned' },
+  },
+  {
+    symbol: 'ARM',
+    companyName: 'Arm Holdings',
+    position: { ownershipStatus: 'owned' },
+  },
+  { symbol: 'AMD', companyName: 'Advanced Micro Devices' },
+  {
+    symbol: 'AVGO',
+    companyName: 'Broadcom',
+    position: { ownershipStatus: 'owned' },
+  },
+  { symbol: 'QCOM', companyName: 'Qualcomm' },
+  { symbol: 'MSFT', companyName: 'Microsoft' },
+  { symbol: 'DELL', companyName: 'Dell Technologies' },
+  { symbol: 'GOOGL', companyName: 'Alphabet' },
+  { symbol: 'MU', companyName: 'Micron Technology' },
+  { symbol: 'VRT', companyName: 'Vertiv' },
+  { symbol: 'ETN', companyName: 'Eaton' },
+  { symbol: 'ASML', companyName: 'ASML Holding' },
+  { symbol: 'AMAT', companyName: 'Applied Materials' },
+  { symbol: 'TSM', companyName: 'Taiwan Semiconductor Manufacturing' },
+  {
+    symbol: 'META',
+    companyName: 'Meta Platforms',
+    position: { ownershipStatus: 'owned' },
+  },
+];
 
 function nowIso() {
   return new Date().toISOString();
@@ -302,7 +334,7 @@ async function loadDefaultSupabaseWatchlist(): Promise<Watchlist | null> {
   if (itemError) return null;
 
   const existingItems = Array.isArray(items) ? items : [];
-  if (existingItems.length === 0 && DEFAULT_WATCHLIST_SEED.length > 0) {
+  if (existingItems.length === 0) {
     const seedRows = DEFAULT_WATCHLIST_SEED.map((item, index) => {
       const position = {
         ...buildDefaultPositionMeta(),

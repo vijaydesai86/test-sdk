@@ -61,6 +61,8 @@ export interface DecisionSnapshot {
   valuationScore: number | null;
   technicalScore: number | null;
   portfolioFitScore: number | null;
+  analystConsensusScore: number | null;
+  insiderScore: number | null;
   whyNow: string[];
   whyNot: string[];
   missingInputs: string[];
