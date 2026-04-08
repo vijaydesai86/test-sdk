@@ -39,6 +39,8 @@ All notable changes to this project are recorded here.
 - **Watchlist "no companies" error**: Supabase seed failure now returns in-memory default items instead of `null`, so users always see the default 15 companies even when the Supabase insert fails.
 - **Watchlist add item error**: `addWatchlistItem` falls back to basic-column insert when detailed columns fail due to schema mismatch.
 - **Watchlist seed fallback type error**: Fixed `fi.position?.ownershipStatus` → `fi.ownershipStatus` in seed-failure fallback path. `WatchlistItem` extends `WatchlistPositionMeta` directly (no nested `position` property).
+- **Watchlist report data missing after ~4 companies**: Per-company `generate_stock_report` calls made 3 redundant LLM calls each (ticker resolution, moat, conclusion) on top of the batch LLM calls the watchlist report already performs. Added `skipLLM` flag so watchlist callers skip per-company LLM overhead, dramatically reducing API/LLM load and preventing rate-limit-driven data gaps.
+- **Deep research / sector "Could not identify companies" error**: When the LLM returned invalid JSON or was unavailable, sector and deep-research reports failed with no fallback. Added `resolveSectorTickers()` which tries the LLM first, then falls back to a curated sector-to-tickers map covering 30+ common sectors (semiconductors, AI, EVs, cybersecurity, fintech, etc.). All quick-search suggestions now work reliably.
 ### Removed
 - Removed extra markdown docs and markdown report artifacts from version-controlled documentation so only `README.md`, `AGENT.md`, and `CHANGELOG.md` remain as repo docs.
 ## [2026-03-26]

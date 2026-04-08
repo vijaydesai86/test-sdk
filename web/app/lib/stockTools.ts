@@ -128,6 +128,113 @@ function parseLLMFillJSON(response: string): any | null {
 }
 
 /**
+ * Fallback sector-to-tickers map for common sectors/themes.
+ * Used when the LLM fails to return a valid ticker list (bad JSON, timeout, etc.)
+ * so that sector and deep-research reports can still proceed.
+ * Keys are lowercased, fuzzy-matched via substring.
+ */
+const SECTOR_FALLBACK_TICKERS: Record<string, string[]> = {
+  semiconductor: ['NVDA', 'AMD', 'INTC', 'AVGO', 'QCOM', 'TXN', 'MU', 'MRVL', 'LRCX', 'AMAT', 'KLAC', 'ON', 'NXPI', 'ADI', 'ASML'],
+  'artificial intelligence': ['NVDA', 'MSFT', 'GOOGL', 'META', 'AMZN', 'CRM', 'PLTR', 'AMD', 'SNOW', 'AI'],
+  'ai ': ['NVDA', 'MSFT', 'GOOGL', 'META', 'AMZN', 'CRM', 'PLTR', 'AMD', 'SNOW', 'AI'],
+  'cloud computing': ['AMZN', 'MSFT', 'GOOGL', 'CRM', 'SNOW', 'NET', 'DDOG', 'MDB', 'ZS', 'WDAY'],
+  'electric vehicle': ['TSLA', 'RIVN', 'NIO', 'LI', 'XPEV', 'LCID', 'GM', 'F', 'BYD', 'QS'],
+  'ev ': ['TSLA', 'RIVN', 'NIO', 'LI', 'XPEV', 'LCID', 'GM', 'F', 'BYD', 'QS'],
+  cybersecurity: ['CRWD', 'PANW', 'ZS', 'FTNT', 'S', 'OKTA', 'NET', 'QLYS', 'TENB', 'RPD'],
+  fintech: ['V', 'MA', 'PYPL', 'SQ', 'SOFI', 'AFRM', 'COIN', 'INTU', 'FIS', 'GPN'],
+  'data center': ['NVDA', 'AMD', 'AVGO', 'EQIX', 'DLR', 'VRT', 'ANET', 'SMCI', 'DELL', 'HPE'],
+  biotech: ['AMGN', 'GILD', 'VRTX', 'REGN', 'MRNA', 'BIIB', 'ALNY', 'BMRN', 'SGEN', 'ILMN'],
+  'social media': ['META', 'SNAP', 'PINS', 'RDDT', 'GOOGL', 'MTCH'],
+  'big tech': ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'NVDA', 'TSLA'],
+  technology: ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'NVDA', 'CRM', 'ORCL', 'ADBE', 'INTC'],
+  banking: ['JPM', 'BAC', 'WFC', 'C', 'GS', 'MS', 'USB', 'PNC', 'TFC', 'SCHW'],
+  healthcare: ['UNH', 'JNJ', 'PFE', 'ABBV', 'LLY', 'MRK', 'TMO', 'ABT', 'BMY', 'AMGN'],
+  pharmaceutical: ['JNJ', 'PFE', 'ABBV', 'LLY', 'MRK', 'BMY', 'AZN', 'NVO', 'GSK', 'SNY'],
+  energy: ['XOM', 'CVX', 'COP', 'EOG', 'SLB', 'MPC', 'PSX', 'OXY', 'PXD', 'VLO'],
+  'renewable energy': ['ENPH', 'SEDG', 'FSLR', 'RUN', 'NEE', 'AES', 'BEP', 'CSIQ', 'NOVA', 'DQ'],
+  solar: ['ENPH', 'SEDG', 'FSLR', 'RUN', 'CSIQ', 'NOVA', 'DQ', 'JKS', 'MAXN', 'ARRY'],
+  retail: ['AMZN', 'WMT', 'COST', 'HD', 'TGT', 'LOW', 'TJX', 'ROST', 'DG', 'DLTR'],
+  ecommerce: ['AMZN', 'SHOP', 'EBAY', 'ETSY', 'MELI', 'SE', 'PDD', 'BABA', 'WMT', 'JD'],
+  'real estate': ['AMT', 'PLD', 'EQIX', 'SPG', 'O', 'DLR', 'WELL', 'AVB', 'EQR', 'VICI'],
+  aerospace: ['BA', 'LMT', 'RTX', 'NOC', 'GD', 'HII', 'TDG', 'HWM', 'LHX', 'AXON'],
+  defense: ['LMT', 'RTX', 'NOC', 'GD', 'HII', 'BA', 'LHX', 'AXON', 'PLTR', 'LDOS'],
+  automotive: ['TSLA', 'GM', 'F', 'TM', 'RIVN', 'STLA', 'HMC', 'NIO', 'LCID', 'BWA'],
+  streaming: ['NFLX', 'DIS', 'CMCSA', 'WBD', 'PARA', 'ROKU', 'SPOT', 'FUBO'],
+  gaming: ['NVDA', 'MSFT', 'SONY', 'EA', 'TTWO', 'RBLX', 'U', 'DKNG'],
+  'quantum computing': ['IONQ', 'RGTI', 'QBTS', 'IBM', 'GOOGL', 'HON'],
+  robotics: ['ISRG', 'ROK', 'TER', 'PATH', 'NVDA', 'ABB'],
+  cannabis: ['TLRY', 'CGC', 'ACB', 'CRON', 'OGI', 'SNDL', 'MO', 'STZ'],
+  space: ['RKLB', 'BA', 'LMT', 'NOC', 'SPCE', 'ASTS', 'BKSY'],
+  insurance: ['BRK.B', 'UNH', 'PGR', 'AIG', 'MET', 'ALL', 'TRV', 'CB', 'AFL', 'HIG'],
+  payments: ['V', 'MA', 'PYPL', 'SQ', 'GPN', 'FIS', 'FISV', 'ADYEN', 'AFRM'],
+  saas: ['CRM', 'NOW', 'WDAY', 'ZS', 'DDOG', 'SNOW', 'MDB', 'HUBS', 'TEAM', 'PANW'],
+  'food & beverage': ['KO', 'PEP', 'MDLZ', 'GIS', 'K', 'HSY', 'SJM', 'MKC', 'CAG', 'CPB'],
+  consumer: ['AAPL', 'AMZN', 'NKE', 'SBUX', 'MCD', 'PG', 'KO', 'PEP', 'HD', 'TGT'],
+  transportation: ['UPS', 'FDX', 'UNP', 'CSX', 'DAL', 'UAL', 'LUV', 'UBER', 'LYFT', 'JBHT'],
+  telecom: ['T', 'VZ', 'TMUS', 'CMCSA', 'CHTR', 'LUMN', 'DISH', 'SATS'],
+  mining: ['BHP', 'RIO', 'NEM', 'FCX', 'GOLD', 'AEM', 'VALE', 'SCCO'],
+  luxury: ['LVMH', 'RMS', 'RACE', 'TPR', 'RL', 'CPRI', 'BURL'],
+};
+
+/**
+ * Look up fallback tickers for a sector query using fuzzy substring matching.
+ * Returns at most `count` tickers, or an empty array if no match.
+ */
+function getSectorFallbackTickers(sector: string, count: number): string[] {
+  const lower = sector.toLowerCase();
+  for (const [key, tickers] of Object.entries(SECTOR_FALLBACK_TICKERS)) {
+    if (lower.includes(key) || key.includes(lower)) {
+      return tickers.slice(0, count);
+    }
+  }
+  return [];
+}
+
+/**
+ * Attempts to parse an LLM response as a JSON array of ticker strings.
+ * Returns an empty array if the response is invalid.
+ */
+function parseLLMTickerArray(raw: string, maxCount: number): string[] {
+  try {
+    const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+    const parsed = JSON.parse(cleaned);
+    if (Array.isArray(parsed)) {
+      return parsed
+        .map((item: any) => String(item || '').replace(/[^A-Z0-9.]/gi, '').toUpperCase())
+        .filter((t) => t.length > 0)
+        .slice(0, maxCount);
+    }
+  } catch {
+    // Invalid JSON
+  }
+  return [];
+}
+
+/**
+ * Identifies companies for a sector using LLM with fallback to hardcoded sectors.
+ * Tries the LLM first; if it fails or returns < 2 tickers, falls back to
+ * SECTOR_FALLBACK_TICKERS for common sector queries.
+ */
+async function resolveSectorTickers(
+  sector: string,
+  count: number,
+  llmFill?: LLMFiller,
+): Promise<string[]> {
+  if (llmFill) {
+    const prompt = buildSectorCompaniesPrompt(sector, count);
+    try {
+      const raw = await llmFill(prompt);
+      const tickers = parseLLMTickerArray(raw, count);
+      if (tickers.length >= 2) return tickers;
+    } catch {
+      // LLM unavailable or returned invalid JSON
+    }
+  }
+  // Fallback to hardcoded sector map
+  return getSectorFallbackTickers(sector, count);
+}
+
+/**
  * Builds a prompt asking the LLM to map each query to its official US stock ticker.
  * Used when the market-data search API returns no candidates.
  */
@@ -1890,12 +1997,21 @@ export async function executeTool(
       }
       case 'generate_stock_report': {
         const symbolQuery = args.symbol || '';
+        // When called from watchlist/comparison with a known ticker, skip per-company
+        // LLM calls (ticker resolution, moat, conclusion) to avoid redundant API/LLM
+        // load.  The caller does batch LLM calls afterward.
+        const skipPerCompanyLLM = Boolean(args.skipLLM);
 
         // Step 1: LLM resolves the input to the correct official ticker.
         // LLM is the primary resolver — it maps informal names to official tickers
         // without needing an API search call.
+        // When skipPerCompanyLLM is set the caller already provides an official ticker.
         let symbol: string | undefined;
-        if (options?.llmFill) {
+        if (skipPerCompanyLLM) {
+          // Caller guarantees the symbol is already an official ticker.
+          const cleaned = symbolQuery.replace(/[^A-Z0-9.]/gi, '').toUpperCase();
+          if (cleaned) symbol = cleaned;
+        } else if (options?.llmFill) {
           const prompt = buildTickerResolutionPrompt([symbolQuery]);
           try {
             const raw = await options.llmFill(prompt);
@@ -2069,8 +2185,9 @@ export async function executeTool(
         }
 
         // LLM moat analysis — best-effort; report still builds without it
+        // Skipped when called from batch callers (watchlist/comparison) that do their own batch moat.
         let moatAnalysis: MoatAnalysis | undefined;
-        if (options?.llmFill) {
+        if (!skipPerCompanyLLM && options?.llmFill) {
           try {
             const moatPrompt = buildMoatAnalysisPrompt(symbol, companyOverview, finalBasicFinancials);
             const raw = await options.llmFill(moatPrompt);
@@ -2103,8 +2220,9 @@ export async function executeTool(
         });
 
         // LLM investment conclusion — rich narrative, best-effort
+        // Skipped when called from batch callers that provide their own summary.
         let llmConclusion: string | undefined;
-        if (options?.llmFill) {
+        if (!skipPerCompanyLLM && options?.llmFill) {
           try {
             const conclusionPrompt = buildStockConclusionPrompt(
               symbol,
@@ -2624,7 +2742,7 @@ export async function executeTool(
           async (item) => {
             const result = await executeTool(
               'generate_stock_report',
-              { symbol: item.symbol, range, skipSave: true, includeRawData: true },
+              { symbol: item.symbol, range, skipSave: true, includeRawData: true, skipLLM: true },
               stockService,
               options
             );
@@ -2768,24 +2886,8 @@ export async function executeTool(
         const count = Math.min(NUM_COMPANIES, Math.max(2, Number(args.count) || NUM_COMPANIES));
         const range = args.range || '1y';
 
-        // Step 1: Use LLM to identify the top companies in this sector.
-        let universe: string[] = [];
-        if (options?.llmFill) {
-          const prompt = buildSectorCompaniesPrompt(sector, count);
-          try {
-            const raw = await options.llmFill(prompt);
-            const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
-            const parsed = JSON.parse(cleaned);
-            if (Array.isArray(parsed)) {
-              universe = parsed
-                .map((item: any) => String(item || '').replace(/[^A-Z0-9.]/gi, '').toUpperCase())
-                .filter((t) => t.length > 0)
-                .slice(0, count);
-            }
-          } catch {
-            // LLM unavailable or returned invalid JSON; fall through
-          }
-        }
+        // Step 1: Use LLM (with hardcoded fallback) to identify the top companies.
+        const universe = await resolveSectorTickers(sector, count, options?.llmFill);
 
         if (universe.length < 2) {
           return {
@@ -3209,24 +3311,8 @@ export async function executeTool(
           };
         }
 
-        // ── Phase 1: LLM identifies initial broad candidate list ────────────────
-        let initialCandidates: string[] = [];
-        {
-          const prompt = buildSectorCompaniesPrompt(sector, initialCount);
-          try {
-            const raw = await options.llmFill(prompt);
-            const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
-            const parsed = JSON.parse(cleaned);
-            if (Array.isArray(parsed)) {
-              initialCandidates = parsed
-                .map((item: any) => String(item || '').replace(/[^A-Z0-9.]/gi, '').toUpperCase())
-                .filter((t) => t.length > 0)
-                .slice(0, initialCount);
-            }
-          } catch {
-            // LLM unavailable or returned invalid JSON
-          }
-        }
+        // ── Phase 1: LLM identifies initial broad candidate list (with fallback) ──
+        const initialCandidates = await resolveSectorTickers(sector, initialCount, options.llmFill);
 
         if (initialCandidates.length < 2) {
           return {
