@@ -388,7 +388,7 @@ async function loadDefaultSupabaseWatchlist(): Promise<Watchlist | null> {
         company_name: fi.companyName,
         display_order: i,
         created_at: fi.createdAt,
-        ownership_status: fi.position?.ownershipStatus ?? 'watching',
+        ownership_status: fi.ownershipStatus ?? 'watching',
       })) }, 'supabase');
     }
 

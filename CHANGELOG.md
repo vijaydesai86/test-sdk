@@ -38,6 +38,7 @@ All notable changes to this project are recorded here.
 ### Fixed
 - **Watchlist "no companies" error**: Supabase seed failure now returns in-memory default items instead of `null`, so users always see the default 15 companies even when the Supabase insert fails.
 - **Watchlist add item error**: `addWatchlistItem` falls back to basic-column insert when detailed columns fail due to schema mismatch.
+- **Watchlist seed fallback type error**: Fixed `fi.position?.ownershipStatus` → `fi.ownershipStatus` in seed-failure fallback path. `WatchlistItem` extends `WatchlistPositionMeta` directly (no nested `position` property).
 ### Removed
 - Removed extra markdown docs and markdown report artifacts from version-controlled documentation so only `README.md`, `AGENT.md`, and `CHANGELOG.md` remain as repo docs.
 ## [2026-03-26]
