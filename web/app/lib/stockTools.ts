@@ -129,7 +129,7 @@ function parseLLMFillJSON(response: string): any | null {
 
 /**
  * Builds a prompt asking the LLM to map each query to its official US stock ticker.
- * Used when the market-data search API returns no candidates (e.g. 'GOOGLE' → 'GOOGL').
+ * Used when the market-data search API returns no candidates.
  */
 function buildTickerResolutionPrompt(queries: string[]): string {
   const shape = Object.fromEntries(queries.map((q) => [q, 'TICKER | null']));
@@ -138,8 +138,8 @@ function buildTickerResolutionPrompt(queries: string[]): string {
     `identify the correct official US stock exchange ticker symbol.\n\n` +
     `Inputs: ${JSON.stringify(queries)}\n\n` +
     `RULES:\n` +
-    `- Return the primary US-listed ticker (e.g. "GOOGL" for Google/Alphabet, "MSFT" for Microsoft)\n` +
-    `- For share-class ambiguity, prefer the more liquid class (e.g. GOOGL over GOOG)\n` +
+    `- Return the primary US-listed ticker for each company\n` +
+    `- For share-class ambiguity, prefer the more liquid class\n` +
     `- Return null for any input you cannot identify with certainty (do NOT provide financial values)\n` +
     `Respond ONLY with valid JSON:\n` +
     JSON.stringify(shape, null, 2)
@@ -933,7 +933,7 @@ const scoreSearchMatch = (query: string, item: any, rank = 0) => {
   return score;
 };
 
-// Strip share-class suffixes so "Alphabet Inc Class A" and "Alphabet Inc Class C"
+// Strip share-class suffixes so multi-class listings (e.g. Class A and Class C)
 // are recognised as the same underlying company.
 const baseCompanyName = (name: string) =>
   name
@@ -965,8 +965,8 @@ export const resolveSymbolFromQuery = async (stockService: StockDataService, que
       .sort((a, b) => b.score - a.score);
     const top = scored[0];
     const second = scored[1];
-    // Two results are considered share-class variants of the same company (e.g.
-    // GOOGL vs GOOG, BRK.A vs BRK.B) when their base names match.  In that case
+    // Two results are considered share-class variants of the same company
+    // when their base names match.  In that case
     // we trust Alpha Vantage's ranking and pick the top result without flagging ambiguity.
     const sameCompany =
       second &&
@@ -1006,7 +1006,7 @@ function buildToolDefinitions() {
         parameters: {
           type: 'object',
           properties: {
-            query: { type: 'string', description: 'Company name or ticker (e.g. "Apple" or "AAPL")' },
+            query: { type: 'string', description: 'Company name or ticker symbol' },
           },
           required: ['query'],
         },
@@ -1020,7 +1020,7 @@ function buildToolDefinitions() {
         parameters: {
           type: 'object',
           properties: {
-            symbol: { type: 'string', description: 'Ticker symbol (e.g. AAPL)' },
+            symbol: { type: 'string', description: 'Ticker symbol' },
           },
           required: ['symbol'],
         },
@@ -1034,7 +1034,7 @@ function buildToolDefinitions() {
         parameters: {
           type: 'object',
           properties: {
-            symbol: { type: 'string', description: 'Ticker symbol (e.g. AAPL)' },
+            symbol: { type: 'string', description: 'Ticker symbol' },
             range: { type: 'string', description: '"daily", "weekly", "monthly", "1w", "1m", "3m", "6m", "1y", "3y", "5y", "max". Default: "daily"' },
           },
           required: ['symbol'],
@@ -1049,7 +1049,7 @@ function buildToolDefinitions() {
         parameters: {
           type: 'object',
           properties: {
-            symbol: { type: 'string', description: 'Ticker symbol (e.g. AAPL)' },
+            symbol: { type: 'string', description: 'Ticker symbol' },
           },
           required: ['symbol'],
         },
@@ -1063,7 +1063,7 @@ function buildToolDefinitions() {
         parameters: {
           type: 'object',
           properties: {
-            symbol: { type: 'string', description: 'Ticker symbol (e.g. AAPL)' },
+            symbol: { type: 'string', description: 'Ticker symbol' },
           },
           required: ['symbol'],
         },
@@ -1077,7 +1077,7 @@ function buildToolDefinitions() {
         parameters: {
           type: 'object',
           properties: {
-            symbol: { type: 'string', description: 'Ticker symbol (e.g. AAPL)' },
+            symbol: { type: 'string', description: 'Ticker symbol' },
           },
           required: ['symbol'],
         },
@@ -1091,7 +1091,7 @@ function buildToolDefinitions() {
         parameters: {
           type: 'object',
           properties: {
-            symbol: { type: 'string', description: 'Ticker symbol (e.g. AAPL)' },
+            symbol: { type: 'string', description: 'Ticker symbol' },
           },
           required: ['symbol'],
         },
@@ -1105,7 +1105,7 @@ function buildToolDefinitions() {
         parameters: {
           type: 'object',
           properties: {
-            symbol: { type: 'string', description: 'Ticker symbol (e.g. AAPL)' },
+            symbol: { type: 'string', description: 'Ticker symbol' },
           },
           required: ['symbol'],
         },
@@ -1119,7 +1119,7 @@ function buildToolDefinitions() {
         parameters: {
           type: 'object',
           properties: {
-            symbol: { type: 'string', description: 'Ticker symbol (e.g. AAPL)' },
+            symbol: { type: 'string', description: 'Ticker symbol' },
           },
           required: ['symbol'],
         },
@@ -1133,7 +1133,7 @@ function buildToolDefinitions() {
         parameters: {
           type: 'object',
           properties: {
-            symbol: { type: 'string', description: 'Ticker symbol (e.g. AAPL)' },
+            symbol: { type: 'string', description: 'Ticker symbol' },
           },
           required: ['symbol'],
         },
@@ -1147,7 +1147,7 @@ function buildToolDefinitions() {
         parameters: {
           type: 'object',
           properties: {
-            symbol: { type: 'string', description: 'Ticker symbol (e.g. AAPL)' },
+            symbol: { type: 'string', description: 'Ticker symbol' },
           },
           required: ['symbol'],
         },
@@ -1161,7 +1161,7 @@ function buildToolDefinitions() {
         parameters: {
           type: 'object',
           properties: {
-            symbol: { type: 'string', description: 'Ticker symbol (e.g. AAPL)' },
+            symbol: { type: 'string', description: 'Ticker symbol' },
           },
           required: ['symbol'],
         },
@@ -1175,7 +1175,7 @@ function buildToolDefinitions() {
         parameters: {
           type: 'object',
           properties: {
-            symbol: { type: 'string', description: 'Ticker symbol (e.g. AAPL)' },
+            symbol: { type: 'string', description: 'Ticker symbol' },
           },
           required: ['symbol'],
         },
@@ -1189,7 +1189,7 @@ function buildToolDefinitions() {
         parameters: {
           type: 'object',
           properties: {
-            symbol: { type: 'string', description: 'Ticker symbol (e.g. AAPL)' },
+            symbol: { type: 'string', description: 'Ticker symbol' },
           },
           required: ['symbol'],
         },
@@ -1203,7 +1203,7 @@ function buildToolDefinitions() {
         parameters: {
           type: 'object',
           properties: {
-            symbol: { type: 'string', description: 'Ticker symbol (e.g. AAPL)' },
+            symbol: { type: 'string', description: 'Ticker symbol' },
           },
           required: ['symbol'],
         },
@@ -1217,7 +1217,7 @@ function buildToolDefinitions() {
         parameters: {
           type: 'object',
           properties: {
-            symbol: { type: 'string', description: 'Ticker symbol (e.g. AAPL)' },
+            symbol: { type: 'string', description: 'Ticker symbol' },
             days: { type: 'number', description: 'Lookback window in days (optional)' },
           },
           required: ['symbol'],
@@ -1232,7 +1232,7 @@ function buildToolDefinitions() {
         parameters: {
           type: 'object',
           properties: {
-            symbol: { type: 'string', description: 'Ticker or company name (e.g. AAPL, Apple)' },
+            symbol: { type: 'string', description: 'Ticker or company name' },
             range: { type: 'string', description: 'Price history range for charts (e.g., "1y", "3y", "5y", "max"). Default is "5y"' },
           },
           required: ['symbol'],
@@ -1298,7 +1298,7 @@ function buildToolDefinitions() {
           properties: {
             sector: {
               type: 'string',
-              description: 'Deep research query, e.g. "semiconductors", "Visa vs Mastercard", "Tesla"',
+              description: 'Deep research query (sector, company, or comparison)',
             },
             count: {
               type: 'number',
@@ -1360,7 +1360,7 @@ function buildToolDefinitions() {
         parameters: {
           type: 'object',
           properties: {
-            symbol: { type: 'string', description: 'Stock ticker symbol (e.g. AAPL)' },
+            symbol: { type: 'string', description: 'Stock ticker symbol' },
           },
           required: ['symbol'],
         },
@@ -1374,7 +1374,7 @@ function buildToolDefinitions() {
         parameters: {
           type: 'object',
           properties: {
-            symbol: { type: 'string', description: 'Stock ticker symbol (e.g. AAPL)' },
+            symbol: { type: 'string', description: 'Stock ticker symbol' },
             count: { type: 'number', description: 'Number of filings to return (default 10, max 20)' },
           },
           required: ['symbol'],
@@ -1400,7 +1400,7 @@ function buildToolDefinitions() {
         parameters: {
           type: 'object',
           properties: {
-            symbol: { type: 'string', description: 'Stock ticker symbol (e.g. AAPL)' },
+            symbol: { type: 'string', description: 'Stock ticker symbol' },
           },
           required: ['symbol'],
         },
@@ -1414,7 +1414,7 @@ function buildToolDefinitions() {
         parameters: {
           type: 'object',
           properties: {
-            symbol: { type: 'string', description: 'Stock ticker symbol (e.g. AAPL)' },
+            symbol: { type: 'string', description: 'Stock ticker symbol' },
           },
           required: ['symbol'],
         },
@@ -1885,8 +1885,8 @@ export async function executeTool(
         const symbolQuery = args.symbol || '';
 
         // Step 1: LLM resolves the input to the correct official ticker.
-        // LLM is the primary resolver — it knows that 'GOOGLE' → 'GOOGL',
-        // 'Microsoft' → 'MSFT', etc., without needing an API search call.
+        // LLM is the primary resolver — it maps informal names to official tickers
+        // without needing an API search call.
         let symbol: string | undefined;
         if (options?.llmFill) {
           const prompt = buildTickerResolutionPrompt([symbolQuery]);
@@ -2248,8 +2248,7 @@ export async function executeTool(
         }
 
         // Step 1: LLM resolves ALL inputs to official tickers in one batch call.
-        // LLM is the primary resolver — no API search is needed for well-known names
-        // (e.g. 'GOOGLE' → 'GOOGL', 'Microsoft' → 'MSFT').
+        // LLM is the primary resolver — no API search is needed for well-known names.
         const resolvedMap = new Map<string, string>(); // query → official ticker
         if (options?.llmFill) {
           const prompt = buildTickerResolutionPrompt(companies);

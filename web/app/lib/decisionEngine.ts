@@ -201,22 +201,21 @@ export function buildDecisionSnapshot(input: DecisionInput): DecisionSnapshot {
   const whyNow: string[] = [];
   const whyNot: string[] = [];
 
-  // ── Populate whyNow with the BEST available metrics, not just abstract scores ──
-  if (qualityScore !== null && qualityScore >= 65) {
-    // Include the actual metric values so users see real numbers
-    const highlights: string[] = [];
-    if (grossMargin !== null && grossMargin >= 35) highlights.push(`gross margin ${grossMargin.toFixed(0)}%`);
-    if (operatingMargin !== null && operatingMargin >= 15) highlights.push(`op margin ${operatingMargin.toFixed(0)}%`);
-    if (roe !== null && roe >= 15) highlights.push(`ROE ${roe.toFixed(0)}%`);
-    if (revenueGrowth !== null && revenueGrowth > 5) highlights.push(`revenue growth ${revenueGrowth > 0 ? '+' : ''}${revenueGrowth.toFixed(0)}%`);
-    const detail = highlights.length ? ` (${highlights.join(', ')})` : '';
-    whyNow.push(`Strong profitability${detail}.`);
-  } else if (qualityScore !== null && qualityScore >= 50) {
-    const highlights: string[] = [];
-    if (grossMargin !== null) highlights.push(`gross margin ${grossMargin.toFixed(0)}%`);
-    if (roe !== null) highlights.push(`ROE ${roe.toFixed(0)}%`);
-    const detail = highlights.length ? ` (${highlights.join(', ')})` : '';
-    whyNow.push(`Acceptable quality metrics${detail}.`);
+  // ── whyNow: highlight the best available real metrics ──
+  // Use actual metric values to build stock-specific rationale, not just abstract scores.
+  // This ensures every stock reads differently based on its real data.
+  {
+    const strengths: string[] = [];
+    if (grossMargin !== null && grossMargin >= 40) strengths.push(`${grossMargin.toFixed(0)}% gross margin`);
+    if (operatingMargin !== null && operatingMargin >= 15) strengths.push(`${operatingMargin.toFixed(0)}% op margin`);
+    if (roe !== null && roe >= 15) strengths.push(`${roe.toFixed(0)}% ROE`);
+    if (revenueGrowth !== null && revenueGrowth > 5) strengths.push(`${revenueGrowth > 0 ? '+' : ''}${revenueGrowth.toFixed(0)}% rev growth`);
+    if (epsGrowth !== null && epsGrowth > 5) strengths.push(`${epsGrowth > 0 ? '+' : ''}${epsGrowth.toFixed(0)}% EPS growth`);
+    if (strengths.length >= 3) {
+      whyNow.push(`Strong fundamentals (${strengths.join(', ')}).`);
+    } else if (strengths.length >= 1) {
+      whyNow.push(`Solid on ${strengths.join(', ')}.`);
+    }
   }
 
   if (valuationScore !== null && valuationScore >= 58) {
@@ -225,6 +224,9 @@ export function buildDecisionSnapshot(input: DecisionInput): DecisionSnapshot {
     if (pe !== null && pe > 0) parts.push(`P/E ${pe.toFixed(1)}`);
     const detail = parts.length ? `: ${parts.join(', ')}` : '';
     whyNow.push(`Supportive valuation${detail}.`);
+  } else if (pe !== null && pe > 0 && pe < 20 && valuationScore === null) {
+    // Even without a full valuation score, a low P/E is noteworthy
+    whyNow.push(`Low P/E of ${pe.toFixed(1)} suggests value.`);
   }
 
   const supportiveTechnicalReason = describeTechnicalSupport({
@@ -245,12 +247,15 @@ export function buildDecisionSnapshot(input: DecisionInput): DecisionSnapshot {
   // ── whyNot: concrete metric-level concerns ──
   // These are real investment concerns, NOT data-gap complaints.
   if (staleCritical) whyNot.push(`Critical data is stale for: ${(trust?.staleLabels || []).join(', ')}.`);
-  if (qualityScore !== null && qualityScore < 45) {
-    const concerns: string[] = [];
-    if (operatingMargin !== null && operatingMargin < 5) concerns.push(`op margin ${operatingMargin.toFixed(0)}%`);
-    if (roe !== null && roe < 8) concerns.push(`ROE ${roe.toFixed(0)}%`);
-    const detail = concerns.length ? ` (${concerns.join(', ')})` : '';
-    whyNot.push(`Weak business quality${detail}.`);
+  {
+    const weaknesses: string[] = [];
+    if (operatingMargin !== null && operatingMargin < 5) weaknesses.push(`${operatingMargin.toFixed(0)}% op margin`);
+    if (roe !== null && roe < 8) weaknesses.push(`${roe.toFixed(0)}% ROE`);
+    if (revenueGrowth !== null && revenueGrowth < -5) weaknesses.push(`${revenueGrowth.toFixed(0)}% rev growth`);
+    if (grossMargin !== null && grossMargin < 25) weaknesses.push(`${grossMargin.toFixed(0)}% gross margin`);
+    if (weaknesses.length) {
+      whyNot.push(`Weak fundamentals (${weaknesses.join(', ')}).`);
+    }
   }
   if (valuationScore !== null && valuationScore < 45) {
     const concerns: string[] = [];

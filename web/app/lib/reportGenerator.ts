@@ -114,7 +114,7 @@ export interface MoatAnalysis {
   moatStrength: string;
   /** Composite moat score 0-100. 0-30 = none, 31-60 = narrow, 61-100 = wide */
   moatScore: number;
-  /** Specific, concrete barriers, e.g. "Apple ecosystem lock-in", "AWS scale economics" */
+  /** Specific, concrete barriers to competition, e.g. ecosystem lock-in, scale economics */
   barriers: string[];
   /** 2-4 sentence descriptive narrative explaining moat sources and their sustainability */
   narrative: string;
@@ -1546,64 +1546,76 @@ function buildRecommendationRationale(profile: {
   const positives: string[] = [];
   const cautions: string[] = [];
 
-  // Quality — cite the actual margin/ROE values so each stock reads differently
-  if (profile.qualityScore !== null) {
+  // ── Strengths: cite real metric values ──
+  {
     const highlights: string[] = [];
-    if (metrics.grossMargin !== null && metrics.grossMargin >= 30) highlights.push(`${metrics.grossMargin.toFixed(0)}% gross margin`);
-    if (metrics.operatingMargin !== null && metrics.operatingMargin >= 10) highlights.push(`${metrics.operatingMargin.toFixed(0)}% op margin`);
-    if (metrics.roe !== null && metrics.roe >= 12) highlights.push(`${metrics.roe.toFixed(0)}% ROE`);
-    if (metrics.revenueGrowth !== null && metrics.revenueGrowth > 3) highlights.push(`${metrics.revenueGrowth > 0 ? '+' : ''}${metrics.revenueGrowth.toFixed(0)}% rev growth`);
-    const detail = highlights.length ? ` (${highlights.join(', ')})` : '';
-    if (profile.qualityScore >= 70) positives.push(`strong profitability${detail}`);
-    else if (profile.qualityScore >= 55) positives.push(`solid fundamentals${detail}`);
-    else if (profile.qualityScore < 38) {
-      const weakParts: string[] = [];
-      if (metrics.operatingMargin !== null && metrics.operatingMargin < 8) weakParts.push(`${metrics.operatingMargin.toFixed(0)}% op margin`);
-      if (metrics.roe !== null && metrics.roe < 10) weakParts.push(`${metrics.roe.toFixed(0)}% ROE`);
-      cautions.push(`weak quality${weakParts.length ? ` (${weakParts.join(', ')})` : ''}`);
-    }
+    if (metrics.grossMargin !== null && metrics.grossMargin >= 40) highlights.push(`${metrics.grossMargin.toFixed(0)}% gross margin`);
+    if (metrics.operatingMargin !== null && metrics.operatingMargin >= 15) highlights.push(`${metrics.operatingMargin.toFixed(0)}% op margin`);
+    if (metrics.roe !== null && metrics.roe >= 15) highlights.push(`${metrics.roe.toFixed(0)}% ROE`);
+    if (metrics.revenueGrowth !== null && metrics.revenueGrowth > 5) highlights.push(`${metrics.revenueGrowth > 0 ? '+' : ''}${metrics.revenueGrowth.toFixed(0)}% rev growth`);
+    if (highlights.length >= 3) positives.push(`strong fundamentals (${highlights.join(', ')})`);
+    else if (highlights.length >= 1) positives.push(`solid on ${highlights.join(', ')}`);
   }
 
   // Valuation — cite P/E and target upside
-  if (profile.valuationScore !== null) {
+  {
     const parts: string[] = [];
-    if (metrics.pe !== null) parts.push(`${metrics.pe.toFixed(1)}x P/E`);
+    if (metrics.pe !== null && metrics.pe > 0) parts.push(`${metrics.pe.toFixed(1)}x P/E`);
     if (metrics.targetUpside !== null) parts.push(`${metrics.targetUpside.toFixed(1)}% target upside`);
-    const detail = parts.length ? ` (${parts.join(', ')})` : '';
-    if (profile.valuationScore >= 60) positives.push(`attractive valuation${detail}`);
-    else if (profile.valuationScore < 40) cautions.push(`stretched valuation${detail}`);
+    if (profile.valuationScore !== null && profile.valuationScore >= 60 && parts.length) {
+      positives.push(`attractive valuation (${parts.join(', ')})`);
+    } else if (profile.valuationScore !== null && profile.valuationScore < 40 && parts.length) {
+      cautions.push(`stretched valuation (${parts.join(', ')})`);
+    }
   }
 
-  // Trend — cite the actual trend direction
+  // Trend — cite direction
   if (profile.trendScore !== null) {
     const trendLabel = metrics.trend !== 'Trend unavailable' ? ` (${metrics.trend.toLowerCase()})` : '';
     if (profile.trendScore >= 58) positives.push(`supportive price trend${trendLabel}`);
     else if (profile.trendScore < 35) cautions.push(`weak price trend${trendLabel}`);
   }
 
-  let opening = 'Signals are mixed across quality, valuation, and trend.';
+  // ── Weaknesses: cite actual metric values ──
+  {
+    const weakParts: string[] = [];
+    if (metrics.operatingMargin !== null && metrics.operatingMargin < 5) weakParts.push(`${metrics.operatingMargin.toFixed(0)}% op margin`);
+    if (metrics.roe !== null && metrics.roe < 8) weakParts.push(`${metrics.roe.toFixed(0)}% ROE`);
+    if (metrics.revenueGrowth !== null && metrics.revenueGrowth < -5) weakParts.push(`${metrics.revenueGrowth.toFixed(0)}% rev growth`);
+    if (weakParts.length) cautions.push(`weak fundamentals (${weakParts.join(', ')})`);
+  }
+
+  let opening: string;
   if (profile.signal === 'Buy') {
     opening = positives.length >= 2
       ? `${sentenceCase(positives.slice(0, 2).join(' and '))}.`
       : positives.length === 1
         ? `${sentenceCase(positives[0])}, supporting fresh exposure.`
-        : 'Quality, valuation, and trend are supportive enough to justify fresh exposure.';
+        : 'Quality, valuation, and trend support fresh exposure.';
   } else if (profile.signal === 'Hold') {
     opening = positives.length
       ? `${sentenceCase(positives[0])}, but not enough for an aggressive add.`
-      : 'Still investable, but not a high-conviction entry point.';
+      : cautions.length
+        ? `${sentenceCase(cautions[0])}, keeping this at hold.`
+        : 'Still investable, but not a high-conviction entry point.';
   } else if (profile.signal === 'Watch') {
     opening = cautions.length
       ? `${sentenceCase(cautions[0])}, so patience is warranted.`
       : positives.length
         ? `${sentenceCase(positives[0])}, but cleaner confirmation needed.`
-        : 'The setup needs a better entry or cleaner confirmation before acting.';
+        : 'The setup needs a better entry or cleaner confirmation.';
   } else if (profile.signal === 'Sell') {
     opening = cautions.length >= 2
       ? `${sentenceCase(cautions.slice(0, 2).join(' and '))}.`
       : cautions.length === 1
         ? `${sentenceCase(cautions[0])}; capital is better protected elsewhere.`
-        : 'Quality and reward-to-risk are weak enough that capital is better protected elsewhere.';
+        : 'Quality and reward-to-risk are weak; capital is better protected elsewhere.';
+  } else {
+    opening = positives.length
+      ? `${sentenceCase(positives[0])}.`
+      : cautions.length
+        ? `${sentenceCase(cautions[0])}.`
+        : 'Signals are mixed.';
   }
 
   if (profile.confidence === 'High' || profile.missingInputs.length === 0) {
