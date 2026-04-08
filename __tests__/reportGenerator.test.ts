@@ -4,6 +4,8 @@ import {
   buildComparisonReport,
   buildSectorReport,
   buildDeepSectorReport,
+  buildDeepStockReport,
+  buildDeepComparisonReport,
   buildWatchlistDailyReport,
   saveReport,
   type StockReportData,

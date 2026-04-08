@@ -2857,7 +2857,7 @@ export async function executeTool(
         const count = Math.min(NUM_COMPANIES, Math.max(2, Number(args.count) || NUM_COMPANIES));
         const range = args.range || '1y';
 
-        // Step 1: Use LLM (with hardcoded fallback) to identify the top companies.
+        // Step 1: Use LLM (with API search fallback) to identify the top companies.
         const universe = await resolveSectorTickers(sector, count, options?.llmFill, stockService);
 
         if (universe.length < 2) {

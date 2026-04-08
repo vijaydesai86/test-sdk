@@ -108,7 +108,6 @@ const CHART_HEIGHT = 280;
 const MAX_TEXTAREA_HEIGHT = 160;
 const TOOL_CALL_WARNING =
   'Model returned tool calls as plain text. Switch to a tool-calling model from the dropdown.';
-const SAMPLE_REPORT_LINK = '/reports/nvda-sample.md';
 const isToolCallText = (content: string) =>
   /"name"\s*:\s*"functions\./.test(content) || /"arguments"\s*:\s*\{/.test(content);
 
@@ -1253,21 +1252,12 @@ export default function ChatInterface() {
             <p className="mt-1 text-sm text-slate-300">
               Reports are grouped by day and surfaced as cards with real labels, not a flat stream of repeated filenames.
             </p>
-            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+            <div className="mt-4">
               <div className="rounded-2xl border border-white/10 bg-slate-950/35 p-3">
                 <p className="text-[11px] uppercase tracking-[0.2em] text-slate-400">Artifacts</p>
                 <p className="mt-2 text-2xl font-semibold text-white">{reportItems.length}</p>
                 <p className="mt-1 text-xs text-slate-400">Built in the current session</p>
               </div>
-              <button
-                type="button"
-                onClick={() => handleReportClick({ filename: 'nvda-sample.md', downloadUrl: SAMPLE_REPORT_LINK, title: 'Sample NVDA Report' })}
-                className="rounded-2xl border border-white/12 bg-white/8 p-3 text-left transition hover:bg-white/14"
-              >
-                <p className="text-[11px] uppercase tracking-[0.2em] text-cyan-200/70">Demo Artifact</p>
-                <p className="mt-2 text-sm font-medium text-white">Open sample NVDA report</p>
-                <p className="mt-1 text-xs text-slate-400">Useful before you generate your own first report.</p>
-              </button>
             </div>
           </div>
 

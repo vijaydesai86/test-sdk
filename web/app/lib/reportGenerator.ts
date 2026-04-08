@@ -2401,7 +2401,18 @@ function buildComparisonMoatSection(items: ComparisonReportItem[]): string {
 
 export function buildStockReport(data: StockReportData): string {
   const priceChart = buildPriceChart(data.priceHistory?.prices || []);
-  const epsChart = buildEpsChart(data.earningsHistory?.quarterlyEarnings || []);
+  // Build EPS chart: prefer real earnings history; fall back to a single-point
+  // chart derived from the overview EPS when the earnings API returns empty.
+  const earningsPoints = data.earningsHistory?.quarterlyEarnings || [];
+  let epsChart = buildEpsChart(earningsPoints);
+  if (!epsChart && earningsPoints.length === 0) {
+    const overviewEps = toNumber(data.companyOverview?.eps);
+    if (overviewEps !== null) {
+      const now = new Date();
+      const q = `${now.getFullYear()}-Q${Math.ceil((now.getMonth() + 1) / 3)}`;
+      epsChart = buildEpsChart([{ fiscalQuarter: q, reportedEPS: String(overviewEps) }]);
+    }
+  }
   const peChart = buildPeChart(data.priceHistory?.prices || [], data.earningsHistory?.quarterlyEarnings || []);
   const revenueChart = buildRevenueChart(data.incomeStatement);
   const marginChart = buildMarginChart(data.incomeStatement);
@@ -2536,34 +2547,69 @@ export function buildStockReport(data: StockReportData): string {
     riskLines.push(`- Net debt of ${formatCurrency(netDebt)}`);
   }
 
-  const incomeTable = incomeReports.length
-    ? buildTable(
+  // Build income table: prefer real quarterly/annual data; fall back to a TTM
+  // estimated row derived from the company overview when the statement API is empty.
+  let incomeTable: string;
+  if (incomeReports.length) {
+    incomeTable = buildTable(
+      ['Period', 'Revenue', 'Gross', 'Op Income', 'Net Income'],
+      incomeReports.map((report) => [
+        formatPeriodLabel(report),
+        formatCurrency(report.totalRevenue),
+        formatCurrency(report.grossProfit),
+        formatCurrency(report.operatingIncome),
+        formatCurrency(report.netIncome),
+      ]),
+      ['left', 'right', 'right', 'right', 'right']
+    );
+  } else {
+    const ttmRevenue = toNumber(overview.revenueTTM);
+    const ttmGross = toNumber(overview.grossProfitTTM);
+    const opMarginRatio = toNumber(overview.operatingMargin);
+    const profitMarginRatio = toNumber(overview.profitMargin);
+    const ttmOpIncome = ttmRevenue !== null && opMarginRatio !== null ? ttmRevenue * opMarginRatio : null;
+    const ttmNetIncome = ttmRevenue !== null && profitMarginRatio !== null ? ttmRevenue * profitMarginRatio : null;
+    if (ttmRevenue !== null) {
+      incomeTable = buildTable(
         ['Period', 'Revenue', 'Gross', 'Op Income', 'Net Income'],
-        incomeReports.map((report) => [
-          formatPeriodLabel(report),
-          formatCurrency(report.totalRevenue),
-          formatCurrency(report.grossProfit),
-          formatCurrency(report.operatingIncome),
-          formatCurrency(report.netIncome),
-        ]),
+        [['TTM (est.)', formatCurrency(ttmRevenue), formatCurrency(ttmGross), formatCurrency(ttmOpIncome), formatCurrency(ttmNetIncome)]],
         ['left', 'right', 'right', 'right', 'right']
-      )
-    : '_Income statement data unavailable (provider or rate limit; no estimated fallback shown)._';
+      );
+    } else {
+      incomeTable = '_Income statement data unavailable (provider or rate limit; no estimated fallback shown)._';
+    }
+  }
 
-  const balanceTable = balanceReports.length
-    ? buildTable(
+  // Build balance sheet table: prefer real data; fall back to a latest-estimated
+  // row derived from overview when the balance sheet API is empty.
+  let balanceTable: string;
+  if (balanceReports.length) {
+    balanceTable = buildTable(
+      ['Period', 'Cash', 'LT Debt', 'Liabilities', 'Assets', 'Equity'],
+      balanceReports.map((report) => [
+        formatPeriodLabel(report),
+        formatCurrency(report.cashAndEquivalents),
+        formatCurrency(report.longTermDebt),
+        formatCurrency(report.totalLiabilities),
+        formatCurrency(report.totalAssets),
+        formatCurrency(report.totalShareholderEquity),
+      ]),
+      ['left', 'right', 'right', 'right', 'right', 'right']
+    );
+  } else {
+    const bookVal = toNumber(overview.bookValue);
+    const sharesOut = toNumber(overview.sharesOutstanding);
+    const equity = bookVal !== null && sharesOut !== null ? bookVal * sharesOut : null;
+    if (equity !== null) {
+      balanceTable = buildTable(
         ['Period', 'Cash', 'LT Debt', 'Liabilities', 'Assets', 'Equity'],
-        balanceReports.map((report) => [
-          formatPeriodLabel(report),
-          formatCurrency(report.cashAndEquivalents),
-          formatCurrency(report.longTermDebt),
-          formatCurrency(report.totalLiabilities),
-          formatCurrency(report.totalAssets),
-          formatCurrency(report.totalShareholderEquity),
-        ]),
+        [['Latest (est.)', '—', '—', '—', '—', formatCurrency(equity)]],
         ['left', 'right', 'right', 'right', 'right', 'right']
-      )
-    : '_Balance sheet data unavailable (provider or rate limit; no estimated fallback shown)._';
+      );
+    } else {
+      balanceTable = '_Balance sheet data unavailable (provider or rate limit; no estimated fallback shown)._';
+    }
+  }
 
   const cashTable = cashReports.length
     ? buildTable(

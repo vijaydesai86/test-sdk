@@ -49,39 +49,7 @@ export const DEFAULT_PORTFOLIO_PROFILE: PortfolioProfile = {
   concentrationLimit: 35,
   strategyNotes: 'Focus on high-quality businesses, maintain valuation discipline, and prefer waiting over forcing a trade.',
 };
-export const DEFAULT_WATCHLIST_SEED: SeedItem[] = [
-  {
-    symbol: 'NVDA',
-    companyName: 'NVIDIA',
-    position: { ownershipStatus: 'owned' },
-  },
-  {
-    symbol: 'ARM',
-    companyName: 'Arm Holdings',
-    position: { ownershipStatus: 'owned' },
-  },
-  { symbol: 'AMD', companyName: 'Advanced Micro Devices' },
-  {
-    symbol: 'AVGO',
-    companyName: 'Broadcom',
-    position: { ownershipStatus: 'owned' },
-  },
-  { symbol: 'QCOM', companyName: 'Qualcomm' },
-  { symbol: 'MSFT', companyName: 'Microsoft' },
-  { symbol: 'DELL', companyName: 'Dell Technologies' },
-  { symbol: 'GOOGL', companyName: 'Alphabet' },
-  { symbol: 'MU', companyName: 'Micron Technology' },
-  { symbol: 'VRT', companyName: 'Vertiv' },
-  { symbol: 'ETN', companyName: 'Eaton' },
-  { symbol: 'ASML', companyName: 'ASML Holding' },
-  { symbol: 'AMAT', companyName: 'Applied Materials' },
-  { symbol: 'TSM', companyName: 'Taiwan Semiconductor Manufacturing' },
-  {
-    symbol: 'META',
-    companyName: 'Meta Platforms',
-    position: { ownershipStatus: 'owned' },
-  },
-];
+export const DEFAULT_WATCHLIST_SEED: SeedItem[] = [];
 
 function nowIso() {
   return new Date().toISOString();
@@ -187,7 +155,7 @@ function normalizeWatchlistRecord(record: any, storage: Watchlist['storage']): W
     isDefault: Boolean(record.is_default ?? record.isDefault),
     createdAt: String(record.created_at ?? record.createdAt ?? nowIso()),
     updatedAt: String(record.updated_at ?? record.updatedAt ?? nowIso()),
-    profile: normalizePortfolioProfile(record),
+    profile: normalizePortfolioProfile(record.profile ?? record),
     items: sortItems(
       Array.isArray(record.items)
         ? record.items.map((item: any) => ({
@@ -221,8 +189,7 @@ async function ensureDefaultFileWatchlist(): Promise<Watchlist> {
   const store = await readFileStore();
   const existing = store.watchlists.find((watchlist) => watchlist.slug === DEFAULT_WATCHLIST_SLUG);
   if (existing) {
-    const normalized = normalizeWatchlistRecord(existing, 'filesystem');
-    if (normalized.items.length > 0) return normalized;
+    return normalizeWatchlistRecord(existing, 'filesystem');
   }
 
   const watchlist = buildDefaultWatchlist('filesystem');
