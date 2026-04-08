@@ -636,8 +636,8 @@ async function callLLMForDataFill(
       role: 'system',
       content:
         'You are a financial data assistant. ' +
-        'Use ONLY the facts explicitly provided in the prompt. Do not use training data for numeric values. ' +
-        'For ticker-resolution prompts you may rely on publicly listed tickers, but return null if unsure. ' +
+        'Do not use training data for numeric financial values (prices, revenues, market caps, etc.) — those come from live APIs. ' +
+        'For ticker-resolution prompts and sector/theme company-identification prompts, you MUST use your knowledge of publicly listed companies and their ticker symbols to provide accurate results. ' +
         'Return null for any value you cannot confirm. ' +
         'Respond ONLY with valid JSON — no markdown, no explanation.',
     },
