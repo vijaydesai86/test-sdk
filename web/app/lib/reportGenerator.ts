@@ -670,10 +670,7 @@ function buildPositionGuidanceTable(rows: Array<{ company: string; guidance: Pos
   );
   // Append a brief Why line for each company below the table
   const whyLines = rows.map(({ company, guidance }) => {
-    const missing = guidance.missingInputs.length
-      ? ` _(Missing: ${guidance.missingInputs.slice(0, 3).join(', ')})_`
-      : '';
-    return `- **${company}:** ${guidance.rationale}${missing}`;
+    return `- **${company}:** ${guidance.rationale}`;
   }).join('\n');
   return `${table}\n\n**Why:**\n${whyLines}`;
 }
@@ -1531,52 +1528,89 @@ function buildRecommendationRationale(profile: {
   qualityScore: number | null;
   valuationScore: number | null;
   trendScore: number | null;
+  overallScore: number | null;
   confidence: 'High' | 'Medium' | 'Low';
   missingInputs: string[];
+  // Real metrics from API data — used to cite concrete numbers
+  metrics: {
+    pe: number | null;
+    grossMargin: number | null;
+    operatingMargin: number | null;
+    roe: number | null;
+    revenueGrowth: number | null;
+    targetUpside: number | null;
+    trend: string;
+  };
 }): string {
+  const { metrics } = profile;
   const positives: string[] = [];
   const cautions: string[] = [];
 
+  // Quality — cite the actual margin/ROE values so each stock reads differently
   if (profile.qualityScore !== null) {
-    if (profile.qualityScore >= 70) positives.push('business quality is strong');
-    else if (profile.qualityScore >= 55) positives.push('business quality is solid');
-    else if (profile.qualityScore < 38) cautions.push('business quality is weak');
+    const highlights: string[] = [];
+    if (metrics.grossMargin !== null && metrics.grossMargin >= 30) highlights.push(`${metrics.grossMargin.toFixed(0)}% gross margin`);
+    if (metrics.operatingMargin !== null && metrics.operatingMargin >= 10) highlights.push(`${metrics.operatingMargin.toFixed(0)}% op margin`);
+    if (metrics.roe !== null && metrics.roe >= 12) highlights.push(`${metrics.roe.toFixed(0)}% ROE`);
+    if (metrics.revenueGrowth !== null && metrics.revenueGrowth > 3) highlights.push(`${metrics.revenueGrowth > 0 ? '+' : ''}${metrics.revenueGrowth.toFixed(0)}% rev growth`);
+    const detail = highlights.length ? ` (${highlights.join(', ')})` : '';
+    if (profile.qualityScore >= 70) positives.push(`strong profitability${detail}`);
+    else if (profile.qualityScore >= 55) positives.push(`solid fundamentals${detail}`);
+    else if (profile.qualityScore < 38) {
+      const weakParts: string[] = [];
+      if (metrics.operatingMargin !== null && metrics.operatingMargin < 8) weakParts.push(`${metrics.operatingMargin.toFixed(0)}% op margin`);
+      if (metrics.roe !== null && metrics.roe < 10) weakParts.push(`${metrics.roe.toFixed(0)}% ROE`);
+      cautions.push(`weak quality${weakParts.length ? ` (${weakParts.join(', ')})` : ''}`);
+    }
   }
 
+  // Valuation — cite P/E and target upside
   if (profile.valuationScore !== null) {
-    if (profile.valuationScore >= 60) positives.push('valuation offers room for upside');
-    else if (profile.valuationScore < 40) cautions.push('valuation support is weak');
+    const parts: string[] = [];
+    if (metrics.pe !== null) parts.push(`${metrics.pe.toFixed(1)}x P/E`);
+    if (metrics.targetUpside !== null) parts.push(`${metrics.targetUpside.toFixed(1)}% target upside`);
+    const detail = parts.length ? ` (${parts.join(', ')})` : '';
+    if (profile.valuationScore >= 60) positives.push(`attractive valuation${detail}`);
+    else if (profile.valuationScore < 40) cautions.push(`stretched valuation${detail}`);
   }
 
+  // Trend — cite the actual trend direction
   if (profile.trendScore !== null) {
-    if (profile.trendScore >= 58) positives.push('trend is supportive');
-    else if (profile.trendScore < 35) cautions.push('trend is working against the setup');
+    const trendLabel = metrics.trend !== 'Trend unavailable' ? ` (${metrics.trend.toLowerCase()})` : '';
+    if (profile.trendScore >= 58) positives.push(`supportive price trend${trendLabel}`);
+    else if (profile.trendScore < 35) cautions.push(`weak price trend${trendLabel}`);
   }
 
   let opening = 'Signals are mixed across quality, valuation, and trend.';
   if (profile.signal === 'Buy') {
     opening = positives.length >= 2
       ? `${sentenceCase(positives.slice(0, 2).join(' and '))}.`
-      : 'Quality, valuation, and trend are supportive enough to justify fresh exposure.';
+      : positives.length === 1
+        ? `${sentenceCase(positives[0])}, supporting fresh exposure.`
+        : 'Quality, valuation, and trend are supportive enough to justify fresh exposure.';
   } else if (profile.signal === 'Hold') {
     opening = positives.length
-      ? `${positives[0][0].toUpperCase()}${positives[0].slice(1)}, but the setup is not attractive enough for an aggressive add.`
-      : 'The thesis is still investable, but this is not a high-conviction entry point.';
+      ? `${sentenceCase(positives[0])}, but not enough for an aggressive add.`
+      : 'Still investable, but not a high-conviction entry point.';
   } else if (profile.signal === 'Watch') {
     opening = cautions.length
-      ? `${cautions[0][0].toUpperCase()}${cautions[0].slice(1)}, so patience is warranted.`
-      : 'The setup needs a better entry or cleaner confirmation before acting.';
+      ? `${sentenceCase(cautions[0])}, so patience is warranted.`
+      : positives.length
+        ? `${sentenceCase(positives[0])}, but cleaner confirmation needed.`
+        : 'The setup needs a better entry or cleaner confirmation before acting.';
   } else if (profile.signal === 'Sell') {
     opening = cautions.length >= 2
       ? `${sentenceCase(cautions.slice(0, 2).join(' and '))}.`
-      : 'Quality and reward-to-risk are weak enough that capital is better protected elsewhere.';
+      : cautions.length === 1
+        ? `${sentenceCase(cautions[0])}; capital is better protected elsewhere.`
+        : 'Quality and reward-to-risk are weak enough that capital is better protected elsewhere.';
   }
 
   if (profile.confidence === 'High' || profile.missingInputs.length === 0) {
     return opening;
   }
 
-  return `${opening} Confidence is ${profile.confidence.toLowerCase()} because ${formatMissingInputs(profile.missingInputs)} are incomplete.`;
+  return `${opening} Confidence limited: ${formatMissingInputs(profile.missingInputs)} unavailable.`;
 }
 
 function deriveRecommendationProfile(args: {
@@ -1586,8 +1620,16 @@ function deriveRecommendationProfile(args: {
   price: number | null;
   hasBalanceSheet: boolean;
   hasCashFlow: boolean;
+  // Real API metrics for stock-specific rationale text
+  realMetrics?: {
+    pe: number | null;
+    grossMargin: number | null;
+    operatingMargin: number | null;
+    roe: number | null;
+    revenueGrowth: number | null;
+  };
 }): RecommendationProfile {
-  const { scorecard, targetUpside, technical, price, hasBalanceSheet, hasCashFlow } = args;
+  const { scorecard, targetUpside, technical, price, hasBalanceSheet, hasCashFlow, realMetrics } = args;
   const qualityScore = weightedAverage([
     { value: scorecard.components.profitability, weight: 0.45 },
     { value: scorecard.components.growth, weight: 0.25 },
@@ -1659,8 +1701,18 @@ function deriveRecommendationProfile(args: {
     qualityScore,
     valuationScore,
     trendScore,
+    overallScore,
     confidence: confidence.label,
     missingInputs: confidence.missingInputs,
+    metrics: {
+      pe: realMetrics?.pe ?? null,
+      grossMargin: realMetrics?.grossMargin ?? null,
+      operatingMargin: realMetrics?.operatingMargin ?? null,
+      roe: realMetrics?.roe ?? null,
+      revenueGrowth: realMetrics?.revenueGrowth ?? null,
+      targetUpside,
+      trend: technical.trend,
+    },
   });
 
   return {
@@ -1780,6 +1832,14 @@ function derivePositionGuidanceFromStock(data: StockReportData, score: number | 
   };
   const balanceReport = getMostCompleteReport(data.balanceSheet, ['cashAndEquivalents', 'longTermDebt', 'totalAssets', 'totalLiabilities', 'totalShareholderEquity']);
   const cashFlowReport = getMostCompleteReport(data.cashFlow, ['operatingCashflow', 'capitalExpenditures', 'freeCashFlow', 'dividendPayout']);
+
+  // Extract real API metric values for stock-specific rationale text
+  const pe = toNumber(overview.peRatio ?? data.basicFinancials?.metric?.peBasicExclExtraTTM);
+  const grossMargin = normalizePercent(data.basicFinancials?.metric?.grossMarginTTM ?? overview.profitMargin);
+  const operatingMargin = normalizePercent(data.basicFinancials?.metric?.operatingMarginTTM ?? overview.operatingMargin);
+  const roe = normalizePercent(data.basicFinancials?.metric?.roeTTM ?? overview.returnOnEquity);
+  const revenueGrowth = normalizePercent(data.basicFinancials?.metric?.revenueGrowthTTM ?? overview.quarterlyRevenueGrowth);
+
   const profile = deriveRecommendationProfile({
     scorecard,
     targetUpside,
@@ -1787,6 +1847,7 @@ function derivePositionGuidanceFromStock(data: StockReportData, score: number | 
     price,
     hasBalanceSheet: balanceReport !== null,
     hasCashFlow: cashFlowReport !== null,
+    realMetrics: { pe, grossMargin, operatingMargin, roe, revenueGrowth },
   });
 
   return toPositionGuidance({

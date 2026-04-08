@@ -201,8 +201,32 @@ export function buildDecisionSnapshot(input: DecisionInput): DecisionSnapshot {
   const whyNow: string[] = [];
   const whyNot: string[] = [];
 
-  if (qualityScore !== null && qualityScore >= 65) whyNow.push(`Business quality scores well (${qualityScore.toFixed(0)}/100) across margin and return metrics.`);
-  if (valuationScore !== null && valuationScore >= 58) whyNow.push(`Valuation/reward-to-risk is supportive (${valuationScore.toFixed(0)}/100) with ${targetUpside !== null ? `${targetUpside.toFixed(1)}% target upside` : 'reasonable upside'}.`);
+  // ── Populate whyNow with the BEST available metrics, not just abstract scores ──
+  if (qualityScore !== null && qualityScore >= 65) {
+    // Include the actual metric values so users see real numbers
+    const highlights: string[] = [];
+    if (grossMargin !== null && grossMargin >= 35) highlights.push(`gross margin ${grossMargin.toFixed(0)}%`);
+    if (operatingMargin !== null && operatingMargin >= 15) highlights.push(`op margin ${operatingMargin.toFixed(0)}%`);
+    if (roe !== null && roe >= 15) highlights.push(`ROE ${roe.toFixed(0)}%`);
+    if (revenueGrowth !== null && revenueGrowth > 5) highlights.push(`revenue growth ${revenueGrowth > 0 ? '+' : ''}${revenueGrowth.toFixed(0)}%`);
+    const detail = highlights.length ? ` (${highlights.join(', ')})` : '';
+    whyNow.push(`Strong profitability${detail}.`);
+  } else if (qualityScore !== null && qualityScore >= 50) {
+    const highlights: string[] = [];
+    if (grossMargin !== null) highlights.push(`gross margin ${grossMargin.toFixed(0)}%`);
+    if (roe !== null) highlights.push(`ROE ${roe.toFixed(0)}%`);
+    const detail = highlights.length ? ` (${highlights.join(', ')})` : '';
+    whyNow.push(`Acceptable quality metrics${detail}.`);
+  }
+
+  if (valuationScore !== null && valuationScore >= 58) {
+    const parts: string[] = [];
+    if (targetUpside !== null) parts.push(`${targetUpside.toFixed(1)}% target upside`);
+    if (pe !== null && pe > 0) parts.push(`P/E ${pe.toFixed(1)}`);
+    const detail = parts.length ? `: ${parts.join(', ')}` : '';
+    whyNow.push(`Supportive valuation${detail}.`);
+  }
+
   const supportiveTechnicalReason = describeTechnicalSupport({
     technicalScore,
     momentum,
@@ -212,15 +236,28 @@ export function buildDecisionSnapshot(input: DecisionInput): DecisionSnapshot {
   if (technicalScore !== null && technicalScore >= 58 && supportiveTechnicalReason) whyNow.push(supportiveTechnicalReason);
   if (desiredEntryMin !== null && desiredEntryMax !== null && price !== null) {
     if (price >= desiredEntryMin && price <= desiredEntryMax) {
-      whyNow.push(`Price is inside your preferred entry range of $${desiredEntryMin}-${desiredEntryMax}.`);
+      whyNow.push(`Price is inside your preferred entry range of $${desiredEntryMin}–${desiredEntryMax}.`);
     } else {
-      whyNot.push(`Price is outside your preferred entry range of $${desiredEntryMin}-${desiredEntryMax}.`);
+      whyNot.push(`Price is outside your preferred entry range of $${desiredEntryMin}–${desiredEntryMax}.`);
     }
   }
 
+  // ── whyNot: concrete metric-level concerns ──
   if (staleCritical) whyNot.push(`Critical data is stale for: ${(trust?.staleLabels || []).join(', ')}.`);
-  if (qualityScore !== null && qualityScore < 45) whyNot.push(`Business quality is only ${qualityScore.toFixed(0)}/100.`);
-  if (valuationScore !== null && valuationScore < 45) whyNot.push(`Valuation support is weak at ${valuationScore.toFixed(0)}/100.`);
+  if (qualityScore !== null && qualityScore < 45) {
+    const concerns: string[] = [];
+    if (operatingMargin !== null && operatingMargin < 5) concerns.push(`op margin ${operatingMargin.toFixed(0)}%`);
+    if (roe !== null && roe < 8) concerns.push(`ROE ${roe.toFixed(0)}%`);
+    const detail = concerns.length ? ` (${concerns.join(', ')})` : '';
+    whyNot.push(`Weak business quality${detail}.`);
+  }
+  if (valuationScore !== null && valuationScore < 45) {
+    const concerns: string[] = [];
+    if (pe !== null && pe > 35) concerns.push(`P/E ${pe.toFixed(1)}`);
+    if (targetUpside !== null && targetUpside < 5) concerns.push(`only ${targetUpside.toFixed(1)}% target upside`);
+    const detail = concerns.length ? ` (${concerns.join(', ')})` : '';
+    whyNot.push(`Weak valuation support${detail}.`);
+  }
   const unsupportiveTechnicalReason = describeTechnicalSupport({
     technicalScore,
     momentum,
@@ -231,7 +268,24 @@ export function buildDecisionSnapshot(input: DecisionInput): DecisionSnapshot {
   if (ownershipStatus === 'owned' && currentWeight !== null && maxWeight !== null && currentWeight > maxWeight) {
     whyNot.push(`Position size ${currentWeight}% is already above your max-weight guardrail of ${maxWeight}%.`);
   }
-  if (missingInputs.length >= 3) whyNot.push(`Important inputs are missing: ${missingInputs.slice(0, 3).join(', ')}.`);
+
+  // ── When too many inputs are missing, still surface what IS known ──
+  if (missingInputs.length >= 3) {
+    // Instead of just listing missing items, note what we DO have and what's missing
+    const knownParts: string[] = [];
+    if (pe !== null) knownParts.push(`P/E ${pe.toFixed(1)}`);
+    if (grossMargin !== null) knownParts.push(`gross margin ${grossMargin.toFixed(0)}%`);
+    if (roe !== null) knownParts.push(`ROE ${roe.toFixed(0)}%`);
+    if (momentum !== null) {
+      const momReturn = (momentum - 50); // rough % return
+      knownParts.push(`price trend ${momReturn >= 0 ? '+' : ''}${momReturn.toFixed(0)}%`);
+    }
+    if (knownParts.length) {
+      whyNot.push(`Limited data (have ${knownParts.join(', ')}; missing ${missingInputs.slice(0, 3).join(', ')}).`);
+    } else {
+      whyNot.push(`Important inputs are missing: ${missingInputs.slice(0, 3).join(', ')}.`);
+    }
+  }
 
   let action: DecisionAction = 'Wait';
   if (!staleCritical && overallScore !== null) {
@@ -308,9 +362,23 @@ export function buildDecisionSnapshot(input: DecisionInput): DecisionSnapshot {
   const reasonParts: string[] = [];
   if (topPro) reasonParts.push(topPro);
   if (topCon) reasonParts.push(topCon);
+  // When neither whyNow nor whyNot has entries, build a mini fact-set from available data
+  if (!reasonParts.length) {
+    const facts: string[] = [];
+    if (pe !== null) facts.push(`P/E ${pe.toFixed(1)}`);
+    if (grossMargin !== null) facts.push(`gross margin ${grossMargin.toFixed(0)}%`);
+    if (roe !== null) facts.push(`ROE ${roe.toFixed(0)}%`);
+    if (momentum !== null) {
+      const momReturn = (momentum - 50);
+      facts.push(`trend ${momReturn >= 0 ? '+' : ''}${momReturn.toFixed(0)}%`);
+    }
+    if (facts.length) {
+      reasonParts.push(`Mixed signals (${facts.join(', ')}).`);
+    }
+  }
   const reasonText = reasonParts.length
     ? reasonParts.join(' ')
-    : 'No strong signals in either direction.';
+    : 'Insufficient data to form a view.';
   const scoreTag = overallScore !== null ? ` Score ${overallScore.toFixed(0)}/100.` : '';
   const summary = `${actionToSummaryLabel(action)}.${scoreTag} ${reasonText}`.trim();
 
