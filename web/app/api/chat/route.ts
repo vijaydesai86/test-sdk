@@ -474,6 +474,15 @@ async function callGitHubModelsAPI(
       err.statusCode = 413;
       throw err;
     }
+    // Transient server errors (500, 502, 503) — mark as retriable so the
+    // fallback chain can try the next model or provider instead of giving up.
+    if (response.status >= 500 && response.status <= 503) {
+      const err = new Error(
+        `GitHub Models API server error (${response.status}) for model '${model}'. Will try next model.`
+      ) as Error & { statusCode: number };
+      err.statusCode = response.status;
+      throw err;
+    }
     throw new Error(`GitHub Models API error (${response.status}): ${errorText}`);
   }
 
@@ -674,7 +683,7 @@ async function callLLMForDataFill(
     });
   }
 
-  // Try each strategy in order; on retriable errors (429), wait and try next
+  // Try each strategy in order; on retriable errors (429, 5xx), wait and try next
   for (let i = 0; i < strategies.length; i++) {
     try {
       const content = await strategies[i]();
@@ -683,7 +692,7 @@ async function callLLMForDataFill(
       console.info(`[callLLMForDataFill] Strategy ${i + 1}/${strategies.length} returned empty, trying next`);
     } catch (err: any) {
       console.info(`[callLLMForDataFill] Strategy ${i + 1}/${strategies.length} failed: ${err?.message || err}`);
-      if (err?.statusCode === 429) {
+      if (err?.statusCode === 429 || (err?.statusCode >= 500 && err?.statusCode <= 503)) {
         const delayMs = Math.min(err?.retryAfterMs ?? 2000, 10000);
         await new Promise((resolve) => setTimeout(resolve, delayMs));
       }
@@ -1045,7 +1054,8 @@ export async function POST(request: NextRequest) {
           }
           break;
         } catch (error: any) {
-          const isRateLimit = error?.statusCode === 429 || error?.statusCode === 503;
+          const isRateLimit = error?.statusCode === 429;
+          const isServerError = error?.statusCode >= 500 && error?.statusCode <= 503;
           const isUnknownModel = error?.statusCode === 400;
           const isTokensLimit = error?.statusCode === 413;
           // Unknown model: skip to the next fallback without counting as an attempt —
@@ -1056,8 +1066,8 @@ export async function POST(request: NextRequest) {
             }
             throw error;
           }
-          if (attempt === 0 && isRateLimit) {
-            markModelCooldown(activeModel, error?.retryAfterMs);
+          if (attempt === 0 && (isRateLimit || isServerError)) {
+            if (isRateLimit) markModelCooldown(activeModel, error?.retryAfterMs);
             if (advanceModel()) {
               // Honor the provider's requested retry delay (e.g. Gemini RetryInfo), capped at 10 s.
               const delayMs = Math.min(error?.retryAfterMs ?? 0, 10000);
@@ -1182,10 +1192,11 @@ export async function POST(request: NextRequest) {
   } catch (error: any) {
     console.error('Chat API error:', error);
     const isRateLimit = error.statusCode === 429;
+    const isServerError = error.statusCode >= 500 && error.statusCode <= 503 && error.message?.includes('server error');
     const isUnknownModel = error.statusCode === 400;
     const isTokensLimit = error.statusCode === 413;
     const isToolCallText = error.statusCode === 422;
-    const isMissingKey = error.statusCode === 503;
+    const isMissingKey = error.statusCode === 503 && !isServerError;
     const statusCode = error.statusCode || (isRateLimit
       ? 429
       : isUnknownModel
@@ -1198,6 +1209,8 @@ export async function POST(request: NextRequest) {
     let details: string;
     if (isRateLimit) {
       details = RATE_LIMIT_GUIDANCE;
+    } else if (isServerError) {
+      details = 'The LLM provider returned a temporary server error. All fallback models were also unavailable. Please try again in a few moments, or switch to a different provider/model from the dropdown.';
     } else if (isUnknownModel) {
       details = 'Open the model dropdown and choose a different model. The model list is fetched live from the GitHub Models catalog.';
     } else if (isTokensLimit) {
@@ -1214,7 +1227,7 @@ export async function POST(request: NextRequest) {
           'Please set GITHUB_TOKEN in your Vercel environment variables. Get a personal access token at: https://github.com/settings/personal-access-tokens — this uses your existing GitHub Copilot subscription.';
       }
     } else {
-      details = 'Make sure your LLM provider tokens and stock data provider keys are set in your Vercel environment variables.';
+      details = 'An unexpected error occurred. Check your LLM provider tokens and stock data provider keys in Vercel environment variables, or try again in a few moments.';
     }
     return NextResponse.json(
       {
