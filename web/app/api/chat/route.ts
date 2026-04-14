@@ -476,11 +476,13 @@ async function callGitHubModelsAPI(
     }
     // Transient server errors (500, 502, 503) — mark as retriable so the
     // fallback chain can try the next model or provider instead of giving up.
-    if (response.status >= 500 && response.status <= 503) {
+    // 501 (Not Implemented) is excluded — it's not transient.
+    if (response.status === 500 || response.status === 502 || response.status === 503) {
       const err = new Error(
         `GitHub Models API server error (${response.status}) for model '${model}'. Will try next model.`
-      ) as Error & { statusCode: number };
+      ) as Error & { statusCode: number; isTransientServerError: boolean };
       err.statusCode = response.status;
+      err.isTransientServerError = true;
       throw err;
     }
     throw new Error(`GitHub Models API error (${response.status}): ${errorText}`);
@@ -563,8 +565,9 @@ async function callGeminiAPI(
     if (response.status === 503) {
       const err = new Error(
         `Gemini API model '${model}' temporarily unavailable (503) — high demand. Will try next model.`
-      ) as Error & { statusCode: number };
+      ) as Error & { statusCode: number; isTransientServerError: boolean };
       err.statusCode = 503;
+      err.isTransientServerError = true;
       throw err;
     }
     if (response.status === 400) {
@@ -1055,7 +1058,7 @@ export async function POST(request: NextRequest) {
           break;
         } catch (error: any) {
           const isRateLimit = error?.statusCode === 429;
-          const isServerError = error?.statusCode >= 500 && error?.statusCode <= 503;
+          const isServerError = Boolean(error?.isTransientServerError);
           const isUnknownModel = error?.statusCode === 400;
           const isTokensLimit = error?.statusCode === 413;
           // Unknown model: skip to the next fallback without counting as an attempt —
@@ -1192,7 +1195,7 @@ export async function POST(request: NextRequest) {
   } catch (error: any) {
     console.error('Chat API error:', error);
     const isRateLimit = error.statusCode === 429;
-    const isServerError = error.statusCode >= 500 && error.statusCode <= 503 && error.message?.includes('server error');
+    const isServerError = Boolean(error.isTransientServerError);
     const isUnknownModel = error.statusCode === 400;
     const isTokensLimit = error.statusCode === 413;
     const isToolCallText = error.statusCode === 422;
