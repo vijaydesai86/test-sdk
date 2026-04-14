@@ -66,7 +66,7 @@ export const DEFAULT_WATCHLIST_SEED: SeedItem[] = [
     companyName: 'Broadcom',
     position: { ownershipStatus: 'owned' },
   },
-  { symbol: 'QCOM', companyName: 'Qualcomm' },
+  { symbol: 'ANET', companyName: 'Arista Networks Inc' },
   { symbol: 'MSFT', companyName: 'Microsoft' },
   { symbol: 'DELL', companyName: 'Dell Technologies' },
   { symbol: 'GOOGL', companyName: 'Alphabet' },
