@@ -1,7 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-/** Explicit provider lock-in (optional). When unset, both providers are used automatically. */
-export type LLMProviderType = 'github' | 'gemini';
 export type RuntimeLLMProvider = 'github' | 'gemini';
 
 export type LLMModelOption = {
@@ -24,19 +22,6 @@ const GEMINI_LABELS: Record<string, string> = {
   'gemini-3.0-flash': 'Gemini 3.0 Flash',
   'gemini-3.1-flash-lite': 'Gemini 3.1 Flash Lite',
 };
-
-/**
- * Normalise an LLM_PROVIDER env string to a typed value, or null for auto.
- * null = use all available providers (GitHub + Gemini) in sequence.
- * 'github' = GitHub Models only.
- * 'gemini' = Gemini only.
- * Legacy 'hybrid' resolves to null (auto).
- */
-export function normalizeLLMProvider(provider: string | null | undefined): LLMProviderType | null {
-  if (provider === 'github') return 'github';
-  if (provider === 'gemini') return 'gemini';
-  return null; // auto: use all available
-}
 
 export function getGitHubToken(): string | undefined {
   return process.env.GITHUB_TOKEN || process.env.GH_TOKEN || process.env.COPILOT_GITHUB_TOKEN;

@@ -89,13 +89,6 @@ interface ModelOption {
   rateLimitTier?: string;
 }
 
-interface ProviderOption {
-  id: string;
-  label: string;
-  available: boolean;
-  details?: string;
-  models: ModelOption[];
-}
 
 type WorkspaceTab = 'watchlist' | 'artifacts' | 'saved';
 type ThemeId = 'aurora' | 'solstice' | 'ember' | 'graphite';
@@ -218,12 +211,6 @@ function ChartBlock({ option }: { option: Record<string, unknown> }) {
   return <div ref={containerRef} className="my-4 w-full" style={{ height: `${CHART_HEIGHT}px` }} />;
 }
 
-function formatProviderLabel(provider?: string) {
-  if (provider === 'github') return 'GitHub';
-  if (provider === 'gemini') return 'Gemini';
-  if (provider === 'hybrid') return 'Hybrid';
-  return provider || 'Unknown';
-}
 
 function formatModelLabel(model?: string) {
   return model ? model.split('/').pop() || model : 'unknown';
@@ -362,8 +349,6 @@ export default function ChatInterface() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [model, setModel] = useState(DEFAULT_MODEL);
-  const [provider, setProvider] = useState<ProviderOption['id']>('github');
-  const [availableProviders, setAvailableProviders] = useState<ProviderOption[]>([]);
   const [availableModels, setAvailableModels] = useState<ModelOption[]>([
     { value: DEFAULT_MODEL, label: 'GPT-4.1', rateLimitTier: 'high' },
   ]);
@@ -390,29 +375,21 @@ export default function ChatInterface() {
   const [portfolioProfileDraft, setPortfolioProfileDraft] = useState<PortfolioProfileMeta | null>(null);
   const [watchlistItemDrafts, setWatchlistItemDrafts] = useState<Record<string, WatchlistItemMeta>>({});
 
-  const selectedProvider = availableProviders.find((item) => item.id === provider) ?? null;
   const selectedModel = availableModels.find((item) => item.value === model) ?? null;
-  const providerHelpText = selectedProvider?.details || 'Choose how the app spends model quota for this chat.';
   const modelHelpText = modelsLoading
     ? 'Loading available models.'
-    : provider === 'hybrid'
-      ? 'Hybrid starts from this model, then walks down the GitHub fallback chain before moving to Gemini if needed.'
-      : provider === 'gemini'
-        ? 'Starts from this Gemini model, then falls through the Gemini fallback ladder automatically.'
-        : 'Starts from this GitHub model, then falls through the GitHub fallback ladder automatically.';
+    : 'Starts from this model, then falls through the fallback ladder automatically.';
 
   useEffect(() => {
     fetch('/api/providers')
       .then((res) => res.json())
-      .then((payload: { providers?: ProviderOption[] }) => {
-        if (!payload.providers?.length) return;
-        setAvailableProviders(payload.providers);
-        const defaultProvider = payload.providers.find((p) => p.available) ?? payload.providers[0];
-        setProvider(defaultProvider.id);
-        const nextModels = defaultProvider.models ?? [];
-        setAvailableModels(nextModels);
-        if (nextModels.length > 0 && !nextModels.find((m) => m.value === model)) {
-          setModel(nextModels[0].value);
+      .then((payload: { models?: ModelOption[] }) => {
+        const nextModels = payload.models ?? [];
+        if (nextModels.length > 0) {
+          setAvailableModels(nextModels);
+          if (!nextModels.find((m) => m.value === model)) {
+            setModel(nextModels[0].value);
+          }
         }
       })
       .catch(() => {
@@ -514,7 +491,7 @@ export default function ChatInterface() {
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: userMessage, sessionId, model, provider }),
+        body: JSON.stringify({ message: userMessage, sessionId, model }),
       });
 
       const rawText = await res.text();
@@ -1538,7 +1515,7 @@ create index if not exists saved_reports_report_date_idx on public.saved_reports
                 {workspaceTabs[2].count} saved
               </div>
               <div className="rounded-full border border-white/10 bg-white/8 px-3 py-2 text-xs text-slate-200">
-                {formatProviderLabel(provider)} • {formatModelLabel(model)}
+                {formatModelLabel(model)}
               </div>
             </div>
 
@@ -1678,42 +1655,6 @@ create index if not exists saved_reports_report_date_idx on public.saved_reports
                     <div className="rounded-[24px] border border-white/10 bg-slate-950/40 p-4">
                       <div className="flex items-start justify-between gap-3">
                         <div>
-                          <p className="text-[11px] uppercase tracking-[0.18em] text-slate-400">Execution strategy</p>
-                          <p className="mt-1 text-xs leading-5 text-slate-300">{providerHelpText}</p>
-                        </div>
-                        {availableProviders.length > 1 ? (
-                          <select
-                            value={provider}
-                            onChange={(e) => {
-                              const next = e.target.value;
-                              setProvider(next);
-                              setSessionId(null);
-                              const sel = availableProviders.find((p) => p.id === next);
-                              const models = sel?.models ?? [];
-                              setAvailableModels(models);
-                              if (models.length > 0) setModel(models[0].value);
-                            }}
-                            disabled={modelsLoading}
-                            className="min-w-[150px] rounded-2xl border border-white/10 bg-white/8 px-3 py-2 text-xs text-white focus:outline-none focus:ring-2 focus:ring-teal-300 disabled:opacity-50"
-                          >
-                            {availableProviders.map((p) => (
-                              <option key={p.id} value={p.id} disabled={!p.available}>
-                                {p.label}
-                                {p.available ? '' : ' (unavailable)'}
-                              </option>
-                            ))}
-                          </select>
-                        ) : (
-                          <div className="rounded-full border border-white/10 bg-white/8 px-3 py-2 text-xs font-medium text-white">
-                            {selectedProvider?.label ?? 'Default'}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="rounded-[24px] border border-white/10 bg-slate-950/40 p-4">
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
                           <p className="text-[11px] uppercase tracking-[0.18em] text-slate-400">Starting model</p>
                           <p className="mt-1 text-xs leading-5 text-slate-300">{modelHelpText}</p>
                         </div>
@@ -1791,12 +1732,12 @@ create index if not exists saved_reports_report_date_idx on public.saved_reports
                           <span className="text-xs font-medium text-slate-400">Assistant</span>
                           {msg.provider && (
                             <span className="rounded-full border border-white/10 bg-white/8 px-2 py-1 text-[10px] uppercase tracking-[0.14em] text-slate-300">
-                              Strategy {formatProviderLabel(msg.provider)}
+                              Strategy {msg.provider}
                             </span>
                           )}
                           {msg.runtimeProvider && (
                             <span className="rounded-full border border-teal-300/20 bg-teal-300/10 px-2 py-1 text-[10px] uppercase tracking-[0.14em] text-teal-100">
-                              Used {formatProviderLabel(msg.runtimeProvider)}
+                              Used {msg.runtimeProvider}
                             </span>
                           )}
                           {msg.model && (
@@ -1833,7 +1774,7 @@ create index if not exists saved_reports_report_date_idx on public.saved_reports
                         <span className="animate-pulse [animation-delay:150ms]">●</span>
                         <span className="animate-pulse [animation-delay:300ms]">●</span>
                         <span className="ml-2 text-xs text-slate-400">
-                          {formatProviderLabel(provider)} • {formatModelLabel(model)} thinking...
+                          {formatModelLabel(model)} thinking...
                         </span>
                       </div>
                     </div>

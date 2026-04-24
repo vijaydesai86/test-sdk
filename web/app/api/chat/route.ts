@@ -9,8 +9,6 @@ import {
   getConfiguredGeminiModel,
   getGeminiFallbackModels,
   getGitHubToken,
-  normalizeLLMProvider,
-  type LLMProviderType,
   type RuntimeLLMProvider,
 } from '@/app/lib/llmProviderConfig';
 
@@ -31,7 +29,7 @@ const FILL_MODEL = process.env.FILL_MODEL || 'openai/gpt-4.1-mini';
 const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions';
 const GEMINI_MODEL = getConfiguredGeminiModel();
 const GEMINI_FALLBACK_MODELS = getGeminiFallbackModels();
-const DEFAULT_LLM_PROVIDER = normalizeLLMProvider(process.env.LLM_PROVIDER);
+const DEFAULT_LLM_PROVIDER = null;
 const AUTO_DOWNGRADE_GPT5 = process.env.AUTO_DOWNGRADE_GPT5 !== 'false';
 const DEFAULT_FALLBACK_MODELS = [
   DEFAULT_MODEL,
@@ -242,83 +240,6 @@ function isToolCallLike(content: string | null | undefined): boolean {
   return /"name"\s*:\s*"functions\./.test(content) || /"arguments"\s*:\s*\{/.test(content);
 }
 
-function parseCompareRequest(message: string): string[] | null {
-  const text = message.trim();
-  if (!/compar/i.test(text)) return null;
-  // Extract comma- or "vs"-separated ticker/company tokens
-  const tickerPart = text
-    .replace(/^.*?compar(?:e|ison\s+of|ison)?\s+(?:companies?\s+)?/i, '')
-    .replace(/\s+report.*$/i, '');
-  // Tokens are already uppercased via .toUpperCase() above.
-  // Allow 2–30 uppercase letters so company names ("MICROSOFT") pass
-  // alongside short tickers ("AMD"). Multi-word names like "PALO ALTO"
-  // split into individual tokens; resolveSymbolFromQuery handles each token
-  // separately via the SYMBOL_SEARCH API.
-  const tokens = tickerPart
-    .split(/\s*(?:,|vs\.?|and|\s)\s*/i)
-    .map((t) => t.trim().toUpperCase())
-    .filter((t) => /^[A-Z]{2,30}$/.test(t));
-  return tokens.length >= 2 ? tokens : null;
-}
-
-function parseReportRequest(message: string) {
-  const text = message.trim();
-  const lower = text.toLowerCase();
-
-  const watchlistDailyMatch = /^(?:generate|create|build|show|give)(?:\s+me)?\s+(?:my\s+)?(?:watchlist\s+)?daily report(?:\s+for\s+(?:my\s+watchlist))?\s*$/i.test(text)
-    || /^(?:my\s+)?(?:watchlist\s+)?daily report$/i.test(text)
-    || (lower.includes('daily report') && lower.includes('watchlist'))
-    || lower === 'daily report'
-    || lower === 'watchlist report'
-    || /^(?:my\s+)?watchlist report$/i.test(text)
-    || /^report for my watchlist$/i.test(text);
-  if (watchlistDailyMatch) {
-    return { type: 'watchlist-daily' as const };
-  }
-
-  const deepSectorMatch = text.match(/deep(?:\s+sector)?(?:\s+(?:research|analysis))?(?:\s+report)?\s+(?:for|on)\s+(.+)$/i);
-  if (deepSectorMatch) {
-    return { type: 'deep-sector' as const, query: deepSectorMatch[1].trim() };
-  }
-
-  const compareCompanies = parseCompareRequest(text);
-  if (compareCompanies) {
-    return { type: 'compare' as const, companies: compareCompanies };
-  }
-
-  const sectorMatch = text.match(/(sector|theme)\s+report\s+for\s+(.+)$/i);
-  if (sectorMatch) {
-    return { type: 'deep-sector' as const, query: sectorMatch[2].trim() };
-  }
-
-  if (lower.includes('sector report') || lower.includes('theme report')) {
-    const queryMatch = text.match(/report\s+for\s+(.+)$/i);
-    if (queryMatch) {
-      return { type: 'deep-sector' as const, query: queryMatch[1].trim() };
-    }
-  }
-
-  const genericMatch = text.match(/report\s+for\s+(.+)$/i);
-  if (genericMatch) {
-    const query = genericMatch[1].trim();
-    if (query.includes(' ') || /sector|theme|stocks?/i.test(query)) {
-      return { type: 'deep-sector' as const, query };
-    }
-  }
-
-  const stockMatch = text.match(/report\s+(?:for|on)\s+([a-zA-Z]{1,6})\s*$/i);
-  if (stockMatch) {
-    return { type: 'stock' as const, symbol: stockMatch[1].toUpperCase() };
-  }
-
-  return null;
-}
-
-function parseTimeframe(message: string) {
-  const match = message.match(/\b(1w|1m|3m|6m|1y|3y|5y|max)\b/i);
-  return match ? match[1].toLowerCase() : null;
-}
-
 function buildFallbackModels(requestedModel: string): string[] {
   const fromEnv = (process.env.COPILOT_FALLBACK_MODELS || '')
     .split(',')
@@ -356,7 +277,7 @@ function isGitHubModelId(model?: string | null): boolean {
  * the GitHub $10 subscription is exhausted before giving up.
  */
 function buildLLMExecutionStrategies(
-  provider: LLMProviderType | null,
+  provider: RuntimeLLMProvider | null,
   requestedModel: string,
   githubToken: string | undefined,
   geminiToken: string | undefined,
@@ -653,7 +574,6 @@ async function callLLMForDataFill(
   prompt: string,
   githubToken: string | undefined,
   geminiToken: string | undefined,
-  provider: LLMProviderType,
 ): Promise<string> {
   const fillMessages: ChatMessage[] = [
     {
@@ -677,7 +597,7 @@ async function callLLMForDataFill(
   const strategies: Array<() => Promise<string>> = [];
 
   // GitHub Models — try FILL_MODEL first, then fallback models
-  if (githubToken && (provider === null || provider === 'github')) {
+  if (githubToken) {
     const githubModels = [FILL_MODEL, ...DEFAULT_FALLBACK_MODELS].filter(Boolean);
     const seen = new Set<string>();
     for (const model of githubModels) {
@@ -691,7 +611,7 @@ async function callLLMForDataFill(
   }
 
   // Gemini — always available as final fallback when token exists
-  if (geminiToken && (provider === null || provider === 'gemini' || strategies.length === 0)) {
+  if (geminiToken) {
     strategies.push(async () => {
       const result = await callGeminiWithFallback(fillMessages, geminiToken, []);
       return extractContent(result);
@@ -722,10 +642,9 @@ async function callLLMForDataFill(
 function createLLMFiller(
   githubToken: string | undefined,
   geminiToken: string | undefined,
-  provider: LLMProviderType,
 ): LLMFiller | undefined {
   if (!githubToken && !geminiToken) return undefined;
-  return (prompt: string) => callLLMForDataFill(prompt, githubToken, geminiToken, provider);
+  return (prompt: string) => callLLMForDataFill(prompt, githubToken, geminiToken);
 }
 
 function getStockProviderConfigError(provider: string): { error: string; details: string } | null {
@@ -785,11 +704,11 @@ function getStockProviderConfigError(provider: string): { error: string; details
 }
 
 export async function POST(request: NextRequest) {
-  let activeProvider: LLMProviderType | null = DEFAULT_LLM_PROVIDER;
+  let activeProvider: RuntimeLLMProvider | null = null;
 
   try {
     const body = await request.json();
-    const { message, sessionId, model, provider } = body;
+    const { message, sessionId, model } = body;
 
     if (!message) {
       return NextResponse.json(
@@ -802,8 +721,7 @@ export async function POST(request: NextRequest) {
     const githubToken = getGitHubToken();
     // Check if Gemini token is available (never exposed client-side — server env only)
     const geminiToken = process.env.GEMINI_TOKEN;
-    activeProvider = normalizeLLMProvider(typeof provider === 'string' ? provider : process.env.LLM_PROVIDER);
-    const usesGeminiPrimary = activeProvider === 'gemini' || (activeProvider === null && !githubToken && Boolean(geminiToken));
+    const usesGeminiPrimary = !githubToken && Boolean(geminiToken);
     const requestedModel = typeof model === 'string' && model.trim()
       ? model
       : usesGeminiPrimary
@@ -889,11 +807,7 @@ export async function POST(request: NextRequest) {
 
     if (executionStrategies.length === 0) {
       const err = new Error(
-        activeProvider === 'gemini'
-          ? 'Gemini token not configured. Set GEMINI_TOKEN environment variable.'
-          : activeProvider === 'github'
-            ? 'GitHub token not configured. Set GITHUB_TOKEN environment variable.'
-            : 'No LLM provider tokens configured. Set GITHUB_TOKEN and/or GEMINI_TOKEN environment variables.'
+        'No AI provider tokens configured. Set GITHUB_TOKEN and/or GEMINI_TOKEN.'
       ) as Error & { statusCode: number };
       err.statusCode = 503;
       throw err;
@@ -1013,7 +927,7 @@ export async function POST(request: NextRequest) {
       // If the model wants to call tools, execute all of them in parallel
       if (assistantMessage.tool_calls && assistantMessage.tool_calls.length > 0) {
         totalToolCalls += assistantMessage.tool_calls.length;
-        const loopLLMFill = createLLMFiller(githubToken, geminiToken, activeProvider);
+        const loopLLMFill = createLLMFiller(githubToken, geminiToken);
         const toolResults = await Promise.all(
           assistantMessage.tool_calls.map(async (toolCall: { id: string; function: { name: string; arguments: string } }) => {
             const toolName = toolCall.function.name;
@@ -1129,11 +1043,9 @@ export async function POST(request: NextRequest) {
     } else if (isMissingKey) {
       if (activeProvider === 'gemini') {
         details = 'Please set GEMINI_TOKEN in your Vercel environment variables. Get a key at: https://aistudio.google.com/api-keys';
-      } else if (activeProvider === 'hybrid') {
-        details = 'Please set GITHUB_TOKEN and/or GEMINI_TOKEN in your Vercel environment variables.';
       } else {
         details =
-          'Please set GITHUB_TOKEN in your Vercel environment variables. Get a personal access token at: https://github.com/settings/personal-access-tokens — this uses your existing GitHub Copilot subscription.';
+          'Please set GITHUB_TOKEN and/or GEMINI_TOKEN in your Vercel environment variables.';
       }
     } else {
       details = 'An unexpected error occurred. Check your LLM provider tokens and stock data provider keys in Vercel environment variables, or try again in a few moments.';
