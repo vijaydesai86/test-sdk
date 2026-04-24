@@ -6,12 +6,11 @@ This file is the operating contract for any agent or contributor changing this r
 
 ## Product scope
 
-The product is an AI-powered stock research assistant with exactly **four user-facing research modes**:
+The product is an AI-powered stock research assistant with exactly **three user-facing research modes**:
 
 1. **Stock report** — full deep-dive on a single company
-2. **Comparison report** — side-by-side analysis of 2–15 companies
-3. **Deep research** — ecosystem dependency analysis + universe refinement, covering single-company, explicit comparison, and sector/theme queries under one mode
-4. **Watchlist daily report** — daily pulse covering every company in the saved watchlist
+2. **Research report** — handles any multi-company, sector, theme, industry, or research question (comparisons, deep sector analysis, ecosystem dependency maps, universe refinement)
+3. **Watchlist daily report** — daily pulse covering every company in the saved watchlist
 
 General chat is supported for data-only questions (e.g. "what is NVDA's P/E?") but is not a separate report mode and must not grow into a parallel product surface.
 
@@ -25,11 +24,11 @@ General chat is supported for data-only questions (e.g. "what is NVDA's P/E?") b
 
 3. **Provider truth beats LLM confidence.** The LLM orchestrates, explains, and synthesises. It must not silently substitute missing provider data with model memory.
 
-4. **Report tools accept pre-fetched data only.** `generate_stock_report`, `generate_comparison_report`, `generate_sector_report`, `generate_deep_sector_report`, and `generate_watchlist_daily_report` make zero internal API calls. The LLM must call all data tools first, then pass the results to the report tool.
+4. **Report tools are the three user-facing tools.** `generate_stock_report`, `generate_research_report`, and `generate_watchlist_daily_report` are the only tools the LLM exposes to users. Internal routing tools (`generate_comparison_report`, `generate_sector_report`, `generate_deep_sector_report`) exist in `executeTool` for internal delegation only and are not in `CHAT_TOOL_NAMES`.
 
 5. **Keep user input simple.** Users must be able to type `google vs microsoft` or `deep research on tesla` and get the right report. Entity resolution may use the LLM for name-to-ticker mapping, but real provider verification (`search_stock`) is required before any market-data fetch.
 
-6. **Deep research stays one mode.** The UI exposes one "deep research" concept. Internally it routes by target type (single company → deep stock; explicit comparison → deep comparison; sector/theme → full ecosystem analysis), but this is hidden from the user.
+6. **Research report is one mode.** The UI exposes one `generate_research_report` tool. Internally it routes by query type (explicit comparison → comparison path; single-company name → deep stock path; sector/theme → full ecosystem analysis), but this routing is hidden from the user and the LLM.
 
 7. **Only three top-level markdown docs.** `README.md`, `AGENT.md`, and `CHANGELOG.md` are the only markdown documents committed to the repo root. Do not add stale or duplicate docs.
 
@@ -60,9 +59,9 @@ User message
 |---|---|
 | `web/app/api/chat/route.ts` | Entry point. Parses requests, selects LLM provider and model, runs the tool-call loop, manages session history, handles rate-limit fallbacks. |
 | `web/app/lib/stockTools.ts` | Tool definitions (`getToolDefinitions`), `executeTool` dispatch, report orchestration (generate_* tools), ticker resolution, sector company selection, moat/conclusion prompt builders, disk cache helpers. |
-| `web/app/lib/stockDataService.ts` | All data provider implementations: `AlphaVantageService`, `FinnhubService`, `FinancialModelingPrepService`, `TwelveDataService`, `StooqService`, `HybridStockDataService`, `MultiSourceStockDataService`. Also standalone services: `SecEdgarService` (SEC EDGAR filings), `FredService` (FRED economic data). `createStockService()` factory selects the active provider from `STOCK_DATA_PROVIDER`. |
+| `web/app/lib/stockDataService.ts` | All data provider implementations: `AlphaVantageService`, `FinnhubService`, `FinancialModelingPrepService`, `TwelveDataService`, `StooqService`, `MultiSourceStockDataService`. Also standalone services: `SecEdgarService` (SEC EDGAR filings), `FredService` (FRED economic data). `createStockService()` always returns `MultiSourceStockDataService` using all configured keys. |
 | `web/app/lib/reportGenerator.ts` | Report builders (`buildStockReport`, `buildComparisonReport`, `buildSectorReport`, `buildDeepSectorReport`, `buildDeepStockReport`, `buildDeepComparisonReport`, `buildWatchlistDailyReport`), technical indicator computations (RSI, MACD, Bollinger, Stochastic, ATR, EMA), ECharts and Mermaid chart builders, `saveReport()` persistence. |
-| `web/app/lib/llmProviderConfig.ts` | LLM provider/model selection, GitHub Models catalog fetching, Gemini model fallback list. |
+| `web/app/lib/llmProviderConfig.ts` | GitHub Models catalog fetching, Gemini model fallback list, token helpers. No provider selection — all available providers are always used. |
 | `web/app/lib/decisionEngine.ts` | 7-pillar multi-factor equity decision engine. Computes weighted pillar scores (Profitability 25%, Growth 15%, Valuation 20%, Momentum 15%, Analyst Consensus 15%, Insider Activity 5%, Financial Health 5%), derives action (Initiate/Add/Hold/Trim/Exit/Wait), confidence, and a transparent summary showing the real data behind each score. Insider activity is market-cap normalized (basis points, no fixed $ thresholds). |
 | `web/app/lib/investmentTypes.ts` | Shared TypeScript types and interfaces for the decision framework: `DecisionSnapshot`, `DecisionAction`, `PortfolioProfile`, `WatchlistPositionMeta`, `DataTrustSummary`, `CompanyThesisRecord`, `DecisionJournalRecord`, `ResearchSessionRecord`. |
 | `web/app/lib/dataTrust.ts` | Data freshness tracker. Computes `DataTrustSummary` per report: each data source gets a freshness class (fresh/aging/stale) based on age vs configurable TTL. Used by the decision engine to set confidence levels. |
@@ -70,12 +69,12 @@ User message
 | `web/app/lib/researchMemoryStore.ts` | Persistence layer for research sessions, company theses, and decision journal records. Backed by Supabase when available, otherwise filesystem JSON. |
 | `web/app/lib/watchlistStore.ts` | Watchlist CRUD backed by Supabase (primary) or JSON file (fallback). Default watchlist seeded with 15 semiconductor/tech companies (max 25 items). Supabase seed failures return in-memory defaults (never empty). |
 | `web/app/lib/supabaseClient.ts` | Lazy Supabase client singleton; returns `null` when env vars are absent. |
-| `web/app/components/ChatInterface.tsx` | Full single-page UI: chat pane, workspace sidebar (Watchlist / Artifacts / Saved tabs), 4 themes (Aurora, Solstice, Ember, Graphite), ECharts and Mermaid rendering, quick prompts, model/provider picker. |
+| `web/app/components/ChatInterface.tsx` | Full single-page UI: chat pane, workspace sidebar (Watchlist / Artifacts / Saved tabs), 4 themes (Aurora, Solstice, Ember, Graphite), ECharts and Mermaid rendering, quick prompts, starting model picker. |
 | `web/app/api/health/route.ts` | Provider health check. Reports which API keys are configured and whether the service is ready. Supports optional live price check via `HEALTH_CHECK_SYMBOL`. |
 | `web/app/api/saved-reports/route.ts` | GET (list) and POST (persist) for the saved-report library. Falls back to legacy schema when migration columns are absent. |
 | `web/app/api/watchlist/route.ts` | GET default watchlist; PATCH/DELETE individual items. |
 | `web/app/api/models/route.ts` | Returns available GitHub Models from live catalog. |
-| `web/app/api/providers/route.ts` | Returns configured LLM providers and their available models. |
+| `web/app/api/providers/route.ts` | Returns combined list of available LLM models (GitHub + Gemini) for the model picker. |
 
 ### Tool catalog (30 tools)
 
@@ -118,15 +117,13 @@ User message
 | `get_sec_filings` | `SecEdgarService` — SEC EDGAR (free, no API key) |
 | `get_economic_indicators` | `FredService` — FRED API (free key from fred.stlouisfed.org) |
 
-**Report tools** — accept pre-fetched data, generate Markdown + ECharts + Mermaid, persist to storage:
+**Report tools** — the three user-facing report tools exposed via `CHAT_TOOL_NAMES`:
 
-| Tool | Builder in reportGenerator.ts |
+| Tool | What it generates |
 |---|---|
-| `generate_stock_report` | `buildStockReport` + `buildDeepStockReport` |
-| `generate_comparison_report` | `buildComparisonReport` + `buildDeepComparisonReport` |
-| `generate_sector_report` | `buildSectorReport` (wrapper around `buildComparisonReport`) |
-| `generate_deep_sector_report` | `buildDeepSectorReport` + ecosystem analysis |
-| `generate_watchlist_daily_report` | `buildWatchlistDailyReport` |
+| `generate_stock_report` | Single-company deep-dive: `buildStockReport` + `buildDeepStockReport` |
+| `generate_research_report` | All multi-company / thematic research — internally routes to comparison, sector, or deep-sector builder |
+| `generate_watchlist_daily_report` | Daily pulse across the saved watchlist: `buildWatchlistDailyReport` |
 
 ### Report pipeline (generate_stock_report example)
 
@@ -146,23 +143,17 @@ Deep-sector research adds two more phases before step 4: Phase 2 fetches overvie
 
 ### StockDataService interface
 
-All providers implement `StockDataService`. The active instance is created once per request by `createStockService()` in `stockDataService.ts`.
+All providers implement `StockDataService`. `createStockService()` in `stockDataService.ts` always builds a `MultiSourceStockDataService` using every configured key, with Stooq always included as the no-key fallback for price history.
 
 ```
-STOCK_DATA_PROVIDER  →  service class
-────────────────────────────────────────────────────────────────────
-alphavantage         →  AlphaVantageService          (default)
-finnhub              →  FinnhubService
-fmp                  →  FinancialModelingPrepService
-twelvedata           →  TwelveDataService
-stooq                →  StooqService                 (no API key)
-hybrid               →  HybridStockDataService       (AV primary + Finnhub fallback)
-multi                →  MultiSourceStockDataService  (AV → Finnhub → FMP → TwelveData → Stooq)
+Configured keys  →  providers added to MultiSourceStockDataService
+──────────────────────────────────────────────────────────────────
+ALPHA_VANTAGE_API_KEY   →  AlphaVantageService
+FINNHUB_API_KEY         →  FinnhubService
+FINANCIAL_MODELING_PREP_API_KEY  →  FinancialModelingPrepService
+TWELVE_DATA_API_KEY     →  TwelveDataService
+(always)                →  StooqService (no key required)
 ```
-
-### Recommended provider setting
-
-`STOCK_DATA_PROVIDER=multi` gives the best data coverage across free-tier gaps. `multi` requires at least one key to be configured; Stooq is always available as the last-resort fallback for price history.
 
 ### Rate limiting and caching
 
@@ -194,14 +185,16 @@ Some tools derive insights purely from data already fetched by other tools:
 
 ## LLM providers
 
-### Configuration
+### Behaviour
+
+The system **always uses all configured providers** in sequence — no configuration switch required. GitHub Models is tried first (exhausting every fallback model), then Gemini. Every request keeps retrying until all models across all providers are exhausted before giving up.
 
 ```
-LLM_PROVIDER  →  behaviour
-────────────────────────────────────────────────────────────────────────
-github        →  GitHub Models API only (GITHUB_TOKEN required)  [default]
-gemini        →  Gemini API only (GEMINI_TOKEN required)
-hybrid        →  GitHub Models primary; auto-falls back to Gemini on 429
+Available tokens  →  execution order
+──────────────────────────────────────────────────────────────────
+GITHUB_TOKEN only    →  GitHub Models only (all fallback models tried)
+GEMINI_TOKEN only    →  Gemini only (all fallback models tried)
+Both tokens set      →  GitHub Models first → Gemini fallback
 ```
 
 ### GitHub Models
@@ -248,16 +241,11 @@ Run all `.sql` files in `supabase/migrations/` in the Supabase SQL editor to cre
 
 See `web/.env.example` for annotated defaults. All variables prefixed with `STOCK_` or `ALPHA_VANTAGE_` etc. are read server-side only and never exposed to the browser.
 
-**Required (at least one from each group):**
-- LLM: `GITHUB_TOKEN` / `GEMINI_TOKEN`
-- Data: `ALPHA_VANTAGE_API_KEY` / `FINNHUB_API_KEY` / `FINANCIAL_MODELING_PREP_API_KEY` / `TWELVE_DATA_API_KEY`
+**Provider tokens (set both for best resilience):**
+- `GITHUB_TOKEN` / `GEMINI_TOKEN` — the system uses all configured tokens automatically
 
 **Optional standalone API keys:**
 - `FRED_API_KEY` — free from [fred.stlouisfed.org](https://fred.stlouisfed.org/docs/api/api_key.html). Enables `get_economic_indicators` tool (GDP, CPI, Fed Funds rate, unemployment, Treasury yields, yield curve).
-
-**Provider selection:**
-- `LLM_PROVIDER` — `github` | `gemini` | `hybrid`
-- `STOCK_DATA_PROVIDER` — `alphavantage` | `finnhub` | `fmp` | `twelvedata` | `stooq` | `hybrid` | `multi`
 
 **LLM model overrides:**
 - `COPILOT_MODEL`, `COPILOT_FALLBACK_MODEL`, `COPILOT_FALLBACK_MODELS`
@@ -289,8 +277,10 @@ See `web/.env.example` for annotated defaults. All variables prefixed with `STOC
 Set these in Vercel project Settings → Environment Variables in addition to your API keys:
 
 ```
-LLM_PROVIDER=hybrid
-STOCK_DATA_PROVIDER=multi
+GITHUB_TOKEN=your_github_pat
+GEMINI_TOKEN=your_gemini_key
+ALPHA_VANTAGE_API_KEY=your_av_key
+FINNHUB_API_KEY=your_finnhub_key
 NUM_COMPANIES=15
 DEEP_RESEARCH_DEPTH=3
 ```
@@ -304,7 +294,7 @@ These give broader sector analysis and better free-tier resilience than the code
 Before merging any change, verify:
 
 - [ ] Does this keep all report data truthful (no fabricated fields)?
-- [ ] Does this preserve the four research modes?
+- [ ] Does this preserve the three research modes (stock report, research report, watchlist daily)?
 - [ ] Does this keep the user input flow simple?
 - [ ] Does this stay within free-tier rate-limit budgets?
 - [ ] Does this avoid duplicating report/data logic that should be shared?

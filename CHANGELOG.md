@@ -1,6 +1,17 @@
 # Changelog
 All notable changes to this project are recorded here.
 ## [Unreleased]
+### Changed
+- **Exhaustive-by-default AI execution**: Removed `LLM_PROVIDER` config. The system always tries all configured providers in sequence — GitHub Models first (exhausting every fallback model), then Gemini. Never errors out until all models and providers are exhausted.
+- **Exhaustive-by-default stock data**: Removed `STOCK_DATA_PROVIDER` config. `createStockService()` always returns `MultiSourceStockDataService`, using every configured key with full provider fallback chain. `HybridStockDataService` removed.
+- **Three report tools only** (`generate_stock_report`, `generate_research_report`, `generate_watchlist_daily_report`): Removed `generate_comparison_report` and `generate_sector_report` from `CHAT_TOOL_NAMES` and from `buildToolDefinitions()`. Renamed `generate_deep_sector_report` → `generate_research_report`. The research report handles all non-single-stock queries: comparisons, sectors, themes, industries, portfolio ideas. Internal routing tools remain in `executeTool` for delegation only.
+- **AI-first request handling**: Removed `parseReportRequest()` / `parseCompareRequest()` / `parseTimeframe()` fast-path pattern matching. All user messages go through the LLM first. The LLM reads intent and decides which tool to call.
+- **No provider/model selector in UI**: Removed provider dropdown. Users see a "starting model" picker only (a hint; the system falls back through all available models automatically). No `provider` field sent in chat requests.
+- **Simplified `/api/providers`**: Returns `{ models }` only — a flat combined list of GitHub + Gemini models for the model picker.
+- **Updated system prompts**: Both SYSTEM_PROMPT and COMPACT_SYSTEM_PROMPT describe the three report tools and the AI-reads-first rule. Removed hardcoded source citations from prompt.
+- **Source info hidden by default**: Data-source sections in reports only appear when `DEBUG=true` is set in Vercel environment variables.
+
+
 ### Added
 - **7-pillar decision engine** (`decisionEngine.ts`): Research-backed multi-factor scoring model producing transparent `DecisionSnapshot` for every company. Pillars: Profitability (25%), Growth (15%), Valuation (20%), Momentum (15%), Analyst Consensus (15%), Insider Activity (5%), Financial Health (5%). Each pillar shows its score and the real data behind it in the summary. Action thresholds: ≥65 Buy/Initiate, 45–64 Hold/Wait, <45 Wait/Sell.
 - **Analyst consensus as a scoring pillar**: Weighted strongBuy/buy/hold/sell/strongSell counts from Finnhub, Alpha Vantage, and FMP are aggregated into a 0–100 score with 15% weight.

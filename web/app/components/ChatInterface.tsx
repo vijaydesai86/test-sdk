@@ -100,7 +100,7 @@ const DEFAULT_MODEL = 'openai/gpt-4.1';
 const CHART_HEIGHT = 280;
 const MAX_TEXTAREA_HEIGHT = 160;
 const TOOL_CALL_WARNING =
-  'Model returned tool calls as plain text. Switch to a tool-calling model from the dropdown.';
+  'Model returned tool calls as plain text. The system will retry with a different model automatically. If the issue persists, try rephrasing your request.';
 const isToolCallText = (content: string) =>
   /"name"\s*:\s*"functions\./.test(content) || /"arguments"\s*:\s*\{/.test(content);
 

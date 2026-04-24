@@ -269,11 +269,8 @@ function isGitHubModelId(model?: string | null): boolean {
 
 /**
  * Build the ordered list of (provider, models) strategies to try.
- * - provider === null (auto): use ALL available providers in order: GitHub first, then Gemini.
- * - provider === 'github': GitHub Models only, with full model fallback chain.
- * - provider === 'gemini': Gemini only, with full model fallback chain.
- * All available GitHub models are tried before falling over to Gemini, ensuring
- * the GitHub $10 subscription is exhausted before giving up.
+ * Always uses all available providers — GitHub first (full fallback chain), then Gemini.
+ * provider === null means auto (use all available); 'github'/'gemini' restricts to one.
  */
 function buildLLMExecutionStrategies(
   provider: RuntimeLLMProvider | null,
@@ -292,16 +289,17 @@ function buildLLMExecutionStrategies(
     ? GEMINI_MODEL
     : requestedModel || GEMINI_MODEL;
 
-  // auto (null) or 'github': add GitHub strategy when token available
-  if ((provider === null || provider === 'github') && githubToken) {
+  const useGitHub = provider === null || provider === 'github';
+  const useGemini = provider === null || provider === 'gemini';
+
+  if (useGitHub && githubToken) {
     strategies.push({
       provider: 'github',
       models: buildFallbackModels(normalizedGithubModel),
     });
   }
 
-  // auto (null) or 'gemini': add Gemini strategy when token available
-  if ((provider === null || provider === 'gemini') && geminiToken) {
+  if (useGemini && geminiToken) {
     strategies.push({
       provider: 'gemini',
       models: [geminiRequestedModel],
@@ -563,11 +561,8 @@ async function callGeminiWithFallback(
  * Returns the raw response string (expected to be valid JSON).
  * Failures are caught and return '{}' so callers can continue gracefully.
  *
- * Provider selection mirrors LLM_PROVIDER:
- * - 'github':  GitHub Models FILL_MODEL (gpt-4.1-mini) — separate quota from main model
- * - 'gemini':  callGeminiWithFallback — tries GEMINI_FALLBACK_MODELS in order
- * - 'hybrid':  GitHub Models primary; auto-falls back to Gemini (with model fallback) on 429
- * On 429, waits for the provider's requested retryDelay (capped at 10 s) and retries once.
+ * Always tries GitHub Models first (FILL_MODEL = gpt-4.1-mini), then falls back to Gemini,
+ * exhausting all available models before giving up.
  */
 async function callLLMForDataFill(
   prompt: string,
@@ -646,60 +641,6 @@ function createLLMFiller(
   return (prompt: string) => callLLMForDataFill(prompt, githubToken, geminiToken);
 }
 
-function getStockProviderConfigError(provider: string): { error: string; details: string } | null {
-  const normalizedProvider = [
-    'alphavantage',
-    'finnhub',
-    'fmp',
-    'twelvedata',
-    'stooq',
-    'multi',
-  ].includes(provider)
-    ? provider
-    : 'multi'; // default is multi-source
-
-  const hasAlphaVantage = Boolean(process.env.ALPHA_VANTAGE_API_KEY);
-  const hasFinnhub = Boolean(process.env.FINNHUB_API_KEY);
-  const hasFmp = Boolean(process.env.FINANCIAL_MODELING_PREP_API_KEY);
-  const hasTwelveData = Boolean(process.env.TWELVE_DATA_API_KEY);
-
-  switch (normalizedProvider) {
-    case 'alphavantage':
-      return hasAlphaVantage
-        ? null
-        : {
-            error: 'Alpha Vantage API key not configured',
-            details: 'Please set ALPHA_VANTAGE_API_KEY environment variable.',
-          };
-    case 'finnhub':
-      return hasFinnhub
-        ? null
-        : {
-            error: 'Finnhub API key not configured',
-            details: 'Please set FINNHUB_API_KEY environment variable.',
-          };
-    case 'fmp':
-      return hasFmp
-        ? null
-        : {
-            error: 'Financial Modeling Prep API key not configured',
-            details: 'Please set FINANCIAL_MODELING_PREP_API_KEY environment variable.',
-          };
-    case 'twelvedata':
-      return hasTwelveData
-        ? null
-        : {
-            error: 'Twelve Data API key not configured',
-            details: 'Please set TWELVE_DATA_API_KEY environment variable.',
-          };
-    case 'stooq':
-    case 'multi':
-    default:
-      // multi uses whatever keys are available; stooq is always active as fallback
-      return null;
-  }
-}
-
 export async function POST(request: NextRequest) {
   let activeProvider: RuntimeLLMProvider | null = null;
 
@@ -725,16 +666,8 @@ export async function POST(request: NextRequest) {
         ? GEMINI_MODEL
         : DEFAULT_MODEL;
 
-    // Initialize the stock data service (always multi-source by default).
+    // Initialize the stock data service — always multi-source using all configured keys.
     const alphaVantageKey = process.env.ALPHA_VANTAGE_API_KEY;
-    const dataProvider = (process.env.STOCK_DATA_PROVIDER || 'multi').toLowerCase();
-    const providerConfigError = getStockProviderConfigError(dataProvider);
-    if (providerConfigError) {
-      return NextResponse.json(
-        providerConfigError,
-        { status: 503 }
-      );
-    }
     const stockService: StockDataService = createStockService(alphaVantageKey);
     const currentSessionId = typeof sessionId === 'string' && sessionId.trim()
       ? sessionId
@@ -932,7 +865,7 @@ export async function POST(request: NextRequest) {
             const toolResult = await executeTool(toolName, { ...toolArgs, sessionId: currentSessionId }, stockService, { llmFill: loopLLMFill });
             // Collect report artifacts; strip full content from model response to avoid echoing
             if (
-              (toolName === 'generate_stock_report' || toolName === 'generate_comparison_report' || toolName === 'generate_sector_report' || toolName === 'generate_deep_sector_report' || toolName === 'generate_watchlist_daily_report') &&
+              (toolName === 'generate_stock_report' || toolName === 'generate_research_report' || toolName === 'generate_watchlist_daily_report') &&
               toolResult.success && toolResult.data?.filename && toolResult.data?.content
             ) {
               reportArtifacts.push({
@@ -984,7 +917,6 @@ export async function POST(request: NextRequest) {
     });
 
     console.info('Chat request stats', {
-      provider: activeProvider,
       runtimeProvider: activeRuntimeProvider,
       requestedModel,
       model: activeModel,
@@ -999,7 +931,7 @@ export async function POST(request: NextRequest) {
       sessionId: currentSessionId,
       model: activeModel,
       requestedModel,
-      provider: activeProvider,
+      provider: activeRuntimeProvider,
       runtimeProvider: activeRuntimeProvider,
       fallbackCount,
       reports: reportArtifacts.length > 0 ? reportArtifacts : undefined,
@@ -1036,14 +968,11 @@ export async function POST(request: NextRequest) {
     } else if (isTokensLimit) {
       details = `The conversation history has grown too large for this model's token limit. Start a new chat to clear the history and try again.`;
     } else if (isToolCallText) {
-      details = 'This model returned tool calls as plain text. Switch to a tool-calling model from the dropdown (for example, GPT-4.1 or Claude Sonnet).';
+      details = 'This model returned tool calls as plain text. The system will retry with a different model automatically.';
     } else if (isMissingKey) {
-      if (activeProvider === 'gemini') {
-        details = 'Please set GEMINI_TOKEN in your Vercel environment variables. Get a key at: https://aistudio.google.com/api-keys';
-      } else {
-        details =
-          'Please set GITHUB_TOKEN and/or GEMINI_TOKEN in your Vercel environment variables.';
-      }
+      details =
+        'Please set GITHUB_TOKEN and/or GEMINI_TOKEN in your Vercel environment variables. ' +
+        'Get a GitHub token at: https://github.com/settings/tokens — Get a Gemini key at: https://aistudio.google.com/api-keys';
     } else {
       details = 'An unexpected error occurred. Check your LLM provider tokens and stock data provider keys in Vercel environment variables, or try again in a few moments.';
     }
