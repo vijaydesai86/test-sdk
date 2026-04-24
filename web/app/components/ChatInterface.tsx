@@ -113,18 +113,18 @@ const THEME_OPTIONS: Array<{ id: ThemeId; label: string; blurb: string }> = [
 
 const QUICK_PROMPTS = [
   {
-    label: 'NVDA stock report',
-    prompt: 'Generate a full stock report for NVDA',
+    label: 'Report on Arm Holdings',
+    prompt: 'Give me a stock report on Arm Holdings',
     eyebrow: 'Single company',
   },
   {
-    label: 'Compare NVDA, AMD, INTC',
-    prompt: 'Compare companies NVDA, AMD, INTC',
+    label: 'Nvidia vs AMD vs Intel',
+    prompt: 'Compare Nvidia, AMD, and Intel',
     eyebrow: 'Comparison',
   },
   {
-    label: 'Deep research on semiconductors',
-    prompt: 'Deep research on semiconductors',
+    label: 'AI infrastructure sector',
+    prompt: 'Deep research on AI infrastructure stocks',
     eyebrow: 'Sector study',
   },
   {
@@ -1730,14 +1730,9 @@ create index if not exists saved_reports_report_date_idx on public.saved_reports
                       {msg.role === 'assistant' && (
                         <div className="mb-3 flex flex-wrap items-center gap-2">
                           <span className="text-xs font-medium text-slate-400">Assistant</span>
-                          {msg.provider && (
-                            <span className="rounded-full border border-white/10 bg-white/8 px-2 py-1 text-[10px] uppercase tracking-[0.14em] text-slate-300">
-                              Strategy {msg.provider}
-                            </span>
-                          )}
                           {msg.runtimeProvider && (
                             <span className="rounded-full border border-teal-300/20 bg-teal-300/10 px-2 py-1 text-[10px] uppercase tracking-[0.14em] text-teal-100">
-                              Used {msg.runtimeProvider}
+                              {msg.runtimeProvider}
                             </span>
                           )}
                           {msg.model && (
@@ -1801,7 +1796,7 @@ create index if not exists saved_reports_report_date_idx on public.saved_reports
                     value={input}
                     onChange={(e) => setInput(e.target.value)}
                     onKeyDown={handleKeyDown}
-                    placeholder="Ask for a stock report, comparison, deep research, or watchlist daily report... (Enter to send, Shift+Enter for newline)"
+                    placeholder="Ask naturally — 'Report on Apple', 'Compare Tesla vs Rivian', 'Best AI stocks', 'Watchlist daily report'…"
                     disabled={isLoading}
                     className="min-h-[54px] max-h-40 w-full resize-none bg-transparent px-3 py-2 text-sm text-white placeholder:text-slate-500 focus:outline-none disabled:opacity-60"
                   />
