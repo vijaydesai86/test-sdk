@@ -47,6 +47,10 @@ const TOOL_RESULT_MAX_DEPTH = 3;
 const TOOL_RESULT_MAX_ARRAY = 12;
 const TOOL_RESULT_MAX_KEYS = 40;
 const TOOL_RESULT_MAX_STRING = 500;
+// Per-request timeout for individual LLM API calls. Keeps a hung upstream call
+// from consuming the entire Vercel 300s budget — the fallback chain advances
+// to the next model instead. Default: 60s. Override via LLM_REQUEST_TIMEOUT_MS.
+const LLM_REQUEST_TIMEOUT_MS = Number(process.env.LLM_REQUEST_TIMEOUT_MS || 60000);
 
 const RATE_LIMIT_GUIDANCE =
   'This model allows 50 requests per day. ' +
@@ -317,29 +321,43 @@ async function callGitHubModelsAPI(
   model: string,
   tools: ReturnType<typeof getToolDefinitionsByName>
 ): Promise<any> {
-  const response = await fetch(GITHUB_MODELS_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${githubToken}`,
-      // GitHub API recommended headers — including User-Agent is important:
-      // Node.js fetch() does NOT add a User-Agent automatically (unlike browsers),
-      // so omitting it makes requests appear as anonymous bot/scraper traffic and
-      // can trigger GitHub's anti-abuse 429 "scraping" response.
-      'User-Agent': 'stock-report-app/1.0',
-      'Accept': 'application/vnd.github+json',
-      'X-GitHub-Api-Version': '2022-11-28',
-    },
-    body: JSON.stringify({
-      model,
-      messages,
-      tools,
-    }),
-  });
+  let response: Response;
+  try {
+    response = await fetch(GITHUB_MODELS_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${githubToken}`,
+        // GitHub API recommended headers — including User-Agent is important:
+        // Node.js fetch() does NOT add a User-Agent automatically (unlike browsers),
+        // so omitting it makes requests appear as anonymous bot/scraper traffic and
+        // can trigger GitHub's anti-abuse 429 "scraping" response.
+        'User-Agent': 'stock-report-app/1.0',
+        'Accept': 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+      },
+      body: JSON.stringify({
+        model,
+        messages,
+        tools,
+      }),
+      signal: AbortSignal.timeout(LLM_REQUEST_TIMEOUT_MS),
+    });
+  } catch (fetchErr: any) {
+    if (fetchErr?.name === 'AbortError' || fetchErr?.name === 'TimeoutError') {
+      const err = new Error(
+        `GitHub Models API request timed out after ${LLM_REQUEST_TIMEOUT_MS / 1000}s for model '${model}'. Will try next model.`
+      ) as Error & { statusCode: number; isTransientServerError: boolean };
+      err.statusCode = 503;
+      err.isTransientServerError = true;
+      throw err;
+    }
+    throw fetchErr;
+  }
 
   if (!response.ok) {
     const errorText = await response.text();
-    console.error(`GitHub Models API ${response.status}: ${errorText}`);
+    console.error(`GitHub Models API ${response.status}:`, errorText.slice(0, 300));
     if (response.status === 401) {
       throw new Error(
         'GitHub Models API authentication failed (401). ' +
@@ -440,18 +458,32 @@ async function callGeminiAPI(
   if (tools && tools.length > 0) {
     body.tools = tools;
   }
-  const response = await fetch(GEMINI_API_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${geminiToken}`,
-    },
-    body: JSON.stringify(body),
-  });
+  let response: Response;
+  try {
+    response = await fetch(GEMINI_API_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${geminiToken}`,
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(LLM_REQUEST_TIMEOUT_MS),
+    });
+  } catch (fetchErr: any) {
+    if (fetchErr?.name === 'AbortError' || fetchErr?.name === 'TimeoutError') {
+      const err = new Error(
+        `Gemini API request timed out after ${LLM_REQUEST_TIMEOUT_MS / 1000}s for model '${model}'. Will try next model.`
+      ) as Error & { statusCode: number; isTransientServerError: boolean };
+      err.statusCode = 503;
+      err.isTransientServerError = true;
+      throw err;
+    }
+    throw fetchErr;
+  }
 
   if (!response.ok) {
     const errorText = await response.text();
-    console.error(`Gemini API ${response.status}: ${errorText}`);
+    console.error(`Gemini API ${response.status}:`, errorText.slice(0, 300));
     if (response.status === 401) {
       throw new Error(
         'Gemini API authentication failed (401). ' +

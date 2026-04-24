@@ -245,7 +245,10 @@ async function loadDefaultSupabaseWatchlist(): Promise<Watchlist | null> {
   const detailedItemsColumns =
     'id, symbol, company_name, display_order, created_at, ownership_status, current_weight, target_weight, max_weight, cost_basis, conviction, thesis, desired_entry_min, desired_entry_max, trim_above, invalidation, review_date, last_reviewed_at, notes';
   const basicItemsColumns = 'id, symbol, company_name, display_order, created_at';
-  const isSchemaMismatch = (message: string) => /column .* does not exist|schema cache/i.test(message);
+  const isSchemaMismatch = (message: string) =>
+    /column .* does not exist|schema cache/i.test(message) ||
+    /<!DOCTYPE|<html/i.test(message) ||
+    /fetch failed|ECONNREFUSED|ENOTFOUND|network error/i.test(message);
 
   const detailedWatchlistsQuery = await supabase
     .from('watchlists')

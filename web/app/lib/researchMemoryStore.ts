@@ -88,7 +88,20 @@ function summarizeDecisionAction(action: DecisionJournalRecord['action']): strin
 }
 
 function isSchemaMismatch(message: string) {
-  return /does not exist|schema cache|Could not find the table/i.test(message);
+  return (
+    // Supabase schema not migrated yet
+    /does not exist|schema cache|Could not find the table/i.test(message) ||
+    // Cloudflare 521 / 502 — Supabase origin server down (HTML error page returned)
+    /<!DOCTYPE|<html/i.test(message) ||
+    // Network-level failures (DNS, TCP, TLS)
+    /fetch failed|ECONNREFUSED|ENOTFOUND|network error/i.test(message)
+  );
+}
+
+function truncateErrorMsg(message: string, max = 200): string {
+  if (!message) return '(no message)';
+  const clean = message.replace(/\s+/g, ' ').trim();
+  return clean.length <= max ? clean : `${clean.slice(0, max)}…`;
 }
 
 export async function loadSessionMessages(sessionId: string): Promise<ResearchMessageRecord[]> {
@@ -109,7 +122,7 @@ export async function loadSessionMessages(sessionId: string): Promise<ResearchMe
       }));
     }
     if (!isSchemaMismatch(query.error.message)) {
-      console.error('[research-memory] Failed to load session messages:', query.error.message);
+      console.error('[research-memory] Failed to load session messages:', truncateErrorMsg(query.error.message));
     }
   }
 
@@ -153,7 +166,7 @@ export async function saveSessionMessages(
       .select('id')
       .single();
     if (existing.error && !isSchemaMismatch(existing.error.message)) {
-      console.error('[research-memory] Failed to upsert session:', existing.error.message);
+      console.error('[research-memory] Failed to upsert session:', truncateErrorMsg(existing.error.message));
     } else if (!existing.error) {
       await supabase.from('research_messages').delete().eq('session_id', sessionId);
       const insert = await supabase.from('research_messages').insert(
@@ -166,7 +179,7 @@ export async function saveSessionMessages(
         }))
       );
       if (insert.error && !isSchemaMismatch(insert.error.message)) {
-        console.error('[research-memory] Failed to save session messages:', insert.error.message);
+        console.error('[research-memory] Failed to save session messages:', truncateErrorMsg(insert.error.message));
       } else {
         return;
       }
@@ -191,7 +204,7 @@ export async function deleteSession(sessionId: string) {
   if (supabase) {
     const del = await supabase.from('research_sessions').delete().eq('id', sessionId);
     if (del.error && !isSchemaMismatch(del.error.message)) {
-      console.error('[research-memory] Failed to delete session:', del.error.message);
+      console.error('[research-memory] Failed to delete session:', truncateErrorMsg(del.error.message));
     }
   }
 
@@ -224,7 +237,7 @@ export async function appendDecisionJournal(entry: Omit<DecisionJournalRecord, '
     });
     if (!insert.error) return;
     if (!isSchemaMismatch(insert.error.message)) {
-      console.error('[research-memory] Failed to write decision journal:', insert.error.message);
+      console.error('[research-memory] Failed to write decision journal:', truncateErrorMsg(insert.error.message));
     }
   }
 
@@ -260,7 +273,7 @@ export async function getLatestDecision(symbol: string): Promise<DecisionJournal
       };
     }
     if (query.error && !isSchemaMismatch(query.error.message)) {
-      console.error('[research-memory] Failed to load latest decision:', query.error.message);
+      console.error('[research-memory] Failed to load latest decision:', truncateErrorMsg(query.error.message));
     }
   }
 
@@ -287,7 +300,7 @@ export async function upsertCompanyThesis(record: CompanyThesisRecord) {
     });
     if (!upsert.error) return;
     if (!isSchemaMismatch(upsert.error.message)) {
-      console.error('[research-memory] Failed to upsert company thesis:', upsert.error.message);
+      console.error('[research-memory] Failed to upsert company thesis:', truncateErrorMsg(upsert.error.message));
     }
   }
 
@@ -322,7 +335,7 @@ async function loadRecentTheses(symbols: string[]): Promise<CompanyThesisRecord[
       }));
     }
     if (!isSchemaMismatch(query.error.message)) {
-      console.error('[research-memory] Failed to load theses:', query.error.message);
+      console.error('[research-memory] Failed to load theses:', truncateErrorMsg(query.error.message));
     }
   }
 
@@ -354,7 +367,7 @@ async function loadRecentDecisions(symbols: string[]): Promise<DecisionJournalRe
       }));
     }
     if (!isSchemaMismatch(query.error.message)) {
-      console.error('[research-memory] Failed to load decision journal:', query.error.message);
+      console.error('[research-memory] Failed to load decision journal:', truncateErrorMsg(query.error.message));
     }
   }
 
@@ -384,7 +397,7 @@ async function loadRecentSessions(limit = 5, excludeSessionId?: string): Promise
       })).slice(0, limit);
     }
     if (!isSchemaMismatch(result.error.message)) {
-      console.error('[research-memory] Failed to load recent sessions:', result.error.message);
+      console.error('[research-memory] Failed to load recent sessions:', truncateErrorMsg(result.error.message));
     }
   }
 
