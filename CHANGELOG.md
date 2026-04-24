@@ -1,6 +1,11 @@
 # Changelog
 All notable changes to this project are recorded here.
 ## [Unreleased]
+### Fixed
+- **400 error on follow-up messages** ("messages with role 'tool' must be a response to a preceding message with 'tool_calls'"): `toPersistentMessages` was saving all messages including `tool` result messages but stripping `tool_calls` metadata from the assistant messages. When reloaded, the `tool` messages had no preceding `tool_calls` assistant message → API 400. Fixed by saving only user messages and final assistant text replies — all `tool` result messages and assistant-only-tool_calls messages are now excluded from persistence.
+- **`trimHistory` compacting**: Removed the "don't compact the last exchange" guard that treated all loaded historical exchanges as if they were in-progress. All loaded exchanges are now always compacted to `[user, assistant-text]`, preventing orphaned tool messages from ever reaching the API.
+- **AI asking clarifying questions instead of acting**: System prompts now explicitly forbid asking the user for clarification. The AI must act immediately using `search_stock` to resolve company names, not prompt the user for ticker symbols.
+
 ### Changed
 - **Exhaustive-by-default AI execution**: Removed `LLM_PROVIDER` config. The system always tries all configured providers in sequence — GitHub Models first (exhausting every fallback model), then Gemini. Never errors out until all models and providers are exhausted.
 - **Exhaustive-by-default stock data**: Removed `STOCK_DATA_PROVIDER` config. `createStockService()` always returns `MultiSourceStockDataService`, using every configured key with full provider fallback chain. `HybridStockDataService` removed.

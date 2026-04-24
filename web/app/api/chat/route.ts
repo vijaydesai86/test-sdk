@@ -81,20 +81,29 @@ interface ChatMessage {
   tool_call_id?: string;
 }
 
-function toPersistentMessages(messages: ChatMessage[]): Array<{ role: 'user' | 'assistant' | 'tool'; content: string | null }> {
+function toPersistentMessages(messages: ChatMessage[]): Array<{ role: 'user' | 'assistant'; content: string | null }> {
+  // Save ONLY user messages and final assistant text replies.
+  // Drop assistant messages that only contained tool_calls (content null/empty) and all
+  // tool result messages — these form an invalid sequence when reloaded because the
+  // tool_calls metadata is not persisted, leaving orphaned 'tool' role messages.
   return messages
     .filter((message) => message.role !== 'system')
+    .filter((message) => {
+      if (message.role === 'tool') return false;
+      if (message.role === 'assistant' && !message.content && message.tool_calls?.length) return false;
+      return true;
+    })
     .map((message) => ({
-      role: message.role as 'user' | 'assistant' | 'tool',
+      role: message.role as 'user' | 'assistant',
       content: message.content,
     }));
 }
 
-const SYSTEM_PROMPT = `You are an elite buy-side equity research analyst. You read EVERY user message first, understand their intent, then decide the right action. Produce institutional-quality, data-driven financial research — thorough, precise, immediately actionable.
+const SYSTEM_PROMPT = `You are an elite buy-side equity research analyst. You read EVERY user message, understand intent, then act immediately. Produce institutional-quality, data-driven financial research — thorough, precise, immediately actionable.
 
 **NON-NEGOTIABLE RULES:**
 
-**1. AI reads first, acts second.** Understand exactly what the user is asking before calling any tool. Never fire a tool without understanding the request.
+**1. NEVER ask for clarification. Always act immediately.** If the user mentions a company or topic, act on your best interpretation right now. If you need to resolve a name to a ticker, call search_stock — do not ask the user. If the request is genuinely ambiguous (e.g. two companies with the same name), pick the most likely one and proceed.
 
 **2. Fetch before you write.** Never state a fact about a stock without first calling the relevant tool. No estimates, no speculation, no filler.
 
@@ -109,7 +118,7 @@ const SYSTEM_PROMPT = `You are an elite buy-side equity research analyst. You re
 
 **6. Interactive context.** After delivering a report, stay in context — if the user asks follow-up questions, changes, or refinements, answer using that same research context without re-running the full report unless explicitly asked.
 
-**7. Resolve company names to tickers first.** If the user gives names ("Google", "Microsoft"), call search_stock to get the correct ticker, then pass tickers to report tools.
+**7. Resolve company names to tickers first.** If the user gives names ("Google", "ARM semiconductors", "Microsoft"), call search_stock immediately to get the correct ticker, then pass tickers to report tools. Do NOT ask the user for the ticker.
 
 **8. Never skip a tool** when that data would strengthen the analysis. If a tool fails, say so explicitly and continue with available data.
 
@@ -124,14 +133,14 @@ const SYSTEM_PROMPT = `You are an elite buy-side equity research analyst. You re
 const COMPACT_SYSTEM_PROMPT = `You are a buy-side equity research analyst.
 
 Rules:
-- Read the user message first, understand intent, then act. Never call a tool without understanding the request.
+- NEVER ask clarifying questions. Act immediately on your best interpretation.
+- If the user gives a company name ("Google", "ARM semiconductors"), call search_stock immediately to resolve the ticker. Do NOT ask the user for the ticker.
 - Fetch data via tools before stating facts. Never use training data for numeric facts.
 - Batch tool calls in one round.
 - Three report tools:
   • generate_stock_report — one company deep-dive.
   • generate_research_report — comparisons, sectors, themes, industries, or any research topic.
   • generate_watchlist_daily_report — user's saved watchlist daily update.
-- If given company names (e.g. "Google"), call search_stock first to get the ticker.
 - After a report, stay in context for follow-up questions — no need to re-run unless explicitly asked.
 - Use tables for comparisons; show calculations.
 
@@ -140,15 +149,10 @@ Keep answers concise unless the user requests depth.`;
 /**
  * Trim conversation history to prevent token limit errors (413) on subsequent turns.
  *
- * The app's fixed overhead per request is ~5,500 tokens (system prompt + tool
- * definitions). High/Low tier models allow 8,000 input tokens, leaving only
- * ~2,500 tokens for conversation history. A single deep-research turn accumulates
- * many tool result messages that can far exceed this budget.
- *
- * Strategy: keep the system message + only the most recent complete exchange
- * (the final user message and its final assistant reply). All intermediate tool
- * call/result messages from previous turns are dropped — they were only needed
- * during that turn's reasoning loop and have no value in later turns.
+ * All messages loaded from persistence are COMPLETE exchanges (previous turns).
+ * Strategy: keep the last `maxExchanges` complete exchanges, each compacted to
+ * [user, final-assistant-text] only — dropping all intermediate tool_calls and
+ * tool result messages, which are bulky and invalid to replay across turns.
  */
 function trimHistory(messages: ChatMessage[], maxExchanges = 2): ChatMessage[] {
   if (messages.length === 0) return messages;
@@ -171,26 +175,24 @@ function trimHistory(messages: ChatMessage[], maxExchanges = 2): ChatMessage[] {
 
   if (exchanges.length === 0) return messages;
 
-  // From each exchange, keep only the final assistant text reply (drop intermediate
-  // tool_calls and tool results — they balloon in size and are not needed later).
+  // From each exchange, keep only [user, final assistant text reply].
+  // Tool_calls and tool result messages are dropped — they are bulky, only needed
+  // during that turn's reasoning loop, and invalid to replay (tool_calls metadata
+  // is not persisted, so reloaded 'tool' messages would be orphaned).
   const compactExchange = (exchange: ChatMessage[]): ChatMessage[] => {
     const userMsg = exchange[0]; // the user message that started this exchange
-    // Find the final assistant message (no tool_calls — the actual text response)
+    // Find the final assistant message that has text content (not just tool_calls)
     const finalAssistant = [...exchange].reverse().find(
-      (m) => m.role === 'assistant' && !m.tool_calls?.length
+      (m) => m.role === 'assistant' && m.content
     );
     if (finalAssistant) return [userMsg, truncateMessageContent(finalAssistant)];
-    // If no clean final assistant message yet (in-progress exchange), keep as-is
-    return exchange.map(truncateMessageContent);
+    // No text response found — keep only the user message (drop orphaned tool msgs)
+    return [userMsg];
   };
 
-  // Keep the last 2 complete exchanges (so there's some conversation context)
-  // plus the current in-progress exchange (last one) in full.
+  // Keep the last N complete exchanges, all compacted
   const keepExchanges = exchanges.slice(-maxExchanges);
-  const compacted = keepExchanges.flatMap((ex, idx) =>
-    // Compact all but the last exchange (which is currently being processed)
-    idx < keepExchanges.length - 1 ? compactExchange(ex) : ex
-  );
+  const compacted = keepExchanges.flatMap((ex) => compactExchange(ex));
 
   return [system, ...compacted.map(truncateMessageContent)];
 }
