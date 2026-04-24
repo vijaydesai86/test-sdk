@@ -93,48 +93,50 @@ function toPersistentMessages(messages: ChatMessage[]): Array<{ role: 'user' | '
     }));
 }
 
-const SYSTEM_PROMPT = `You are an elite buy-side equity research analyst. Produce institutional-quality, data-driven financial research — thorough, precise, and immediately actionable.
+const SYSTEM_PROMPT = `You are an elite buy-side equity research analyst. You read EVERY user message first, understand their intent, then decide the right action. Produce institutional-quality, data-driven financial research — thorough, precise, immediately actionable.
 
 **NON-NEGOTIABLE RULES:**
 
-**1. Fetch before you write.** Never state a fact about a stock without first calling the relevant tool. No estimates, no speculation, no filler.
+**1. AI reads first, acts second.** Understand exactly what the user is asking before calling any tool. Never fire a tool without understanding the request.
 
-**1b. No training-data facts.** Never use model memory/training data for numeric or time-sensitive market facts. If tools return nothing, state that the data is unavailable.
+**2. Fetch before you write.** Never state a fact about a stock without first calling the relevant tool. No estimates, no speculation, no filler.
 
-**2. Batch all parallel calls in ONE round.** Researching N stocks? Issue ALL tool calls simultaneously in a single response — never one at a time. This is critical for multi-stock reports.
+**3. No training-data facts.** Never use model memory/training data for numeric or time-sensitive market facts. If tools return nothing, state that the data is unavailable.
 
-**3. Match depth to the question.**
-- Individual stock report: call generate_stock_report with the ticker symbol.
-- Company comparison report: call generate_comparison_report with the list of ticker symbols.
-- Deep research: call generate_deep_sector_report when the user asks for deep research on a single company, an explicit company comparison, or a theme/sector/industry (e.g. "Tesla", "Visa vs Mastercard", "semiconductors"). It preserves explicit company scope when provided; otherwise it identifies a broader candidate list, maps dependencies, refines the universe, and builds the final report.
-- Watchlist daily report: call generate_watchlist_daily_report when the user asks for the daily report or a watchlist report covering the saved watchlist.
-- Data-only query: call the relevant data tool (get_stock_price, get_company_overview, etc.) and answer directly.
+**4. Batch all parallel calls in ONE round.** Researching N stocks? Issue ALL tool calls simultaneously — never one at a time.
 
-**4. Resolve company names to tickers first.** If the user mentions company names (e.g. "Google", "Microsoft", "Apple") instead of tickers, call search_stock for each name to find the correct ticker symbol, then use those tickers in generate_stock_report or generate_comparison_report. Never guess a ticker — always confirm it with search_stock.
+**5. Three report types — use the right one:**
+- **generate_stock_report** — single stock deep-dive (earnings, financials, valuation, moat, conclusion). Use when the user asks about ONE company.
+- **generate_research_report** — for EVERYTHING multi-company or thematic: comparisons ("NVDA vs AMD"), sector/theme/industry ("cloud computing", "EVs"), deep research on any topic ("growth stocks", "dividend plays", "AI infrastructure"), portfolio ideas. Handles all of it.
+- **generate_watchlist_daily_report** — daily update across the user's saved watchlist.
 
-**5. Never skip a tool** when that data would strengthen the analysis. If a tool fails due to missing API keys, say so explicitly and continue with available data only.
+**6. Interactive context.** After delivering a report, stay in context — if the user asks follow-up questions, changes, or refinements, answer using that same research context without re-running the full report unless explicitly asked.
 
-**6. Report requests.** When a user asks for a report on one stock, call generate_stock_report. When asked to compare companies, call generate_comparison_report. When asked for deep research on a company, comparison, theme, sector, or industry, call generate_deep_sector_report. When asked for a daily report on the watchlist, call generate_watchlist_daily_report. Always return the saved artifact path.
+**7. Resolve company names to tickers first.** If the user gives names ("Google", "Microsoft"), call search_stock to get the correct ticker, then pass tickers to report tools.
+
+**8. Never skip a tool** when that data would strengthen the analysis. If a tool fails, say so explicitly and continue with available data.
 
 **OUTPUT STANDARDS:**
-- Tables for all comparisons of 2+ stocks or metrics — no empty cells.
+- Tables for comparisons of 2+ stocks.
 - ### headers for sections in deep research.
-- Emoji section markers: 📊 📈 💰 🏦 🔍 ⚠️ ✅ — bold key metrics.
-- Show all calculations explicitly: FCF = Op.CF − CapEx = $X − $Y = $Z.
+- Emoji markers: 📊 📈 💰 🏦 🔍 ⚠️ ✅ — bold key metrics.
+- Show calculations: FCF = Op.CF − CapEx = $X − $Y = $Z.
 - Numbers: prices 2 decimals, % 1 decimal, large numbers 2 sig figs ($2.3B).
-- Cite "Source: Alpha Vantage" after data-heavy sections.
 `;
 
 const COMPACT_SYSTEM_PROMPT = `You are a buy-side equity research analyst.
 
 Rules:
-- Fetch data via tools before stating facts.
-- Never use training data for numeric market facts; say "data unavailable" if tools fail.
-- Batch tool calls in a single round.
-- If given company names instead of tickers (e.g. "Google", "Microsoft"), call search_stock for each name first to get the correct ticker symbol, then use those tickers in report/comparison tools.
-- Use tables for comparisons and show calculations.
-- Return report paths when asked for reports, including watchlist daily reports.
-- For deep research queries on a company, explicit comparison, theme, sector, or industry (e.g. "Tesla", "Visa vs Mastercard", "semiconductors"), call generate_deep_sector_report — it preserves explicit company scope when present and otherwise performs dependency mapping and universe refinement.
+- Read the user message first, understand intent, then act. Never call a tool without understanding the request.
+- Fetch data via tools before stating facts. Never use training data for numeric facts.
+- Batch tool calls in one round.
+- Three report tools:
+  • generate_stock_report — one company deep-dive.
+  • generate_research_report — comparisons, sectors, themes, industries, or any research topic.
+  • generate_watchlist_daily_report — user's saved watchlist daily update.
+- If given company names (e.g. "Google"), call search_stock first to get the ticker.
+- After a report, stay in context for follow-up questions — no need to re-run unless explicitly asked.
+- Use tables for comparisons; show calculations.
 
 Keep answers concise unless the user requests depth.`;
 
@@ -345,8 +347,16 @@ function isGitHubModelId(model?: string | null): boolean {
   return Boolean(model && model.includes('/'));
 }
 
+/**
+ * Build the ordered list of (provider, models) strategies to try.
+ * - provider === null (auto): use ALL available providers in order: GitHub first, then Gemini.
+ * - provider === 'github': GitHub Models only, with full model fallback chain.
+ * - provider === 'gemini': Gemini only, with full model fallback chain.
+ * All available GitHub models are tried before falling over to Gemini, ensuring
+ * the GitHub $10 subscription is exhausted before giving up.
+ */
 function buildLLMExecutionStrategies(
-  provider: LLMProviderType,
+  provider: LLMProviderType | null,
   requestedModel: string,
   githubToken: string | undefined,
   geminiToken: string | undefined,
@@ -362,14 +372,16 @@ function buildLLMExecutionStrategies(
     ? GEMINI_MODEL
     : requestedModel || GEMINI_MODEL;
 
-  if ((provider === 'github' || provider === 'hybrid') && githubToken) {
+  // auto (null) or 'github': add GitHub strategy when token available
+  if ((provider === null || provider === 'github') && githubToken) {
     strategies.push({
       provider: 'github',
       models: buildFallbackModels(normalizedGithubModel),
     });
   }
 
-  if ((provider === 'gemini' || provider === 'hybrid') && geminiToken) {
+  // auto (null) or 'gemini': add Gemini strategy when token available
+  if ((provider === null || provider === 'gemini') && geminiToken) {
     strategies.push({
       provider: 'gemini',
       models: [geminiRequestedModel],
@@ -665,7 +677,7 @@ async function callLLMForDataFill(
   const strategies: Array<() => Promise<string>> = [];
 
   // GitHub Models — try FILL_MODEL first, then fallback models
-  if (githubToken && (provider === 'github' || provider === 'hybrid')) {
+  if (githubToken && (provider === null || provider === 'github')) {
     const githubModels = [FILL_MODEL, ...DEFAULT_FALLBACK_MODELS].filter(Boolean);
     const seen = new Set<string>();
     for (const model of githubModels) {
@@ -679,7 +691,7 @@ async function callLLMForDataFill(
   }
 
   // Gemini — always available as final fallback when token exists
-  if (geminiToken && (provider === 'gemini' || provider === 'hybrid' || strategies.length === 0)) {
+  if (geminiToken && (provider === null || provider === 'gemini' || strategies.length === 0)) {
     strategies.push(async () => {
       const result = await callGeminiWithFallback(fillMessages, geminiToken, []);
       return extractContent(result);
@@ -720,14 +732,13 @@ function getStockProviderConfigError(provider: string): { error: string; details
   const normalizedProvider = [
     'alphavantage',
     'finnhub',
-    'hybrid',
     'fmp',
     'twelvedata',
     'stooq',
     'multi',
   ].includes(provider)
     ? provider
-    : 'alphavantage';
+    : 'multi'; // default is multi-source
 
   const hasAlphaVantage = Boolean(process.env.ALPHA_VANTAGE_API_KEY);
   const hasFinnhub = Boolean(process.env.FINNHUB_API_KEY);
@@ -763,22 +774,18 @@ function getStockProviderConfigError(provider: string): { error: string; details
             error: 'Twelve Data API key not configured',
             details: 'Please set TWELVE_DATA_API_KEY environment variable.',
           };
-    case 'hybrid':
-      return hasAlphaVantage || hasFinnhub
-        ? null
-        : {
-            error: 'No stock data provider keys configured for hybrid mode',
-            details: 'Please set ALPHA_VANTAGE_API_KEY or FINNHUB_API_KEY environment variable.',
-          };
     case 'stooq':
     case 'multi':
     default:
-      return null;
+      // multi uses whatever keys are available; at least stooq (no key) is always active
+      return hasAlphaVantage || hasFinnhub || hasFmp || hasTwelveData
+        ? null
+        : null; // stooq is always available as fallback
   }
 }
 
 export async function POST(request: NextRequest) {
-  let activeProvider: LLMProviderType = DEFAULT_LLM_PROVIDER;
+  let activeProvider: LLMProviderType | null = DEFAULT_LLM_PROVIDER;
 
   try {
     const body = await request.json();
@@ -795,17 +802,17 @@ export async function POST(request: NextRequest) {
     const githubToken = getGitHubToken();
     // Check if Gemini token is available (never exposed client-side — server env only)
     const geminiToken = process.env.GEMINI_TOKEN;
-    activeProvider = normalizeLLMProvider(typeof provider === 'string' ? provider : DEFAULT_LLM_PROVIDER);
-    const usesGeminiPrimary = activeProvider === 'gemini' || (activeProvider === 'hybrid' && !githubToken && Boolean(geminiToken));
+    activeProvider = normalizeLLMProvider(typeof provider === 'string' ? provider : process.env.LLM_PROVIDER);
+    const usesGeminiPrimary = activeProvider === 'gemini' || (activeProvider === null && !githubToken && Boolean(geminiToken));
     const requestedModel = typeof model === 'string' && model.trim()
       ? model
       : usesGeminiPrimary
         ? GEMINI_MODEL
         : DEFAULT_MODEL;
 
-    // Initialize the configured stock data provider.
-    const dataProvider = (process.env.STOCK_DATA_PROVIDER || 'alphavantage').toLowerCase();
+    // Initialize the stock data service (always multi-source by default).
     const alphaVantageKey = process.env.ALPHA_VANTAGE_API_KEY;
+    const dataProvider = (process.env.STOCK_DATA_PROVIDER || 'multi').toLowerCase();
     const providerConfigError = getStockProviderConfigError(dataProvider);
     if (providerConfigError) {
       return NextResponse.json(
@@ -837,109 +844,8 @@ export async function POST(request: NextRequest) {
       } : undefined,
     });
 
-    const reportRequest = parseReportRequest(message);
-    const timeframe = parseTimeframe(message);
-    if (reportRequest) {
-      const systemPrompt = process.env.USE_FULL_SYSTEM_PROMPT === 'true'
-        ? SYSTEM_PROMPT
-        : COMPACT_SYSTEM_PROMPT;
-      const conversationMessages: ChatMessage[] = [
-        {
-          role: 'system',
-          content: memoryContext.summary
-            ? `${systemPrompt}\n\nPERSISTENT INVESTOR CONTEXT:\n${memoryContext.summary}`
-            : systemPrompt,
-        },
-        ...baseConversationMessages,
-      ];
-
-      conversationMessages.push({ role: 'user', content: message });
-
-      const llmFill = createLLMFiller(githubToken, geminiToken, activeProvider);
-
-      const toolResult = reportRequest.type === 'compare'
-        ? await executeTool(
-            'generate_comparison_report',
-            { companies: reportRequest.companies, range: timeframe || '1y', sessionId: currentSessionId },
-            stockService,
-            { llmFill }
-          )
-        : reportRequest.type === 'deep-sector'
-          ? await executeTool(
-              'generate_deep_sector_report',
-              { sector: reportRequest.query, range: timeframe || '1y', sessionId: currentSessionId },
-              stockService,
-              { llmFill }
-            )
-          : reportRequest.type === 'watchlist-daily'
-            ? await executeTool(
-                'generate_watchlist_daily_report',
-                { range: timeframe || '1y', sessionId: currentSessionId },
-                stockService,
-                { llmFill }
-              )
-            : await executeTool(
-                'generate_stock_report',
-                { symbol: (reportRequest as any).symbol, range: timeframe || '5y', sessionId: currentSessionId },
-                stockService,
-                { llmFill }
-              );
-
-      if (!toolResult.success) {
-        return NextResponse.json(
-          { error: toolResult.error || toolResult.message || 'Report generation failed' },
-          { status: 500 }
-        );
-      }
-
-      const downloadUrl = toolResult.data?.downloadUrl;
-      const filename = toolResult.data?.filename as string | undefined;
-      const content = toolResult.data?.content as string | undefined;
-      const title = toolResult.data?.title as string | undefined;
-      const summary = toolResult.data?.summary as string | undefined;
-      const reportDate = toolResult.data?.reportDate as string | undefined;
-      const reportKind = toolResult.data?.reportKind as string | undefined;
-      const storagePath = toolResult.data?.storagePath as string | undefined;
-      const decisionSnapshot = toolResult.data?.decisionSnapshot as { action?: string; confidence?: string; summary?: string } | undefined;
-      const responseText = decisionSnapshot?.summary
-        ? `Report ready. ${decisionSnapshot.summary} Open the **Artifacts** panel for the full report.`
-        : summary
-          ? `Report ready. ${summary} Open the **Artifacts** panel for the full report.`
-          : 'Report ready — open the **Artifacts** panel to view it.';
-
-      conversationMessages.push({ role: 'assistant', content: responseText });
-      await saveSessionMessages(currentSessionId, toPersistentMessages(conversationMessages), {
-        title: title || reportKind || 'Research Session',
-        summary: responseText,
-      });
-
-      console.info('Chat request stats', {
-        provider: activeProvider,
-        model: requestedModel,
-        rounds: 0,
-        toolCalls: 1,
-        toolsProvided: 0,
-        directReport: reportRequest.type,
-      });
-
-      return NextResponse.json({
-        response: responseText,
-        sessionId: currentSessionId,
-        model: requestedModel,
-        requestedModel,
-        provider: activeProvider,
-        runtimeProvider: activeProvider,
-        fallbackCount: 0,
-        report: filename && content ? { filename, content, downloadUrl, title, summary, reportDate, reportKind, storagePath } : null,
-        stats: {
-          rounds: 0,
-          toolCalls: 1,
-          toolsProvided: 0,
-        },
-      });
-    }
-
-    // Get or create conversation history
+    // All messages — including report requests — go through the LLM first.
+    // The AI model reads user intent and decides which tool to call.
     const preferCompactPrompt = isSmallContextModel(requestedModel);
     const systemPrompt = process.env.USE_FULL_SYSTEM_PROMPT === 'true' && !preferCompactPrompt
       ? SYSTEM_PROMPT
@@ -986,8 +892,8 @@ export async function POST(request: NextRequest) {
         activeProvider === 'gemini'
           ? 'Gemini token not configured. Set GEMINI_TOKEN environment variable.'
           : activeProvider === 'github'
-            ? 'GitHub token not configured'
-            : 'No LLM provider tokens configured. Set GITHUB_TOKEN and/or GEMINI_TOKEN.'
+            ? 'GitHub token not configured. Set GITHUB_TOKEN environment variable.'
+            : 'No LLM provider tokens configured. Set GITHUB_TOKEN and/or GEMINI_TOKEN environment variables.'
       ) as Error & { statusCode: number };
       err.statusCode = 503;
       throw err;
