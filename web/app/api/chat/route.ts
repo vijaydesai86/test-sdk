@@ -29,7 +29,6 @@ const FILL_MODEL = process.env.FILL_MODEL || 'openai/gpt-4.1-mini';
 const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions';
 const GEMINI_MODEL = getConfiguredGeminiModel();
 const GEMINI_FALLBACK_MODELS = getGeminiFallbackModels();
-const DEFAULT_LLM_PROVIDER = null;
 const AUTO_DOWNGRADE_GPT5 = process.env.AUTO_DOWNGRADE_GPT5 !== 'false';
 const DEFAULT_FALLBACK_MODELS = [
   DEFAULT_MODEL,
@@ -696,10 +695,8 @@ function getStockProviderConfigError(provider: string): { error: string; details
     case 'stooq':
     case 'multi':
     default:
-      // multi uses whatever keys are available; at least stooq (no key) is always active
-      return hasAlphaVantage || hasFinnhub || hasFmp || hasTwelveData
-        ? null
-        : null; // stooq is always available as fallback
+      // multi uses whatever keys are available; stooq is always active as fallback
+      return null;
   }
 }
 

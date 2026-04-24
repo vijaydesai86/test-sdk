@@ -3246,7 +3246,7 @@ export async function executeTool(
         };
       }
       case 'generate_research_report':
-      // falls through to deep sector / research logic
+      // fall through to deep sector / research logic
       case 'generate_deep_sector_report': {
         const sector = String(args.sector || '').trim();
         if (!sector) {
