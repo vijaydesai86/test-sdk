@@ -362,7 +362,12 @@ async function callGitHubModelsAPI(
       err.isTransientServerError = true;
       throw err;
     }
-    throw fetchErr;
+    const err = new Error(
+      `GitHub Models API network failure for model '${model}'. Will try next model.`
+    ) as Error & { statusCode: number; isTransientServerError: boolean };
+    err.statusCode = 503;
+    err.isTransientServerError = true;
+    throw err;
   }
 
   if (!response.ok) {
@@ -488,7 +493,12 @@ async function callGeminiAPI(
       err.isTransientServerError = true;
       throw err;
     }
-    throw fetchErr;
+    const err = new Error(
+      `Gemini API network failure for model '${model}'. Will try next model.`
+    ) as Error & { statusCode: number; isTransientServerError: boolean };
+    err.statusCode = 503;
+    err.isTransientServerError = true;
+    throw err;
   }
 
   if (!response.ok) {
