@@ -9,11 +9,6 @@ import * as echarts from 'echarts';
 interface Message {
   role: 'user' | 'assistant';
   content: string;
-  model?: string;
-  requestedModel?: string;
-  provider?: string;
-  runtimeProvider?: string;
-  fallbackCount?: number;
   stats?: {
     rounds: number;
     toolCalls: number;
@@ -83,20 +78,12 @@ interface WatchlistMeta {
   profile: PortfolioProfileMeta;
 }
 
-interface ModelOption {
-  value: string;
-  label: string;
-  rateLimitTier?: string;
-}
-
-
 type WorkspaceTab = 'watchlist' | 'artifacts' | 'saved';
 type ThemeId = 'aurora' | 'solstice' | 'ember' | 'graphite';
 
 const DEFAULT_THEME: ThemeId = 'aurora';
 const THEME_STORAGE_KEY = 'stock-ui-theme';
 
-const DEFAULT_MODEL = 'openai/gpt-4.1';
 const CHART_HEIGHT = 280;
 const MAX_TEXTAREA_HEIGHT = 160;
 const TOOL_CALL_WARNING =
@@ -209,11 +196,6 @@ function ChartBlock({ option }: { option: Record<string, unknown> }) {
   }, [option]);
 
   return <div ref={containerRef} className="my-4 w-full" style={{ height: `${CHART_HEIGHT}px` }} />;
-}
-
-
-function formatModelLabel(model?: string) {
-  return model ? model.split('/').pop() || model : 'unknown';
 }
 
 function humanizeSlug(value: string) {
@@ -348,11 +330,6 @@ export default function ChatInterface() {
   const [isLoading, setIsLoading] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [model, setModel] = useState(DEFAULT_MODEL);
-  const [availableModels, setAvailableModels] = useState<ModelOption[]>([
-    { value: DEFAULT_MODEL, label: 'GPT-4.1', rateLimitTier: 'high' },
-  ]);
-  const [modelsLoading, setModelsLoading] = useState(true);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [reportPreview, setReportPreview] = useState<string | null>(null);
@@ -374,30 +351,6 @@ export default function ChatInterface() {
   const [watchlistInput, setWatchlistInput] = useState('');
   const [portfolioProfileDraft, setPortfolioProfileDraft] = useState<PortfolioProfileMeta | null>(null);
   const [watchlistItemDrafts, setWatchlistItemDrafts] = useState<Record<string, WatchlistItemMeta>>({});
-
-  const selectedModel = availableModels.find((item) => item.value === model) ?? null;
-  const modelHelpText = modelsLoading
-    ? 'Loading available models.'
-    : 'Starts from this model, then falls through the fallback ladder automatically.';
-
-  useEffect(() => {
-    fetch('/api/providers')
-      .then((res) => res.json())
-      .then((payload: { models?: ModelOption[] }) => {
-        const nextModels = payload.models ?? [];
-        if (nextModels.length > 0) {
-          setAvailableModels(nextModels);
-          if (!nextModels.find((m) => m.value === model)) {
-            setModel(nextModels[0].value);
-          }
-        }
-      })
-      .catch(() => {
-        /* keep fallback model */
-      })
-      .finally(() => setModelsLoading(false));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   const fetchSupabaseReports = () => {
     setSupabaseReportsLoading(true);
@@ -429,19 +382,25 @@ export default function ChatInterface() {
   };
 
   useEffect(() => {
-    fetchSupabaseReports();
-    fetchWatchlist();
+    const timer = window.setTimeout(() => {
+      fetchSupabaseReports();
+      fetchWatchlist();
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, []);
 
   useEffect(() => {
     if (!watchlist) return;
-    setPortfolioProfileDraft(watchlist.profile);
-    setWatchlistItemDrafts(
-      watchlist.items.reduce<Record<string, WatchlistItemMeta>>((acc, item) => {
-        acc[item.symbol] = item;
-        return acc;
-      }, {})
-    );
+    const timer = window.setTimeout(() => {
+      setPortfolioProfileDraft(watchlist.profile);
+      setWatchlistItemDrafts(
+        watchlist.items.reduce<Record<string, WatchlistItemMeta>>((acc, item) => {
+          acc[item.symbol] = item;
+          return acc;
+        }, {})
+      );
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [watchlist]);
 
   useEffect(() => {
@@ -467,7 +426,10 @@ export default function ChatInterface() {
     if (typeof window === 'undefined') return;
     const savedTheme = window.localStorage.getItem(THEME_STORAGE_KEY);
     if (savedTheme && THEME_OPTIONS.some((option) => option.id === savedTheme)) {
-      setTheme(savedTheme as ThemeId);
+      const timer = window.setTimeout(() => {
+        setTheme(savedTheme as ThemeId);
+      }, 0);
+      return () => window.clearTimeout(timer);
     }
   }, []);
 
@@ -488,11 +450,11 @@ export default function ChatInterface() {
     setIsLoading(true);
 
     try {
-      const res = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: userMessage, sessionId, model }),
-      });
+        const res = await fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message: userMessage, sessionId }),
+        });
 
       const rawText = await res.text();
       let data: Record<string, unknown>;
@@ -519,11 +481,6 @@ export default function ChatInterface() {
         {
           role: 'assistant',
           content: assistantText,
-          model: typeof data.model === 'string' ? data.model : undefined,
-          requestedModel: typeof data.requestedModel === 'string' ? data.requestedModel : undefined,
-          provider: typeof data.provider === 'string' ? data.provider : undefined,
-          runtimeProvider: typeof data.runtimeProvider === 'string' ? data.runtimeProvider : undefined,
-          fallbackCount: typeof data.fallbackCount === 'number' ? data.fallbackCount : undefined,
           stats: data.stats as Message['stats'],
         },
       ]);
@@ -1514,9 +1471,6 @@ create index if not exists saved_reports_report_date_idx on public.saved_reports
               <div className="rounded-full border border-white/10 bg-white/8 px-3 py-2 text-xs text-slate-200">
                 {workspaceTabs[2].count} saved
               </div>
-              <div className="rounded-full border border-white/10 bg-white/8 px-3 py-2 text-xs text-slate-200">
-                {formatModelLabel(model)}
-              </div>
             </div>
 
             <div className="flex items-center gap-2">
@@ -1653,34 +1607,10 @@ create index if not exists saved_reports_report_date_idx on public.saved_reports
                       </div>
                     </div>
                     <div className="rounded-[24px] border border-white/10 bg-slate-950/40 p-4">
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <p className="text-[11px] uppercase tracking-[0.18em] text-slate-400">Starting model</p>
-                          <p className="mt-1 text-xs leading-5 text-slate-300">{modelHelpText}</p>
-                        </div>
-                        <select
-                          value={model}
-                          onChange={(e) => {
-                            setModel(e.target.value);
-                            setSessionId(null);
-                          }}
-                          disabled={modelsLoading}
-                          className="min-w-[170px] rounded-2xl border border-white/10 bg-white/8 px-3 py-2 text-xs text-white focus:outline-none focus:ring-2 focus:ring-teal-300 disabled:opacity-50"
-                        >
-                          {modelsLoading
-                            ? <option>Loading...</option>
-                            : availableModels.map((m) => (
-                                <option key={m.value} value={m.value}>
-                                  {m.label}
-                                </option>
-                              ))}
-                        </select>
-                      </div>
-                      {selectedModel?.rateLimitTier && (
-                        <p className="mt-3 text-[11px] uppercase tracking-[0.18em] text-teal-200/60">
-                          Current tier: {selectedModel.rateLimitTier}
-                        </p>
-                      )}
+                      <p className="text-[11px] uppercase tracking-[0.18em] text-slate-400">Automatic routing</p>
+                      <p className="mt-1 text-xs leading-5 text-slate-300">
+                        Ask naturally. The app automatically fans out across the available AI model ladder and provider fallbacks without requiring any model choice from you.
+                      </p>
                     </div>
                   </div>
                 </div>
@@ -1730,21 +1660,6 @@ create index if not exists saved_reports_report_date_idx on public.saved_reports
                       {msg.role === 'assistant' && (
                         <div className="mb-3 flex flex-wrap items-center gap-2">
                           <span className="text-xs font-medium text-slate-400">Assistant</span>
-                          {msg.runtimeProvider && (
-                            <span className="rounded-full border border-teal-300/20 bg-teal-300/10 px-2 py-1 text-[10px] uppercase tracking-[0.14em] text-teal-100">
-                              {msg.runtimeProvider}
-                            </span>
-                          )}
-                          {msg.model && (
-                            <span className="rounded-full border border-cyan-300/20 bg-cyan-300/10 px-2 py-1 font-mono text-[10px] text-cyan-100">
-                              {formatModelLabel(msg.model)}
-                            </span>
-                          )}
-                          {msg.fallbackCount && msg.fallbackCount > 0 && (
-                            <span className="rounded-full border border-amber-300/20 bg-amber-300/10 px-2 py-1 text-[10px] uppercase tracking-[0.14em] text-amber-100">
-                              {msg.fallbackCount} fallback{msg.fallbackCount === 1 ? '' : 's'}
-                            </span>
-                          )}
                           {msg.stats && (
                             <span className="text-[10px] text-slate-400">
                               {msg.stats.rounds} rounds • {msg.stats.toolCalls} calls
@@ -1768,9 +1683,7 @@ create index if not exists saved_reports_report_date_idx on public.saved_reports
                         <span className="animate-pulse">●</span>
                         <span className="animate-pulse [animation-delay:150ms]">●</span>
                         <span className="animate-pulse [animation-delay:300ms]">●</span>
-                        <span className="ml-2 text-xs text-slate-400">
-                          {formatModelLabel(model)} thinking...
-                        </span>
+                        <span className="ml-2 text-xs text-slate-400">Researching...</span>
                       </div>
                     </div>
                   </div>

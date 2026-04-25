@@ -6,9 +6,11 @@ import { buildResearchContext, deleteSession, loadSessionMessages, saveSessionMe
 import { getDefaultWatchlist } from '@/app/lib/watchlistStore';
 import { selectChatToolNames } from '@/app/lib/chatToolPolicy';
 import {
+  fetchGitHubModels,
   getConfiguredGeminiModel,
   getGeminiFallbackModels,
   getGitHubToken,
+  normalizeGeminiModel,
   type RuntimeLLMProvider,
 } from '@/app/lib/llmProviderConfig';
 
@@ -54,7 +56,7 @@ const LLM_REQUEST_TIMEOUT_MS = Number(process.env.LLM_REQUEST_TIMEOUT_MS || 6000
 
 const RATE_LIMIT_GUIDANCE =
   'This model allows 50 requests per day. ' +
-  'Try switching to a different model from the dropdown, or try again tomorrow.';
+  'The system will keep walking the automatic fallback ladder, or you can try again tomorrow.';
 
 const MODEL_COOLDOWN_MS = Number(process.env.LLM_MODEL_COOLDOWN_MS || 120000);
 const modelCooldowns = new Map<string, number>();
@@ -245,20 +247,20 @@ function isToolCallLike(content: string | null | undefined): boolean {
   return /"name"\s*:\s*"functions\./.test(content) || /"arguments"\s*:\s*\{/.test(content);
 }
 
-function buildFallbackModels(requestedModel: string): string[] {
+function buildFallbackModels(requestedModel: string, extraModels: string[] = []): string[] {
   const fromEnv = (process.env.COPILOT_FALLBACK_MODELS || '')
     .split(',')
     .map((item) => item.trim())
     .filter(Boolean);
   const base = fromEnv.length > 0 ? fromEnv : DEFAULT_FALLBACK_MODELS;
-  const combined = [requestedModel, ...base, FALLBACK_MODEL];
+  const combined = [requestedModel, ...base, ...extraModels, FALLBACK_MODEL];
   const unique = Array.from(new Set(combined.filter(Boolean)));
   const available = unique.filter((model) => !isModelCoolingDown(model));
   return available.length > 0 ? available : unique;
 }
 
 function buildGeminiFallbackModels(requestedModel?: string | null): string[] {
-  const combined = [requestedModel || '', ...GEMINI_FALLBACK_MODELS];
+  const combined = [normalizeGeminiModel(requestedModel), ...GEMINI_FALLBACK_MODELS];
   const unique = Array.from(new Set(combined.filter(Boolean)));
   const available = unique.filter((model) => !isModelCoolingDown(model));
   return available.length > 0 ? available : unique;
@@ -278,12 +280,12 @@ function isGitHubModelId(model?: string | null): boolean {
  * Always uses all available providers — GitHub first (full fallback chain), then Gemini.
  * provider === null means auto (use all available); 'github'/'gemini' restricts to one.
  */
-function buildLLMExecutionStrategies(
+async function buildLLMExecutionStrategies(
   provider: RuntimeLLMProvider | null,
   requestedModel: string,
   githubToken: string | undefined,
   geminiToken: string | undefined,
-): LLMExecutionStrategy[] {
+): Promise<LLMExecutionStrategy[]> {
   const strategies: LLMExecutionStrategy[] = [];
   const githubRequestedModel = isGitHubModelId(requestedModel)
     ? requestedModel
@@ -293,26 +295,34 @@ function buildLLMExecutionStrategies(
     : githubRequestedModel;
   const geminiRequestedModel = isGitHubModelId(requestedModel)
     ? GEMINI_MODEL
-    : requestedModel || GEMINI_MODEL;
+    : normalizeGeminiModel(requestedModel || GEMINI_MODEL);
 
   const useGitHub = provider === null || provider === 'github';
   const useGemini = provider === null || provider === 'gemini';
 
   if (useGitHub && githubToken) {
+    const catalogModels = (await fetchGitHubModels()).map((item) => item.value);
     strategies.push({
       provider: 'github',
-      models: buildFallbackModels(normalizedGithubModel),
+      models: buildFallbackModels(normalizedGithubModel, catalogModels),
     });
   }
 
   if (useGemini && geminiToken) {
     strategies.push({
       provider: 'gemini',
-      models: [geminiRequestedModel],
+      models: buildGeminiFallbackModels(geminiRequestedModel),
     });
   }
 
   return strategies;
+}
+
+function sanitizeMessagesForGemini(messages: ChatMessage[]): ChatMessage[] {
+  return messages.map((message) => ({
+    ...message,
+    content: typeof message.content === 'string' ? message.content : '',
+  }));
 }
 
 async function callGitHubModelsAPI(
@@ -454,7 +464,7 @@ async function callGeminiAPI(
   model: string,
   tools: ReturnType<typeof getToolDefinitionsByName>
 ): Promise<any> {
-  const body: Record<string, unknown> = { model, messages };
+  const body: Record<string, unknown> = { model, messages: sanitizeMessagesForGemini(messages) };
   if (tools && tools.length > 0) {
     body.tools = tools;
   }
@@ -535,11 +545,21 @@ async function callGeminiAPI(
       throw err;
     }
     if (response.status === 400) {
+      let apiMessage = errorText;
+      try {
+        const errorJson = JSON.parse(errorText);
+        apiMessage = String(errorJson?.error?.message || errorText);
+      } catch {
+        // ignore JSON parse errors
+      }
+      const isUnknownModel = /model.*not found|unsupported model|invalid model/i.test(apiMessage);
       const err = new Error(
-        `Gemini API bad request (400). Model '${model}' may be invalid — check GEMINI_MODEL env var. ` +
-        `API response: ${errorText}`
-      ) as Error & { statusCode: number };
+        isUnknownModel
+          ? `Gemini API model '${model}' is unavailable. Will try the next model.`
+          : `Gemini API bad request (400): ${apiMessage}`
+      ) as Error & { statusCode: number; isUnknownModel?: boolean };
       err.statusCode = 400;
+      if (isUnknownModel) err.isUnknownModel = true;
       throw err;
     }
     throw new Error(`Gemini API error (${response.status}): ${errorText}`);
@@ -676,7 +696,7 @@ function createLLMFiller(
 }
 
 export async function POST(request: NextRequest) {
-  let activeProvider: RuntimeLLMProvider | null = null;
+  const activeProvider: RuntimeLLMProvider | null = null;
 
   try {
     const body = await request.json();
@@ -762,12 +782,12 @@ export async function POST(request: NextRequest) {
     let assistantContent: string | null = null;
     let toolDefinitionsUsed = toolDefinitions;
     const reportArtifacts: Array<{ filename: string; content: string; downloadUrl: string; title?: string; summary?: string; reportDate?: string; reportKind?: string; storagePath?: string }> = [];
-    const executionStrategies = buildLLMExecutionStrategies(
-      activeProvider,
-      requestedModel,
-      githubToken,
-      geminiToken,
-    );
+     const executionStrategies = await buildLLMExecutionStrategies(
+       activeProvider,
+       requestedModel,
+       githubToken,
+       geminiToken,
+     );
 
     if (executionStrategies.length === 0) {
       const err = new Error(
@@ -843,7 +863,8 @@ export async function POST(request: NextRequest) {
         } catch (error: any) {
           const isRateLimit = error?.statusCode === 429;
           const isServerError = Boolean(error?.isTransientServerError);
-          const isUnknownModel = error?.statusCode === 400;
+          const isUnknownModel = Boolean(error?.isUnknownModel);
+          const isBadRequest = error?.statusCode === 400 && !isUnknownModel;
           const isTokensLimit = error?.statusCode === 413;
           // Unknown model: skip to the next fallback without counting as an attempt —
           // retrying with the same invalid model ID would always fail.
@@ -853,7 +874,7 @@ export async function POST(request: NextRequest) {
             }
             throw error;
           }
-          if (attempt === 0 && (isRateLimit || isServerError)) {
+          if (attempt === 0 && (isRateLimit || isServerError || isBadRequest)) {
             if (isRateLimit) markModelCooldown(activeModel, error?.retryAfterMs);
             if (advanceModel()) {
               // Honor the provider's requested retry delay (e.g. Gemini RetryInfo), capped at 10 s.
@@ -979,13 +1000,14 @@ export async function POST(request: NextRequest) {
     console.error('Chat API error:', error);
     const isRateLimit = error.statusCode === 429;
     const isServerError = Boolean(error.isTransientServerError);
-    const isUnknownModel = error.statusCode === 400;
+    const isUnknownModel = Boolean(error.isUnknownModel);
+    const isBadRequest = error.statusCode === 400 && !isUnknownModel;
     const isTokensLimit = error.statusCode === 413;
     const isToolCallText = error.statusCode === 422;
     const isMissingKey = error.statusCode === 503 && !isServerError;
     const statusCode = error.statusCode || (isRateLimit
       ? 429
-      : isUnknownModel
+      : isUnknownModel || isBadRequest
       ? 400
       : isTokensLimit
       ? 413
@@ -996,9 +1018,11 @@ export async function POST(request: NextRequest) {
     if (isRateLimit) {
       details = RATE_LIMIT_GUIDANCE;
     } else if (isServerError) {
-      details = 'The LLM provider returned a temporary server error. All fallback models were also unavailable. Please try again in a few moments, or switch to a different provider/model from the dropdown.';
+      details = 'The AI providers returned temporary server errors. The system already retried across the available model ladder. Please try again in a few moments.';
     } else if (isUnknownModel) {
-      details = 'Open the model dropdown and choose a different model. The model list is fetched live from the GitHub Models catalog.';
+      details = 'One or more server-side model IDs are no longer valid. The system exhausted the automatic fallback ladder. Verify `COPILOT_MODEL`, `COPILOT_FALLBACK_MODELS`, and `GEMINI_MODEL` in environment variables.';
+    } else if (isBadRequest) {
+      details = 'The AI providers rejected the request payload after exhausting the automatic fallback ladder. Please try again in a few moments.';
     } else if (isTokensLimit) {
       details = `The conversation history has grown too large for this model's token limit. Start a new chat to clear the history and try again.`;
     } else if (isToolCallText) {

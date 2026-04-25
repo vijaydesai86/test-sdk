@@ -71,9 +71,9 @@ The system **automatically uses all configured providers in sequence** — GitHu
 |---|---|---|
 | `GITHUB_TOKEN` | Recommended | Personal access token from [github.com/settings/tokens](https://github.com/settings/tokens). Requires `models:read` scope. Uses your existing GitHub Copilot subscription at no extra cost. Also accepted: `GH_TOKEN`, `COPILOT_GITHUB_TOKEN`. |
 | `GEMINI_TOKEN` | Recommended | API key from [aistudio.google.com/api-keys](https://aistudio.google.com/api-keys). Use AI Studio — not Google Cloud Console — to get free-tier quota automatically. |
-| `COPILOT_MODEL` | No | Starting model ID for GitHub Models. Default: `openai/gpt-4.1`. The system falls back through all available models automatically. |
-| `GEMINI_MODEL` | No | Gemini model ID. Default: `gemini-2.5-flash`. The system tries all Gemini fallback models automatically. |
-| `COPILOT_FALLBACK_MODELS` | No | Comma-separated fallback model IDs for GitHub provider. |
+| `COPILOT_MODEL` | No | Preferred first GitHub Models ID. Default: `openai/gpt-4.1`. After that the server fans out across the full live GitHub catalog automatically. |
+| `GEMINI_MODEL` | No | Preferred first Gemini model ID. Default: `gemini-2.5-flash`. Invalid values are ignored and reset to the safe Gemini ladder automatically. |
+| `COPILOT_FALLBACK_MODELS` | No | Optional comma-separated GitHub model IDs to try near the front of the automatic fallback ladder. |
 | `FILL_MODEL` | No | Lighter model used for ticker resolution. Default: `openai/gpt-4.1-mini`. |
 | `AUTO_DOWNGRADE_GPT5` | No | Set to `false` to disable automatic gpt-5 → gpt-4.1 downgrade. Default: `true`. |
 
@@ -166,7 +166,7 @@ test-sdk/
 │   │   │   ├── chat/            # Main research endpoint (POST, DELETE)
 │   │   │   ├── health/          # Provider health check (GET)
 │   │   │   ├── models/          # GitHub Models catalog (GET)
-│   │   │   ├── providers/       # LLM provider list (GET)
+│   │   │   ├── providers/       # Internal LLM model inventory (GET)
 │   │   │   ├── saved-reports/   # Saved report library (GET, POST)
 │   │   │   └── watchlist/       # Watchlist management (GET, PATCH, DELETE)
 │   │   ├── components/
@@ -178,7 +178,7 @@ test-sdk/
 │   │       ├── decisionEngine.ts  # 7-pillar multi-factor decision engine
 │   │       ├── investmentTypes.ts # Shared types: DecisionSnapshot, PortfolioProfile, etc.
 │   │       ├── dataTrust.ts       # Data freshness tracking (fresh/aging/stale)
-│   │       ├── llmProviderConfig.ts# LLM provider/model configuration
+│   │       ├── llmProviderConfig.ts# LLM provider/model configuration + safe fallback ladders
 │   │       ├── watchlistStore.ts  # Watchlist CRUD (Supabase / filesystem)
 │   │       ├── researchMemoryStore.ts # Research session + thesis persistence
 │   │       ├── chatToolPolicy.ts  # Tool name allowlist for LLM calls

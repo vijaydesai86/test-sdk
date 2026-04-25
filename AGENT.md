@@ -57,7 +57,7 @@ User message
 
 | File | Role |
 |---|---|
-| `web/app/api/chat/route.ts` | Entry point. Parses requests, selects LLM provider and model, runs the tool-call loop, manages session history, handles rate-limit fallbacks. |
+| `web/app/api/chat/route.ts` | Entry point. Parses requests, auto-routes across the available LLM model ladders, runs the tool-call loop, manages session history, handles rate-limit fallbacks. |
 | `web/app/lib/stockTools.ts` | Tool definitions (`getToolDefinitions`), `executeTool` dispatch, report orchestration (generate_* tools), ticker resolution, sector company selection, moat/conclusion prompt builders, disk cache helpers. |
 | `web/app/lib/stockDataService.ts` | All data provider implementations: `AlphaVantageService`, `FinnhubService`, `FinancialModelingPrepService`, `TwelveDataService`, `StooqService`, `MultiSourceStockDataService`. Also standalone services: `SecEdgarService` (SEC EDGAR filings), `FredService` (FRED economic data). `createStockService()` always returns `MultiSourceStockDataService` using all configured keys. |
 | `web/app/lib/reportGenerator.ts` | Report builders (`buildStockReport`, `buildComparisonReport`, `buildSectorReport`, `buildDeepSectorReport`, `buildDeepStockReport`, `buildDeepComparisonReport`, `buildWatchlistDailyReport`), technical indicator computations (RSI, MACD, Bollinger, Stochastic, ATR, EMA), ECharts and Mermaid chart builders, `saveReport()` persistence. |
@@ -69,12 +69,12 @@ User message
 | `web/app/lib/researchMemoryStore.ts` | Persistence layer for research sessions, company theses, and decision journal records. Backed by Supabase when available, otherwise filesystem JSON. |
 | `web/app/lib/watchlistStore.ts` | Watchlist CRUD backed by Supabase (primary) or JSON file (fallback). Default watchlist seeded with 15 semiconductor/tech companies (max 25 items). Supabase seed failures return in-memory defaults (never empty). |
 | `web/app/lib/supabaseClient.ts` | Lazy Supabase client singleton; returns `null` when env vars are absent. |
-| `web/app/components/ChatInterface.tsx` | Full single-page UI: chat pane, workspace sidebar (Watchlist / Artifacts / Saved tabs), 4 themes (Aurora, Solstice, Ember, Graphite), ECharts and Mermaid rendering, quick prompts, starting model picker. |
+| `web/app/components/ChatInterface.tsx` | Full single-page UI: chat pane, workspace sidebar (Watchlist / Artifacts / Saved tabs), 4 themes (Aurora, Solstice, Ember, Graphite), ECharts and Mermaid rendering, quick prompts, automatic routing messaging. |
 | `web/app/api/health/route.ts` | Provider health check. Reports which API keys are configured and whether the service is ready. Supports optional live price check via `HEALTH_CHECK_SYMBOL`. |
 | `web/app/api/saved-reports/route.ts` | GET (list) and POST (persist) for the saved-report library. Falls back to legacy schema when migration columns are absent. |
 | `web/app/api/watchlist/route.ts` | GET default watchlist; PATCH/DELETE individual items. |
 | `web/app/api/models/route.ts` | Returns available GitHub Models from live catalog. |
-| `web/app/api/providers/route.ts` | Returns combined list of available LLM models (GitHub + Gemini) for the model picker. |
+| `web/app/api/providers/route.ts` | Returns combined list of available LLM models (GitHub + Gemini) for internal inventory/debug use. |
 
 ### Tool catalog (30 tools)
 
@@ -203,15 +203,16 @@ Both tokens set      →  GitHub Models first → Gemini fallback
 - Auth: `GITHUB_TOKEN` (or `GH_TOKEN`, `COPILOT_GITHUB_TOKEN`)
 - Default model: `openai/gpt-4.1` (override with `COPILOT_MODEL`)
 - Gap-fill (ticker resolution) model: `openai/gpt-4.1-mini` (override with `FILL_MODEL`)
-- Fallback chain: configurable via `COPILOT_FALLBACK_MODELS`; defaults to gpt-4.1 → Claude Sonnet → gpt-4.1-mini → Gemini Flash
-- Live model catalog fetched from `https://models.github.ai/catalog/models` filtered to OpenAI/Anthropic/Google tool-calling models
+- Fallback chain: `COPILOT_MODEL` / `COPILOT_FALLBACK_MODELS` are only the front of the ladder; the route then fans out across the full live GitHub catalog filtered to OpenAI/Anthropic/Google tool-calling models
+- Live model catalog fetched from `https://models.github.ai/catalog/models`
 
 ### Gemini
 
 - Endpoint: `https://generativelanguage.googleapis.com/v1beta/openai/chat/completions`
 - Auth: `GEMINI_TOKEN` — must come from [aistudio.google.com/api-keys](https://aistudio.google.com/api-keys), NOT Google Cloud Console
 - Default model: `gemini-2.5-flash` (override with `GEMINI_MODEL`)
-- Internal fallback chain: gemini-2.5-flash → gemini-2.5-flash-lite → gemini-3.0-flash → gemini-3.1-flash-lite
+- Internal fallback chain: gemini-2.5-flash → gemini-2.5-flash-lite → gemini-2.0-flash
+- Gemini requests must never send `content: null`; the route normalizes Gemini-bound messages to string content before calling the OpenAI-compatible endpoint
 
 ### Model cooldown
 
