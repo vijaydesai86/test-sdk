@@ -11,6 +11,7 @@ import {
   getGeminiFallbackModels,
   getGitHubToken,
   normalizeGeminiModel,
+  SAFE_GITHUB_MODELS,
   type RuntimeLLMProvider,
 } from '@/app/lib/llmProviderConfig';
 
@@ -32,14 +33,7 @@ const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/openai/
 const GEMINI_MODEL = getConfiguredGeminiModel();
 const GEMINI_FALLBACK_MODELS = getGeminiFallbackModels();
 const AUTO_DOWNGRADE_GPT5 = process.env.AUTO_DOWNGRADE_GPT5 !== 'false';
-const DEFAULT_FALLBACK_MODELS = [
-  DEFAULT_MODEL,
-  'openai/gpt-4.1',
-  'anthropic/claude-3.7-sonnet',
-  'anthropic/claude-3.5-sonnet',
-  'openai/gpt-4.1-mini',
-  'google/gemini-3-flash',
-];
+const DEFAULT_FALLBACK_MODELS = SAFE_GITHUB_MODELS.map((model) => model.value);
 // Allow enough rounds for multi-stock research. With parallel batching, each round
 // can execute dozens of tool calls simultaneously — so 30 rounds is ample even for
 // 20-stock reports (typically: 1 sector list + 2-3 batch rounds + 1 write round).
@@ -60,6 +54,15 @@ const RATE_LIMIT_GUIDANCE =
 
 const MODEL_COOLDOWN_MS = Number(process.env.LLM_MODEL_COOLDOWN_MS || 120000);
 const modelCooldowns = new Map<string, number>();
+const invalidModels = new Set<string>();
+
+function isModelInvalid(modelId: string): boolean {
+  return invalidModels.has(modelId);
+}
+
+function markModelInvalid(modelId: string) {
+  invalidModels.add(modelId);
+}
 
 function isModelCoolingDown(modelId: string): boolean {
   const until = modelCooldowns.get(modelId);
@@ -255,14 +258,14 @@ function buildFallbackModels(requestedModel: string, extraModels: string[] = [])
   const base = fromEnv.length > 0 ? fromEnv : DEFAULT_FALLBACK_MODELS;
   const combined = [requestedModel, ...base, ...extraModels, FALLBACK_MODEL];
   const unique = Array.from(new Set(combined.filter(Boolean)));
-  const available = unique.filter((model) => !isModelCoolingDown(model));
+  const available = unique.filter((model) => !isModelCoolingDown(model) && !isModelInvalid(model));
   return available.length > 0 ? available : unique;
 }
 
 function buildGeminiFallbackModels(requestedModel?: string | null): string[] {
   const combined = [normalizeGeminiModel(requestedModel), ...GEMINI_FALLBACK_MODELS];
   const unique = Array.from(new Set(combined.filter(Boolean)));
-  const available = unique.filter((model) => !isModelCoolingDown(model));
+  const available = unique.filter((model) => !isModelCoolingDown(model) && !isModelInvalid(model));
   return available.length > 0 ? available : unique;
 }
 
@@ -425,10 +428,12 @@ async function callGitHubModelsAPI(
         // ignore JSON parse errors
       }
       if (errorCode === 'unknown_model' || errorCode === 'model_not_found') {
+        markModelInvalid(model);
         const err = new Error(
-          'Model not found. Please select a different model from the dropdown.'
-        ) as Error & { statusCode: number };
+          `GitHub model '${model}' is unavailable. Will try the next model.`
+        ) as Error & { statusCode: number; isUnknownModel?: boolean };
         err.statusCode = 400;
+        err.isUnknownModel = true;
         throw err;
       }
     }
@@ -563,6 +568,7 @@ async function callGeminiAPI(
         // ignore JSON parse errors
       }
       const isUnknownModel = /model.*not found|unsupported model|invalid model/i.test(apiMessage);
+      if (isUnknownModel) markModelInvalid(model);
       const err = new Error(
         isUnknownModel
           ? `Gemini API model '${model}' is unavailable. Will try the next model.`
