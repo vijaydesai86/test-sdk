@@ -421,9 +421,11 @@ async function callGitHubModelsAPI(
     // variants — treat both identically so the error is surfaced cleanly.
     if (response.status === 400 || response.status === 404) {
       let errorCode = '';
+      let errorMessage = errorText;
       try {
         const errorJson = JSON.parse(errorText);
         errorCode = errorJson?.error?.code || '';
+        errorMessage = errorJson?.error?.message || errorText;
       } catch {
         // ignore JSON parse errors
       }
@@ -436,6 +438,11 @@ async function callGitHubModelsAPI(
         err.isUnknownModel = true;
         throw err;
       }
+      const err = new Error(
+        `GitHub Models API rejected the request for model '${model}': ${errorMessage}`
+      ) as Error & { statusCode: number };
+      err.statusCode = response.status;
+      throw err;
     }
     if (response.status === 413) {
       const err = new Error(
@@ -880,7 +887,6 @@ export async function POST(request: NextRequest) {
           const isRateLimit = error?.statusCode === 429;
           const isServerError = Boolean(error?.isTransientServerError);
           const isUnknownModel = Boolean(error?.isUnknownModel);
-          const isBadRequest = error?.statusCode === 400 && !isUnknownModel;
           const isTokensLimit = error?.statusCode === 413;
           // Unknown model: skip to the next fallback without counting as an attempt —
           // retrying with the same invalid model ID would always fail.
@@ -890,7 +896,7 @@ export async function POST(request: NextRequest) {
             }
             throw error;
           }
-          if (attempt === 0 && (isRateLimit || isServerError || isBadRequest)) {
+          if (attempt === 0 && (isRateLimit || isServerError)) {
             if (isRateLimit) markModelCooldown(activeModel, error?.retryAfterMs);
             if (advanceModel()) {
               // Honor the provider's requested retry delay (e.g. Gemini RetryInfo), capped at 10 s.
