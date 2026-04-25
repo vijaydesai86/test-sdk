@@ -1024,6 +1024,21 @@ export async function POST(request: NextRequest) {
       : isToolCallText
       ? 422
       : 500);
+    const userFacingError = isRateLimit
+      ? 'AI provider rate limit reached'
+      : isServerError
+      ? 'AI providers temporarily unavailable'
+      : isUnknownModel
+      ? 'AI model configuration error'
+      : isBadRequest
+      ? 'AI provider rejected the request'
+      : isTokensLimit
+      ? 'Conversation too large for the provider'
+      : isToolCallText
+      ? 'Model returned tool calls as text'
+      : isMissingKey
+      ? 'AI provider credentials missing'
+      : 'Failed to process message';
     let details: string;
     if (isRateLimit) {
       details = RATE_LIMIT_GUIDANCE;
@@ -1046,7 +1061,7 @@ export async function POST(request: NextRequest) {
     }
     return NextResponse.json(
       {
-        error: error.message || 'Failed to process message',
+        error: userFacingError,
         details,
       },
       { status: statusCode }

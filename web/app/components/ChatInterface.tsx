@@ -340,7 +340,13 @@ export default function ChatInterface() {
   const [savedReports, setSavedReports] = useState<ReportItem[]>([]);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [activeWorkspaceTab, setActiveWorkspaceTab] = useState<WorkspaceTab>('watchlist');
-  const [theme, setTheme] = useState<ThemeId>(DEFAULT_THEME);
+  const [theme, setTheme] = useState<ThemeId>(() => {
+    if (typeof window === 'undefined') return DEFAULT_THEME;
+    const savedTheme = window.localStorage.getItem(THEME_STORAGE_KEY);
+    return savedTheme && THEME_OPTIONS.some((option) => option.id === savedTheme)
+      ? savedTheme as ThemeId
+      : DEFAULT_THEME;
+  });
   const [supabaseReports, setSupabaseReports] = useState<SavedReportMeta[]>([]);
   const [supabaseReportsLoading, setSupabaseReportsLoading] = useState(false);
   const [supabaseSetupRequired, setSupabaseSetupRequired] = useState(false);
@@ -373,7 +379,17 @@ export default function ChatInterface() {
       .then(async (res) => {
         const payload = (await res.json()) as { watchlist?: WatchlistMeta; error?: string };
         if (!res.ok) throw new Error(payload.error || 'Failed to load watchlist');
-        setWatchlist(payload.watchlist ?? null);
+        const nextWatchlist = payload.watchlist ?? null;
+        setWatchlist(nextWatchlist);
+        setPortfolioProfileDraft(nextWatchlist?.profile ?? null);
+        setWatchlistItemDrafts(
+          nextWatchlist
+            ? nextWatchlist.items.reduce<Record<string, WatchlistItemMeta>>((acc, item) => {
+                acc[item.symbol] = item;
+                return acc;
+              }, {})
+            : {}
+        );
       })
       .catch((err: unknown) => {
         setWatchlistError(err instanceof Error ? err.message : 'Failed to load watchlist');
@@ -382,26 +398,10 @@ export default function ChatInterface() {
   };
 
   useEffect(() => {
-    const timer = window.setTimeout(() => {
-      fetchSupabaseReports();
-      fetchWatchlist();
-    }, 0);
-    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    fetchSupabaseReports();
+    fetchWatchlist();
   }, []);
-
-  useEffect(() => {
-    if (!watchlist) return;
-    const timer = window.setTimeout(() => {
-      setPortfolioProfileDraft(watchlist.profile);
-      setWatchlistItemDrafts(
-        watchlist.items.reduce<Record<string, WatchlistItemMeta>>((acc, item) => {
-          acc[item.symbol] = item;
-          return acc;
-        }, {})
-      );
-    }, 0);
-    return () => window.clearTimeout(timer);
-  }, [watchlist]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
@@ -421,17 +421,6 @@ export default function ChatInterface() {
       document.body.style.overflow = '';
     };
   }, [sidebarOpen, reportPreview]);
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const savedTheme = window.localStorage.getItem(THEME_STORAGE_KEY);
-    if (savedTheme && THEME_OPTIONS.some((option) => option.id === savedTheme)) {
-      const timer = window.setTimeout(() => {
-        setTheme(savedTheme as ThemeId);
-      }, 0);
-      return () => window.clearTimeout(timer);
-    }
-  }, []);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
