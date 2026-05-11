@@ -6,11 +6,12 @@ import { buildResearchContext, deleteSession, loadSessionMessages, saveSessionMe
 import { getDefaultWatchlist } from '@/app/lib/watchlistStore';
 import { selectChatToolNames } from '@/app/lib/chatToolPolicy';
 import {
+  fetchGitHubModels,
   getConfiguredGeminiModel,
   getGeminiFallbackModels,
   getGitHubToken,
-  normalizeLLMProvider,
-  type LLMProviderType,
+  normalizeGeminiModel,
+  SAFE_GITHUB_MODELS,
   type RuntimeLLMProvider,
 } from '@/app/lib/llmProviderConfig';
 
@@ -31,16 +32,8 @@ const FILL_MODEL = process.env.FILL_MODEL || 'openai/gpt-4.1-mini';
 const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions';
 const GEMINI_MODEL = getConfiguredGeminiModel();
 const GEMINI_FALLBACK_MODELS = getGeminiFallbackModels();
-const DEFAULT_LLM_PROVIDER = normalizeLLMProvider(process.env.LLM_PROVIDER);
 const AUTO_DOWNGRADE_GPT5 = process.env.AUTO_DOWNGRADE_GPT5 !== 'false';
-const DEFAULT_FALLBACK_MODELS = [
-  DEFAULT_MODEL,
-  'openai/gpt-4.1',
-  'anthropic/claude-3.7-sonnet',
-  'anthropic/claude-3.5-sonnet',
-  'openai/gpt-4.1-mini',
-  'google/gemini-3-flash',
-];
+const DEFAULT_FALLBACK_MODELS = SAFE_GITHUB_MODELS.map((model) => model.value);
 // Allow enough rounds for multi-stock research. With parallel batching, each round
 // can execute dozens of tool calls simultaneously — so 30 rounds is ample even for
 // 20-stock reports (typically: 1 sector list + 2-3 batch rounds + 1 write round).
@@ -50,13 +43,26 @@ const TOOL_RESULT_MAX_DEPTH = 3;
 const TOOL_RESULT_MAX_ARRAY = 12;
 const TOOL_RESULT_MAX_KEYS = 40;
 const TOOL_RESULT_MAX_STRING = 500;
+// Per-request timeout for individual LLM API calls. Keeps a hung upstream call
+// from consuming the entire Vercel 300s budget — the fallback chain advances
+// to the next model instead. Default: 60s. Override via LLM_REQUEST_TIMEOUT_MS.
+const LLM_REQUEST_TIMEOUT_MS = Number(process.env.LLM_REQUEST_TIMEOUT_MS || 60000);
 
 const RATE_LIMIT_GUIDANCE =
   'This model allows 50 requests per day. ' +
-  'Try switching to a different model from the dropdown, or try again tomorrow.';
+  'The system will keep walking the automatic fallback ladder, or you can try again tomorrow.';
 
 const MODEL_COOLDOWN_MS = Number(process.env.LLM_MODEL_COOLDOWN_MS || 120000);
 const modelCooldowns = new Map<string, number>();
+const invalidModels = new Set<string>();
+
+function isModelInvalid(modelId: string): boolean {
+  return invalidModels.has(modelId);
+}
+
+function markModelInvalid(modelId: string) {
+  invalidModels.add(modelId);
+}
 
 function isModelCoolingDown(modelId: string): boolean {
   const until = modelCooldowns.get(modelId);
@@ -84,72 +90,78 @@ interface ChatMessage {
   tool_call_id?: string;
 }
 
-function toPersistentMessages(messages: ChatMessage[]): Array<{ role: 'user' | 'assistant' | 'tool'; content: string | null }> {
+function toPersistentMessages(messages: ChatMessage[]): Array<{ role: 'user' | 'assistant'; content: string | null }> {
+  // Save ONLY user messages and final assistant text replies.
+  // Drop assistant messages that only contained tool_calls (content null/empty) and all
+  // tool result messages — these form an invalid sequence when reloaded because the
+  // tool_calls metadata is not persisted, leaving orphaned 'tool' role messages.
   return messages
     .filter((message) => message.role !== 'system')
+    .filter((message) => {
+      if (message.role === 'tool') return false;
+      if (message.role === 'assistant' && !message.content && message.tool_calls?.length) return false;
+      return true;
+    })
     .map((message) => ({
-      role: message.role as 'user' | 'assistant' | 'tool',
+      role: message.role as 'user' | 'assistant',
       content: message.content,
     }));
 }
 
-const SYSTEM_PROMPT = `You are an elite buy-side equity research analyst. Produce institutional-quality, data-driven financial research — thorough, precise, and immediately actionable.
+const SYSTEM_PROMPT = `You are an elite buy-side equity research analyst. You read EVERY user message, understand intent, then act immediately. Produce institutional-quality, data-driven financial research — thorough, precise, immediately actionable.
 
 **NON-NEGOTIABLE RULES:**
 
-**1. Fetch before you write.** Never state a fact about a stock without first calling the relevant tool. No estimates, no speculation, no filler.
+**1. NEVER ask for clarification. Always act immediately.** If the user mentions a company or topic, act on your best interpretation right now. If you need to resolve a name to a ticker, call search_stock — do not ask the user. If the request is genuinely ambiguous (e.g. two companies with the same name), pick the most likely one and proceed.
 
-**1b. No training-data facts.** Never use model memory/training data for numeric or time-sensitive market facts. If tools return nothing, state that the data is unavailable.
+**2. Fetch before you write.** Never state a fact about a stock without first calling the relevant tool. No estimates, no speculation, no filler.
 
-**2. Batch all parallel calls in ONE round.** Researching N stocks? Issue ALL tool calls simultaneously in a single response — never one at a time. This is critical for multi-stock reports.
+**3. No training-data facts.** Never use model memory/training data for numeric or time-sensitive market facts. If tools return nothing, state that the data is unavailable.
 
-**3. Match depth to the question.**
-- Individual stock report: call generate_stock_report with the ticker symbol.
-- Company comparison report: call generate_comparison_report with the list of ticker symbols.
-- Deep research: call generate_deep_sector_report when the user asks for deep research on a single company, an explicit company comparison, or a theme/sector/industry (e.g. "Tesla", "Visa vs Mastercard", "semiconductors"). It preserves explicit company scope when provided; otherwise it identifies a broader candidate list, maps dependencies, refines the universe, and builds the final report.
-- Watchlist daily report: call generate_watchlist_daily_report when the user asks for the daily report or a watchlist report covering the saved watchlist.
-- Data-only query: call the relevant data tool (get_stock_price, get_company_overview, etc.) and answer directly.
+**4. Batch all parallel calls in ONE round.** Researching N stocks? Issue ALL tool calls simultaneously — never one at a time.
 
-**4. Resolve company names to tickers first.** If the user mentions company names (e.g. "Google", "Microsoft", "Apple") instead of tickers, call search_stock for each name to find the correct ticker symbol, then use those tickers in generate_stock_report or generate_comparison_report. Never guess a ticker — always confirm it with search_stock.
+**5. Three report types — use the right one:**
+- **generate_stock_report** — single stock deep-dive (earnings, financials, valuation, moat, conclusion). Use when the user asks about ONE company.
+- **generate_research_report** — for EVERYTHING multi-company or thematic: comparisons ("NVDA vs AMD"), sector/theme/industry ("cloud computing", "EVs"), deep research on any topic ("growth stocks", "dividend plays", "AI infrastructure"), portfolio ideas. Handles all of it.
+- **generate_watchlist_daily_report** — daily update across the user's saved watchlist.
 
-**5. Never skip a tool** when that data would strengthen the analysis. If a tool fails due to missing API keys, say so explicitly and continue with available data only.
+**6. Interactive context.** After delivering a report, stay in context — if the user asks follow-up questions, changes, or refinements, answer using that same research context without re-running the full report unless explicitly asked.
 
-**6. Report requests.** When a user asks for a report on one stock, call generate_stock_report. When asked to compare companies, call generate_comparison_report. When asked for deep research on a company, comparison, theme, sector, or industry, call generate_deep_sector_report. When asked for a daily report on the watchlist, call generate_watchlist_daily_report. Always return the saved artifact path.
+**7. Resolve company names to tickers first.** If the user gives names ("Google", "ARM semiconductors", "Microsoft"), call search_stock immediately to get the correct ticker, then pass tickers to report tools. Do NOT ask the user for the ticker.
+
+**8. Never skip a tool** when that data would strengthen the analysis. If a tool fails, say so explicitly and continue with available data.
 
 **OUTPUT STANDARDS:**
-- Tables for all comparisons of 2+ stocks or metrics — no empty cells.
+- Tables for comparisons of 2+ stocks.
 - ### headers for sections in deep research.
-- Emoji section markers: 📊 📈 💰 🏦 🔍 ⚠️ ✅ — bold key metrics.
-- Show all calculations explicitly: FCF = Op.CF − CapEx = $X − $Y = $Z.
+- Emoji markers: 📊 📈 💰 🏦 🔍 ⚠️ ✅ — bold key metrics.
+- Show calculations: FCF = Op.CF − CapEx = $X − $Y = $Z.
 - Numbers: prices 2 decimals, % 1 decimal, large numbers 2 sig figs ($2.3B).
-- Cite "Source: Alpha Vantage" after data-heavy sections.
 `;
 
 const COMPACT_SYSTEM_PROMPT = `You are a buy-side equity research analyst.
 
 Rules:
-- Fetch data via tools before stating facts.
-- Never use training data for numeric market facts; say "data unavailable" if tools fail.
-- Batch tool calls in a single round.
-- If given company names instead of tickers (e.g. "Google", "Microsoft"), call search_stock for each name first to get the correct ticker symbol, then use those tickers in report/comparison tools.
-- Use tables for comparisons and show calculations.
-- Return report paths when asked for reports, including watchlist daily reports.
-- For deep research queries on a company, explicit comparison, theme, sector, or industry (e.g. "Tesla", "Visa vs Mastercard", "semiconductors"), call generate_deep_sector_report — it preserves explicit company scope when present and otherwise performs dependency mapping and universe refinement.
+- NEVER ask clarifying questions. Act immediately on your best interpretation.
+- If the user gives a company name ("Google", "ARM semiconductors"), call search_stock immediately to resolve the ticker. Do NOT ask the user for the ticker.
+- Fetch data via tools before stating facts. Never use training data for numeric facts.
+- Batch tool calls in one round.
+- Three report tools:
+  • generate_stock_report — one company deep-dive.
+  • generate_research_report — comparisons, sectors, themes, industries, or any research topic.
+  • generate_watchlist_daily_report — user's saved watchlist daily update.
+- After a report, stay in context for follow-up questions — no need to re-run unless explicitly asked.
+- Use tables for comparisons; show calculations.
 
 Keep answers concise unless the user requests depth.`;
 
 /**
  * Trim conversation history to prevent token limit errors (413) on subsequent turns.
  *
- * The app's fixed overhead per request is ~5,500 tokens (system prompt + tool
- * definitions). High/Low tier models allow 8,000 input tokens, leaving only
- * ~2,500 tokens for conversation history. A single deep-research turn accumulates
- * many tool result messages that can far exceed this budget.
- *
- * Strategy: keep the system message + only the most recent complete exchange
- * (the final user message and its final assistant reply). All intermediate tool
- * call/result messages from previous turns are dropped — they were only needed
- * during that turn's reasoning loop and have no value in later turns.
+ * All messages loaded from persistence are COMPLETE exchanges (previous turns).
+ * Strategy: keep the last `maxExchanges` complete exchanges, each compacted to
+ * [user, final-assistant-text] only — dropping all intermediate tool_calls and
+ * tool result messages, which are bulky and invalid to replay across turns.
  */
 function trimHistory(messages: ChatMessage[], maxExchanges = 2): ChatMessage[] {
   if (messages.length === 0) return messages;
@@ -172,26 +184,24 @@ function trimHistory(messages: ChatMessage[], maxExchanges = 2): ChatMessage[] {
 
   if (exchanges.length === 0) return messages;
 
-  // From each exchange, keep only the final assistant text reply (drop intermediate
-  // tool_calls and tool results — they balloon in size and are not needed later).
+  // From each exchange, keep only [user, final assistant text reply].
+  // Tool_calls and tool result messages are dropped — they are bulky, only needed
+  // during that turn's reasoning loop, and invalid to replay (tool_calls metadata
+  // is not persisted, so reloaded 'tool' messages would be orphaned).
   const compactExchange = (exchange: ChatMessage[]): ChatMessage[] => {
     const userMsg = exchange[0]; // the user message that started this exchange
-    // Find the final assistant message (no tool_calls — the actual text response)
+    // Find the final assistant message that has text content (not just tool_calls)
     const finalAssistant = [...exchange].reverse().find(
-      (m) => m.role === 'assistant' && !m.tool_calls?.length
+      (m) => m.role === 'assistant' && m.content
     );
     if (finalAssistant) return [userMsg, truncateMessageContent(finalAssistant)];
-    // If no clean final assistant message yet (in-progress exchange), keep as-is
-    return exchange.map(truncateMessageContent);
+    // No text response found — keep only the user message (drop orphaned tool msgs)
+    return [userMsg];
   };
 
-  // Keep the last 2 complete exchanges (so there's some conversation context)
-  // plus the current in-progress exchange (last one) in full.
+  // Keep the last N complete exchanges, all compacted
   const keepExchanges = exchanges.slice(-maxExchanges);
-  const compacted = keepExchanges.flatMap((ex, idx) =>
-    // Compact all but the last exchange (which is currently being processed)
-    idx < keepExchanges.length - 1 ? compactExchange(ex) : ex
-  );
+  const compacted = keepExchanges.flatMap((ex) => compactExchange(ex));
 
   return [system, ...compacted.map(truncateMessageContent)];
 }
@@ -240,99 +250,22 @@ function isToolCallLike(content: string | null | undefined): boolean {
   return /"name"\s*:\s*"functions\./.test(content) || /"arguments"\s*:\s*\{/.test(content);
 }
 
-function parseCompareRequest(message: string): string[] | null {
-  const text = message.trim();
-  if (!/compar/i.test(text)) return null;
-  // Extract comma- or "vs"-separated ticker/company tokens
-  const tickerPart = text
-    .replace(/^.*?compar(?:e|ison\s+of|ison)?\s+(?:companies?\s+)?/i, '')
-    .replace(/\s+report.*$/i, '');
-  // Tokens are already uppercased via .toUpperCase() above.
-  // Allow 2–30 uppercase letters so company names ("MICROSOFT") pass
-  // alongside short tickers ("AMD"). Multi-word names like "PALO ALTO"
-  // split into individual tokens; resolveSymbolFromQuery handles each token
-  // separately via the SYMBOL_SEARCH API.
-  const tokens = tickerPart
-    .split(/\s*(?:,|vs\.?|and|\s)\s*/i)
-    .map((t) => t.trim().toUpperCase())
-    .filter((t) => /^[A-Z]{2,30}$/.test(t));
-  return tokens.length >= 2 ? tokens : null;
-}
-
-function parseReportRequest(message: string) {
-  const text = message.trim();
-  const lower = text.toLowerCase();
-
-  const watchlistDailyMatch = /^(?:generate|create|build|show|give)(?:\s+me)?\s+(?:my\s+)?(?:watchlist\s+)?daily report(?:\s+for\s+(?:my\s+watchlist))?\s*$/i.test(text)
-    || /^(?:my\s+)?(?:watchlist\s+)?daily report$/i.test(text)
-    || (lower.includes('daily report') && lower.includes('watchlist'))
-    || lower === 'daily report'
-    || lower === 'watchlist report'
-    || /^(?:my\s+)?watchlist report$/i.test(text)
-    || /^report for my watchlist$/i.test(text);
-  if (watchlistDailyMatch) {
-    return { type: 'watchlist-daily' as const };
-  }
-
-  const deepSectorMatch = text.match(/deep(?:\s+sector)?(?:\s+(?:research|analysis))?(?:\s+report)?\s+(?:for|on)\s+(.+)$/i);
-  if (deepSectorMatch) {
-    return { type: 'deep-sector' as const, query: deepSectorMatch[1].trim() };
-  }
-
-  const compareCompanies = parseCompareRequest(text);
-  if (compareCompanies) {
-    return { type: 'compare' as const, companies: compareCompanies };
-  }
-
-  const sectorMatch = text.match(/(sector|theme)\s+report\s+for\s+(.+)$/i);
-  if (sectorMatch) {
-    return { type: 'deep-sector' as const, query: sectorMatch[2].trim() };
-  }
-
-  if (lower.includes('sector report') || lower.includes('theme report')) {
-    const queryMatch = text.match(/report\s+for\s+(.+)$/i);
-    if (queryMatch) {
-      return { type: 'deep-sector' as const, query: queryMatch[1].trim() };
-    }
-  }
-
-  const genericMatch = text.match(/report\s+for\s+(.+)$/i);
-  if (genericMatch) {
-    const query = genericMatch[1].trim();
-    if (query.includes(' ') || /sector|theme|stocks?/i.test(query)) {
-      return { type: 'deep-sector' as const, query };
-    }
-  }
-
-  const stockMatch = text.match(/report\s+(?:for|on)\s+([a-zA-Z]{1,6})\s*$/i);
-  if (stockMatch) {
-    return { type: 'stock' as const, symbol: stockMatch[1].toUpperCase() };
-  }
-
-  return null;
-}
-
-function parseTimeframe(message: string) {
-  const match = message.match(/\b(1w|1m|3m|6m|1y|3y|5y|max)\b/i);
-  return match ? match[1].toLowerCase() : null;
-}
-
-function buildFallbackModels(requestedModel: string): string[] {
+function buildFallbackModels(requestedModel: string, extraModels: string[] = []): string[] {
   const fromEnv = (process.env.COPILOT_FALLBACK_MODELS || '')
     .split(',')
     .map((item) => item.trim())
     .filter(Boolean);
   const base = fromEnv.length > 0 ? fromEnv : DEFAULT_FALLBACK_MODELS;
-  const combined = [requestedModel, ...base, FALLBACK_MODEL];
+  const combined = [requestedModel, ...base, ...extraModels, FALLBACK_MODEL];
   const unique = Array.from(new Set(combined.filter(Boolean)));
-  const available = unique.filter((model) => !isModelCoolingDown(model));
+  const available = unique.filter((model) => !isModelCoolingDown(model) && !isModelInvalid(model));
   return available.length > 0 ? available : unique;
 }
 
 function buildGeminiFallbackModels(requestedModel?: string | null): string[] {
-  const combined = [requestedModel || '', ...GEMINI_FALLBACK_MODELS];
+  const combined = [normalizeGeminiModel(requestedModel), ...GEMINI_FALLBACK_MODELS];
   const unique = Array.from(new Set(combined.filter(Boolean)));
-  const available = unique.filter((model) => !isModelCoolingDown(model));
+  const available = unique.filter((model) => !isModelCoolingDown(model) && !isModelInvalid(model));
   return available.length > 0 ? available : unique;
 }
 
@@ -345,12 +278,17 @@ function isGitHubModelId(model?: string | null): boolean {
   return Boolean(model && model.includes('/'));
 }
 
-function buildLLMExecutionStrategies(
-  provider: LLMProviderType,
+/**
+ * Build the ordered list of (provider, models) strategies to try.
+ * Always uses all available providers — GitHub first (full fallback chain), then Gemini.
+ * provider === null means auto (use all available); 'github'/'gemini' restricts to one.
+ */
+async function buildLLMExecutionStrategies(
+  provider: RuntimeLLMProvider | null,
   requestedModel: string,
   githubToken: string | undefined,
   geminiToken: string | undefined,
-): LLMExecutionStrategy[] {
+): Promise<LLMExecutionStrategy[]> {
   const strategies: LLMExecutionStrategy[] = [];
   const githubRequestedModel = isGitHubModelId(requestedModel)
     ? requestedModel
@@ -360,23 +298,34 @@ function buildLLMExecutionStrategies(
     : githubRequestedModel;
   const geminiRequestedModel = isGitHubModelId(requestedModel)
     ? GEMINI_MODEL
-    : requestedModel || GEMINI_MODEL;
+    : normalizeGeminiModel(requestedModel || GEMINI_MODEL);
 
-  if ((provider === 'github' || provider === 'hybrid') && githubToken) {
+  const useGitHub = provider === null || provider === 'github';
+  const useGemini = provider === null || provider === 'gemini';
+
+  if (useGitHub && githubToken) {
+    const catalogModels = (await fetchGitHubModels()).map((item) => item.value);
     strategies.push({
       provider: 'github',
-      models: buildFallbackModels(normalizedGithubModel),
+      models: buildFallbackModels(normalizedGithubModel, catalogModels),
     });
   }
 
-  if ((provider === 'gemini' || provider === 'hybrid') && geminiToken) {
+  if (useGemini && geminiToken) {
     strategies.push({
       provider: 'gemini',
-      models: [geminiRequestedModel],
+      models: buildGeminiFallbackModels(geminiRequestedModel),
     });
   }
 
   return strategies;
+}
+
+function sanitizeMessagesForGemini(messages: ChatMessage[]): ChatMessage[] {
+  return messages.map((message) => ({
+    ...message,
+    content: typeof message.content === 'string' ? message.content : '',
+  }));
 }
 
 async function callGitHubModelsAPI(
@@ -385,29 +334,48 @@ async function callGitHubModelsAPI(
   model: string,
   tools: ReturnType<typeof getToolDefinitionsByName>
 ): Promise<any> {
-  const response = await fetch(GITHUB_MODELS_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${githubToken}`,
-      // GitHub API recommended headers — including User-Agent is important:
-      // Node.js fetch() does NOT add a User-Agent automatically (unlike browsers),
-      // so omitting it makes requests appear as anonymous bot/scraper traffic and
-      // can trigger GitHub's anti-abuse 429 "scraping" response.
-      'User-Agent': 'stock-report-app/1.0',
-      'Accept': 'application/vnd.github+json',
-      'X-GitHub-Api-Version': '2022-11-28',
-    },
-    body: JSON.stringify({
-      model,
-      messages,
-      tools,
-    }),
-  });
+  let response: Response;
+  try {
+    response = await fetch(GITHUB_MODELS_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${githubToken}`,
+        // GitHub API recommended headers — including User-Agent is important:
+        // Node.js fetch() does NOT add a User-Agent automatically (unlike browsers),
+        // so omitting it makes requests appear as anonymous bot/scraper traffic and
+        // can trigger GitHub's anti-abuse 429 "scraping" response.
+        'User-Agent': 'stock-report-app/1.0',
+        'Accept': 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+      },
+      body: JSON.stringify({
+        model,
+        messages,
+        tools,
+      }),
+      signal: AbortSignal.timeout(LLM_REQUEST_TIMEOUT_MS),
+    });
+  } catch (fetchErr: any) {
+    if (fetchErr?.name === 'AbortError' || fetchErr?.name === 'TimeoutError') {
+      const err = new Error(
+        `GitHub Models API request timed out after ${LLM_REQUEST_TIMEOUT_MS / 1000}s for model '${model}'. Will try next model.`
+      ) as Error & { statusCode: number; isTransientServerError: boolean };
+      err.statusCode = 503;
+      err.isTransientServerError = true;
+      throw err;
+    }
+    const err = new Error(
+      `GitHub Models API network failure for model '${model}'. Will try next model.`
+    ) as Error & { statusCode: number; isTransientServerError: boolean };
+    err.statusCode = 503;
+    err.isTransientServerError = true;
+    throw err;
+  }
 
   if (!response.ok) {
     const errorText = await response.text();
-    console.error(`GitHub Models API ${response.status}: ${errorText}`);
+    console.error(`GitHub Models API ${response.status}:`, errorText.slice(0, 300));
     if (response.status === 401) {
       throw new Error(
         'GitHub Models API authentication failed (401). ' +
@@ -453,19 +421,28 @@ async function callGitHubModelsAPI(
     // variants — treat both identically so the error is surfaced cleanly.
     if (response.status === 400 || response.status === 404) {
       let errorCode = '';
+      let errorMessage = errorText;
       try {
         const errorJson = JSON.parse(errorText);
         errorCode = errorJson?.error?.code || '';
+        errorMessage = errorJson?.error?.message || errorText;
       } catch {
         // ignore JSON parse errors
       }
       if (errorCode === 'unknown_model' || errorCode === 'model_not_found') {
+        markModelInvalid(model);
         const err = new Error(
-          'Model not found. Please select a different model from the dropdown.'
-        ) as Error & { statusCode: number };
+          `GitHub model '${model}' is unavailable. Will try the next model.`
+        ) as Error & { statusCode: number; isUnknownModel?: boolean };
         err.statusCode = 400;
+        err.isUnknownModel = true;
         throw err;
       }
+      const err = new Error(
+        `GitHub Models API rejected the request for model '${model}': ${errorMessage}`
+      ) as Error & { statusCode: number };
+      err.statusCode = response.status;
+      throw err;
     }
     if (response.status === 413) {
       const err = new Error(
@@ -504,22 +481,41 @@ async function callGeminiAPI(
   model: string,
   tools: ReturnType<typeof getToolDefinitionsByName>
 ): Promise<any> {
-  const body: Record<string, unknown> = { model, messages };
+  const body: Record<string, unknown> = { model, messages: sanitizeMessagesForGemini(messages) };
   if (tools && tools.length > 0) {
     body.tools = tools;
   }
-  const response = await fetch(GEMINI_API_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${geminiToken}`,
-    },
-    body: JSON.stringify(body),
-  });
+  let response: Response;
+  try {
+    response = await fetch(GEMINI_API_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${geminiToken}`,
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(LLM_REQUEST_TIMEOUT_MS),
+    });
+  } catch (fetchErr: any) {
+    if (fetchErr?.name === 'AbortError' || fetchErr?.name === 'TimeoutError') {
+      const err = new Error(
+        `Gemini API request timed out after ${LLM_REQUEST_TIMEOUT_MS / 1000}s for model '${model}'. Will try next model.`
+      ) as Error & { statusCode: number; isTransientServerError: boolean };
+      err.statusCode = 503;
+      err.isTransientServerError = true;
+      throw err;
+    }
+    const err = new Error(
+      `Gemini API network failure for model '${model}'. Will try next model.`
+    ) as Error & { statusCode: number; isTransientServerError: boolean };
+    err.statusCode = 503;
+    err.isTransientServerError = true;
+    throw err;
+  }
 
   if (!response.ok) {
     const errorText = await response.text();
-    console.error(`Gemini API ${response.status}: ${errorText}`);
+    console.error(`Gemini API ${response.status}:`, errorText.slice(0, 300));
     if (response.status === 401) {
       throw new Error(
         'Gemini API authentication failed (401). ' +
@@ -571,11 +567,22 @@ async function callGeminiAPI(
       throw err;
     }
     if (response.status === 400) {
+      let apiMessage = errorText;
+      try {
+        const errorJson = JSON.parse(errorText);
+        apiMessage = String(errorJson?.error?.message || errorText);
+      } catch {
+        // ignore JSON parse errors
+      }
+      const isUnknownModel = /model.*not found|unsupported model|invalid model/i.test(apiMessage);
+      if (isUnknownModel) markModelInvalid(model);
       const err = new Error(
-        `Gemini API bad request (400). Model '${model}' may be invalid — check GEMINI_MODEL env var. ` +
-        `API response: ${errorText}`
-      ) as Error & { statusCode: number };
+        isUnknownModel
+          ? `Gemini API model '${model}' is unavailable. Will try the next model.`
+          : `Gemini API bad request (400): ${apiMessage}`
+      ) as Error & { statusCode: number; isUnknownModel?: boolean };
       err.statusCode = 400;
+      if (isUnknownModel) err.isUnknownModel = true;
       throw err;
     }
     throw new Error(`Gemini API error (${response.status}): ${errorText}`);
@@ -631,17 +638,13 @@ async function callGeminiWithFallback(
  * Returns the raw response string (expected to be valid JSON).
  * Failures are caught and return '{}' so callers can continue gracefully.
  *
- * Provider selection mirrors LLM_PROVIDER:
- * - 'github':  GitHub Models FILL_MODEL (gpt-4.1-mini) — separate quota from main model
- * - 'gemini':  callGeminiWithFallback — tries GEMINI_FALLBACK_MODELS in order
- * - 'hybrid':  GitHub Models primary; auto-falls back to Gemini (with model fallback) on 429
- * On 429, waits for the provider's requested retryDelay (capped at 10 s) and retries once.
+ * Always tries GitHub Models first (FILL_MODEL = gpt-4.1-mini), then falls back to Gemini,
+ * exhausting all available models before giving up.
  */
 async function callLLMForDataFill(
   prompt: string,
   githubToken: string | undefined,
   geminiToken: string | undefined,
-  provider: LLMProviderType,
 ): Promise<string> {
   const fillMessages: ChatMessage[] = [
     {
@@ -665,7 +668,7 @@ async function callLLMForDataFill(
   const strategies: Array<() => Promise<string>> = [];
 
   // GitHub Models — try FILL_MODEL first, then fallback models
-  if (githubToken && (provider === 'github' || provider === 'hybrid')) {
+  if (githubToken) {
     const githubModels = [FILL_MODEL, ...DEFAULT_FALLBACK_MODELS].filter(Boolean);
     const seen = new Set<string>();
     for (const model of githubModels) {
@@ -679,7 +682,7 @@ async function callLLMForDataFill(
   }
 
   // Gemini — always available as final fallback when token exists
-  if (geminiToken && (provider === 'gemini' || provider === 'hybrid' || strategies.length === 0)) {
+  if (geminiToken) {
     strategies.push(async () => {
       const result = await callGeminiWithFallback(fillMessages, geminiToken, []);
       return extractContent(result);
@@ -710,79 +713,17 @@ async function callLLMForDataFill(
 function createLLMFiller(
   githubToken: string | undefined,
   geminiToken: string | undefined,
-  provider: LLMProviderType,
 ): LLMFiller | undefined {
   if (!githubToken && !geminiToken) return undefined;
-  return (prompt: string) => callLLMForDataFill(prompt, githubToken, geminiToken, provider);
-}
-
-function getStockProviderConfigError(provider: string): { error: string; details: string } | null {
-  const normalizedProvider = [
-    'alphavantage',
-    'finnhub',
-    'hybrid',
-    'fmp',
-    'twelvedata',
-    'stooq',
-    'multi',
-  ].includes(provider)
-    ? provider
-    : 'alphavantage';
-
-  const hasAlphaVantage = Boolean(process.env.ALPHA_VANTAGE_API_KEY);
-  const hasFinnhub = Boolean(process.env.FINNHUB_API_KEY);
-  const hasFmp = Boolean(process.env.FINANCIAL_MODELING_PREP_API_KEY);
-  const hasTwelveData = Boolean(process.env.TWELVE_DATA_API_KEY);
-
-  switch (normalizedProvider) {
-    case 'alphavantage':
-      return hasAlphaVantage
-        ? null
-        : {
-            error: 'Alpha Vantage API key not configured',
-            details: 'Please set ALPHA_VANTAGE_API_KEY environment variable.',
-          };
-    case 'finnhub':
-      return hasFinnhub
-        ? null
-        : {
-            error: 'Finnhub API key not configured',
-            details: 'Please set FINNHUB_API_KEY environment variable.',
-          };
-    case 'fmp':
-      return hasFmp
-        ? null
-        : {
-            error: 'Financial Modeling Prep API key not configured',
-            details: 'Please set FINANCIAL_MODELING_PREP_API_KEY environment variable.',
-          };
-    case 'twelvedata':
-      return hasTwelveData
-        ? null
-        : {
-            error: 'Twelve Data API key not configured',
-            details: 'Please set TWELVE_DATA_API_KEY environment variable.',
-          };
-    case 'hybrid':
-      return hasAlphaVantage || hasFinnhub
-        ? null
-        : {
-            error: 'No stock data provider keys configured for hybrid mode',
-            details: 'Please set ALPHA_VANTAGE_API_KEY or FINNHUB_API_KEY environment variable.',
-          };
-    case 'stooq':
-    case 'multi':
-    default:
-      return null;
-  }
+  return (prompt: string) => callLLMForDataFill(prompt, githubToken, geminiToken);
 }
 
 export async function POST(request: NextRequest) {
-  let activeProvider: LLMProviderType = DEFAULT_LLM_PROVIDER;
+  const activeProvider: RuntimeLLMProvider | null = null;
 
   try {
     const body = await request.json();
-    const { message, sessionId, model, provider } = body;
+    const { message, sessionId, model } = body;
 
     if (!message) {
       return NextResponse.json(
@@ -795,24 +736,15 @@ export async function POST(request: NextRequest) {
     const githubToken = getGitHubToken();
     // Check if Gemini token is available (never exposed client-side — server env only)
     const geminiToken = process.env.GEMINI_TOKEN;
-    activeProvider = normalizeLLMProvider(typeof provider === 'string' ? provider : DEFAULT_LLM_PROVIDER);
-    const usesGeminiPrimary = activeProvider === 'gemini' || (activeProvider === 'hybrid' && !githubToken && Boolean(geminiToken));
+    const usesGeminiPrimary = !githubToken && Boolean(geminiToken);
     const requestedModel = typeof model === 'string' && model.trim()
       ? model
       : usesGeminiPrimary
         ? GEMINI_MODEL
         : DEFAULT_MODEL;
 
-    // Initialize the configured stock data provider.
-    const dataProvider = (process.env.STOCK_DATA_PROVIDER || 'alphavantage').toLowerCase();
+    // Initialize the stock data service — always multi-source using all configured keys.
     const alphaVantageKey = process.env.ALPHA_VANTAGE_API_KEY;
-    const providerConfigError = getStockProviderConfigError(dataProvider);
-    if (providerConfigError) {
-      return NextResponse.json(
-        providerConfigError,
-        { status: 503 }
-      );
-    }
     const stockService: StockDataService = createStockService(alphaVantageKey);
     const currentSessionId = typeof sessionId === 'string' && sessionId.trim()
       ? sessionId
@@ -837,109 +769,8 @@ export async function POST(request: NextRequest) {
       } : undefined,
     });
 
-    const reportRequest = parseReportRequest(message);
-    const timeframe = parseTimeframe(message);
-    if (reportRequest) {
-      const systemPrompt = process.env.USE_FULL_SYSTEM_PROMPT === 'true'
-        ? SYSTEM_PROMPT
-        : COMPACT_SYSTEM_PROMPT;
-      const conversationMessages: ChatMessage[] = [
-        {
-          role: 'system',
-          content: memoryContext.summary
-            ? `${systemPrompt}\n\nPERSISTENT INVESTOR CONTEXT:\n${memoryContext.summary}`
-            : systemPrompt,
-        },
-        ...baseConversationMessages,
-      ];
-
-      conversationMessages.push({ role: 'user', content: message });
-
-      const llmFill = createLLMFiller(githubToken, geminiToken, activeProvider);
-
-      const toolResult = reportRequest.type === 'compare'
-        ? await executeTool(
-            'generate_comparison_report',
-            { companies: reportRequest.companies, range: timeframe || '1y', sessionId: currentSessionId },
-            stockService,
-            { llmFill }
-          )
-        : reportRequest.type === 'deep-sector'
-          ? await executeTool(
-              'generate_deep_sector_report',
-              { sector: reportRequest.query, range: timeframe || '1y', sessionId: currentSessionId },
-              stockService,
-              { llmFill }
-            )
-          : reportRequest.type === 'watchlist-daily'
-            ? await executeTool(
-                'generate_watchlist_daily_report',
-                { range: timeframe || '1y', sessionId: currentSessionId },
-                stockService,
-                { llmFill }
-              )
-            : await executeTool(
-                'generate_stock_report',
-                { symbol: (reportRequest as any).symbol, range: timeframe || '5y', sessionId: currentSessionId },
-                stockService,
-                { llmFill }
-              );
-
-      if (!toolResult.success) {
-        return NextResponse.json(
-          { error: toolResult.error || toolResult.message || 'Report generation failed' },
-          { status: 500 }
-        );
-      }
-
-      const downloadUrl = toolResult.data?.downloadUrl;
-      const filename = toolResult.data?.filename as string | undefined;
-      const content = toolResult.data?.content as string | undefined;
-      const title = toolResult.data?.title as string | undefined;
-      const summary = toolResult.data?.summary as string | undefined;
-      const reportDate = toolResult.data?.reportDate as string | undefined;
-      const reportKind = toolResult.data?.reportKind as string | undefined;
-      const storagePath = toolResult.data?.storagePath as string | undefined;
-      const decisionSnapshot = toolResult.data?.decisionSnapshot as { action?: string; confidence?: string; summary?: string } | undefined;
-      const responseText = decisionSnapshot?.summary
-        ? `Report ready. ${decisionSnapshot.summary} Open the **Artifacts** panel for the full report.`
-        : summary
-          ? `Report ready. ${summary} Open the **Artifacts** panel for the full report.`
-          : 'Report ready — open the **Artifacts** panel to view it.';
-
-      conversationMessages.push({ role: 'assistant', content: responseText });
-      await saveSessionMessages(currentSessionId, toPersistentMessages(conversationMessages), {
-        title: title || reportKind || 'Research Session',
-        summary: responseText,
-      });
-
-      console.info('Chat request stats', {
-        provider: activeProvider,
-        model: requestedModel,
-        rounds: 0,
-        toolCalls: 1,
-        toolsProvided: 0,
-        directReport: reportRequest.type,
-      });
-
-      return NextResponse.json({
-        response: responseText,
-        sessionId: currentSessionId,
-        model: requestedModel,
-        requestedModel,
-        provider: activeProvider,
-        runtimeProvider: activeProvider,
-        fallbackCount: 0,
-        report: filename && content ? { filename, content, downloadUrl, title, summary, reportDate, reportKind, storagePath } : null,
-        stats: {
-          rounds: 0,
-          toolCalls: 1,
-          toolsProvided: 0,
-        },
-      });
-    }
-
-    // Get or create conversation history
+    // All messages — including report requests — go through the LLM first.
+    // The AI model reads user intent and decides which tool to call.
     const preferCompactPrompt = isSmallContextModel(requestedModel);
     const systemPrompt = process.env.USE_FULL_SYSTEM_PROMPT === 'true' && !preferCompactPrompt
       ? SYSTEM_PROMPT
@@ -974,20 +805,16 @@ export async function POST(request: NextRequest) {
     let assistantContent: string | null = null;
     let toolDefinitionsUsed = toolDefinitions;
     const reportArtifacts: Array<{ filename: string; content: string; downloadUrl: string; title?: string; summary?: string; reportDate?: string; reportKind?: string; storagePath?: string }> = [];
-    const executionStrategies = buildLLMExecutionStrategies(
-      activeProvider,
-      requestedModel,
-      githubToken,
-      geminiToken,
-    );
+     const executionStrategies = await buildLLMExecutionStrategies(
+       activeProvider,
+       requestedModel,
+       githubToken,
+       geminiToken,
+     );
 
     if (executionStrategies.length === 0) {
       const err = new Error(
-        activeProvider === 'gemini'
-          ? 'Gemini token not configured. Set GEMINI_TOKEN environment variable.'
-          : activeProvider === 'github'
-            ? 'GitHub token not configured'
-            : 'No LLM provider tokens configured. Set GITHUB_TOKEN and/or GEMINI_TOKEN.'
+        'No AI provider tokens configured. Set GITHUB_TOKEN and/or GEMINI_TOKEN.'
       ) as Error & { statusCode: number };
       err.statusCode = 503;
       throw err;
@@ -1059,7 +886,7 @@ export async function POST(request: NextRequest) {
         } catch (error: any) {
           const isRateLimit = error?.statusCode === 429;
           const isServerError = Boolean(error?.isTransientServerError);
-          const isUnknownModel = error?.statusCode === 400;
+          const isUnknownModel = Boolean(error?.isUnknownModel);
           const isTokensLimit = error?.statusCode === 413;
           // Unknown model: skip to the next fallback without counting as an attempt —
           // retrying with the same invalid model ID would always fail.
@@ -1107,7 +934,7 @@ export async function POST(request: NextRequest) {
       // If the model wants to call tools, execute all of them in parallel
       if (assistantMessage.tool_calls && assistantMessage.tool_calls.length > 0) {
         totalToolCalls += assistantMessage.tool_calls.length;
-        const loopLLMFill = createLLMFiller(githubToken, geminiToken, activeProvider);
+        const loopLLMFill = createLLMFiller(githubToken, geminiToken);
         const toolResults = await Promise.all(
           assistantMessage.tool_calls.map(async (toolCall: { id: string; function: { name: string; arguments: string } }) => {
             const toolName = toolCall.function.name;
@@ -1115,7 +942,7 @@ export async function POST(request: NextRequest) {
             const toolResult = await executeTool(toolName, { ...toolArgs, sessionId: currentSessionId }, stockService, { llmFill: loopLLMFill });
             // Collect report artifacts; strip full content from model response to avoid echoing
             if (
-              (toolName === 'generate_stock_report' || toolName === 'generate_comparison_report' || toolName === 'generate_sector_report' || toolName === 'generate_deep_sector_report' || toolName === 'generate_watchlist_daily_report') &&
+              (toolName === 'generate_stock_report' || toolName === 'generate_research_report' || toolName === 'generate_watchlist_daily_report') &&
               toolResult.success && toolResult.data?.filename && toolResult.data?.content
             ) {
               reportArtifacts.push({
@@ -1167,7 +994,6 @@ export async function POST(request: NextRequest) {
     });
 
     console.info('Chat request stats', {
-      provider: activeProvider,
       runtimeProvider: activeRuntimeProvider,
       requestedModel,
       model: activeModel,
@@ -1182,7 +1008,7 @@ export async function POST(request: NextRequest) {
       sessionId: currentSessionId,
       model: activeModel,
       requestedModel,
-      provider: activeProvider,
+      provider: activeRuntimeProvider,
       runtimeProvider: activeRuntimeProvider,
       fallbackCount,
       reports: reportArtifacts.length > 0 ? reportArtifacts : undefined,
@@ -1196,45 +1022,58 @@ export async function POST(request: NextRequest) {
     console.error('Chat API error:', error);
     const isRateLimit = error.statusCode === 429;
     const isServerError = Boolean(error.isTransientServerError);
-    const isUnknownModel = error.statusCode === 400;
+    const isUnknownModel = Boolean(error.isUnknownModel);
+    const isBadRequest = error.statusCode === 400 && !isUnknownModel;
     const isTokensLimit = error.statusCode === 413;
     const isToolCallText = error.statusCode === 422;
     const isMissingKey = error.statusCode === 503 && !isServerError;
     const statusCode = error.statusCode || (isRateLimit
       ? 429
-      : isUnknownModel
+      : isUnknownModel || isBadRequest
       ? 400
       : isTokensLimit
       ? 413
       : isToolCallText
       ? 422
       : 500);
+    const userFacingError = isRateLimit
+      ? 'AI provider rate limit reached'
+      : isServerError
+      ? 'AI providers temporarily unavailable'
+      : isUnknownModel
+      ? 'AI model configuration error'
+      : isBadRequest
+      ? 'AI provider rejected the request'
+      : isTokensLimit
+      ? 'Conversation too large for the provider'
+      : isToolCallText
+      ? 'Model returned tool calls as text'
+      : isMissingKey
+      ? 'AI provider credentials missing'
+      : 'Failed to process message';
     let details: string;
     if (isRateLimit) {
       details = RATE_LIMIT_GUIDANCE;
     } else if (isServerError) {
-      details = 'The LLM provider returned a temporary server error. All fallback models were also unavailable. Please try again in a few moments, or switch to a different provider/model from the dropdown.';
+      details = 'The AI providers returned temporary server errors. The system already retried across the available model ladder. Please try again in a few moments.';
     } else if (isUnknownModel) {
-      details = 'Open the model dropdown and choose a different model. The model list is fetched live from the GitHub Models catalog.';
+      details = 'One or more server-side model IDs are no longer valid. The system exhausted the automatic fallback ladder. Verify `COPILOT_MODEL`, `COPILOT_FALLBACK_MODELS`, and `GEMINI_MODEL` in environment variables.';
+    } else if (isBadRequest) {
+      details = 'The AI providers rejected the request payload after exhausting the automatic fallback ladder. Please try again in a few moments.';
     } else if (isTokensLimit) {
       details = `The conversation history has grown too large for this model's token limit. Start a new chat to clear the history and try again.`;
     } else if (isToolCallText) {
-      details = 'This model returned tool calls as plain text. Switch to a tool-calling model from the dropdown (for example, GPT-4.1 or Claude Sonnet).';
+      details = 'This model returned tool calls as plain text. The system will retry with a different model automatically.';
     } else if (isMissingKey) {
-      if (activeProvider === 'gemini') {
-        details = 'Please set GEMINI_TOKEN in your Vercel environment variables. Get a key at: https://aistudio.google.com/api-keys';
-      } else if (activeProvider === 'hybrid') {
-        details = 'Please set GITHUB_TOKEN and/or GEMINI_TOKEN in your Vercel environment variables.';
-      } else {
-        details =
-          'Please set GITHUB_TOKEN in your Vercel environment variables. Get a personal access token at: https://github.com/settings/personal-access-tokens — this uses your existing GitHub Copilot subscription.';
-      }
+      details =
+        'Please set GITHUB_TOKEN and/or GEMINI_TOKEN in your Vercel environment variables. ' +
+        'Get a GitHub token at: https://github.com/settings/tokens — Get a Gemini key at: https://aistudio.google.com/api-keys';
     } else {
       details = 'An unexpected error occurred. Check your LLM provider tokens and stock data provider keys in Vercel environment variables, or try again in a few moments.';
     }
     return NextResponse.json(
       {
-        error: error.message || 'Failed to process message',
+        error: userFacingError,
         details,
       },
       { status: statusCode }

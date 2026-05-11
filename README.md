@@ -2,19 +2,16 @@
 
 An AI-powered stock research tool built on Next.js and GitHub Models. It produces institutional-quality equity research reports by combining real market data from free-tier financial APIs with LLM reasoning via GitHub Copilot or Gemini.
 
----
-
 ## What it does
 
 Type a question in plain English and the assistant calls the right data tools, fetches real market data, and generates a structured report as a downloadable Markdown artifact.
 
-**Four research modes:**
+**Three research modes:**
 
 | Mode | How to ask | What you get |
 |---|---|---|
 | **Stock report** | `Generate a stock report for NVDA` | Full deep-dive: price, financials, earnings, insider activity, analyst ratings, technicals (RSI, MACD, Bollinger, Stochastic), dividend analysis, DCF valuation, moat analysis, investment thesis |
-| **Comparison report** | `Compare NVDA, AMD, INTC` | Side-by-side tables, charts, moat rankings, and position guidance for 2–15 companies |
-| **Deep research** | `Deep research on semiconductors` or `Tesla vs Rivian` | Ecosystem dependency map (Mermaid diagram), sector universe refinement, full comparison body, multi-pass synthesis |
+| **Research report** | `Compare NVDA, AMD, INTC` · `Deep research on semiconductors` · `Best dividend stocks` · `Tesla vs Rivian` | Handles any multi-company, sector, theme, industry, or research question. Ecosystem dependency map, universe refinement, full comparison body, multi-pass synthesis |
 | **Watchlist daily** | `Generate daily report for my watchlist` | One combined report covering every company in the saved watchlist |
 
 **Transparent decision engine:**
@@ -68,26 +65,30 @@ Copy `web/.env.example` to `web/.env.local` and fill in the values. All variable
 
 ### LLM providers (at least one required)
 
+The system **automatically uses all configured providers in sequence** — GitHub Models first (exhausting all fallback models), then Gemini. No configuration needed; just set the tokens and everything is used.
+
 | Variable | Required | Description |
 |---|---|---|
-| `GITHUB_TOKEN` | Yes (github/hybrid) | Personal access token from [github.com/settings/tokens](https://github.com/settings/tokens). Requires `models:read` scope. Uses your existing GitHub Copilot subscription at no extra cost. Also accepted: `GH_TOKEN`, `COPILOT_GITHUB_TOKEN`. |
-| `GEMINI_TOKEN` | Yes (gemini/hybrid) | API key from [aistudio.google.com/api-keys](https://aistudio.google.com/api-keys). Use AI Studio — not Google Cloud Console — to get free-tier quota automatically. |
-| `LLM_PROVIDER` | No | `github` (default) · `gemini` · `hybrid`. Hybrid uses GitHub Models as primary and falls back to Gemini on 429. |
-| `COPILOT_MODEL` | No | Model ID for GitHub Models. Default: `openai/gpt-4.1`. |
-| `GEMINI_MODEL` | No | Gemini model ID. Default: `gemini-2.5-flash`. |
-| `COPILOT_FALLBACK_MODELS` | No | Comma-separated fallback model IDs for GitHub provider. |
+| `GITHUB_TOKEN` | Recommended | Personal access token from [github.com/settings/tokens](https://github.com/settings/tokens). Requires `models:read` scope. Uses your existing GitHub Copilot subscription at no extra cost. Also accepted: `GH_TOKEN`, `COPILOT_GITHUB_TOKEN`. |
+| `GEMINI_TOKEN` | Recommended | API key from [aistudio.google.com/api-keys](https://aistudio.google.com/api-keys). Use AI Studio — not Google Cloud Console — to get free-tier quota automatically. |
+| `COPILOT_MODEL` | No | Preferred first GitHub Models ID. Default: `openai/gpt-4.1`. After that the server fans out across the full live GitHub catalog automatically. |
+| `GEMINI_MODEL` | No | Preferred first Gemini model ID. Default: `gemini-2.5-flash`. Invalid values are ignored and reset to the safe Gemini ladder automatically. |
+| `COPILOT_FALLBACK_MODELS` | No | Optional comma-separated GitHub model IDs to try near the front of the automatic fallback ladder. |
 | `FILL_MODEL` | No | Lighter model used for ticker resolution. Default: `openai/gpt-4.1-mini`. |
 | `AUTO_DOWNGRADE_GPT5` | No | Set to `false` to disable automatic gpt-5 → gpt-4.1 downgrade. Default: `true`. |
 
 ### Stock data providers (at least one required)
 
+The system **automatically uses all configured providers with full fallback** — each API call tries every configured provider until data is returned. No `STOCK_DATA_PROVIDER` selection needed.
+
 | Variable | Required | Description |
 |---|---|---|
-| `ALPHA_VANTAGE_API_KEY` | Yes (alphavantage/hybrid/multi) | Free key from [alphavantage.co](https://www.alphavantage.co/support/#api-key). Free tier: 25 req/day, 5 req/min. |
-| `FINNHUB_API_KEY` | Yes (finnhub/hybrid/multi) | Free key from [finnhub.io](https://finnhub.io). Free tier: 60 req/min. |
-| `FINANCIAL_MODELING_PREP_API_KEY` | No | Free key from [financialmodelingprep.com](https://financialmodelingprep.com/developer/docs). Enables `fmp` and `multi` modes. |
-| `TWELVE_DATA_API_KEY` | No | Free key from [twelvedata.com](https://twelvedata.com/pricing). Enables `twelvedata` and `multi` modes. |
-| `STOCK_DATA_PROVIDER` | No | `alphavantage` (default) · `finnhub` · `fmp` · `twelvedata` · `stooq` · `hybrid` · `multi`. See provider guide below. |
+| `ALPHA_VANTAGE_API_KEY` | Recommended | Free key from [alphavantage.co](https://www.alphavantage.co/support/#api-key). Free tier: 25 req/day, 5 req/min. |
+| `FINNHUB_API_KEY` | Recommended | Free key from [finnhub.io](https://finnhub.io). Free tier: 60 req/min. |
+| `FINANCIAL_MODELING_PREP_API_KEY` | No | Free key from [financialmodelingprep.com](https://financialmodelingprep.com/developer/docs). Adds financial statements and ratios. |
+| `TWELVE_DATA_API_KEY` | No | Free key from [twelvedata.com](https://twelvedata.com/pricing). Adds price history coverage. |
+
+_Stooq (price history, no key needed) is always included as a final fallback._
 
 ### Additional data sources (optional — enable extra research tools)
 
@@ -126,22 +127,6 @@ _Note: SEC EDGAR filings (`get_sec_filings`) require no API key — the SEC EDGA
 
 ---
 
-## Stock data provider guide
-
-The `STOCK_DATA_PROVIDER` variable selects the data backend. For best coverage with free-tier keys, use `multi`.
-
-| Provider | API key(s) needed | Notes |
-|---|---|---|
-| `alphavantage` | `ALPHA_VANTAGE_API_KEY` | Default. Good fundamentals, limited free-tier rate. |
-| `finnhub` | `FINNHUB_API_KEY` | Good real-time price and news. |
-| `fmp` | `FINANCIAL_MODELING_PREP_API_KEY` | Good statements and ratios. |
-| `twelvedata` | `TWELVE_DATA_API_KEY` | Good price history. |
-| `stooq` | None | Price history only. Always available as a fallback. |
-| `hybrid` | `ALPHA_VANTAGE_API_KEY` (+ optional `FINNHUB_API_KEY`) | Alpha Vantage primary; Finnhub fills gaps. |
-| `multi` | Any combination | Full fallback chain: AV → Finnhub → FMP → Twelve Data → Stooq. Recommended for production. |
-
----
-
 ## Deploying to Vercel
 
 1. Push your fork to GitHub.
@@ -153,8 +138,10 @@ The `STOCK_DATA_PROVIDER` variable selects the data backend. For best coverage w
 **Recommended production environment variables:**
 
 ```
-LLM_PROVIDER=hybrid
-STOCK_DATA_PROVIDER=multi
+GITHUB_TOKEN=your_github_pat
+GEMINI_TOKEN=your_gemini_key
+ALPHA_VANTAGE_API_KEY=your_av_key
+FINNHUB_API_KEY=your_finnhub_key
 NUM_COMPANIES=15
 DEEP_RESEARCH_DEPTH=3
 ```
@@ -179,7 +166,7 @@ test-sdk/
 │   │   │   ├── chat/            # Main research endpoint (POST, DELETE)
 │   │   │   ├── health/          # Provider health check (GET)
 │   │   │   ├── models/          # GitHub Models catalog (GET)
-│   │   │   ├── providers/       # LLM provider list (GET)
+│   │   │   ├── providers/       # Internal LLM model inventory (GET)
 │   │   │   ├── saved-reports/   # Saved report library (GET, POST)
 │   │   │   └── watchlist/       # Watchlist management (GET, PATCH, DELETE)
 │   │   ├── components/
@@ -191,7 +178,7 @@ test-sdk/
 │   │       ├── decisionEngine.ts  # 7-pillar multi-factor decision engine
 │   │       ├── investmentTypes.ts # Shared types: DecisionSnapshot, PortfolioProfile, etc.
 │   │       ├── dataTrust.ts       # Data freshness tracking (fresh/aging/stale)
-│   │       ├── llmProviderConfig.ts# LLM provider/model configuration
+│   │       ├── llmProviderConfig.ts# LLM provider/model configuration + safe fallback ladders
 │   │       ├── watchlistStore.ts  # Watchlist CRUD (Supabase / filesystem)
 │   │       ├── researchMemoryStore.ts # Research session + thesis persistence
 │   │       ├── chatToolPolicy.ts  # Tool name allowlist for LLM calls

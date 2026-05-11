@@ -1403,63 +1403,15 @@ function buildToolDefinitions() {
     {
       type: 'function' as const,
       function: {
-        name: 'generate_comparison_report',
-        description: 'Generate a comprehensive comparison report for multiple companies and save it as a markdown artifact.',
-        parameters: {
-          type: 'object',
-          properties: {
-            companies: { type: 'array', items: { type: 'string' }, description: `Company names or tickers (2–${NUM_COMPANIES} items)` },
-            range: { type: 'string', description: 'Price history range for charts (e.g., "1y", "3y", "5y", "max"). Default is "1y"' },
-          },
-          required: ['companies'],
-        },
-      },
-    },
-    {
-      type: 'function' as const,
-      function: {
-        name: 'generate_sector_report',
+        name: 'generate_research_report',
         description:
-          'Research a sector or thematic investment theme. Uses AI to identify the top companies in the sector, then generates a full comparison-style report. ' +
-          'Use this when the user asks about a sector, industry, or theme (e.g. "AI data center", "electric vehicles", "cloud computing", "semiconductor"). ' +
-          'Do NOT use this for a single stock report or when the user explicitly lists specific tickers.',
+          'Generate a research report. Use for comparisons (e.g. \'NVDA vs AMD\'), sector/theme/industry studies (e.g. \'cloud computing\', \'EVs\'), deep research on any topic (e.g. \'growth stocks\', \'AI infrastructure\'), or any multi-company analysis. Handles all non-single-stock research.',
         parameters: {
           type: 'object',
           properties: {
             sector: {
               type: 'string',
-              description: 'Sector or thematic query, e.g. "AI data center", "electric vehicles", "cloud computing"',
-            },
-            count: {
-              type: 'number',
-              description: `Number of top companies to include (default: ${NUM_COMPANIES}, min: 2, max: ${NUM_COMPANIES})`,
-            },
-            range: {
-              type: 'string',
-              description: 'Price history range for comparison charts (e.g. "1y", "3y"). Default: "1y"',
-            },
-          },
-          required: ['sector'],
-        },
-      },
-    },
-    {
-      type: 'function' as const,
-      function: {
-        name: 'generate_deep_sector_report',
-        description:
-          'Generate a deep research report. For theme/sector/industry queries it performs ecosystem analysis and company-list refinement. ' +
-          'For a single company or an explicit company comparison, it preserves that scope and builds a deep-research wrapper around the correct underlying report. ' +
-          'Phase 1: when needed, AI identifies a broad candidate list of top companies in the theme. ' +
-          'Phase 2: Real data (company overviews, news sentiment, peers) is fetched for all candidates. ' +
-          `Phase 3: AI maps supply-chain, customer, market and news dependencies, draws a dependency diagram, and refines the company list — repeated ${DEEP_RESEARCH_DEPTH} time(s) for progressively deeper analysis. ` +
-          'Phase 4: Full stock or comparison analysis is built for the final scope.',
-        parameters: {
-          type: 'object',
-          properties: {
-            sector: {
-              type: 'string',
-              description: 'Deep research query (sector, company, or comparison)',
+              description: 'Deep research query (sector, company comparison, or theme)',
             },
             count: {
               type: 'number',
@@ -3293,6 +3245,8 @@ export async function executeTool(
           message: `Saved sector report for "${sector}" to ${saved.filePath}`,
         };
       }
+      case 'generate_research_report':
+      // fall through to deep sector / research logic
       case 'generate_deep_sector_report': {
         const sector = String(args.sector || '').trim();
         if (!sector) {

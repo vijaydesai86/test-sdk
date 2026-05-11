@@ -23,8 +23,6 @@ export interface StockDataService {
   searchNews(query: string, days?: number): Promise<any>;
 }
 
-type Provider = 'alphavantage' | 'finnhub' | 'hybrid' | 'fmp' | 'twelvedata' | 'stooq' | 'multi';
-const PROVIDER_ENV = (process.env.STOCK_DATA_PROVIDER || 'alphavantage').toLowerCase() as Provider;
 
 /**
  * Stock data service using Alpha Vantage API (free tier)
@@ -2050,186 +2048,27 @@ class MultiSourceStockDataService implements StockDataService {
 }
 
 
-class HybridStockDataService implements StockDataService {
-  constructor(
-    private primary: StockDataService,
-    private fallback: StockDataService
-  ) {}
 
-  private async withFallback<T>(primaryCall: () => Promise<T>, fallbackCall: () => Promise<T>): Promise<T> {
-    try {
-      return await primaryCall();
-    } catch {
-      const result = await fallbackCall();
-      // Tag with source so stockTools.ts correctly attributes Finnhub data in the sources table
-      if (result != null && typeof result === 'object' && !Array.isArray(result)) {
-        return { ...(result as object), __source: 'Finnhub' } as T;
-      }
-      return result;
-    }
-  }
-
-  getStockPrice(symbol: string) {
-    return this.withFallback(
-      () => this.primary.getStockPrice(symbol),
-      () => this.fallback.getStockPrice(symbol)
-    );
-  }
-  getPriceHistory(symbol: string, range?: string) {
-    return this.withFallback(
-      () => this.primary.getPriceHistory(symbol, range),
-      () => this.fallback.getPriceHistory(symbol, range)
-    );
-  }
-  getCompanyOverview(symbol: string) {
-    return this.withFallback(
-      () => this.primary.getCompanyOverview(symbol),
-      () => this.fallback.getCompanyOverview(symbol)
-    );
-  }
-  getBasicFinancials(symbol: string) {
-    return this.withFallback(
-      () => this.primary.getBasicFinancials(symbol),
-      () => this.fallback.getBasicFinancials(symbol)
-    );
-  }
-  getInsiderTrading(symbol: string) {
-    return this.withFallback(
-      () => this.primary.getInsiderTrading(symbol),
-      () => this.fallback.getInsiderTrading(symbol)
-    );
-  }
-  getAnalystRatings(symbol: string) {
-    return this.withFallback(
-      () => this.primary.getAnalystRatings(symbol),
-      () => this.fallback.getAnalystRatings(symbol)
-    );
-  }
-  getAnalystRecommendations(symbol: string) {
-    return this.withFallback(
-      () => this.primary.getAnalystRecommendations(symbol),
-      () => this.fallback.getAnalystRecommendations(symbol)
-    );
-  }
-  getPriceTargets(symbol: string) {
-    return this.withFallback(
-      () => this.primary.getPriceTargets(symbol),
-      () => this.fallback.getPriceTargets(symbol)
-    );
-  }
-  getPeers(symbol: string) {
-    return this.withFallback(
-      () => this.primary.getPeers(symbol),
-      () => this.fallback.getPeers(symbol)
-    );
-  }
-  searchStock(query: string) {
-    return this.withFallback(
-      () => this.primary.searchStock(query),
-      () => this.fallback.searchStock(query)
-    );
-  }
-  getEarningsHistory(symbol: string) {
-    return this.withFallback(
-      () => this.primary.getEarningsHistory(symbol),
-      () => this.fallback.getEarningsHistory(symbol)
-    );
-  }
-  getIncomeStatement(symbol: string) {
-    return this.withFallback(
-      () => this.primary.getIncomeStatement(symbol),
-      () => this.fallback.getIncomeStatement(symbol)
-    );
-  }
-  getBalanceSheet(symbol: string) {
-    return this.withFallback(
-      () => this.primary.getBalanceSheet(symbol),
-      () => this.fallback.getBalanceSheet(symbol)
-    );
-  }
-  getCashFlow(symbol: string) {
-    return this.withFallback(
-      () => this.primary.getCashFlow(symbol),
-      () => this.fallback.getCashFlow(symbol)
-    );
-  }
-  getSectorPerformance() {
-    return this.withFallback(
-      () => this.primary.getSectorPerformance(),
-      () => this.fallback.getSectorPerformance()
-    );
-  }
-  getTopGainersLosers() {
-    return this.withFallback(
-      () => this.primary.getTopGainersLosers(),
-      () => this.fallback.getTopGainersLosers()
-    );
-  }
-  getNewsSentiment(symbol: string) {
-    return this.withFallback(
-      () => this.primary.getNewsSentiment(symbol),
-      () => this.fallback.getNewsSentiment(symbol)
-    );
-  }
-  getCompanyNews(symbol: string, days?: number) {
-    return this.withFallback(
-      () => this.primary.getCompanyNews(symbol, days),
-      () => this.fallback.getCompanyNews(symbol, days)
-    );
-  }
-  searchNews(query: string, days?: number) {
-    return this.withFallback(
-      () => this.primary.searchNews(query, days),
-      () => this.fallback.searchNews(query, days)
-    );
-  }
-}
 
 export function createStockService(apiKey?: string): StockDataService {
-  const provider = PROVIDER_ENV;
   const finnhubKey = process.env.FINNHUB_API_KEY;
   const fmpKey = process.env.FINANCIAL_MODELING_PREP_API_KEY;
   const twelveKey = process.env.TWELVE_DATA_API_KEY;
-  if (provider === 'finnhub') {
-    return new FinnhubService(finnhubKey);
+  const providers: Array<{ id: ProviderId; service: StockDataService }> = [];
+  if (apiKey || process.env.ALPHA_VANTAGE_API_KEY) {
+    providers.push({ id: 'alphavantage', service: new AlphaVantageService(apiKey) });
   }
-  if (provider === 'fmp') {
-    return new FinancialModelingPrepService(fmpKey);
+  if (finnhubKey) {
+    providers.push({ id: 'finnhub', service: new FinnhubService(finnhubKey) });
   }
-  if (provider === 'twelvedata') {
-    return new TwelveDataService(twelveKey);
+  if (fmpKey) {
+    providers.push({ id: 'fmp', service: new FinancialModelingPrepService(fmpKey) });
   }
-  if (provider === 'stooq') {
-    return new StooqService();
+  if (twelveKey) {
+    providers.push({ id: 'twelvedata', service: new TwelveDataService(twelveKey) });
   }
-  if (provider === 'hybrid') {
-    if (finnhubKey) {
-      return new HybridStockDataService(new AlphaVantageService(apiKey), new FinnhubService(finnhubKey));
-    }
-    // No Finnhub key configured; fall back to Alpha Vantage only to avoid 403 errors
-    return new AlphaVantageService(apiKey);
-  }
-  if (provider === 'multi') {
-    const providers: Array<{ id: ProviderId; service: StockDataService }> = [];
-    if (apiKey || process.env.ALPHA_VANTAGE_API_KEY) {
-      providers.push({ id: 'alphavantage', service: new AlphaVantageService(apiKey) });
-    }
-    if (finnhubKey) {
-      providers.push({ id: 'finnhub', service: new FinnhubService(finnhubKey) });
-    }
-    if (fmpKey) {
-      providers.push({ id: 'fmp', service: new FinancialModelingPrepService(fmpKey) });
-    }
-    if (twelveKey) {
-      providers.push({ id: 'twelvedata', service: new TwelveDataService(twelveKey) });
-    }
-    providers.push({ id: 'stooq', service: new StooqService() });
-    if (providers.length === 0) {
-      throw new Error('No stock data providers configured. Set API keys for Alpha Vantage, Finnhub, FMP, or Twelve Data.');
-    }
-    return new MultiSourceStockDataService(providers);
-  }
-  return new AlphaVantageService(apiKey);
+  providers.push({ id: 'stooq', service: new StooqService() });
+  return new MultiSourceStockDataService(providers);
 }
 
 // ────────────────────────────────────────────────────────────────────────────

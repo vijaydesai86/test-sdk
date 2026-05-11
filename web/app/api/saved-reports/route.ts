@@ -23,7 +23,17 @@ interface BasicSavedReportRow {
 }
 
 function isSchemaMismatch(message: string) {
-  return /column .* does not exist|schema cache/i.test(message);
+  return (
+    /column .* does not exist|schema cache/i.test(message) ||
+    /<!DOCTYPE|<html/i.test(message) ||
+    /fetch failed|ECONNREFUSED|ENOTFOUND|network error/i.test(message)
+  );
+}
+
+function truncateErrorMsg(message: string, max = 200): string {
+  if (!message) return '(no message)';
+  const clean = message.replace(/\s+/g, ' ').trim();
+  return clean.length <= max ? clean : `${clean.slice(0, max)}…`;
 }
 
 function normalizeLegacyReport(row: BasicSavedReportRow): DetailedSavedReportRow {
@@ -60,7 +70,7 @@ export async function GET() {
       .order('created_at', { ascending: false });
 
     if (legacyQuery.error) {
-      console.error('[saved-reports] Supabase error:', legacyQuery.error.message);
+      console.error('[saved-reports] Supabase error:', truncateErrorMsg(legacyQuery.error.message));
       return NextResponse.json({ reports: [], setupRequired: true });
     }
 
@@ -70,7 +80,7 @@ export async function GET() {
   }
 
   if (detailedQuery.error) {
-    console.error('[saved-reports] Supabase error:', detailedQuery.error.message);
+    console.error('[saved-reports] Supabase error:', truncateErrorMsg(detailedQuery.error.message));
     return NextResponse.json({ reports: [], setupRequired: true });
   }
 
@@ -143,7 +153,7 @@ export async function POST(request: NextRequest) {
       .single();
 
     if (legacyInsert.error) {
-      console.error('[saved-reports] Supabase insert error:', legacyInsert.error.message);
+      console.error('[saved-reports] Supabase insert error:', truncateErrorMsg(legacyInsert.error.message));
       return NextResponse.json({ error: legacyInsert.error.message }, { status: 500 });
     }
 
@@ -154,7 +164,7 @@ export async function POST(request: NextRequest) {
   }
 
   if (detailedInsert.error) {
-    console.error('[saved-reports] Supabase insert error:', detailedInsert.error.message);
+    console.error('[saved-reports] Supabase insert error:', truncateErrorMsg(detailedInsert.error.message));
     return NextResponse.json({ error: detailedInsert.error.message }, { status: 500 });
   }
 

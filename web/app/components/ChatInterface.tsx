@@ -9,11 +9,6 @@ import * as echarts from 'echarts';
 interface Message {
   role: 'user' | 'assistant';
   content: string;
-  model?: string;
-  requestedModel?: string;
-  provider?: string;
-  runtimeProvider?: string;
-  fallbackCount?: number;
   stats?: {
     rounds: number;
     toolCalls: number;
@@ -83,31 +78,16 @@ interface WatchlistMeta {
   profile: PortfolioProfileMeta;
 }
 
-interface ModelOption {
-  value: string;
-  label: string;
-  rateLimitTier?: string;
-}
-
-interface ProviderOption {
-  id: string;
-  label: string;
-  available: boolean;
-  details?: string;
-  models: ModelOption[];
-}
-
 type WorkspaceTab = 'watchlist' | 'artifacts' | 'saved';
 type ThemeId = 'aurora' | 'solstice' | 'ember' | 'graphite';
 
 const DEFAULT_THEME: ThemeId = 'aurora';
 const THEME_STORAGE_KEY = 'stock-ui-theme';
 
-const DEFAULT_MODEL = 'openai/gpt-4.1';
 const CHART_HEIGHT = 280;
 const MAX_TEXTAREA_HEIGHT = 160;
 const TOOL_CALL_WARNING =
-  'Model returned tool calls as plain text. Switch to a tool-calling model from the dropdown.';
+  'Model returned tool calls as plain text. The system will retry with a different model automatically. If the issue persists, try rephrasing your request.';
 const isToolCallText = (content: string) =>
   /"name"\s*:\s*"functions\./.test(content) || /"arguments"\s*:\s*\{/.test(content);
 
@@ -120,18 +100,18 @@ const THEME_OPTIONS: Array<{ id: ThemeId; label: string; blurb: string }> = [
 
 const QUICK_PROMPTS = [
   {
-    label: 'NVDA stock report',
-    prompt: 'Generate a full stock report for NVDA',
+    label: 'Report on Arm Holdings',
+    prompt: 'Give me a stock report on Arm Holdings',
     eyebrow: 'Single company',
   },
   {
-    label: 'Compare NVDA, AMD, INTC',
-    prompt: 'Compare companies NVDA, AMD, INTC',
+    label: 'Nvidia vs AMD vs Intel',
+    prompt: 'Compare Nvidia, AMD, and Intel',
     eyebrow: 'Comparison',
   },
   {
-    label: 'Deep research on semiconductors',
-    prompt: 'Deep research on semiconductors',
+    label: 'AI infrastructure sector',
+    prompt: 'Deep research on AI infrastructure stocks',
     eyebrow: 'Sector study',
   },
   {
@@ -216,17 +196,6 @@ function ChartBlock({ option }: { option: Record<string, unknown> }) {
   }, [option]);
 
   return <div ref={containerRef} className="my-4 w-full" style={{ height: `${CHART_HEIGHT}px` }} />;
-}
-
-function formatProviderLabel(provider?: string) {
-  if (provider === 'github') return 'GitHub';
-  if (provider === 'gemini') return 'Gemini';
-  if (provider === 'hybrid') return 'Hybrid';
-  return provider || 'Unknown';
-}
-
-function formatModelLabel(model?: string) {
-  return model ? model.split('/').pop() || model : 'unknown';
 }
 
 function humanizeSlug(value: string) {
@@ -361,13 +330,6 @@ export default function ChatInterface() {
   const [isLoading, setIsLoading] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [model, setModel] = useState(DEFAULT_MODEL);
-  const [provider, setProvider] = useState<ProviderOption['id']>('github');
-  const [availableProviders, setAvailableProviders] = useState<ProviderOption[]>([]);
-  const [availableModels, setAvailableModels] = useState<ModelOption[]>([
-    { value: DEFAULT_MODEL, label: 'GPT-4.1', rateLimitTier: 'high' },
-  ]);
-  const [modelsLoading, setModelsLoading] = useState(true);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [reportPreview, setReportPreview] = useState<string | null>(null);
@@ -378,7 +340,13 @@ export default function ChatInterface() {
   const [savedReports, setSavedReports] = useState<ReportItem[]>([]);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [activeWorkspaceTab, setActiveWorkspaceTab] = useState<WorkspaceTab>('watchlist');
-  const [theme, setTheme] = useState<ThemeId>(DEFAULT_THEME);
+  const [theme, setTheme] = useState<ThemeId>(() => {
+    if (typeof window === 'undefined') return DEFAULT_THEME;
+    const savedTheme = window.localStorage.getItem(THEME_STORAGE_KEY);
+    return savedTheme && THEME_OPTIONS.some((option) => option.id === savedTheme)
+      ? savedTheme as ThemeId
+      : DEFAULT_THEME;
+  });
   const [supabaseReports, setSupabaseReports] = useState<SavedReportMeta[]>([]);
   const [supabaseReportsLoading, setSupabaseReportsLoading] = useState(false);
   const [supabaseSetupRequired, setSupabaseSetupRequired] = useState(false);
@@ -389,38 +357,6 @@ export default function ChatInterface() {
   const [watchlistInput, setWatchlistInput] = useState('');
   const [portfolioProfileDraft, setPortfolioProfileDraft] = useState<PortfolioProfileMeta | null>(null);
   const [watchlistItemDrafts, setWatchlistItemDrafts] = useState<Record<string, WatchlistItemMeta>>({});
-
-  const selectedProvider = availableProviders.find((item) => item.id === provider) ?? null;
-  const selectedModel = availableModels.find((item) => item.value === model) ?? null;
-  const providerHelpText = selectedProvider?.details || 'Choose how the app spends model quota for this chat.';
-  const modelHelpText = modelsLoading
-    ? 'Loading available models.'
-    : provider === 'hybrid'
-      ? 'Hybrid starts from this model, then walks down the GitHub fallback chain before moving to Gemini if needed.'
-      : provider === 'gemini'
-        ? 'Starts from this Gemini model, then falls through the Gemini fallback ladder automatically.'
-        : 'Starts from this GitHub model, then falls through the GitHub fallback ladder automatically.';
-
-  useEffect(() => {
-    fetch('/api/providers')
-      .then((res) => res.json())
-      .then((payload: { providers?: ProviderOption[] }) => {
-        if (!payload.providers?.length) return;
-        setAvailableProviders(payload.providers);
-        const defaultProvider = payload.providers.find((p) => p.available) ?? payload.providers[0];
-        setProvider(defaultProvider.id);
-        const nextModels = defaultProvider.models ?? [];
-        setAvailableModels(nextModels);
-        if (nextModels.length > 0 && !nextModels.find((m) => m.value === model)) {
-          setModel(nextModels[0].value);
-        }
-      })
-      .catch(() => {
-        /* keep fallback model */
-      })
-      .finally(() => setModelsLoading(false));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   const fetchSupabaseReports = () => {
     setSupabaseReportsLoading(true);
@@ -443,7 +379,17 @@ export default function ChatInterface() {
       .then(async (res) => {
         const payload = (await res.json()) as { watchlist?: WatchlistMeta; error?: string };
         if (!res.ok) throw new Error(payload.error || 'Failed to load watchlist');
-        setWatchlist(payload.watchlist ?? null);
+        const nextWatchlist = payload.watchlist ?? null;
+        setWatchlist(nextWatchlist);
+        setPortfolioProfileDraft(nextWatchlist?.profile ?? null);
+        setWatchlistItemDrafts(
+          nextWatchlist
+            ? nextWatchlist.items.reduce<Record<string, WatchlistItemMeta>>((acc, item) => {
+                acc[item.symbol] = item;
+                return acc;
+              }, {})
+            : {}
+        );
       })
       .catch((err: unknown) => {
         setWatchlistError(err instanceof Error ? err.message : 'Failed to load watchlist');
@@ -452,20 +398,10 @@ export default function ChatInterface() {
   };
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchSupabaseReports();
     fetchWatchlist();
   }, []);
-
-  useEffect(() => {
-    if (!watchlist) return;
-    setPortfolioProfileDraft(watchlist.profile);
-    setWatchlistItemDrafts(
-      watchlist.items.reduce<Record<string, WatchlistItemMeta>>((acc, item) => {
-        acc[item.symbol] = item;
-        return acc;
-      }, {})
-    );
-  }, [watchlist]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
@@ -488,14 +424,6 @@ export default function ChatInterface() {
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    const savedTheme = window.localStorage.getItem(THEME_STORAGE_KEY);
-    if (savedTheme && THEME_OPTIONS.some((option) => option.id === savedTheme)) {
-      setTheme(savedTheme as ThemeId);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
     window.localStorage.setItem(THEME_STORAGE_KEY, theme);
     document.documentElement.dataset.stockTheme = theme;
   }, [theme]);
@@ -511,11 +439,11 @@ export default function ChatInterface() {
     setIsLoading(true);
 
     try {
-      const res = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: userMessage, sessionId, model, provider }),
-      });
+        const res = await fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message: userMessage, sessionId }),
+        });
 
       const rawText = await res.text();
       let data: Record<string, unknown>;
@@ -542,11 +470,6 @@ export default function ChatInterface() {
         {
           role: 'assistant',
           content: assistantText,
-          model: typeof data.model === 'string' ? data.model : undefined,
-          requestedModel: typeof data.requestedModel === 'string' ? data.requestedModel : undefined,
-          provider: typeof data.provider === 'string' ? data.provider : undefined,
-          runtimeProvider: typeof data.runtimeProvider === 'string' ? data.runtimeProvider : undefined,
-          fallbackCount: typeof data.fallbackCount === 'number' ? data.fallbackCount : undefined,
           stats: data.stats as Message['stats'],
         },
       ]);
@@ -1537,9 +1460,6 @@ create index if not exists saved_reports_report_date_idx on public.saved_reports
               <div className="rounded-full border border-white/10 bg-white/8 px-3 py-2 text-xs text-slate-200">
                 {workspaceTabs[2].count} saved
               </div>
-              <div className="rounded-full border border-white/10 bg-white/8 px-3 py-2 text-xs text-slate-200">
-                {formatProviderLabel(provider)} • {formatModelLabel(model)}
-              </div>
             </div>
 
             <div className="flex items-center gap-2">
@@ -1676,70 +1596,10 @@ create index if not exists saved_reports_report_date_idx on public.saved_reports
                       </div>
                     </div>
                     <div className="rounded-[24px] border border-white/10 bg-slate-950/40 p-4">
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <p className="text-[11px] uppercase tracking-[0.18em] text-slate-400">Execution strategy</p>
-                          <p className="mt-1 text-xs leading-5 text-slate-300">{providerHelpText}</p>
-                        </div>
-                        {availableProviders.length > 1 ? (
-                          <select
-                            value={provider}
-                            onChange={(e) => {
-                              const next = e.target.value;
-                              setProvider(next);
-                              setSessionId(null);
-                              const sel = availableProviders.find((p) => p.id === next);
-                              const models = sel?.models ?? [];
-                              setAvailableModels(models);
-                              if (models.length > 0) setModel(models[0].value);
-                            }}
-                            disabled={modelsLoading}
-                            className="min-w-[150px] rounded-2xl border border-white/10 bg-white/8 px-3 py-2 text-xs text-white focus:outline-none focus:ring-2 focus:ring-teal-300 disabled:opacity-50"
-                          >
-                            {availableProviders.map((p) => (
-                              <option key={p.id} value={p.id} disabled={!p.available}>
-                                {p.label}
-                                {p.available ? '' : ' (unavailable)'}
-                              </option>
-                            ))}
-                          </select>
-                        ) : (
-                          <div className="rounded-full border border-white/10 bg-white/8 px-3 py-2 text-xs font-medium text-white">
-                            {selectedProvider?.label ?? 'Default'}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="rounded-[24px] border border-white/10 bg-slate-950/40 p-4">
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <p className="text-[11px] uppercase tracking-[0.18em] text-slate-400">Starting model</p>
-                          <p className="mt-1 text-xs leading-5 text-slate-300">{modelHelpText}</p>
-                        </div>
-                        <select
-                          value={model}
-                          onChange={(e) => {
-                            setModel(e.target.value);
-                            setSessionId(null);
-                          }}
-                          disabled={modelsLoading}
-                          className="min-w-[170px] rounded-2xl border border-white/10 bg-white/8 px-3 py-2 text-xs text-white focus:outline-none focus:ring-2 focus:ring-teal-300 disabled:opacity-50"
-                        >
-                          {modelsLoading
-                            ? <option>Loading...</option>
-                            : availableModels.map((m) => (
-                                <option key={m.value} value={m.value}>
-                                  {m.label}
-                                </option>
-                              ))}
-                        </select>
-                      </div>
-                      {selectedModel?.rateLimitTier && (
-                        <p className="mt-3 text-[11px] uppercase tracking-[0.18em] text-teal-200/60">
-                          Current tier: {selectedModel.rateLimitTier}
-                        </p>
-                      )}
+                      <p className="text-[11px] uppercase tracking-[0.18em] text-slate-400">Automatic routing</p>
+                      <p className="mt-1 text-xs leading-5 text-slate-300">
+                        Ask naturally. The app automatically fans out across the available AI model ladder and provider fallbacks without requiring any model choice from you.
+                      </p>
                     </div>
                   </div>
                 </div>
@@ -1789,26 +1649,6 @@ create index if not exists saved_reports_report_date_idx on public.saved_reports
                       {msg.role === 'assistant' && (
                         <div className="mb-3 flex flex-wrap items-center gap-2">
                           <span className="text-xs font-medium text-slate-400">Assistant</span>
-                          {msg.provider && (
-                            <span className="rounded-full border border-white/10 bg-white/8 px-2 py-1 text-[10px] uppercase tracking-[0.14em] text-slate-300">
-                              Strategy {formatProviderLabel(msg.provider)}
-                            </span>
-                          )}
-                          {msg.runtimeProvider && (
-                            <span className="rounded-full border border-teal-300/20 bg-teal-300/10 px-2 py-1 text-[10px] uppercase tracking-[0.14em] text-teal-100">
-                              Used {formatProviderLabel(msg.runtimeProvider)}
-                            </span>
-                          )}
-                          {msg.model && (
-                            <span className="rounded-full border border-cyan-300/20 bg-cyan-300/10 px-2 py-1 font-mono text-[10px] text-cyan-100">
-                              {formatModelLabel(msg.model)}
-                            </span>
-                          )}
-                          {msg.fallbackCount && msg.fallbackCount > 0 && (
-                            <span className="rounded-full border border-amber-300/20 bg-amber-300/10 px-2 py-1 text-[10px] uppercase tracking-[0.14em] text-amber-100">
-                              {msg.fallbackCount} fallback{msg.fallbackCount === 1 ? '' : 's'}
-                            </span>
-                          )}
                           {msg.stats && (
                             <span className="text-[10px] text-slate-400">
                               {msg.stats.rounds} rounds • {msg.stats.toolCalls} calls
@@ -1832,9 +1672,7 @@ create index if not exists saved_reports_report_date_idx on public.saved_reports
                         <span className="animate-pulse">●</span>
                         <span className="animate-pulse [animation-delay:150ms]">●</span>
                         <span className="animate-pulse [animation-delay:300ms]">●</span>
-                        <span className="ml-2 text-xs text-slate-400">
-                          {formatProviderLabel(provider)} • {formatModelLabel(model)} thinking...
-                        </span>
+                        <span className="ml-2 text-xs text-slate-400">Researching...</span>
                       </div>
                     </div>
                   </div>
@@ -1860,7 +1698,7 @@ create index if not exists saved_reports_report_date_idx on public.saved_reports
                     value={input}
                     onChange={(e) => setInput(e.target.value)}
                     onKeyDown={handleKeyDown}
-                    placeholder="Ask for a stock report, comparison, deep research, or watchlist daily report... (Enter to send, Shift+Enter for newline)"
+                    placeholder="Ask naturally — 'Report on Apple', 'Compare Tesla vs Rivian', 'Best AI stocks', 'Watchlist daily report'…"
                     disabled={isLoading}
                     className="min-h-[54px] max-h-40 w-full resize-none bg-transparent px-3 py-2 text-sm text-white placeholder:text-slate-500 focus:outline-none disabled:opacity-60"
                   />

@@ -1,6 +1,34 @@
 # Changelog
 All notable changes to this project are recorded here.
 ## [Unreleased]
+### Fixed
+- **Gemini tool-calling 400 (`Value is not a string: null`)**: Gemini's OpenAI-compatible endpoint rejected assistant tool-call messages when `content` was `null`. `callGeminiAPI()` now sanitizes every Gemini-bound message so `content` is always a string before each tool-calling round.
+- **Misleading Gemini 400 errors**: Gemini 400 responses no longer blame the user's selected model or tell users to open a dropdown. The route now distinguishes invalid model IDs from generic bad requests and returns server-side guidance.
+- **Invalid Gemini fallback IDs**: Removed stale Gemini fallback IDs (`gemini-3.0-flash`, `gemini-3.1-flash-lite`) and replaced the safe internal Gemini ladder with `gemini-2.5-flash` → `gemini-2.5-flash-lite` → `gemini-2.0-flash`.
+- **Automatic model fan-out**: GitHub execution now fans out across the full live filtered GitHub Models catalog instead of a small static shortlist, while Gemini walks the safe internal ladder automatically.
+- **User-facing model leakage**: Removed the starting-model picker and model/provider badges from the chat UI. Routing is automatic; users no longer need to know model names.
+- **Raw `fetch failed` leaks from LLM providers**: GitHub/Gemini DNS/network failures are now normalized into transient provider errors so users get a clean fallback-exhausted message instead of a low-level fetch exception.
+- **Stale GitHub fallback IDs**: Removed the hardcoded `anthropic/claude-3.7-sonnet` and `anthropic/claude-3.5-sonnet` defaults from the GitHub fallback ladder, and unknown-model responses now mark those IDs invalid so subsequent requests skip them instead of repeating the same `model_not_found` failure.
+- **Supabase 521 HTML error pages logged verbatim**: `isSchemaMismatch` now also matches Cloudflare HTML error pages (`<!DOCTYPE`, `<html`) and connection failures (`fetch failed`, `ECONNREFUSED`, `ENOTFOUND`) in `researchMemoryStore.ts`, `saved-reports/route.ts`, and `watchlistStore.ts`. These are silently swallowed and the filesystem fallback runs without logging. Previously, a full 521 HTML page was logged for every Supabase request when the database server was down.
+- **Noisy Vercel logs**: All `console.error` calls for Supabase errors now truncate the message to 200 characters. LLM API error bodies truncated to 300 characters in log output.
+- **504 Vercel timeout (GitHub Models hung)**: Added `AbortSignal.timeout(60s)` to every `fetch` in `callGitHubModelsAPI` and `callGeminiAPI`. A hung upstream call now fails after 60 seconds and advances the fallback chain to the next model, instead of holding the Vercel function until the 300s hard limit. Configurable via `LLM_REQUEST_TIMEOUT_MS` env var.
+
+### Fixed
+- **400 error on follow-up messages** ("messages with role 'tool' must be a response to a preceding message with 'tool_calls'"): `toPersistentMessages` was saving all messages including `tool` result messages but stripping `tool_calls` metadata from the assistant messages. When reloaded, the `tool` messages had no preceding `tool_calls` assistant message → API 400. Fixed by saving only user messages and final assistant text replies — all `tool` result messages and assistant-only-tool_calls messages are now excluded from persistence.
+- **`trimHistory` compacting**: Removed the "don't compact the last exchange" guard that treated all loaded historical exchanges as if they were in-progress. All loaded exchanges are now always compacted to `[user, assistant-text]`, preventing orphaned tool messages from ever reaching the API.
+- **AI asking clarifying questions instead of acting**: System prompts now explicitly forbid asking the user for clarification. The AI must act immediately using `search_stock` to resolve company names, not prompt the user for ticker symbols.
+
+### Changed
+- **Exhaustive-by-default AI execution**: Removed `LLM_PROVIDER` config. The system always tries all configured providers in sequence — GitHub Models first (exhausting every fallback model), then Gemini. Never errors out until all models and providers are exhausted.
+- **Exhaustive-by-default stock data**: Removed `STOCK_DATA_PROVIDER` config. `createStockService()` always returns `MultiSourceStockDataService`, using every configured key with full provider fallback chain. `HybridStockDataService` removed.
+- **Three report tools only** (`generate_stock_report`, `generate_research_report`, `generate_watchlist_daily_report`): Removed `generate_comparison_report` and `generate_sector_report` from `CHAT_TOOL_NAMES` and from `buildToolDefinitions()`. Renamed `generate_deep_sector_report` → `generate_research_report`. The research report handles all non-single-stock queries: comparisons, sectors, themes, industries, portfolio ideas. Internal routing tools remain in `executeTool` for delegation only.
+- **AI-first request handling**: Removed `parseReportRequest()` / `parseCompareRequest()` / `parseTimeframe()` fast-path pattern matching. All user messages go through the LLM first. The LLM reads intent and decides which tool to call.
+- **No provider/model selector in UI**: Users no longer see or choose model names. The app routes automatically across the available providers/models and keeps model selection server-side.
+- **Simplified `/api/providers`**: Returns `{ models }` only — a flat combined list of GitHub + Gemini models for internal inventory/debug use.
+- **Updated system prompts**: Both SYSTEM_PROMPT and COMPACT_SYSTEM_PROMPT describe the three report tools and the AI-reads-first rule. Removed hardcoded source citations from prompt.
+- **Source info hidden by default**: Data-source sections in reports only appear when `DEBUG=true` is set in Vercel environment variables.
+
+
 ### Added
 - **7-pillar decision engine** (`decisionEngine.ts`): Research-backed multi-factor scoring model producing transparent `DecisionSnapshot` for every company. Pillars: Profitability (25%), Growth (15%), Valuation (20%), Momentum (15%), Analyst Consensus (15%), Insider Activity (5%), Financial Health (5%). Each pillar shows its score and the real data behind it in the summary. Action thresholds: ≥65 Buy/Initiate, 45–64 Hold/Wait, <45 Wait/Sell.
 - **Analyst consensus as a scoring pillar**: Weighted strongBuy/buy/hold/sell/strongSell counts from Finnhub, Alpha Vantage, and FMP are aggregated into a 0–100 score with 15% weight.
