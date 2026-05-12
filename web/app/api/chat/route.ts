@@ -1002,6 +1002,7 @@ export async function POST(request: NextRequest) {
         if (advanceModel()) {
           continue;
         }
+        // No models remain in the fallback ladder, so surface the error instead of looping forever.
         const err = new Error('Model returned tool calls as plain text.') as Error & { statusCode: number };
         err.statusCode = 422;
         throw err;

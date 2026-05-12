@@ -10,9 +10,11 @@ const DEFAULT_PROVIDER_MIN_INTERVAL_MS = {
 } as const;
 
 function getProviderMinIntervalMs(envName: string, fallback: number): number {
-  const raw = Number(process.env[envName] || fallback);
-  if (!Number.isFinite(raw)) return fallback;
-  return Math.max(0, Math.trunc(raw));
+  const rawEnv = process.env[envName];
+  if (!rawEnv || rawEnv.trim() === '') return fallback;
+  const parsed = Number(rawEnv);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(0, Math.trunc(parsed));
 }
 
 export interface StockDataService {
@@ -1913,7 +1915,10 @@ function countMeaningfulLeaves(value: any, depth = 0): number {
     return value.slice(0, 5).reduce((total, entry) => total + countMeaningfulLeaves(entry, depth + 1), 0);
   }
   if (typeof value === 'object') {
-    return Object.values(value).slice(0, 20).reduce<number>((total, entry) => total + countMeaningfulLeaves(entry, depth + 1), 0);
+    return Object.keys(value).slice(0, 20).reduce<number>(
+      (total, key) => total + countMeaningfulLeaves((value as Record<string, unknown>)[key], depth + 1),
+      0
+    );
   }
   return 1;
 }
