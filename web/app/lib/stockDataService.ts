@@ -50,6 +50,8 @@ export class AlphaVantageService implements StockDataService {
   private cache = new Map<string, { expiresAt: number; data: any }>();
   private lastRequestAt = new Map<string, number>();
   private static sharedCache = new Map<string, { expiresAt: number; data: any }>();
+  // Alpha Vantage uses multiple endpoint families behind one base URL, so this service
+  // keeps its throttle state in a keyed map instead of a single timestamp.
   private minIntervals = {
     alphavantage: getProviderMinIntervalMs('ALPHA_VANTAGE_MIN_INTERVAL_MS', DEFAULT_PROVIDER_MIN_INTERVAL_MS.alphavantage),
   };
@@ -1882,6 +1884,8 @@ const METHOD_PROVIDER_PRIORITY: Partial<Record<keyof StockDataService, ProviderI
   getAnalystRecommendations: ['finnhub', 'fmp', 'alphavantage', 'twelvedata', 'stooq'],
   getPriceTargets: ['finnhub', 'fmp', 'alphavantage', 'twelvedata', 'stooq'],
   getPeers: ['finnhub', 'fmp', 'alphavantage', 'twelvedata', 'stooq'],
+  // Search requests are high-frequency during ticker resolution, so prefer the roomier
+  // free-tier providers before spending Alpha Vantage's much tighter daily quota.
   searchStock: ['finnhub', 'fmp', 'alphavantage', 'twelvedata', 'stooq'],
   getEarningsHistory: ['finnhub', 'alphavantage', 'fmp', 'twelvedata', 'stooq'],
   getIncomeStatement: ['fmp', 'finnhub', 'alphavantage', 'twelvedata', 'stooq'],

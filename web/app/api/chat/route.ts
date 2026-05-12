@@ -997,6 +997,8 @@ export async function POST(request: NextRequest) {
       // No tool calls — we have the final response
       assistantContent = assistantMessage.content;
       if (isToolCallLike(assistantContent)) {
+        // Some models occasionally emit raw tool-call JSON as assistant text. Drop that bad
+        // assistant turn, cool the model down briefly, and let the next fallback model retry.
         conversationMessages.pop();
         markModelCooldown(activeModel, MODEL_COOLDOWN_MS);
         if (advanceModel()) {
