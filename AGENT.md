@@ -76,7 +76,7 @@ User message
 | `web/app/api/models/route.ts` | Returns available GitHub Models from live catalog. |
 | `web/app/api/providers/route.ts` | Returns combined list of available LLM models (GitHub + Gemini) for internal inventory/debug use. |
 
-### Tool catalog (30 tools)
+### Tool catalog (31 tools)
 
 **Data tools** — fetch real data, return structured JSON, make zero report-side decisions:
 
@@ -98,6 +98,7 @@ User message
 | `get_cash_flow` | `getCashFlow` |
 | `get_news_sentiment` | `getNewsSentiment` |
 | `get_company_news` | `getCompanyNews` |
+| `search_news` | `searchNews` |
 | `get_sector_performance` | `getSectorPerformance` |
 | `get_top_gainers_losers` | `getTopGainersLosers` |
 

@@ -40,6 +40,7 @@ The decision summary shows the **real data behind each score** so you can see ex
 | **Dividend analysis** | `Analyze dividends for KO` | Yield, payout ratio, FCF coverage, safety score, ex-dividend dates |
 | **DCF valuation** | `What's the intrinsic value of MSFT?` | 10-year DCF, WACC, margin of safety, valuation verdict |
 | **Market sentiment** | `What's the market sentiment right now?` | Composite Fear & Greed index (0-100) from real market data |
+| **Theme news search** | `Find recent semiconductor news` | Recent market/news articles for a company, sector, or investment theme |
 
 ---
 
@@ -117,11 +118,12 @@ _Note: SEC EDGAR filings (`get_sec_filings`) require no API key — the SEC EDGA
 | `STOCK_CACHE_TTL_MS` | `604800000` (7 days) | How long fetched data is cached on disk. |
 | `LLM_MODEL_COOLDOWN_MS` | `120000` | How long a rate-limited LLM model is skipped before retrying. |
 | `STOCK_PROVIDER_COOLDOWN_MS` | `300000` | How long a rate-limited data provider is paused. |
-| `ALPHA_VANTAGE_MIN_INTERVAL_MS` | `1200` | Min ms between Alpha Vantage requests. |
-| `FINNHUB_MIN_INTERVAL_MS` | `500` | Min ms between Finnhub requests. |
-| `FMP_MIN_INTERVAL_MS` | `800` | Min ms between FMP requests. |
-| `TWELVE_DATA_MIN_INTERVAL_MS` | `800` | Min ms between Twelve Data requests. |
-| `STOOQ_MIN_INTERVAL_MS` | `800` | Min ms between Stooq requests. |
+| `ALPHA_VANTAGE_MIN_INTERVAL_MS` | `12000` | Min ms between Alpha Vantage requests. Matches the documented 5 req/min free-tier ceiling. |
+| `FINNHUB_MIN_INTERVAL_MS` | `1100` | Min ms between Finnhub requests. Keeps the default under the documented 60 req/min free-tier ceiling. |
+| `FMP_MIN_INTERVAL_MS` | `12000` | Min ms between FMP requests. Uses a conservative default for the free-tier minute quota. |
+| `TWELVE_DATA_MIN_INTERVAL_MS` | `8000` | Min ms between Twelve Data requests. Keeps the default under the documented 8 req/min free-tier ceiling. |
+| `STOOQ_MIN_INTERVAL_MS` | `1000` | Min ms between Stooq requests. Conservative no-key fallback pacing. |
+| `GITHUB_MODELS_CACHE_TTL_MS` | `900000` (15 min) | Cache TTL for the live GitHub Models catalog so every chat request does not re-fetch the catalog. |
 | `DEBUG` | `false` | Set to `true` to show data-source and data-coverage sections in reports. |
 | `HEALTH_CHECK_SYMBOL` | — | Optional ticker for a live price check in the `/api/health` response. |
 

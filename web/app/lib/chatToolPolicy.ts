@@ -8,6 +8,7 @@ export const CHAT_TOOL_NAMES = [
   'get_price_targets',
   'get_news_sentiment',
   'get_company_news',
+  'search_news',
   'get_price_history',
   'get_earnings_history',
   'get_income_statement',

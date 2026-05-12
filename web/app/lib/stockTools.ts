@@ -1388,6 +1388,21 @@ function buildToolDefinitions() {
     {
       type: 'function' as const,
       function: {
+        name: 'search_news',
+        description: 'Search recent market news for a company, sector, or investment theme. Use this for deep research topics when the question is broader than a single ticker.',
+        parameters: {
+          type: 'object',
+          properties: {
+            query: { type: 'string', description: 'Company, sector, or investment-theme search query' },
+            days: { type: 'number', description: 'Lookback window in days (optional)' },
+          },
+          required: ['query'],
+        },
+      },
+    },
+    {
+      type: 'function' as const,
+      function: {
         name: 'generate_stock_report',
         description: 'Generate a comprehensive stock research report and save it as a markdown artifact.',
         parameters: {
@@ -1685,6 +1700,14 @@ export async function executeTool(
           success: true,
           data: news,
           message: `Retrieved company news for ${args.symbol}`,
+        };
+      }
+      case 'search_news': {
+        const news = await stockService.searchNews(args.query || '', args.days ? Number(args.days) : undefined);
+        return {
+          success: true,
+          data: news,
+          message: `Retrieved market news for "${args.query || ''}"`,
         };
       }
       case 'get_sector_performance': {
