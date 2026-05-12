@@ -1913,7 +1913,7 @@ function countMeaningfulLeaves(value: any, depth = 0): number {
     return value.slice(0, 5).reduce((total, entry) => total + countMeaningfulLeaves(entry, depth + 1), 0);
   }
   if (typeof value === 'object') {
-    return Object.values(value).slice(0, 20).reduce((total, entry) => total + countMeaningfulLeaves(entry, depth + 1), 0);
+    return Object.values(value).slice(0, 20).reduce<number>((total, entry) => total + countMeaningfulLeaves(entry, depth + 1), 0);
   }
   return 1;
 }
@@ -2003,7 +2003,7 @@ class MultiSourceStockDataService implements StockDataService {
   private async callProviders<T>(method: keyof StockDataService, args: any[]): Promise<T> {
     let lastError: any;
     let mergedResult: any = null;
-    let mergeSources: string[] = [];
+    const mergeSources: string[] = [];
     let mergeCount = 0;
     for (const provider of this.getOrderedProviders(method)) {
       if (this.isDisabled(provider.id)) continue;

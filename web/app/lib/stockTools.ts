@@ -1418,6 +1418,78 @@ function buildToolDefinitions() {
     {
       type: 'function' as const,
       function: {
+        name: 'generate_comparison_report',
+        description: 'Internal routing tool for explicit company-vs-company comparisons. Not exposed in the top-level chat allow-list.',
+        parameters: {
+          type: 'object',
+          properties: {
+            symbols: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Ticker symbols or company names to compare',
+            },
+            range: {
+              type: 'string',
+              description: 'Price history range for comparison charts (e.g. "1y", "3y"). Default: "1y"',
+            },
+          },
+          required: ['symbols'],
+        },
+      },
+    },
+    {
+      type: 'function' as const,
+      function: {
+        name: 'generate_sector_report',
+        description: 'Internal routing tool for sector/theme research when the user asks for a basket, industry, or theme report.',
+        parameters: {
+          type: 'object',
+          properties: {
+            sector: {
+              type: 'string',
+              description: 'Sector, industry, or investment-theme query',
+            },
+            count: {
+              type: 'number',
+              description: `Number of companies in the final list (default: ${NUM_COMPANIES}, min: 3, max: ${NUM_COMPANIES})`,
+            },
+            range: {
+              type: 'string',
+              description: 'Price history range for charts (e.g. "1y", "3y"). Default: "1y"',
+            },
+          },
+          required: ['sector'],
+        },
+      },
+    },
+    {
+      type: 'function' as const,
+      function: {
+        name: 'generate_deep_sector_report',
+        description: 'Internal routing tool for recursive deep research on a sector or investment theme.',
+        parameters: {
+          type: 'object',
+          properties: {
+            sector: {
+              type: 'string',
+              description: 'Sector, industry, or investment-theme query',
+            },
+            count: {
+              type: 'number',
+              description: `Number of companies in the refined final list (default: ${NUM_COMPANIES}, min: 3, max: ${NUM_COMPANIES})`,
+            },
+            range: {
+              type: 'string',
+              description: 'Price history range for comparison charts (e.g. "1y", "3y"). Default: "1y"',
+            },
+          },
+          required: ['sector'],
+        },
+      },
+    },
+    {
+      type: 'function' as const,
+      function: {
         name: 'generate_research_report',
         description:
           'Generate a research report. Use for comparisons (e.g. \'NVDA vs AMD\'), sector/theme/industry studies (e.g. \'cloud computing\', \'EVs\'), deep research on any topic (e.g. \'growth stocks\', \'AI infrastructure\'), or any multi-company analysis. Handles all non-single-stock research.',
