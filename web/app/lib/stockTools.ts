@@ -1388,6 +1388,21 @@ function buildToolDefinitions() {
     {
       type: 'function' as const,
       function: {
+        name: 'search_news',
+        description: 'Search recent market news for a company, sector, or investment theme. Use this for deep research topics when the question is broader than a single ticker.',
+        parameters: {
+          type: 'object',
+          properties: {
+            query: { type: 'string', description: 'Company, sector, or investment-theme search query' },
+            days: { type: 'number', description: 'Lookback window in days (optional)' },
+          },
+          required: ['query'],
+        },
+      },
+    },
+    {
+      type: 'function' as const,
+      function: {
         name: 'generate_stock_report',
         description: 'Generate a comprehensive stock research report and save it as a markdown artifact.',
         parameters: {
@@ -1397,6 +1412,78 @@ function buildToolDefinitions() {
             range: { type: 'string', description: 'Price history range for charts (e.g., "1y", "3y", "5y", "max"). Default is "5y"' },
           },
           required: ['symbol'],
+        },
+      },
+    },
+    {
+      type: 'function' as const,
+      function: {
+        name: 'generate_comparison_report',
+        description: 'Internal routing tool for explicit company-vs-company comparisons. Not exposed in the top-level chat allow-list.',
+        parameters: {
+          type: 'object',
+          properties: {
+            symbols: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Ticker symbols or company names to compare',
+            },
+            range: {
+              type: 'string',
+              description: 'Price history range for comparison charts (e.g. "1y", "3y"). Default: "1y"',
+            },
+          },
+          required: ['symbols'],
+        },
+      },
+    },
+    {
+      type: 'function' as const,
+      function: {
+        name: 'generate_sector_report',
+        description: 'Internal routing tool for sector/theme research when the user asks for a basket, industry, or theme report.',
+        parameters: {
+          type: 'object',
+          properties: {
+            sector: {
+              type: 'string',
+              description: 'Sector, industry, or investment-theme query',
+            },
+            count: {
+              type: 'number',
+              description: `Number of companies in the final list (default: ${NUM_COMPANIES}, min: 3, max: ${NUM_COMPANIES})`,
+            },
+            range: {
+              type: 'string',
+              description: 'Price history range for charts (e.g. "1y", "3y"). Default: "1y"',
+            },
+          },
+          required: ['sector'],
+        },
+      },
+    },
+    {
+      type: 'function' as const,
+      function: {
+        name: 'generate_deep_sector_report',
+        description: 'Internal routing tool for recursive deep research on a sector or investment theme.',
+        parameters: {
+          type: 'object',
+          properties: {
+            sector: {
+              type: 'string',
+              description: 'Sector, industry, or investment-theme query',
+            },
+            count: {
+              type: 'number',
+              description: `Number of companies in the refined final list (default: ${NUM_COMPANIES}, min: 3, max: ${NUM_COMPANIES})`,
+            },
+            range: {
+              type: 'string',
+              description: 'Price history range for comparison charts (e.g. "1y", "3y"). Default: "1y"',
+            },
+          },
+          required: ['sector'],
         },
       },
     },
@@ -1685,6 +1772,14 @@ export async function executeTool(
           success: true,
           data: news,
           message: `Retrieved company news for ${args.symbol}`,
+        };
+      }
+      case 'search_news': {
+        const news = await stockService.searchNews(args.query || '', args.days ? Number(args.days) : undefined);
+        return {
+          success: true,
+          data: news,
+          message: `Retrieved market news for "${args.query || ''}"`,
         };
       }
       case 'get_sector_performance': {

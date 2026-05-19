@@ -56,6 +56,18 @@ const MODEL_COOLDOWN_MS = Number(process.env.LLM_MODEL_COOLDOWN_MS || 120000);
 const modelCooldowns = new Map<string, number>();
 const invalidModels = new Set<string>();
 
+function parseRetryAfterMs(headerValue: string | null): number | undefined {
+  if (!headerValue) return undefined;
+  const seconds = Number(headerValue);
+  if (Number.isFinite(seconds) && seconds > 0) {
+    return Math.ceil(seconds * 1000);
+  }
+  const timestamp = Date.parse(headerValue);
+  if (Number.isNaN(timestamp)) return undefined;
+  const deltaMs = timestamp - Date.now();
+  return deltaMs > 0 ? deltaMs : undefined;
+}
+
 function isModelInvalid(modelId: string): boolean {
   return invalidModels.has(modelId);
 }
@@ -394,6 +406,7 @@ async function callGitHubModelsAPI(
       );
     }
     if (response.status === 429) {
+      const headerRetryAfterMs = parseRetryAfterMs(response.headers.get('retry-after'));
       let waitSeconds: number | undefined;
       try {
         const errorJson = JSON.parse(errorText);
@@ -403,18 +416,21 @@ async function callGitHubModelsAPI(
       } catch {
         // ignore JSON parse errors
       }
+      const retryAfterMs = headerRetryAfterMs ?? (waitSeconds !== undefined ? waitSeconds * 1000 : undefined);
       let waitMsg = '';
-      if (waitSeconds !== undefined) {
-        if (waitSeconds < 3600) {
-          waitMsg = ` Please wait approximately ${Math.ceil(waitSeconds / 60)} minute(s) before retrying.`;
+      if (retryAfterMs !== undefined) {
+        const waitSecondsForMessage = Math.ceil(retryAfterMs / 1000);
+        if (waitSecondsForMessage < 3600) {
+          waitMsg = ` Please wait approximately ${Math.ceil(waitSecondsForMessage / 60)} minute(s) before retrying.`;
         } else {
-          waitMsg = ` Please wait approximately ${Math.ceil(waitSeconds / 3600)} hour(s) before retrying.`;
+          waitMsg = ` Please wait approximately ${Math.ceil(waitSecondsForMessage / 3600)} hour(s) before retrying.`;
         }
       }
       const err = new Error(
         `Rate limit reached for this model.${waitMsg}`
-      ) as Error & { statusCode: number };
+      ) as Error & { statusCode: number; retryAfterMs?: number };
       err.statusCode = 429;
+      if (retryAfterMs !== undefined) err.retryAfterMs = retryAfterMs;
       throw err;
     }
     // GitHub Models returns 400 for most unknown model IDs, but 404 for certain
@@ -981,6 +997,14 @@ export async function POST(request: NextRequest) {
       // No tool calls — we have the final response
       assistantContent = assistantMessage.content;
       if (isToolCallLike(assistantContent)) {
+        // Some models occasionally emit raw tool-call JSON as assistant text. Drop that bad
+        // assistant turn, cool the model down briefly, and let the next fallback model retry.
+        conversationMessages.pop();
+        markModelCooldown(activeModel, MODEL_COOLDOWN_MS);
+        if (advanceModel()) {
+          continue;
+        }
+        // No models remain in the fallback ladder, so surface the error instead of looping forever.
         const err = new Error('Model returned tool calls as plain text.') as Error & { statusCode: number };
         err.statusCode = 422;
         throw err;

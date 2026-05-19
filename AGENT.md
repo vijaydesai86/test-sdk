@@ -76,7 +76,7 @@ User message
 | `web/app/api/models/route.ts` | Returns available GitHub Models from live catalog. |
 | `web/app/api/providers/route.ts` | Returns combined list of available LLM models (GitHub + Gemini) for internal inventory/debug use. |
 
-### Tool catalog (30 tools)
+### Tool catalog (34 definitions / 31 chat-exposed tools)
 
 **Data tools** — fetch real data, return structured JSON, make zero report-side decisions:
 
@@ -98,6 +98,7 @@ User message
 | `get_cash_flow` | `getCashFlow` |
 | `get_news_sentiment` | `getNewsSentiment` |
 | `get_company_news` | `getCompanyNews` |
+| `search_news` | `searchNews` |
 | `get_sector_performance` | `getSectorPerformance` |
 | `get_top_gainers_losers` | `getTopGainersLosers` |
 
@@ -124,6 +125,14 @@ User message
 | `generate_stock_report` | Single-company deep-dive: `buildStockReport` + `buildDeepStockReport` |
 | `generate_research_report` | All multi-company / thematic research — internally routes to comparison, sector, or deep-sector builder |
 | `generate_watchlist_daily_report` | Daily pulse across the saved watchlist: `buildWatchlistDailyReport` |
+
+**Internal routing tool definitions** — present in `getToolDefinitions()` for internal delegation, but filtered out of `CHAT_TOOL_NAMES`:
+
+| Tool | What it generates |
+|---|---|
+| `generate_comparison_report` | Explicit ticker-vs-ticker comparison report |
+| `generate_sector_report` | Sector/theme report without recursive deep refinement |
+| `generate_deep_sector_report` | Recursive deep-sector research path |
 
 ### Report pipeline (generate_stock_report example)
 

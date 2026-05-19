@@ -1,6 +1,22 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import axios from 'axios';
 
+const DEFAULT_PROVIDER_MIN_INTERVAL_MS = {
+  alphavantage: 12000,
+  finnhub: 1100,
+  fmp: 12000,
+  twelvedata: 8000,
+  stooq: 1000,
+} as const;
+
+function getProviderMinIntervalMs(envName: string, fallback: number): number {
+  const rawEnv = process.env[envName];
+  if (!rawEnv || rawEnv.trim() === '') return fallback;
+  const parsed = Number(rawEnv);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(0, Math.trunc(parsed));
+}
+
 export interface StockDataService {
   getStockPrice(symbol: string): Promise<any>;
   getPriceHistory(symbol: string, range?: string): Promise<any>;
@@ -34,8 +50,10 @@ export class AlphaVantageService implements StockDataService {
   private cache = new Map<string, { expiresAt: number; data: any }>();
   private lastRequestAt = new Map<string, number>();
   private static sharedCache = new Map<string, { expiresAt: number; data: any }>();
+  // Alpha Vantage uses multiple endpoint families behind one base URL, so this service
+  // keeps its throttle state in a keyed map instead of a single timestamp.
   private minIntervals = {
-    alphavantage: Number(process.env.ALPHA_VANTAGE_MIN_INTERVAL_MS || 1200),
+    alphavantage: getProviderMinIntervalMs('ALPHA_VANTAGE_MIN_INTERVAL_MS', DEFAULT_PROVIDER_MIN_INTERVAL_MS.alphavantage),
   };
 
   constructor(apiKey?: string) {
@@ -648,7 +666,7 @@ export class FinnhubService implements StockDataService {
   private baseUrl = 'https://finnhub.io/api/v1';
   private cache = new Map<string, { expiresAt: number; data: any }>();
   private lastRequestAt = 0;
-  private minIntervalMs = Number(process.env.FINNHUB_MIN_INTERVAL_MS || 500);
+  private minIntervalMs = getProviderMinIntervalMs('FINNHUB_MIN_INTERVAL_MS', DEFAULT_PROVIDER_MIN_INTERVAL_MS.finnhub);
 
   constructor(apiKey?: string) {
     this.apiKey = apiKey || process.env.FINNHUB_API_KEY || '';
@@ -1041,7 +1059,7 @@ export class TwelveDataService implements StockDataService {
   private baseUrl = 'https://api.twelvedata.com';
   private cache = new Map<string, { expiresAt: number; data: any }>();
   private lastRequestAt = 0;
-  private minIntervalMs = Number(process.env.TWELVE_DATA_MIN_INTERVAL_MS || 800);
+  private minIntervalMs = getProviderMinIntervalMs('TWELVE_DATA_MIN_INTERVAL_MS', DEFAULT_PROVIDER_MIN_INTERVAL_MS.twelvedata);
 
   constructor(apiKey?: string) {
     this.apiKey = apiKey || process.env.TWELVE_DATA_API_KEY || '';
@@ -1243,7 +1261,7 @@ export class FinancialModelingPrepService implements StockDataService {
   private baseUrl = 'https://financialmodelingprep.com/api/v3';
   private cache = new Map<string, { expiresAt: number; data: any }>();
   private lastRequestAt = 0;
-  private minIntervalMs = Number(process.env.FMP_MIN_INTERVAL_MS || 800);
+  private minIntervalMs = getProviderMinIntervalMs('FMP_MIN_INTERVAL_MS', DEFAULT_PROVIDER_MIN_INTERVAL_MS.fmp);
 
   constructor(apiKey?: string) {
     this.apiKey = apiKey || process.env.FINANCIAL_MODELING_PREP_API_KEY || '';
@@ -1653,7 +1671,7 @@ export class StooqService implements StockDataService {
   private baseUrl = 'https://stooq.com';
   private cache = new Map<string, { expiresAt: number; data: any }>();
   private lastRequestAt = 0;
-  private minIntervalMs = Number(process.env.STOOQ_MIN_INTERVAL_MS || 800);
+  private minIntervalMs = getProviderMinIntervalMs('STOOQ_MIN_INTERVAL_MS', DEFAULT_PROVIDER_MIN_INTERVAL_MS.stooq);
 
   private async throttle(): Promise<void> {
     if (this.minIntervalMs <= 0) return;
@@ -1866,7 +1884,9 @@ const METHOD_PROVIDER_PRIORITY: Partial<Record<keyof StockDataService, ProviderI
   getAnalystRecommendations: ['finnhub', 'fmp', 'alphavantage', 'twelvedata', 'stooq'],
   getPriceTargets: ['finnhub', 'fmp', 'alphavantage', 'twelvedata', 'stooq'],
   getPeers: ['finnhub', 'fmp', 'alphavantage', 'twelvedata', 'stooq'],
-  searchStock: ['alphavantage', 'finnhub', 'fmp', 'twelvedata', 'stooq'],
+  // Search requests are high-frequency during ticker resolution, so prefer the roomier
+  // free-tier providers before spending Alpha Vantage's much tighter daily quota.
+  searchStock: ['finnhub', 'fmp', 'alphavantage', 'twelvedata', 'stooq'],
   getEarningsHistory: ['finnhub', 'alphavantage', 'fmp', 'twelvedata', 'stooq'],
   getIncomeStatement: ['fmp', 'finnhub', 'alphavantage', 'twelvedata', 'stooq'],
   getBalanceSheet: ['fmp', 'finnhub', 'alphavantage', 'twelvedata', 'stooq'],
@@ -1890,6 +1910,45 @@ function hasMeaningfulValue(value: any): boolean {
   if (Array.isArray(value)) return value.length > 0;
   if (typeof value === 'object') return Object.values(value).some((entry) => hasMeaningfulValue(entry));
   return true;
+}
+
+function countMeaningfulLeaves(value: any, depth = 0): number {
+  if (!hasMeaningfulValue(value)) return 0;
+  if (depth >= 4) return 1;
+  if (Array.isArray(value)) {
+    return value.slice(0, 5).reduce((total, entry) => total + countMeaningfulLeaves(entry, depth + 1), 0);
+  }
+  if (typeof value === 'object') {
+    return Object.keys(value).slice(0, 20).reduce<number>(
+      (total, key) => total + countMeaningfulLeaves((value as Record<string, unknown>)[key], depth + 1),
+      0
+    );
+  }
+  return 1;
+}
+
+function shouldMergeAnotherProvider(method: keyof StockDataService, result: any): boolean {
+  if (!MERGEABLE_METHODS.has(method)) return false;
+  if (!result || typeof result !== 'object') return true;
+
+  switch (method) {
+    case 'getCompanyOverview':
+      return countMeaningfulLeaves(result) < 12;
+    case 'getBasicFinancials':
+      return countMeaningfulLeaves(result) < 8;
+    case 'getIncomeStatement':
+    case 'getBalanceSheet':
+    case 'getCashFlow':
+      return (
+        !hasMeaningfulValue((result as any)?.annualReports) &&
+        !hasMeaningfulValue((result as any)?.quarterlyReports) &&
+        !hasMeaningfulValue((result as any)?.annual) &&
+        !hasMeaningfulValue((result as any)?.quarterly) &&
+        countMeaningfulLeaves(result) < 6
+      );
+    default:
+      return false;
+  }
 }
 
 function mergeProviderPayload(base: any, incoming: any): any {
@@ -1953,7 +2012,7 @@ class MultiSourceStockDataService implements StockDataService {
   private async callProviders<T>(method: keyof StockDataService, args: any[]): Promise<T> {
     let lastError: any;
     let mergedResult: any = null;
-    let mergeSources: string[] = [];
+    const mergeSources: string[] = [];
     let mergeCount = 0;
     for (const provider of this.getOrderedProviders(method)) {
       if (this.isDisabled(provider.id)) continue;
@@ -1968,7 +2027,7 @@ class MultiSourceStockDataService implements StockDataService {
         mergedResult = mergeProviderPayload(mergedResult, labeledResult);
         mergeSources.push(PROVIDER_LABELS[provider.id]);
         mergeCount += 1;
-        if (mergeCount >= 2) {
+        if (mergeCount >= 2 || !shouldMergeAnotherProvider(method, mergedResult)) {
           break;
         }
       } catch (error: any) {

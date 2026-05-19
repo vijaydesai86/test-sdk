@@ -94,6 +94,13 @@ describe('executeTool routing', () => {
     expect(service.getBalanceSheet).toHaveBeenCalledWith('AAPL');
   });
 
+  it('routes search_news to searchNews', async () => {
+    const service = stubService();
+    const result = await executeTool('search_news', { query: 'semiconductors', days: 14 }, service);
+    expect(result.success).toBe(true);
+    expect(service.searchNews).toHaveBeenCalledWith('semiconductors', 14);
+  });
+
   it('routes get_cash_flow to getCashFlow', async () => {
     const service = stubService();
     const result = await executeTool('get_cash_flow', { symbol: 'AAPL' }, service);
@@ -123,7 +130,7 @@ describe('executeTool routing', () => {
 
   it('unknown tool returns success: false with descriptive error', async () => {
     const service = stubService();
-    const result = await executeTool('search_news', { query: 'AI', days: 7 }, service);
+    const result = await executeTool('unknown_tool_xyz', { query: 'AI', days: 7 }, service);
     expect(result.success).toBe(false);
     expect(result.error).toBeDefined();
   });

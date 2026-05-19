@@ -9,6 +9,9 @@ export type LLMModelOption = {
 };
 
 const GITHUB_MODELS_CATALOG_URL = 'https://models.github.ai/catalog/models';
+const GITHUB_MODELS_CACHE_TTL_MS = Number(process.env.GITHUB_MODELS_CACHE_TTL_MS || 15 * 60 * 1000);
+let cachedGitHubModels: { expiresAt: number; models: LLMModelOption[] } | null = null;
+let inFlightGitHubModelsPromise: Promise<LLMModelOption[]> | null = null;
 
 export const SAFE_GITHUB_MODELS: LLMModelOption[] = [
   { value: 'openai/gpt-4.1', label: 'OpenAI GPT-4.1', rateLimitTier: 'high' },
@@ -65,50 +68,68 @@ export async function fetchGitHubModels(): Promise<LLMModelOption[]> {
     return SAFE_GITHUB_MODELS;
   }
 
-  try {
-    const response = await fetch(GITHUB_MODELS_CATALOG_URL, {
-      headers: {
-        Authorization: `Bearer ${githubToken}`,
-        Accept: 'application/vnd.github+json',
-        'X-GitHub-Api-Version': '2022-11-28',
-      },
-    });
-
-    if (!response.ok) {
-      console.error(`GitHub Models catalog fetch failed: ${response.status}`);
-      return SAFE_GITHUB_MODELS;
-    }
-
-    const catalog: any[] = await response.json();
-    const ALLOWED_PUBLISHERS = new Set(['openai', 'anthropic', 'google']);
-    const SUPERSEDED_IDS = new Set(['openai/gpt-4o', 'openai/gpt-4o-mini', 'openai/gpt-5-chat']);
-    const getModelDate = (model: any) => {
-      const raw = model.updated_at || model.created_at || model.released_at;
-      const date = raw ? new Date(raw).getTime() : 0;
-      return Number.isNaN(date) ? 0 : date;
-    };
-
-    const models = catalog
-      .filter((model: any) => {
-        const publisher = (model.id as string).split('/')[0];
-        return (
-          ALLOWED_PUBLISHERS.has(publisher) &&
-          !SUPERSEDED_IDS.has(model.id as string) &&
-          Array.isArray(model.capabilities) &&
-          model.capabilities.includes('tool-calling') &&
-          !model.deprecated
-        );
-      })
-      .sort((a: any, b: any) => getModelDate(b) - getModelDate(a))
-      .map((model: any) => ({
-        value: model.id as string,
-        label: model.name as string,
-        rateLimitTier: model.rate_limit_tier as string,
-      }));
-
-    return models.length > 0 ? models : SAFE_GITHUB_MODELS;
-  } catch (err) {
-    console.error('Failed to fetch GitHub Models catalog:', err);
-    return SAFE_GITHUB_MODELS;
+  if (cachedGitHubModels && cachedGitHubModels.expiresAt > Date.now()) {
+    return cachedGitHubModels.models;
   }
+
+  if (inFlightGitHubModelsPromise) {
+    return inFlightGitHubModelsPromise;
+  }
+  inFlightGitHubModelsPromise = (async () => {
+    try {
+      const response = await fetch(GITHUB_MODELS_CATALOG_URL, {
+        headers: {
+          Authorization: `Bearer ${githubToken}`,
+          Accept: 'application/vnd.github+json',
+          'X-GitHub-Api-Version': '2022-11-28',
+        },
+      });
+
+      if (!response.ok) {
+        console.error(`GitHub Models catalog fetch failed: ${response.status}`);
+        return SAFE_GITHUB_MODELS;
+      }
+
+      const catalog: any[] = await response.json();
+      const ALLOWED_PUBLISHERS = new Set(['openai', 'anthropic', 'google']);
+      const SUPERSEDED_IDS = new Set(['openai/gpt-4o', 'openai/gpt-4o-mini', 'openai/gpt-5-chat']);
+      const getModelDate = (model: any) => {
+        const raw = model.updated_at || model.created_at || model.released_at;
+        const date = raw ? new Date(raw).getTime() : 0;
+        return Number.isNaN(date) ? 0 : date;
+      };
+
+      const models = catalog
+        .filter((model: any) => {
+          const publisher = (model.id as string).split('/')[0];
+          return (
+            ALLOWED_PUBLISHERS.has(publisher) &&
+            !SUPERSEDED_IDS.has(model.id as string) &&
+            Array.isArray(model.capabilities) &&
+            model.capabilities.includes('tool-calling') &&
+            !model.deprecated
+          );
+        })
+        .sort((a: any, b: any) => getModelDate(b) - getModelDate(a))
+        .map((model: any) => ({
+          value: model.id as string,
+          label: model.name as string,
+          rateLimitTier: model.rate_limit_tier as string,
+        }));
+
+      const nextModels = models.length > 0 ? models : SAFE_GITHUB_MODELS;
+      cachedGitHubModels = {
+        expiresAt: Date.now() + GITHUB_MODELS_CACHE_TTL_MS,
+        models: nextModels,
+      };
+      return nextModels;
+    } catch (err) {
+      console.error('Failed to fetch GitHub Models catalog:', err);
+      return SAFE_GITHUB_MODELS;
+    } finally {
+      inFlightGitHubModelsPromise = null;
+    }
+  })();
+
+  return inFlightGitHubModelsPromise;
 }

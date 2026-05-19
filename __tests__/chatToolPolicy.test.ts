@@ -9,6 +9,7 @@ describe('chat tool policy', () => {
     expect(CHAT_TOOL_NAMES).toContain('get_dividend_analysis');
     expect(CHAT_TOOL_NAMES).toContain('get_dcf_valuation');
     expect(CHAT_TOOL_NAMES).toContain('get_market_sentiment');
+    expect(CHAT_TOOL_NAMES).toContain('search_news');
     expect(CHAT_TOOL_NAMES).toContain('generate_watchlist_daily_report');
   });
 
