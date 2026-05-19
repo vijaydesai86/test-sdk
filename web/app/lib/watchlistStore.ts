@@ -50,14 +50,10 @@ export const DEFAULT_PORTFOLIO_PROFILE: PortfolioProfile = {
   strategyNotes: 'Focus on high-quality businesses, maintain valuation discipline, and prefer waiting over forcing a trade.',
 };
 export const DEFAULT_WATCHLIST_SEED: SeedItem[] = [
+  { symbol: 'TSMC', companyName: 'Taiwan Semiconductor Manufacturing Company' },
   {
     symbol: 'NVDA',
     companyName: 'NVIDIA',
-    position: { ownershipStatus: 'owned' },
-  },
-  {
-    symbol: 'ARM',
-    companyName: 'Arm Holdings',
     position: { ownershipStatus: 'owned' },
   },
   { symbol: 'AMD', companyName: 'Advanced Micro Devices' },
@@ -66,21 +62,17 @@ export const DEFAULT_WATCHLIST_SEED: SeedItem[] = [
     companyName: 'Broadcom',
     position: { ownershipStatus: 'owned' },
   },
-  { symbol: 'ANET', companyName: 'Arista Networks Inc' },
-  { symbol: 'MSFT', companyName: 'Microsoft' },
-  { symbol: 'DELL', companyName: 'Dell Technologies' },
-  { symbol: 'GOOGL', companyName: 'Alphabet' },
   { symbol: 'MU', companyName: 'Micron Technology' },
+  { symbol: 'GOOG', companyName: 'Alphabet' },
   { symbol: 'VRT', companyName: 'Vertiv' },
-  { symbol: 'ETN', companyName: 'Eaton' },
-  { symbol: 'ASML', companyName: 'ASML Holding' },
+  { symbol: 'ANET', companyName: 'Arista Networks Inc' },
+  { symbol: 'APH', companyName: 'Amphenol' },
   { symbol: 'AMAT', companyName: 'Applied Materials' },
-  { symbol: 'TSM', companyName: 'Taiwan Semiconductor Manufacturing' },
-  {
-    symbol: 'META',
-    companyName: 'Meta Platforms',
-    position: { ownershipStatus: 'owned' },
-  },
+  { symbol: 'MRVL', companyName: 'Marvell Technology' },
+  { symbol: 'ETN', companyName: 'Eaton' },
+  { symbol: 'WDC', companyName: 'Western Digital' },
+  { symbol: 'RMBS', companyName: 'Rambus' },
+  { symbol: 'MSFT', companyName: 'Microsoft' },
 ];
 
 function nowIso() {
