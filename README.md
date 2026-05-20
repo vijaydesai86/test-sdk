@@ -6,6 +6,8 @@ An AI-powered stock research tool built on Next.js and GitHub Models. It produce
 
 Type a question in plain English and the assistant calls the right data tools, fetches real market data, and generates a structured report as a downloadable Markdown artifact.
 
+Report-style requests are guarded server-side: if the model answers a stock, comparison, theme, or watchlist report request in plain chat without creating an artifact, the server runs the matching report tool instead. This keeps free-form prompts such as `Should I buy Arm?`, `Compare Nvidia, AMD, and Intel`, and `AI infrastructure stocks` on the verified report path.
+
 **Three research modes:**
 
 | Mode | How to ask | What you get |
@@ -180,6 +182,7 @@ test-sdk/
 │   │   │   └── ChatInterface.tsx  # Full UI: chat, workspace, themes, charts
 │   │   └── lib/
 │   │       ├── stockTools.ts      # 30 tool definitions, executeTool, report orchestration
+│   │       ├── reportIntent.ts    # Free-form report intent guard/fallback classifier
 │   │       ├── stockDataService.ts# All data providers + SecEdgarService + FredService
 │   │       ├── reportGenerator.ts # Report builders, technical indicators, chart builders
 │   │       ├── decisionEngine.ts  # 7-pillar multi-factor decision engine

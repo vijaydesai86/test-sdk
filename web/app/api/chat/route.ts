@@ -5,6 +5,7 @@ import { createStockService, StockDataService } from '@/app/lib/stockDataService
 import { buildResearchContext, deleteSession, loadSessionMessages, saveSessionMessages } from '@/app/lib/researchMemoryStore';
 import { getDefaultWatchlist } from '@/app/lib/watchlistStore';
 import { selectChatToolNames } from '@/app/lib/chatToolPolicy';
+import { inferReportFallback } from '@/app/lib/reportIntent';
 import {
   fetchGitHubModels,
   getConfiguredGeminiModel,
@@ -330,35 +331,6 @@ function getTopSearchSymbol(toolResult: any): string | undefined {
   const first = toolResult?.data?.results?.[0] ?? toolResult?.data?.bestMatches?.[0];
   const symbol = first?.symbol ?? first?.['1. symbol'];
   return typeof symbol === 'string' && symbol.trim() ? symbol.trim().toUpperCase() : undefined;
-}
-
-function inferReportFallback(userMessage: string, resolvedSymbol?: string): { toolName: string; args: Record<string, any> } | null {
-  const text = userMessage.trim();
-  if (!text) return null;
-  const lower = text.toLowerCase();
-
-  if (/\bwatchlist\b|\bdaily report\b|\bportfolio pulse\b/.test(lower)) {
-    return { toolName: 'generate_watchlist_daily_report', args: { range: '1y' } };
-  }
-
-  const multiIntent = /\b(compare|comparison|vs\.?|versus|sector|theme|industry|industries|deep research|best|top|basket|stocks|companies)\b/i.test(text);
-  if (multiIntent) {
-    return { toolName: 'generate_research_report', args: { sector: text, range: '1y' } };
-  }
-
-  const singleReportIntent = /\b(stock report|report on|report for|research on|deep dive on|comprehensive report)\b/i.test(text);
-  if (singleReportIntent) {
-    return {
-      toolName: 'generate_stock_report',
-      args: {
-        symbol: resolvedSymbol || text,
-        range: '5y',
-        ...(resolvedSymbol ? { skipLLM: true } : {}),
-      },
-    };
-  }
-
-  return null;
 }
 
 function buildFallbackModels(requestedModel: string, extraModels: string[] = []): string[] {
@@ -992,27 +964,46 @@ export async function POST(request: NextRequest) {
       return callGitHubModelsAPI(messages, githubToken, modelId, tools, LLM_REQUEST_TIMEOUT_MS);
     };
 
+    const runReportFallback = async (reason: string): Promise<boolean> => {
+      const fallback = inferReportFallback(String(message), lastResolvedSearchSymbol);
+      if (!fallback || isRouteDeadlineNear(requestDeadlineAt, VERCEL_INTERNAL_DEADLINE_BUFFER_MS + 5000)) {
+        return false;
+      }
+      try {
+        console.info(`Running report intent fallback after ${reason}`, {
+          toolName: fallback.toolName,
+          hasResolvedSymbol: Boolean(lastResolvedSearchSymbol),
+        });
+        const fallbackResult = await executeTool(
+          fallback.toolName,
+          { ...fallback.args, sessionId: currentSessionId },
+          stockService,
+          {
+            llmFill: createLLMFiller(githubToken, geminiToken, requestDeadlineAt),
+            deadlineAt: requestDeadlineAt,
+          }
+        );
+        const artifact = REPORT_TOOL_NAMES.has(fallback.toolName) ? toReportArtifact(fallbackResult) : null;
+        if (artifact) {
+          reportArtifacts.push(artifact);
+          assistantContent = 'The report has been saved.';
+          return true;
+        }
+        assistantContent = fallbackResult?.error
+          ? `I could not generate the requested report: ${fallbackResult.error}`
+          : 'I could not generate the requested report from the available verified inputs.';
+        return true;
+      } catch (error) {
+        console.warn('Report intent fallback failed:', summarizeErrorMessage(error));
+        assistantContent = `I could not generate the requested report: ${summarizeErrorMessage(error)}`;
+        return true;
+      }
+    };
+
     while (rounds < MAX_TOOL_ROUNDS) {
       if (isRouteDeadlineNear(requestDeadlineAt, LLM_REQUEST_TIMEOUT_MS + VERCEL_INTERNAL_DEADLINE_BUFFER_MS)) {
         if (reportArtifacts.length === 0) {
-          const fallback = inferReportFallback(String(message), lastResolvedSearchSymbol);
-          if (fallback && !isRouteDeadlineNear(requestDeadlineAt, VERCEL_INTERNAL_DEADLINE_BUFFER_MS + 5000)) {
-            try {
-              const fallbackResult = await executeTool(
-                fallback.toolName,
-                { ...fallback.args, sessionId: currentSessionId },
-                stockService,
-                {
-                  llmFill: createLLMFiller(githubToken, geminiToken, requestDeadlineAt),
-                  deadlineAt: requestDeadlineAt,
-                }
-              );
-              const artifact = REPORT_TOOL_NAMES.has(fallback.toolName) ? toReportArtifact(fallbackResult) : null;
-              if (artifact) reportArtifacts.push(artifact);
-            } catch (error) {
-              console.warn('Deadline report fallback failed:', summarizeErrorMessage(error));
-            }
-          }
+          await runReportFallback('near-deadline guard');
         }
         assistantContent = reportArtifacts.length > 0
           ? 'The report has been saved. I skipped the final model narration on Vercel so the request returns before the 300 second hard timeout.'
@@ -1171,6 +1162,16 @@ export async function POST(request: NextRequest) {
         const err = new Error('Model returned tool calls as plain text.') as Error & { statusCode: number };
         err.statusCode = 422;
         throw err;
+      }
+      if (reportArtifacts.length === 0 && inferReportFallback(String(message), lastResolvedSearchSymbol)) {
+        conversationMessages.pop();
+        const handled = await runReportFallback('plain model answer to report intent');
+        if (!handled) {
+          assistantContent = 'I could not safely finish the requested report before the runtime deadline. No report was saved; please retry the same request.';
+        }
+        if (assistantContent) {
+          conversationMessages.push({ role: 'assistant', content: assistantContent });
+        }
       }
       break;
     }

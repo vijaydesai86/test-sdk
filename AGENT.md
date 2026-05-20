@@ -60,13 +60,15 @@ General chat is supported for data-only questions (e.g. "what is NVDA's P/E?") b
 
 11. **Research report is one mode.** The UI exposes one `generate_research_report` tool. Internally it routes by query type (explicit comparison → comparison path; single-company name → deep stock path; sector/theme → full ecosystem analysis), but this routing is hidden from the user and the LLM.
 
-12. **Only three top-level markdown docs.** `README.md`, `AGENT.md`, and `CHANGELOG.md` are the only markdown documents committed to the repo root. Do not add stale or duplicate docs.
+12. **Plain chat cannot satisfy report intent.** Users may ask in any natural wording. If a request maps to stock report, comparison/research report, theme/deep research, or watchlist daily and the LLM returns plain text without a report artifact, `route.ts` must run the matching report fallback from `reportIntent.ts`. Do not let stale model memory answer report requests.
 
-13. **Keep common report plumbing shared.** New report types must reuse the existing data-fetching, timing, valuation, chart, moat analysis, conclusion, and persistence helpers. No copy-pasted report pipelines.
+13. **Only three top-level markdown docs.** `README.md`, `AGENT.md`, and `CHANGELOG.md` are the only markdown documents committed to the repo root. Do not add stale or duplicate docs.
 
-14. **Deployment-impacting changes require a clean install check.** Any dependency, lockfile, package manager, Vercel config, build script, or install-related change must be verified from a clean dependency state with the Vercel install command (`npm ci --no-audit --no-fund`) followed by `npm run build`. Do not rely only on an existing `node_modules` build.
+14. **Keep common report plumbing shared.** New report types must reuse the existing data-fetching, timing, valuation, chart, moat analysis, conclusion, and persistence helpers. No copy-pasted report pipelines.
 
-15. **Optimise for free-tier operation.** Assume Vercel free tier, free provider quotas, and rate-limited model access. Prefer bounded concurrency (`DATA_FETCH_CONCURRENCY`), caching (`STOCK_CACHE_TTL_MS`), provider/model cooldowns, and graceful partial-data handling over brute force.
+15. **Deployment-impacting changes require a clean install check.** Any dependency, lockfile, package manager, Vercel config, build script, or install-related change must be verified from a clean dependency state with the Vercel install command (`npm ci --no-audit --no-fund`) followed by `npm run build`. Do not rely only on an existing `node_modules` build.
+
+16. **Optimise for free-tier operation.** Assume Vercel free tier, free provider quotas, and rate-limited model access. Prefer bounded concurrency (`DATA_FETCH_CONCURRENCY`), caching (`STOCK_CACHE_TTL_MS`), provider/model cooldowns, and graceful partial-data handling over brute force.
 
 ---
 
@@ -91,6 +93,7 @@ User message
 |---|---|
 | `web/app/api/chat/route.ts` | Entry point. Parses requests, auto-routes across the available LLM model ladders, runs the tool-call loop, manages session history, handles rate-limit fallbacks. |
 | `web/app/lib/stockTools.ts` | Tool definitions (`getToolDefinitions`), `executeTool` dispatch, report orchestration (generate_* tools), ticker resolution, sector company selection, moat/conclusion prompt builders, disk cache helpers. |
+| `web/app/lib/reportIntent.ts` | Server-side free-form report intent fallback. Prevents plain LLM answers from satisfying stock/comparison/theme/watchlist report requests without a saved artifact. |
 | `web/app/lib/stockDataService.ts` | All data provider implementations: `AlphaVantageService`, `FinnhubService`, `FinancialModelingPrepService`, `TwelveDataService`, `StooqService`, `MultiSourceStockDataService`. Also standalone services: `SecEdgarService` (SEC EDGAR filings), `FredService` (FRED economic data). `createStockService()` always returns `MultiSourceStockDataService` using all configured keys. |
 | `web/app/lib/reportGenerator.ts` | Report builders (`buildStockReport`, `buildComparisonReport`, `buildSectorReport`, `buildDeepSectorReport`, `buildDeepStockReport`, `buildDeepComparisonReport`, `buildWatchlistDailyReport`), technical indicator computations (RSI, MACD, Bollinger, Stochastic, ATR, EMA), ECharts and Mermaid chart builders, `saveReport()` persistence. |
 | `web/app/lib/llmProviderConfig.ts` | GitHub Models catalog fetching, Gemini model fallback list, token helpers. No provider selection — all available providers are always used. |
