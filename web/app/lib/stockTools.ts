@@ -483,7 +483,8 @@ function buildMoatAnalysisPrompt(
     `You are a senior equity research analyst specialising in Warren Buffett-style economic moat analysis.\n\n` +
     `CRITICAL: Base your entire analysis ONLY on the real API data provided below. ` +
     `Do NOT use training-memory values for prices, margins, revenue, or any financial metric — ` +
-    `all financial inputs come from live market-data APIs and are provided here.\n\n` +
+    `all financial inputs come from live market-data APIs and are provided here. ` +
+    `If a moat claim is not supported by the provided description or metrics, mark the moat as None.\n\n` +
     `Assess the competitive moat for the following company and return a JSON object.\n\n` +
     `Company: ${name} (${symbol})\n` +
     `Sector: ${sector}\n` +
@@ -546,7 +547,8 @@ function buildBatchMoatAnalysisPrompt(
   return (
     `You are a senior equity research analyst specialising in Warren Buffett-style economic moat analysis.\n\n` +
     `CRITICAL: Base your entire analysis ONLY on the real API data provided below for each company. ` +
-    `Do NOT use training-memory values for prices, margins, revenue, or any financial metric.\n\n` +
+    `Do NOT use training-memory values for prices, margins, revenue, or any financial metric. ` +
+    `If a moat claim is not supported by the provided description or metrics, mark the moat as None.\n\n` +
     `Assess the competitive moat for EACH of the following companies.\n\n` +
     `COMPANY DATA:\n${summaries}\n\n` +
     `MOAT FRAMEWORK: Network Effects | Cost Advantage | Switching Costs | Intangible Assets | Efficient Scale | Mixed | None\n` +
@@ -569,13 +571,103 @@ type SymbolCache = Record<string, CacheEntry>;
 const cleanTicker = (raw: string): string =>
   String(raw || '').replace(/[^A-Z0-9.]/gi, '').toUpperCase();
 
+const stripExchangePrefix = (raw: string): string =>
+  String(raw || '')
+    .trim()
+    .replace(/^(?:NYSE|NASDAQ|NASDAQGS|NASDAQGM|NASDAQCM|AMEX|NYSEAMERICAN|NYSEARCA|OTC|OTCMKTS)\s*[:.-]?\s*/i, '')
+    .trim();
+
 function normalizeTickerCandidate(raw: unknown): string | undefined {
   if (typeof raw !== 'string') return undefined;
-  const cleaned = cleanTicker(raw);
+  const cleaned = cleanTicker(stripExchangePrefix(raw));
   // US tickers are short; allow share-class dots but reject malformed values like ARMNULL.
   if (!/^[A-Z0-9](?:[A-Z0-9.]{0,5})$/.test(cleaned)) return undefined;
   if (cleaned.includes('NULL') || cleaned.includes('NAN') || cleaned.includes('UNDEFINED')) return undefined;
   return cleaned;
+}
+
+function toFiniteNumber(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') return null;
+  const parsed = typeof value === 'string'
+    ? Number(value.trim().replace(/[$£€,]/g, '').replace(/%$/g, ''))
+    : Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function normalizePercentValue(value: unknown): number | null {
+  const parsed = toFiniteNumber(value);
+  if (parsed === null) return null;
+  return Math.abs(parsed) <= 2 ? parsed * 100 : parsed;
+}
+
+function getRecentPriceRange(priceHistory: any): { low: number | null; high: number | null } {
+  const prices = Array.isArray(priceHistory?.prices) ? priceHistory.prices : [];
+  const dated = prices
+    .map((point: any) => ({ point, time: Date.parse(String(point?.date || '')) }))
+    .filter((entry: any) => Number.isFinite(entry.time));
+  const latest = dated.reduce((max: number, entry: any) => Math.max(max, entry.time), 0);
+  const cutoff = latest > 0 ? latest - 370 * 24 * 60 * 60 * 1000 : 0;
+  const scoped = latest > 0 ? dated.filter((entry: any) => entry.time >= cutoff).map((entry: any) => entry.point) : prices;
+  const values = scoped
+    .flatMap((point: any) => [toFiniteNumber(point?.low ?? point?.close), toFiniteNumber(point?.high ?? point?.close)])
+    .filter((value: number | null): value is number => value !== null && value > 0);
+  if (!values.length) return { low: null, high: null };
+  return { low: Math.min(...values), high: Math.max(...values) };
+}
+
+function overviewRangeIsPlausible(price: number | null, overview: any): boolean | null {
+  const high = toFiniteNumber(overview?.['52WeekHigh']);
+  const low = toFiniteNumber(overview?.['52WeekLow']);
+  if (price === null || high === null || low === null) return null;
+  if (low <= 0 || high < low) return false;
+  return price >= low * 0.5 && price <= high * 1.5;
+}
+
+function sanitizeMarketScaledOverview(overview: any, price: any, priceHistory: any): { overview: any; notes: string[] } {
+  if (!overview || typeof overview !== 'object') return { overview, notes: [] };
+  const sanitized = { ...overview };
+  const notes: string[] = [];
+  const currentPrice = toFiniteNumber(price?.price);
+  const historyRange = getRecentPriceRange(priceHistory);
+  const rangePlausible = overviewRangeIsPlausible(currentPrice, overview);
+
+  if (historyRange.low !== null && historyRange.high !== null) {
+    sanitized['52WeekLow'] = historyRange.low;
+    sanitized['52WeekHigh'] = historyRange.high;
+  } else if (rangePlausible === false) {
+    sanitized['52WeekLow'] = null;
+    sanitized['52WeekHigh'] = null;
+    notes.push('Provider 52-week range was inconsistent with current price and was suppressed.');
+  }
+
+  if (rangePlausible === false) {
+    sanitized['50DayMovingAverage'] = null;
+    sanitized['200DayMovingAverage'] = null;
+    sanitized.bookValue = null;
+    sanitized.revenuePerShare = null;
+    sanitized.dividendPerShare = null;
+    sanitized.analystTargetPrice = null;
+    notes.push('Provider per-share market fields were inconsistent with current price and were suppressed.');
+  }
+
+  const marketCap = toFiniteNumber(sanitized.marketCapitalization);
+  const sharesOutstanding = toFiniteNumber(sanitized.sharesOutstanding);
+  if (currentPrice !== null && marketCap !== null && sharesOutstanding !== null && sharesOutstanding > 0) {
+    const impliedMarketCap = currentPrice * sharesOutstanding;
+    const ratio = marketCap / impliedMarketCap;
+    if (ratio < 0.33 || ratio > 3) {
+      sanitized.marketCapitalization = null;
+      notes.push('Provider market capitalization was inconsistent with price and shares outstanding and was suppressed.');
+    }
+  }
+
+  const dividendYield = normalizePercentValue(sanitized.dividendYield);
+  if (dividendYield !== null && (dividendYield < 0 || dividendYield > 25)) {
+    sanitized.dividendYield = null;
+    notes.push('Provider dividend yield was outside a plausible range and was suppressed.');
+  }
+
+  return { overview: sanitized, notes };
 }
 
 async function validateResolvedTicker(stockService: StockDataService, ticker: string): Promise<boolean> {
@@ -835,12 +927,14 @@ function buildStockConclusionPrompt(
     `CRITICAL RULES:\n` +
     `1. Base EVERY factual claim strictly on the real market data provided below — cite actual numbers.\n` +
     `2. Do NOT use your training knowledge for any financial figures (prices, revenues, margins, multiples).\n` +
-    `3. Write a COMPREHENSIVE, well-structured narrative of 5-7 paragraphs — NOT bullet points.\n` +
-    `4. Each paragraph should build on the previous to form a coherent investment thesis.\n` +
-    `5. Be specific: reference actual numbers from the data. Vague statements like "revenue is growing" are unacceptable.\n` +
-    `6. The final recommendation MUST align with the structured decision below. Do not contradict the required recommendation label.\n` +
-    `7. Conclude with a clear investment recommendation: BUY / HOLD / WATCH / SELL with specific rationale.\n` +
-    `8. Output ONLY the narrative paragraphs in plain markdown — no JSON, no section headers, no preamble.\n\n` +
+    `3. If a value is N/A, unavailable, or missing, state that it is unavailable; do NOT estimate, infer, or fill it.\n` +
+    `4. Do NOT mention any metric unless it appears in the data block below.\n` +
+    `5. Write a COMPREHENSIVE, well-structured narrative of 5-7 paragraphs — NOT bullet points.\n` +
+    `6. Each paragraph should build on the previous to form a coherent investment thesis.\n` +
+    `7. Be specific: reference actual numbers from the data. Vague statements like "revenue is growing" are unacceptable.\n` +
+    `8. The final recommendation MUST align with the structured decision below. Do not contradict the required recommendation label.\n` +
+    `9. Conclude with a clear investment recommendation: BUY / HOLD / WATCH / SELL with specific rationale.\n` +
+    `10. Output ONLY the narrative paragraphs in plain markdown — no JSON, no section headers, no preamble.\n\n` +
     `═══ STRUCTURED DECISION TO MATCH ═══\n` +
     `Required Recommendation Label: ${requiredRecommendation}\n` +
     `Decision Action: ${decisionAction}\n` +
@@ -958,12 +1052,14 @@ function buildComparisonConclusionPrompt(
     `CRITICAL RULES:\n` +
     `1. Base EVERY factual claim strictly on the real market data provided below — cite actual numbers.\n` +
     `2. Do NOT use training knowledge for any financial figures.\n` +
-    `3. Write a COMPREHENSIVE narrative of 5-7 paragraphs — NOT bullet points.\n` +
-    `4. Cover: (a) sector/group context, (b) comparative financial performance, (c) valuation, (d) moats and competitive dynamics, (e) top pick(s) with clear evidence-based rationale, (f) risks, (g) portfolio strategy.\n` +
-    `5. Reference specific numbers from each company. Be precise — avoid vague generalisations.\n` +
-    `6. When structured scores are available, keep any top-pick recommendation aligned with the highest-scored company shown below.\n` +
-    `7. End with a clear recommendation: which company(ies) to buy, hold, or avoid, and why.\n` +
-    `8. Output ONLY the narrative paragraphs in plain markdown — no JSON, no headers, no preamble.\n\n` +
+    `3. If a value is N/A, unavailable, or missing, state that it is unavailable; do NOT estimate, infer, or fill it.\n` +
+    `4. Do NOT mention any metric unless it appears in the data block below.\n` +
+    `5. Write a COMPREHENSIVE narrative of 5-7 paragraphs — NOT bullet points.\n` +
+    `6. Cover: (a) sector/group context, (b) comparative financial performance, (c) valuation, (d) moats and competitive dynamics, (e) top pick(s) with clear evidence-based rationale, (f) risks, (g) portfolio strategy.\n` +
+    `7. Reference specific numbers from each company. Be precise — avoid vague generalisations.\n` +
+    `8. When structured scores are available, keep any top-pick recommendation aligned with the highest-scored company shown below.\n` +
+    `9. End with a clear recommendation: which company(ies) to buy, hold, or avoid, and why.\n` +
+    `10. Output ONLY the narrative paragraphs in plain markdown — no JSON, no headers, no preamble.\n\n` +
     `═══ STRUCTURED SCORE SUMMARY ═══\n` +
     `${rankedSummary || 'No structured scores available.'}\n\n` +
     `═══ COMPANY DATA ═══\n\n` +
@@ -1157,11 +1253,13 @@ export const resolveSymbolFromQuery = async (stockService: StockDataService, que
     return { ok: false, reason: 'Empty query', candidates: [] as any[] };
   }
 
+  const exchangeStripped = stripExchangePrefix(trimmed);
+  const queryForSearch = exchangeStripped || trimmed;
   const stopwordSet = new Set(['stocks', 'stock', 'companies', 'company', 'compare', 'and']);
-  const cleanedTokens = trimmed
+  const cleanedTokens = queryForSearch
     .split(/\s+/)
     .filter((token) => token && !stopwordSet.has(token.toLowerCase()));
-  const cleanedQuery = cleanedTokens.length ? cleanedTokens.join(' ') : trimmed;
+  const cleanedQuery = cleanedTokens.length ? cleanedTokens.join(' ') : queryForSearch;
   const isLikelyTicker = /^[a-zA-Z]{1,6}$/.test(cleanedQuery);
   try {
     const results = await stockService.searchStock(cleanedQuery);
@@ -1171,7 +1269,7 @@ export const resolveSymbolFromQuery = async (stockService: StockDataService, que
       return { ok: false, reason: 'No matches found', candidates: [] };
     }
     const scored = candidates
-      .map((item, i) => ({ item, score: scoreSearchMatch(trimmed, item, i) }))
+      .map((item, i) => ({ item, score: scoreSearchMatch(cleanedQuery, item, i) }))
       .sort((a, b) => b.score - a.score);
     const top = scored[0];
     const second = scored[1];
@@ -2289,9 +2387,11 @@ export async function executeTool(
           );
 
         const price = await safeFetch('Price', 'price', () => stockService.getStockPrice(symbol));
-        const companyOverview = await safeFetch('Company overview', 'overview', () => stockService.getCompanyOverview(symbol));
+        const rawCompanyOverview = await safeFetch('Company overview', 'overview', () => stockService.getCompanyOverview(symbol));
         const basicFinancials = await safeFetch('Basic financials', 'basicFinancials', () => stockService.getBasicFinancials(symbol));
         const priceHistory = await safeFetch('Price history', `priceHistory:${range}`, () => stockService.getPriceHistory(symbol, range));
+        const { overview: companyOverview, notes: overviewNotes } = sanitizeMarketScaledOverview(rawCompanyOverview, price, priceHistory);
+        notes.push(...overviewNotes);
         const earningsHistory = await safeFetch('Earnings history', 'earningsHistory', () => stockService.getEarningsHistory(symbol), !coreOnly);
         const incomeStatement = await safeFetch('Income statement', 'incomeStatement', () => stockService.getIncomeStatement(symbol), !coreOnly);
         const balanceSheet = await safeFetch('Balance sheet', 'balanceSheet', () => stockService.getBalanceSheet(symbol), !coreOnly);
@@ -2720,7 +2820,9 @@ export async function executeTool(
         const items: any[] = [];
         for (const item of rawItems) {
           const { symbol } = item;
-          const basicFinancials = item.basicFinancials || (item.overview ? buildBasicFinancialsFallback(item.overview) : undefined);
+          const { overview, notes: overviewNotes } = sanitizeMarketScaledOverview(item.overview, item.price, item.priceHistory);
+          notes.push(...overviewNotes.map((note) => `${symbol}: ${note}`));
+          const basicFinancials = item.basicFinancials || (overview ? buildBasicFinancialsFallback(overview) : undefined);
           const watchlistItem = watchlist?.items.find((entry) => entry.symbol === symbol.toUpperCase());
           const previousDecision = await getLatestDecision(symbol).catch(() => null);
           const trustSummary = buildTrustSummaryFromCache(item.cache, [
@@ -2742,7 +2844,7 @@ export async function executeTool(
             symbol,
             price: item.price,
             priceHistory: item.priceHistory,
-            companyOverview: item.overview,
+            companyOverview: overview,
             basicFinancials,
             incomeStatement: item.incomeStatement,
             balanceSheet: item.balanceSheet,
@@ -2760,7 +2862,7 @@ export async function executeTool(
           items.push({
             symbol,
             price: item.price,
-            overview: item.overview,
+            overview,
             basicFinancials,
             priceHistory: item.priceHistory,
             incomeStatement: item.incomeStatement,
@@ -3259,7 +3361,9 @@ export async function executeTool(
         const items: any[] = [];
         for (const item of rawItems) {
           const { symbol } = item;
-          const basicFinancials = item.basicFinancials || (item.overview ? buildBasicFinancialsFallbackSector(item.overview) : undefined);
+          const { overview, notes: overviewNotes } = sanitizeMarketScaledOverview(item.overview, item.price, item.priceHistory);
+          notes.push(...overviewNotes.map((note) => `${symbol}: ${note}`));
+          const basicFinancials = item.basicFinancials || (overview ? buildBasicFinancialsFallbackSector(overview) : undefined);
           const watchlistItem = watchlist?.items.find((entry) => entry.symbol === symbol.toUpperCase());
           const previousDecision = await getLatestDecision(symbol).catch(() => null);
           const trustSummary = buildTrustSummaryFromCache(item.cache, [
@@ -3281,7 +3385,7 @@ export async function executeTool(
             symbol,
             price: item.price,
             priceHistory: item.priceHistory,
-            companyOverview: item.overview,
+            companyOverview: overview,
             basicFinancials,
             incomeStatement: item.incomeStatement,
             balanceSheet: item.balanceSheet,
@@ -3299,7 +3403,7 @@ export async function executeTool(
           items.push({
             symbol,
             price: item.price,
-            overview: item.overview,
+            overview,
             basicFinancials,
             priceHistory: item.priceHistory,
             incomeStatement: item.incomeStatement,
@@ -3818,7 +3922,9 @@ export async function executeTool(
         const items: any[] = [];
         for (const item of rawItems) {
           const { symbol } = item;
-          const basicFinancials = item.basicFinancials || (item.overview ? buildBasicFinancialsFallbackDeep(item.overview) : undefined);
+          const { overview, notes: overviewNotes } = sanitizeMarketScaledOverview(item.overview, item.price, item.priceHistory);
+          notes.push(...overviewNotes.map((note) => `${symbol}: ${note}`));
+          const basicFinancials = item.basicFinancials || (overview ? buildBasicFinancialsFallbackDeep(overview) : undefined);
           const watchlistItem = watchlist?.items.find((entry) => entry.symbol === symbol.toUpperCase());
           const previousDecision = await getLatestDecision(symbol).catch(() => null);
           const trustSummary = buildTrustSummaryFromCache(item.cache, [
@@ -3840,7 +3946,7 @@ export async function executeTool(
             symbol,
             price: item.price,
             priceHistory: item.priceHistory,
-            companyOverview: item.overview,
+            companyOverview: overview,
             basicFinancials,
             incomeStatement: item.incomeStatement,
             balanceSheet: item.balanceSheet,
@@ -3858,7 +3964,7 @@ export async function executeTool(
           items.push({
             symbol,
             price: item.price,
-            overview: item.overview,
+            overview,
             basicFinancials,
             priceHistory: item.priceHistory,
             incomeStatement: item.incomeStatement,

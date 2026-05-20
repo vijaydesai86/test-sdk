@@ -5,7 +5,7 @@ import type { DataTrustSummary, DecisionSnapshot, PortfolioProfile, WatchlistPos
 import { getConfiguredEnv } from './env';
 import { DEFAULT_REPORTS_DIR } from './reportFileStore';
 
-type PricePoint = { date: string; close: string | number };
+type PricePoint = { date: string; close: string | number; high?: string | number; low?: string | number };
 type EarningsPoint = { fiscalQuarter: string; reportedEPS: string | number };
 type ActionLabel = 'Buy' | 'Hold' | 'Watch' | 'Sell';
 type OwnerAction = 'Add' | 'Hold' | 'Trim' | 'Sell';
@@ -474,6 +474,12 @@ function normalizePercent(value: unknown): number | null {
   return num;
 }
 
+function normalizeYieldPercent(value: unknown): number | null {
+  const percent = normalizePercent(value);
+  if (percent === null) return null;
+  return percent >= 0 && percent <= 25 ? percent : null;
+}
+
 function formatNumber(value: unknown, decimals = 2): string {
   const num = toNumber(value);
   if (num === null) return 'N/A';
@@ -498,6 +504,12 @@ function formatMarketCap(value: unknown): string {
 
 function formatPercent(value: unknown, decimals = 1): string {
   const num = normalizePercent(value);
+  if (num === null) return 'N/A';
+  return `${num.toFixed(decimals)}%`;
+}
+
+function formatYieldPercent(value: unknown, decimals = 1): string {
+  const num = normalizeYieldPercent(value);
   if (num === null) return 'N/A';
   return `${num.toFixed(decimals)}%`;
 }
@@ -1132,8 +1144,9 @@ function getTechnicalSnapshot(price: number | null, prices: PricePoint[] = [], o
           : rsi14 <= 40
             ? "Bearish"
             : "Neutral";
-  const weekHigh = toNumber(overview["52WeekHigh"]);
-  const weekLow = toNumber(overview["52WeekLow"]);
+  const trustedRange = getTrustedRange(price, prices, overview);
+  const weekHigh = trustedRange.high;
+  const weekLow = trustedRange.low;
   const rangePosition = price !== null && weekHigh !== null && weekLow !== null && weekHigh !== weekLow
     ? ((price - weekLow) / (weekHigh - weekLow)) * 100
     : null;
@@ -1160,6 +1173,48 @@ function getTechnicalSnapshot(price: number | null, prices: PricePoint[] = [], o
   const ema26Val = ema26Arr.length > 0 && !isNaN(ema26Arr[ema26Arr.length - 1]) ? ema26Arr[ema26Arr.length - 1] : null;
 
   return { rsi14, rsiState, moving50, moving200, vs50, vs200, trend, rangePosition, macd, bollinger, stochastic, atr, ema12: ema12Val, ema26: ema26Val };
+}
+
+function getPriceHistoryRange(prices: PricePoint[] = []): { low: number | null; high: number | null } {
+  const datedPoints = prices
+    .map((point) => ({ point, time: Date.parse(point.date) }))
+    .filter((entry) => Number.isFinite(entry.time));
+  const latestTime = datedPoints.reduce((latest, entry) => Math.max(latest, entry.time), 0);
+  const cutoff = latestTime > 0 ? latestTime - 370 * 24 * 60 * 60 * 1000 : 0;
+  const scopedPoints = latestTime > 0
+    ? datedPoints.filter((entry) => entry.time >= cutoff).map((entry) => entry.point)
+    : prices;
+  const values = scopedPoints
+    .flatMap((point) => [toNumber(point.low ?? point.close), toNumber(point.high ?? point.close)])
+    .filter((value): value is number => value !== null && value > 0);
+  if (!values.length) return { low: null, high: null };
+  return {
+    low: Math.min(...values),
+    high: Math.max(...values),
+  };
+}
+
+function getTrustedRange(price: number | null, prices: PricePoint[] = [], overview: any = {}): { low: number | null; high: number | null } {
+  const historyRange = getPriceHistoryRange(prices);
+  if (historyRange.low !== null && historyRange.high !== null && historyRange.high >= historyRange.low) {
+    return historyRange;
+  }
+
+  const overviewHigh = toNumber(overview["52WeekHigh"]);
+  const overviewLow = toNumber(overview["52WeekLow"]);
+  if (
+    price !== null &&
+    overviewHigh !== null &&
+    overviewLow !== null &&
+    overviewLow > 0 &&
+    overviewHigh >= overviewLow &&
+    price >= overviewLow * 0.5 &&
+    price <= overviewHigh * 1.5
+  ) {
+    return { low: overviewLow, high: overviewHigh };
+  }
+
+  return { low: null, high: null };
 }
 
 /** Exported alias for getTechnicalSnapshot — used by tools that need technical analysis outside reports. */
@@ -2429,6 +2484,7 @@ export function buildStockReport(data: StockReportData): string {
   const priceLine = price === null
     ? 'N/A'
     : `${formatPrice(price)} (${formatSignedPercentValue(changePercentValue, 2, { alreadyPercent: changePercentIsPercent })})`;
+  const trustedRange = getTrustedRange(price, data.priceHistory?.prices || [], overview);
 
   const snapshotLines = [
     `- Price: ${priceLine} (day change)`,
@@ -2444,7 +2500,7 @@ export function buildStockReport(data: StockReportData): string {
     overview.revenueTTM ? `- Revenue (TTM): ${formatCurrency(overview.revenueTTM)}` : null,
     overview.grossProfitTTM ? `- Gross Profit (TTM): ${formatCurrency(overview.grossProfitTTM)}` : null,
     overview.sharesOutstanding ? `- Shares Outstanding: ${formatCompactNumber(overview.sharesOutstanding)}` : null,
-    overview.dividendYield ? `- Dividend Yield: ${formatPercent(overview.dividendYield)}` : null,
+    overview.dividendYield ? `- Dividend Yield: ${formatYieldPercent(overview.dividendYield)}` : null,
   ].filter(Boolean) as string[];
 
   const peers = (data.peers?.peers || [])
@@ -2645,8 +2701,8 @@ export function buildStockReport(data: StockReportData): string {
     ],
     ['left', 'right']
   );
-  const weekHigh = toNumber(overview['52WeekHigh']);
-  const weekLow = toNumber(overview['52WeekLow']);
+  const weekHigh = trustedRange.high;
+  const weekLow = trustedRange.low;
   const fromHigh = price && weekHigh ? ((price - weekHigh) / weekHigh) * 100 : null;
   const fromLow = price && weekLow ? ((price - weekLow) / weekLow) * 100 : null;
   const kpiTable = buildTable(
@@ -2786,7 +2842,7 @@ export function buildStockReport(data: StockReportData): string {
       else divSafety = '🔴 Unsafe (FCF does not cover)';
     }
     const dividendLines = [
-      dividendYield != null ? `- Dividend Yield: ${formatPercent(dividendYield)}` : null,
+      dividendYield != null ? `- Dividend Yield: ${formatYieldPercent(dividendYield)}` : null,
       dividendPerShare != null ? `- Annual Dividend/Share: $${dividendPerShare.toFixed(2)}` : null,
       divPayoutRatio != null ? `- Payout Ratio (EPS): ${divPayoutRatio.toFixed(1)}%` : null,
       divCoverage != null ? `- FCF Coverage Ratio: ${divCoverage.toFixed(2)}x` : null,
@@ -3086,12 +3142,13 @@ export function buildComparisonReport(data: ComparisonReportData): string {
       ? Number(changePercent.replace('%', ''))
       : changePercent;
     const changeIsPercent = typeof changePercent === 'string' && changePercent.includes('%');
+    const trustedRange = getTrustedRange(price, item.priceHistory?.prices || [], overview);
     return [
       `${overview.name || item.symbol} (${item.symbol})`,
       formatPrice(price),
       formatSignedPercentValue(changeValue, 2, { alreadyPercent: changeIsPercent }),
       formatCurrency(overview.marketCapitalization),
-      `${formatCurrency(overview['52WeekLow'])} - ${formatCurrency(overview['52WeekHigh'])}`,
+      `${formatCurrency(trustedRange.low)} - ${formatCurrency(trustedRange.high)}`,
     ];
   });
 
