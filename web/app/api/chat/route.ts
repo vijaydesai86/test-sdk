@@ -44,11 +44,15 @@ const TOOL_RESULT_MAX_DEPTH = 3;
 const TOOL_RESULT_MAX_ARRAY = 12;
 const TOOL_RESULT_MAX_KEYS = 40;
 const TOOL_RESULT_MAX_STRING = 500;
-// Per-request timeout for individual LLM API calls. Keeps a hung upstream call
-// from consuming the entire Vercel 300s budget — the fallback chain advances
-// to the next model instead. Default: 60s. Override via LLM_REQUEST_TIMEOUT_MS.
-const DEFAULT_LLM_REQUEST_TIMEOUT_MS = process.env.VERCEL ? 60000 : 90000;
+// Per-request timeout for main tool-routing LLM calls. Targeted report-fill
+// calls use shorter budgets below so optional enrichment cannot consume the
+// Vercel function window before the report is saveable.
+const DEFAULT_LLM_REQUEST_TIMEOUT_MS = process.env.VERCEL ? 30000 : 90000;
 const LLM_REQUEST_TIMEOUT_MS = Number(process.env.LLM_REQUEST_TIMEOUT_MS || DEFAULT_LLM_REQUEST_TIMEOUT_MS);
+const DEFAULT_LLM_FILL_REQUEST_TIMEOUT_MS = process.env.VERCEL ? 12000 : 60000;
+const LLM_FILL_REQUEST_TIMEOUT_MS = Number(process.env.LLM_FILL_REQUEST_TIMEOUT_MS || DEFAULT_LLM_FILL_REQUEST_TIMEOUT_MS);
+const DEFAULT_LLM_FILL_TOTAL_BUDGET_MS = process.env.VERCEL ? 20000 : 120000;
+const LLM_FILL_TOTAL_BUDGET_MS = Number(process.env.LLM_FILL_TOTAL_BUDGET_MS || DEFAULT_LLM_FILL_TOTAL_BUDGET_MS);
 const VERCEL_FUNCTION_TIMEOUT_MS = Number(process.env.VERCEL_FUNCTION_TIMEOUT_MS || 300000);
 const VERCEL_INTERNAL_DEADLINE_BUFFER_MS = Number(process.env.VERCEL_INTERNAL_DEADLINE_BUFFER_MS || 25000);
 const VERCEL_REQUEST_DEADLINE_MS = Math.max(60000, VERCEL_FUNCTION_TIMEOUT_MS - VERCEL_INTERNAL_DEADLINE_BUFFER_MS);
@@ -454,7 +458,8 @@ async function callGitHubModelsAPI(
   messages: ChatMessage[],
   githubToken: string,
   model: string,
-  tools: ReturnType<typeof getToolDefinitionsByName>
+  tools: ReturnType<typeof getToolDefinitionsByName>,
+  timeoutMs = LLM_REQUEST_TIMEOUT_MS
 ): Promise<any> {
   let response: Response;
   try {
@@ -476,12 +481,12 @@ async function callGitHubModelsAPI(
         messages,
         tools,
       }),
-      signal: AbortSignal.timeout(LLM_REQUEST_TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (fetchErr: any) {
     if (fetchErr?.name === 'AbortError' || fetchErr?.name === 'TimeoutError') {
       const err = new Error(
-        `GitHub Models API request timed out after ${LLM_REQUEST_TIMEOUT_MS / 1000}s for model '${model}'. Will try next model.`
+        `GitHub Models API request timed out after ${timeoutMs / 1000}s for model '${model}'. Will try next model.`
       ) as Error & { statusCode: number; isTransientServerError: boolean };
       err.statusCode = 503;
       err.isTransientServerError = true;
@@ -621,7 +626,8 @@ async function callGeminiAPI(
   messages: ChatMessage[],
   geminiToken: string,
   model: string,
-  tools: ReturnType<typeof getToolDefinitionsByName>
+  tools: ReturnType<typeof getToolDefinitionsByName>,
+  timeoutMs = LLM_REQUEST_TIMEOUT_MS
 ): Promise<any> {
   const body: Record<string, unknown> = { model, messages: sanitizeMessagesForGemini(messages) };
   if (tools && tools.length > 0) {
@@ -636,12 +642,12 @@ async function callGeminiAPI(
         'Authorization': `Bearer ${geminiToken}`,
       },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(LLM_REQUEST_TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (fetchErr: any) {
     if (fetchErr?.name === 'AbortError' || fetchErr?.name === 'TimeoutError') {
       const err = new Error(
-        `Gemini API request timed out after ${LLM_REQUEST_TIMEOUT_MS / 1000}s for model '${model}'. Will try next model.`
+        `Gemini API request timed out after ${timeoutMs / 1000}s for model '${model}'. Will try next model.`
       ) as Error & { statusCode: number; isTransientServerError: boolean };
       err.statusCode = 503;
       err.isTransientServerError = true;
@@ -751,7 +757,11 @@ async function callLLMForDataFill(
   geminiToken: string | undefined,
   deadlineAt?: number,
 ): Promise<string> {
-  if (isRouteDeadlineNear(deadlineAt, LLM_REQUEST_TIMEOUT_MS + 5000)) return '{}';
+  if (isRouteDeadlineNear(deadlineAt, LLM_FILL_REQUEST_TIMEOUT_MS + 5000)) return '{}';
+  const fillDeadlineAt = Math.min(
+    deadlineAt ?? Number.POSITIVE_INFINITY,
+    Date.now() + LLM_FILL_TOTAL_BUDGET_MS
+  );
 
   const fillMessages: ChatMessage[] = [
     {
@@ -778,13 +788,15 @@ async function callLLMForDataFill(
   const providerAuthFailures = new Set<RuntimeLLMProvider>();
 
   for (let i = 0; i < candidates.length; i++) {
-    if (isRouteDeadlineNear(deadlineAt, LLM_REQUEST_TIMEOUT_MS + 5000)) return '{}';
+    if (Date.now() >= fillDeadlineAt) return '{}';
+    if (isRouteDeadlineNear(deadlineAt, LLM_FILL_REQUEST_TIMEOUT_MS + 5000)) return '{}';
     const candidate = candidates[i];
     if (providerAuthFailures.has(candidate.provider)) continue;
     try {
+      const timeoutMs = Math.max(1000, Math.min(LLM_FILL_REQUEST_TIMEOUT_MS, fillDeadlineAt - Date.now()));
       const result = candidate.provider === 'github'
-        ? await callGitHubModelsAPI(fillMessages, githubToken as string, candidate.model, [])
-        : await callGeminiAPI(fillMessages, geminiToken as string, candidate.model, []);
+        ? await callGitHubModelsAPI(fillMessages, githubToken as string, candidate.model, [], timeoutMs)
+        : await callGeminiAPI(fillMessages, geminiToken as string, candidate.model, [], timeoutMs);
       const content = extractContent(result);
       if (content && content !== '{}') return content;
       console.info(`[callLLMForDataFill] ${candidate.provider}/${candidate.model} returned empty, trying next`);
@@ -797,10 +809,7 @@ async function callLLMForDataFill(
       if (err?.isUnknownModel) {
         continue;
       }
-      if (err?.statusCode === 429 || (err?.statusCode >= 500 && err?.statusCode <= 503)) {
-        const delayMs = Math.min(err?.retryAfterMs ?? 2000, 10000, Math.max(0, routeRemainingMs(deadlineAt) - VERCEL_INTERNAL_DEADLINE_BUFFER_MS));
-        await new Promise((resolve) => setTimeout(resolve, delayMs));
-      }
+      if (err?.statusCode === 429 || (err?.statusCode >= 500 && err?.statusCode <= 503)) continue;
     }
   }
 
@@ -972,7 +981,7 @@ export async function POST(request: NextRequest) {
           err.statusCode = 503;
           throw err;
         }
-        return callGeminiAPI(messages, geminiToken, modelId, tools);
+        return callGeminiAPI(messages, geminiToken, modelId, tools, LLM_REQUEST_TIMEOUT_MS);
       }
 
       if (!githubToken) {
@@ -980,7 +989,7 @@ export async function POST(request: NextRequest) {
         err.statusCode = 503;
         throw err;
       }
-      return callGitHubModelsAPI(messages, githubToken, modelId, tools);
+      return callGitHubModelsAPI(messages, githubToken, modelId, tools, LLM_REQUEST_TIMEOUT_MS);
     };
 
     while (rounds < MAX_TOOL_ROUNDS) {
@@ -1062,14 +1071,6 @@ export async function POST(request: NextRequest) {
           }
           if (isRateLimit || isServerError) {
             if (isRateLimit) markModelCooldown(activeModel, error?.retryAfterMs);
-            const delayMs = Math.min(
-              error?.retryAfterMs ?? 0,
-              10000,
-              Math.max(0, routeRemainingMs(requestDeadlineAt) - VERCEL_INTERNAL_DEADLINE_BUFFER_MS)
-            );
-            if (delayMs > 0) {
-              await new Promise((resolve) => setTimeout(resolve, delayMs));
-            }
             if (advanceCandidate()) {
               continue;
             }

@@ -3,7 +3,8 @@ All notable changes to this project are recorded here.
 ## [Unreleased]
 ### Changed
 - **Agent operating contract**: `AGENT.md` now captures the standing collaboration rules for discuss-before-change, holistic impact review, local/Vercel parity, truthful-data requirements, LLM/tool fallback discipline, mandatory practical validation, test expectations, docs alignment, and commit/push boundaries.
-- **Deep research execution order**: Deep-sector reports now use one fixed core-data-first pass. They resolve a verified universe, fetch critical market data before optional ecosystem LLM enrichment, and reserve model calls for after a data-backed report body is already possible.
+- **Deep research execution order**: Deep-sector reports now resolve a verified universe, fetch critical market data before optional ecosystem LLM enrichment, and reserve model calls for after a data-backed report body is already possible. `DEEP_RESEARCH_DEPTH` is restored as a bounded optional post-core-data refinement setting with default `1`.
+- **Priority-aware timeout scheduling**: Report generation now uses separate critical/high/optional/LLM task ceilings and shorter report-fill LLM budgets on Vercel, so a slow provider or optional model call cannot consume the whole function window before rendering and persistence.
 
 ### Fixed
 - **Wrong or weakly supported report decisions**: Single-stock and watchlist ticker inputs are live-search/validated before market-data fetches, so display names like `TSMC` resolve to official provider tickers. The decision engine no longer turns a single available pillar such as momentum into a buy/add score when core profitability/growth/valuation data is missing.
@@ -16,6 +17,7 @@ All notable changes to this project are recorded here.
 - **Free-tier provider pressure**: Report fetches now check cache/rate-limit state before starting upstream requests, provider throttles are serialized across concurrent report fetches, and Alpha Vantage is pushed later in the method-specific fallback order where roomier/no-key providers can satisfy the data.
 - **Single-stock report fundamentals**: `generate_stock_report` now calls the dedicated `getBasicFinancials` provider method before falling back to overview-derived metrics, so profitability/growth/financial-ratio inputs have a better chance of being real provider data.
 - **Large Vercel reports finish with useful decisions**: Multi-company and watchlist reports on Vercel prioritize core decision inputs (price, overview, basic financials, price history, analyst ratings, price targets) and use cached optional sections for large universes instead of spending free-tier quota on lower-priority endpoints first.
+- **Report-fill LLM prompt wiring**: Optional moat, rationale, conclusion, ticker-resolution, and deep-sector ecosystem calls keep their intended prompts while still obeying per-call timeout ceilings.
 - **LLM fallback resilience**: Invalid GitHub/Gemini credentials for one provider now skip to the next configured provider instead of blocking the whole request.
 - **Local vs Vercel budgets**: Deep research and LLM request timeouts stay conservative on Vercel, while local runs can spend longer collecting data when no 300 s platform timeout applies.
 - **Gemini tool-calling 400 (`Value is not a string: null`)**: Gemini's OpenAI-compatible endpoint rejected assistant tool-call messages when `content` was `null`. `callGeminiAPI()` now sanitizes every Gemini-bound message so `content` is always a string before each tool-calling round.

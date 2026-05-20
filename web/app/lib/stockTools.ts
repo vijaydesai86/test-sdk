@@ -41,9 +41,9 @@ function parseBoundedEnvInt(name: string, fallback: number, min: number, max: nu
 // Number of companies to include in comparison/sector/deep-sector reports.
 // Clamp to a free-tier-safe ceiling so a bad env value cannot fan out into dozens of API calls.
 const NUM_COMPANIES = parseBoundedEnvInt('NUM_COMPANIES', 10, 2, 15);
-// Keep deep-sector refinement intentionally shallow. Core market data is more
-// valuable than repeated LLM refinement, especially under Vercel's hard runtime.
-const DEEP_RESEARCH_DEPTH = 1;
+// Optional post-core-data ecosystem/refinement passes in deep sector research.
+// Core market data is always fetched before any pass is allowed to run.
+const DEEP_RESEARCH_DEPTH = parseBoundedEnvInt('DEEP_RESEARCH_DEPTH', 1, 1, 3);
 // Keep enough headroom under Vercel's overall runtime limit for rendering and persistence work.
 const DEFAULT_DEEP_RESEARCH_MAX_MS = process.env.VERCEL ? 240000 : 600000;
 const MAX_DEEP_RESEARCH_MAX_MS = process.env.VERCEL ? 270000 : 900000;
@@ -59,6 +59,12 @@ const VERCEL_EXTENDED_DATA_MAX_COMPANIES = parseBoundedEnvInt('VERCEL_EXTENDED_D
 const VERCEL_REPORT_RETURN_BUFFER_MS = parseBoundedEnvInt('VERCEL_REPORT_RETURN_BUFFER_MS', 45000, 5000, 120000);
 const VERCEL_REPORT_LLM_MIN_REMAINING_MS = parseBoundedEnvInt('VERCEL_REPORT_LLM_MIN_REMAINING_MS', 120000, 30000, 240000);
 type ReportWorkPriority = 'critical' | 'high' | 'optional' | 'llm';
+const REPORT_TASK_TIMEOUT_MS: Record<ReportWorkPriority, number> = {
+  critical: process.env.VERCEL ? 12000 : 30000,
+  high: process.env.VERCEL ? 8000 : 25000,
+  optional: process.env.VERCEL ? 4000 : 15000,
+  llm: process.env.VERCEL ? 12000 : 60000,
+};
 
 function shouldFetchExtendedReportData(companyCount: number): boolean {
   return !process.env.VERCEL || companyCount <= VERCEL_EXTENDED_DATA_MAX_COMPANIES;
@@ -92,6 +98,33 @@ function hasReportWorkBudget(deadlineAt: number | undefined, priority: ReportWor
 
 function hasReportLLMBudget(deadlineAt?: number): boolean {
   return hasReportWorkBudget(deadlineAt, 'llm');
+}
+
+function reportTaskTimeoutMs(priority: ReportWorkPriority, deadlineAt?: number): number {
+  const base = REPORT_TASK_TIMEOUT_MS[priority];
+  if (!deadlineAt) return base;
+  const saveBuffer = reportSaveBufferMs();
+  const usable = remainingMs(deadlineAt) - saveBuffer;
+  return Math.max(1000, Math.min(base, usable));
+}
+
+async function withReportTaskTimeout<T>(
+  task: Promise<T>,
+  priority: ReportWorkPriority,
+  deadlineAt?: number
+): Promise<T> {
+  const timeoutMs = reportTaskTimeoutMs(priority, deadlineAt);
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      task,
+      new Promise<T>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error(`Report ${priority} task timed out after ${timeoutMs}ms`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
 }
 
 function pushDeadlineNote(notes: string[], deadlineAt?: number): boolean {
@@ -2347,7 +2380,7 @@ export async function executeTool(
         if (!symbol && !skipPerCompanyLLM && options?.llmFill) {
           const prompt = buildTickerResolutionPrompt([symbolQuery]);
           try {
-            const raw = await options.llmFill(prompt);
+            const raw = await withReportTaskTimeout(options.llmFill(prompt), 'llm', deadlineAt);
             const parsed = parseLLMFillJSON(raw);
             const llmTicker = normalizeTickerCandidate(parsed?.[symbolQuery]);
             if (llmTicker && await validateResolvedTicker(stockService, llmTicker)) {
@@ -2384,7 +2417,8 @@ export async function executeTool(
           key: string,
           request: () => Promise<T>,
           allowRequest = true,
-          allowNearDeadline = false
+          allowNearDeadline = false,
+          priority: ReportWorkPriority = 'critical'
         ) => {
           const cachedEntry = getCachedEntry(cache, key);
           const cachedValue = getCachedValue(cache, key);
@@ -2407,7 +2441,7 @@ export async function executeTool(
             return undefined as T;
           }
           try {
-            const result = await request();
+            const result = await withReportTaskTimeout(request(), priority, deadlineAt);
             const provider = result && typeof result === 'object' && '__source' in result
               ? String((result as any).__source)
               : DEFAULT_SOURCE;
@@ -2470,28 +2504,30 @@ export async function executeTool(
           );
 
         const allowCritical = forceCriticalData || hasReportWorkBudget(deadlineAt, 'critical', 1);
-        const price = await safeFetch('Price', 'price', () => stockService.getStockPrice(symbol), allowCritical, forceCriticalData);
-        const rawCompanyOverview = await safeFetch('Company overview', 'overview', () => stockService.getCompanyOverview(symbol), allowCritical, forceCriticalData);
-        const basicFinancials = await safeFetch('Basic financials', 'basicFinancials', () => stockService.getBasicFinancials(symbol), allowCritical, forceCriticalData);
-        const priceHistory = await safeFetch('Price history', `priceHistory:${range}`, () => stockService.getPriceHistory(symbol, range), allowCritical, forceCriticalData);
+        const price = await safeFetch('Price', 'price', () => stockService.getStockPrice(symbol), allowCritical, forceCriticalData, 'critical');
+        const rawCompanyOverview = await safeFetch('Company overview', 'overview', () => stockService.getCompanyOverview(symbol), allowCritical, forceCriticalData, 'critical');
+        const basicFinancials = await safeFetch('Basic financials', 'basicFinancials', () => stockService.getBasicFinancials(symbol), allowCritical, forceCriticalData, 'critical');
+        const priceHistory = await safeFetch('Price history', `priceHistory:${range}`, () => stockService.getPriceHistory(symbol, range), allowCritical, forceCriticalData, 'critical');
         const { overview: companyOverview, notes: overviewNotes } = sanitizeMarketScaledOverview(rawCompanyOverview, price, priceHistory);
         notes.push(...overviewNotes);
-        const earningsHistory = await safeFetch('Earnings history', 'earningsHistory', () => stockService.getEarningsHistory(symbol), !coreOnly && hasReportWorkBudget(deadlineAt, 'high', 1));
-        const incomeStatement = await safeFetch('Income statement', 'incomeStatement', () => stockService.getIncomeStatement(symbol), !coreOnly && hasReportWorkBudget(deadlineAt, 'high', 1));
-        const balanceSheet = await safeFetch('Balance sheet', 'balanceSheet', () => stockService.getBalanceSheet(symbol), !coreOnly && hasReportWorkBudget(deadlineAt, 'high', 1));
-        const cashFlow = await safeFetch('Cash flow', 'cashFlow', () => stockService.getCashFlow(symbol), !coreOnly && hasReportWorkBudget(deadlineAt, 'high', 1));
-        const analystRatings = await safeFetch('Analyst ratings', 'analystRatings', () => stockService.getAnalystRatings(symbol), hasReportWorkBudget(deadlineAt, 'high', 1));
+        const earningsHistory = await safeFetch('Earnings history', 'earningsHistory', () => stockService.getEarningsHistory(symbol), !coreOnly && hasReportWorkBudget(deadlineAt, 'high', 1), false, 'high');
+        const incomeStatement = await safeFetch('Income statement', 'incomeStatement', () => stockService.getIncomeStatement(symbol), !coreOnly && hasReportWorkBudget(deadlineAt, 'high', 1), false, 'high');
+        const balanceSheet = await safeFetch('Balance sheet', 'balanceSheet', () => stockService.getBalanceSheet(symbol), !coreOnly && hasReportWorkBudget(deadlineAt, 'high', 1), false, 'high');
+        const cashFlow = await safeFetch('Cash flow', 'cashFlow', () => stockService.getCashFlow(symbol), !coreOnly && hasReportWorkBudget(deadlineAt, 'high', 1), false, 'high');
+        const analystRatings = await safeFetch('Analyst ratings', 'analystRatings', () => stockService.getAnalystRatings(symbol), hasReportWorkBudget(deadlineAt, 'high', 1), false, 'high');
         const analystRecommendations = await safeFetch(
           'Analyst recommendations',
           'analystRecommendations',
           () => stockService.getAnalystRecommendations(symbol),
-          !coreOnly && hasReportWorkBudget(deadlineAt, 'optional', 1)
+          !coreOnly && hasReportWorkBudget(deadlineAt, 'optional', 1),
+          false,
+          'optional'
         );
-        const insiderTrading = await safeFetch('Insider trading', 'insiderTrading', () => stockService.getInsiderTrading(symbol), !coreOnly && hasReportWorkBudget(deadlineAt, 'optional', 1));
-        const priceTargets = await safeFetch('Price targets', 'priceTargets', () => stockService.getPriceTargets(symbol), hasReportWorkBudget(deadlineAt, 'high', 1));
-        const peers = await safeFetch('Peers', 'peers', () => stockService.getPeers(symbol), !coreOnly && hasReportWorkBudget(deadlineAt, 'optional', 1));
-        const newsSentiment = await safeFetch('News sentiment', 'newsSentiment', () => stockService.getNewsSentiment(symbol), !coreOnly && hasReportWorkBudget(deadlineAt, 'optional', 1));
-        const companyNews = await safeFetch('Company news', 'companyNews', () => stockService.getCompanyNews(symbol, 14), !coreOnly && hasReportWorkBudget(deadlineAt, 'optional', 1));
+        const insiderTrading = await safeFetch('Insider trading', 'insiderTrading', () => stockService.getInsiderTrading(symbol), !coreOnly && hasReportWorkBudget(deadlineAt, 'optional', 1), false, 'optional');
+        const priceTargets = await safeFetch('Price targets', 'priceTargets', () => stockService.getPriceTargets(symbol), hasReportWorkBudget(deadlineAt, 'high', 1), false, 'high');
+        const peers = await safeFetch('Peers', 'peers', () => stockService.getPeers(symbol), !coreOnly && hasReportWorkBudget(deadlineAt, 'optional', 1), false, 'optional');
+        const newsSentiment = await safeFetch('News sentiment', 'newsSentiment', () => stockService.getNewsSentiment(symbol), !coreOnly && hasReportWorkBudget(deadlineAt, 'optional', 1), false, 'optional');
+        const companyNews = await safeFetch('Company news', 'companyNews', () => stockService.getCompanyNews(symbol, 14), !coreOnly && hasReportWorkBudget(deadlineAt, 'optional', 1), false, 'optional');
 
 
         // Build basic financials from the overview. These are direct provider fields
@@ -2533,7 +2569,7 @@ export async function executeTool(
         if (!skipPerCompanyLLM && options?.llmFill && hasReportLLMBudget(deadlineAt)) {
           try {
             const moatPrompt = buildMoatAnalysisPrompt(symbol, companyOverview, finalBasicFinancials);
-            const raw = await options.llmFill(moatPrompt);
+            const raw = await withReportTaskTimeout(options.llmFill(moatPrompt), 'llm', deadlineAt);
             const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
             const parsed = JSON.parse(cleaned);
             moatAnalysis = parseMoatEntry(parsed) ?? undefined;
@@ -2584,7 +2620,7 @@ export async function executeTool(
               moatAnalysis,
               decisionSnapshot
             );
-            llmConclusion = (await options.llmFill(conclusionPrompt)).trim();
+            llmConclusion = (await withReportTaskTimeout(options.llmFill(conclusionPrompt), 'llm', deadlineAt)).trim();
           } catch {
             // LLM unavailable — use structured fallback
           }
@@ -2727,7 +2763,7 @@ export async function executeTool(
         if (options?.llmFill && hasReportLLMBudget(deadlineAt)) {
           const prompt = buildTickerResolutionPrompt(companies);
           try {
-            const raw = await options.llmFill(prompt);
+            const raw = await withReportTaskTimeout(options.llmFill(prompt), 'llm', deadlineAt);
             const parsed = parseLLMFillJSON(raw);
             if (parsed && typeof parsed === 'object') {
               for (const query of companies) {
@@ -2779,7 +2815,8 @@ export async function executeTool(
           label: string,
           key: string,
           request: () => Promise<T>,
-          allowRequest = true
+          allowRequest = true,
+          priority: ReportWorkPriority = 'critical'
         ) => {
           const cachedValue = getCachedValue(cache, key);
           if (cachedValue !== null) {
@@ -2795,7 +2832,7 @@ export async function executeTool(
           if (rateLimitHit || !allowRequest) return undefined as T;
           if (pushDeadlineNote(notes, deadlineAt)) return undefined as T;
           try {
-            const result = await request();
+            const result = await withReportTaskTimeout(request(), priority, deadlineAt);
             if (result && typeof result === 'object') {
               const sourceValue = '__source' in result ? String((result as any).__source) : DEFAULT_SOURCE;
               sourceMap[symbol] = sourceMap[symbol] || {};
@@ -2873,19 +2910,19 @@ export async function executeTool(
           async (symbol) => {
             const cache = await loadSymbolCache(symbol);
             const companyCount = universe.length;
-            const price = await safeFetch(symbol, cache, 'Price', 'price', () => stockService.getStockPrice(symbol), hasReportWorkBudget(deadlineAt, 'critical', companyCount));
-            const overview = await safeFetch(symbol, cache, 'Company overview', 'overview', () => stockService.getCompanyOverview(symbol), hasReportWorkBudget(deadlineAt, 'critical', companyCount));
-            const basicFinancials = await safeFetch(symbol, cache, 'Basic financials', 'basicFinancials', () => stockService.getBasicFinancials(symbol), hasReportWorkBudget(deadlineAt, 'critical', companyCount));
-            const priceHistory = await safeFetch(symbol, cache, 'Price history', `priceHistory:${range}`, () => stockService.getPriceHistory(symbol, range), hasReportWorkBudget(deadlineAt, 'critical', companyCount));
-            const incomeStatement = await safeFetch(symbol, cache, 'Income statement', 'incomeStatement', () => stockService.getIncomeStatement(symbol), fetchExtendedData && hasReportWorkBudget(deadlineAt, 'high', companyCount));
-            const balanceSheet = await safeFetch(symbol, cache, 'Balance sheet', 'balanceSheet', () => stockService.getBalanceSheet(symbol), fetchExtendedData && hasReportWorkBudget(deadlineAt, 'high', companyCount));
-            const cashFlow = await safeFetch(symbol, cache, 'Cash flow', 'cashFlow', () => stockService.getCashFlow(symbol), fetchExtendedData && hasReportWorkBudget(deadlineAt, 'high', companyCount));
-            const analystRatings = await safeFetch(symbol, cache, 'Analyst ratings', 'analystRatings', () => stockService.getAnalystRatings(symbol), hasReportWorkBudget(deadlineAt, 'high', companyCount));
-            const insiderTrading = await safeFetch(symbol, cache, 'Insider trading', 'insiderTrading', () => stockService.getInsiderTrading(symbol), fetchExtendedData && hasReportWorkBudget(deadlineAt, 'optional', companyCount));
-            const priceTargets = await safeFetch(symbol, cache, 'Price targets', 'priceTargets', () => stockService.getPriceTargets(symbol), hasReportWorkBudget(deadlineAt, 'high', companyCount));
-            const peers = await safeFetch(symbol, cache, 'Peers', 'peers', () => stockService.getPeers(symbol), fetchExtendedData && hasReportWorkBudget(deadlineAt, 'optional', companyCount));
-            const newsSentiment = await safeFetch(symbol, cache, 'News sentiment', 'newsSentiment', () => stockService.getNewsSentiment(symbol), fetchExtendedData && hasReportWorkBudget(deadlineAt, 'optional', companyCount));
-            const companyNews = await safeFetch(symbol, cache, 'Company news', 'companyNews', () => stockService.getCompanyNews(symbol, 14), fetchExtendedData && hasReportWorkBudget(deadlineAt, 'optional', companyCount));
+            const price = await safeFetch(symbol, cache, 'Price', 'price', () => stockService.getStockPrice(symbol), hasReportWorkBudget(deadlineAt, 'critical', companyCount), 'critical');
+            const overview = await safeFetch(symbol, cache, 'Company overview', 'overview', () => stockService.getCompanyOverview(symbol), hasReportWorkBudget(deadlineAt, 'critical', companyCount), 'critical');
+            const basicFinancials = await safeFetch(symbol, cache, 'Basic financials', 'basicFinancials', () => stockService.getBasicFinancials(symbol), hasReportWorkBudget(deadlineAt, 'critical', companyCount), 'critical');
+            const priceHistory = await safeFetch(symbol, cache, 'Price history', `priceHistory:${range}`, () => stockService.getPriceHistory(symbol, range), hasReportWorkBudget(deadlineAt, 'critical', companyCount), 'critical');
+            const incomeStatement = await safeFetch(symbol, cache, 'Income statement', 'incomeStatement', () => stockService.getIncomeStatement(symbol), fetchExtendedData && hasReportWorkBudget(deadlineAt, 'high', companyCount), 'high');
+            const balanceSheet = await safeFetch(symbol, cache, 'Balance sheet', 'balanceSheet', () => stockService.getBalanceSheet(symbol), fetchExtendedData && hasReportWorkBudget(deadlineAt, 'high', companyCount), 'high');
+            const cashFlow = await safeFetch(symbol, cache, 'Cash flow', 'cashFlow', () => stockService.getCashFlow(symbol), fetchExtendedData && hasReportWorkBudget(deadlineAt, 'high', companyCount), 'high');
+            const analystRatings = await safeFetch(symbol, cache, 'Analyst ratings', 'analystRatings', () => stockService.getAnalystRatings(symbol), hasReportWorkBudget(deadlineAt, 'high', companyCount), 'high');
+            const insiderTrading = await safeFetch(symbol, cache, 'Insider trading', 'insiderTrading', () => stockService.getInsiderTrading(symbol), fetchExtendedData && hasReportWorkBudget(deadlineAt, 'optional', companyCount), 'optional');
+            const priceTargets = await safeFetch(symbol, cache, 'Price targets', 'priceTargets', () => stockService.getPriceTargets(symbol), hasReportWorkBudget(deadlineAt, 'high', companyCount), 'high');
+            const peers = await safeFetch(symbol, cache, 'Peers', 'peers', () => stockService.getPeers(symbol), fetchExtendedData && hasReportWorkBudget(deadlineAt, 'optional', companyCount), 'optional');
+            const newsSentiment = await safeFetch(symbol, cache, 'News sentiment', 'newsSentiment', () => stockService.getNewsSentiment(symbol), fetchExtendedData && hasReportWorkBudget(deadlineAt, 'optional', companyCount), 'optional');
+            const companyNews = await safeFetch(symbol, cache, 'Company news', 'companyNews', () => stockService.getCompanyNews(symbol, 14), fetchExtendedData && hasReportWorkBudget(deadlineAt, 'optional', companyCount), 'optional');
             return {
               symbol,
               cache,
@@ -2982,7 +3019,7 @@ export async function executeTool(
             const moatPrompt = buildBatchMoatAnalysisPrompt(
               items.map((item) => ({ symbol: item.symbol, overview: item.overview, basicFinancials: item.basicFinancials }))
             );
-            const raw = await options.llmFill(moatPrompt);
+            const raw = await withReportTaskTimeout(options.llmFill(moatPrompt), 'llm', deadlineAt);
             const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
             const parsed = JSON.parse(cleaned);
             if (parsed && typeof parsed === 'object') {
@@ -3028,7 +3065,7 @@ export async function executeTool(
                 };
               })
             );
-            const raw = await options.llmFill(rationalePrompt);
+            const raw = await withReportTaskTimeout(options.llmFill(rationalePrompt), 'llm', deadlineAt);
             const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
             const parsed = JSON.parse(cleaned);
             if (parsed && typeof parsed === 'object') {
@@ -3060,7 +3097,7 @@ export async function executeTool(
                 score: getComparisonPromptScore(item),
               }))
             );
-            llmConclusionComparison = (await options.llmFill(conclusionPrompt)).trim();
+            llmConclusionComparison = (await withReportTaskTimeout(options.llmFill(conclusionPrompt), 'llm', deadlineAt)).trim();
           } catch {
             // LLM unavailable — use structured fallback
           }
@@ -3134,10 +3171,10 @@ export async function executeTool(
           }
         }
 
-        // Retry failed items after a brief delay to let rate limits reset
+        // Retry failed items sequentially without adding a fixed sleep; provider
+        // throttles/cooldowns already decide when another upstream call is allowed.
         if (failures.length > 0 && successfulItems.length > 0 && !isDeadlineNear(deadlineAt, 45000)) {
-          console.info(`[watchlist] Retrying ${failures.length} failed items after rate-limit cooldown: ${failures.join(', ')}`);
-          await new Promise((resolve) => setTimeout(resolve, 5000));
+          console.info(`[watchlist] Retrying ${failures.length} failed items sequentially: ${failures.join(', ')}`);
           const retryItems = watchlist.items.filter((item) => failures.includes(item.symbol));
           const retryResults = await mapWithConcurrency(
             retryItems,
@@ -3184,7 +3221,7 @@ export async function executeTool(
                 basicFinancials: item.stock.basicFinancials,
               }))
             );
-            const raw = await options.llmFill(moatPrompt);
+            const raw = await withReportTaskTimeout(options.llmFill(moatPrompt), 'llm', deadlineAt);
             const cleaned = raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
             const parsed = JSON.parse(cleaned);
             if (parsed && typeof parsed === "object") {
@@ -3228,7 +3265,7 @@ export async function executeTool(
                 };
               })
             );
-            const raw = await options.llmFill(rationalePrompt);
+            const raw = await withReportTaskTimeout(options.llmFill(rationalePrompt), 'llm', deadlineAt);
             const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
             const parsed = JSON.parse(cleaned);
             if (parsed && typeof parsed === 'object') {
@@ -3335,7 +3372,8 @@ export async function executeTool(
           label: string,
           key: string,
           request: () => Promise<T>,
-          allowRequest = true
+          allowRequest = true,
+          priority: ReportWorkPriority = 'critical'
         ) => {
           const cachedValue = getCachedValue(cache, key);
           if (cachedValue !== null) {
@@ -3351,7 +3389,7 @@ export async function executeTool(
           if (rateLimitHit || !allowRequest) return undefined as T;
           if (pushDeadlineNote(notes, deadlineAt)) return undefined as T;
           try {
-            const result = await request();
+            const result = await withReportTaskTimeout(request(), priority, deadlineAt);
             if (result && typeof result === 'object') {
               const sourceValue = '__source' in result ? String((result as any).__source) : DEFAULT_SOURCE;
               sourceMap[symbol] = sourceMap[symbol] || {};
@@ -3429,19 +3467,19 @@ export async function executeTool(
           async (symbol) => {
             const cache = await loadSymbolCache(symbol);
             const companyCount = universe.length;
-            const price = await safeFetch(symbol, cache, 'Price', 'price', () => stockService.getStockPrice(symbol), hasReportWorkBudget(deadlineAt, 'critical', companyCount));
-            const overview = await safeFetch(symbol, cache, 'Company overview', 'overview', () => stockService.getCompanyOverview(symbol), hasReportWorkBudget(deadlineAt, 'critical', companyCount));
-            const basicFinancials = await safeFetch(symbol, cache, 'Basic financials', 'basicFinancials', () => stockService.getBasicFinancials(symbol), hasReportWorkBudget(deadlineAt, 'critical', companyCount));
-            const priceHistory = await safeFetch(symbol, cache, 'Price history', `priceHistory:${range}`, () => stockService.getPriceHistory(symbol, range), hasReportWorkBudget(deadlineAt, 'critical', companyCount));
-            const incomeStatement = await safeFetch(symbol, cache, 'Income statement', 'incomeStatement', () => stockService.getIncomeStatement(symbol), fetchExtendedData && hasReportWorkBudget(deadlineAt, 'high', companyCount));
-            const balanceSheet = await safeFetch(symbol, cache, 'Balance sheet', 'balanceSheet', () => stockService.getBalanceSheet(symbol), fetchExtendedData && hasReportWorkBudget(deadlineAt, 'high', companyCount));
-            const cashFlow = await safeFetch(symbol, cache, 'Cash flow', 'cashFlow', () => stockService.getCashFlow(symbol), fetchExtendedData && hasReportWorkBudget(deadlineAt, 'high', companyCount));
-            const analystRatings = await safeFetch(symbol, cache, 'Analyst ratings', 'analystRatings', () => stockService.getAnalystRatings(symbol), hasReportWorkBudget(deadlineAt, 'high', companyCount));
-            const insiderTrading = await safeFetch(symbol, cache, 'Insider trading', 'insiderTrading', () => stockService.getInsiderTrading(symbol), fetchExtendedData && hasReportWorkBudget(deadlineAt, 'optional', companyCount));
-            const priceTargets = await safeFetch(symbol, cache, 'Price targets', 'priceTargets', () => stockService.getPriceTargets(symbol), hasReportWorkBudget(deadlineAt, 'high', companyCount));
-            const peers = await safeFetch(symbol, cache, 'Peers', 'peers', () => stockService.getPeers(symbol), fetchExtendedData && hasReportWorkBudget(deadlineAt, 'optional', companyCount));
-            const newsSentiment = await safeFetch(symbol, cache, 'News sentiment', 'newsSentiment', () => stockService.getNewsSentiment(symbol), fetchExtendedData && hasReportWorkBudget(deadlineAt, 'optional', companyCount));
-            const companyNews = await safeFetch(symbol, cache, 'Company news', 'companyNews', () => stockService.getCompanyNews(symbol, 14), fetchExtendedData && hasReportWorkBudget(deadlineAt, 'optional', companyCount));
+            const price = await safeFetch(symbol, cache, 'Price', 'price', () => stockService.getStockPrice(symbol), hasReportWorkBudget(deadlineAt, 'critical', companyCount), 'critical');
+            const overview = await safeFetch(symbol, cache, 'Company overview', 'overview', () => stockService.getCompanyOverview(symbol), hasReportWorkBudget(deadlineAt, 'critical', companyCount), 'critical');
+            const basicFinancials = await safeFetch(symbol, cache, 'Basic financials', 'basicFinancials', () => stockService.getBasicFinancials(symbol), hasReportWorkBudget(deadlineAt, 'critical', companyCount), 'critical');
+            const priceHistory = await safeFetch(symbol, cache, 'Price history', `priceHistory:${range}`, () => stockService.getPriceHistory(symbol, range), hasReportWorkBudget(deadlineAt, 'critical', companyCount), 'critical');
+            const incomeStatement = await safeFetch(symbol, cache, 'Income statement', 'incomeStatement', () => stockService.getIncomeStatement(symbol), fetchExtendedData && hasReportWorkBudget(deadlineAt, 'high', companyCount), 'high');
+            const balanceSheet = await safeFetch(symbol, cache, 'Balance sheet', 'balanceSheet', () => stockService.getBalanceSheet(symbol), fetchExtendedData && hasReportWorkBudget(deadlineAt, 'high', companyCount), 'high');
+            const cashFlow = await safeFetch(symbol, cache, 'Cash flow', 'cashFlow', () => stockService.getCashFlow(symbol), fetchExtendedData && hasReportWorkBudget(deadlineAt, 'high', companyCount), 'high');
+            const analystRatings = await safeFetch(symbol, cache, 'Analyst ratings', 'analystRatings', () => stockService.getAnalystRatings(symbol), hasReportWorkBudget(deadlineAt, 'high', companyCount), 'high');
+            const insiderTrading = await safeFetch(symbol, cache, 'Insider trading', 'insiderTrading', () => stockService.getInsiderTrading(symbol), fetchExtendedData && hasReportWorkBudget(deadlineAt, 'optional', companyCount), 'optional');
+            const priceTargets = await safeFetch(symbol, cache, 'Price targets', 'priceTargets', () => stockService.getPriceTargets(symbol), hasReportWorkBudget(deadlineAt, 'high', companyCount), 'high');
+            const peers = await safeFetch(symbol, cache, 'Peers', 'peers', () => stockService.getPeers(symbol), fetchExtendedData && hasReportWorkBudget(deadlineAt, 'optional', companyCount), 'optional');
+            const newsSentiment = await safeFetch(symbol, cache, 'News sentiment', 'newsSentiment', () => stockService.getNewsSentiment(symbol), fetchExtendedData && hasReportWorkBudget(deadlineAt, 'optional', companyCount), 'optional');
+            const companyNews = await safeFetch(symbol, cache, 'Company news', 'companyNews', () => stockService.getCompanyNews(symbol, 14), fetchExtendedData && hasReportWorkBudget(deadlineAt, 'optional', companyCount), 'optional');
             return {
               symbol,
               cache,
@@ -3537,7 +3575,7 @@ export async function executeTool(
             const moatPrompt = buildBatchMoatAnalysisPrompt(
               items.map((item) => ({ symbol: item.symbol, overview: item.overview, basicFinancials: item.basicFinancials }))
             );
-            const raw = await options.llmFill(moatPrompt);
+            const raw = await withReportTaskTimeout(options.llmFill(moatPrompt), 'llm', deadlineAt);
             const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
             const parsed = JSON.parse(cleaned);
             if (parsed && typeof parsed === 'object') {
@@ -3583,7 +3621,7 @@ export async function executeTool(
                 };
               })
             );
-            const raw = await options.llmFill(rationalePrompt);
+            const raw = await withReportTaskTimeout(options.llmFill(rationalePrompt), 'llm', deadlineAt);
             const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
             const parsed = JSON.parse(cleaned);
             if (parsed && typeof parsed === 'object') {
@@ -3615,7 +3653,7 @@ export async function executeTool(
                 score: getComparisonPromptScore(item),
               }))
             );
-            llmConclusionSector = (await options.llmFill(conclusionPrompt)).trim();
+            llmConclusionSector = (await withReportTaskTimeout(options.llmFill(conclusionPrompt), 'llm', deadlineAt)).trim();
           } catch {
             // LLM unavailable — use structured fallback
           }
@@ -3808,7 +3846,8 @@ export async function executeTool(
           key: string,
           request: () => Promise<T>,
           allowRequest = true,
-          allowNearDeadline = false
+          allowNearDeadline = false,
+          priority: ReportWorkPriority = 'critical'
         ) => {
           const cachedValue = getCachedValue(cache, key);
           if (cachedValue !== null) {
@@ -3828,7 +3867,7 @@ export async function executeTool(
             return undefined as T;
           }
           try {
-            const result = await request();
+            const result = await withReportTaskTimeout(request(), priority, deadlineAt);
             if (result && typeof result === 'object') {
               const sourceValue = '__source' in result ? String((result as any).__source) : DEFAULT_SOURCE;
               sourceMap[symbol] = sourceMap[symbol] || {};
@@ -3928,19 +3967,19 @@ export async function executeTool(
             const cache = await loadSymbolCache(symbol);
             const companyCount = universe.length;
             const allowCritical = forceCoreFetch || hasReportWorkBudget(deadlineAt, 'critical', companyCount);
-            const price = await safeFetch(symbol, cache, 'Price', 'price', () => stockService.getStockPrice(symbol), allowCritical, forceCoreFetch);
-            const overview = await safeFetch(symbol, cache, 'Company overview', 'overview', () => stockService.getCompanyOverview(symbol), allowCritical, forceCoreFetch);
-            const basicFinancials = await safeFetch(symbol, cache, 'Basic financials', 'basicFinancials', () => stockService.getBasicFinancials(symbol), allowCritical, forceCoreFetch);
-            const priceHistory = await safeFetch(symbol, cache, 'Price history', `priceHistory:${range}`, () => stockService.getPriceHistory(symbol, range), allowCritical, forceCoreFetch);
-            const incomeStatement = await safeFetch(symbol, cache, 'Income statement', 'incomeStatement', () => stockService.getIncomeStatement(symbol), fetchExtendedData && hasReportWorkBudget(deadlineAt, 'high', companyCount));
-            const balanceSheet = await safeFetch(symbol, cache, 'Balance sheet', 'balanceSheet', () => stockService.getBalanceSheet(symbol), fetchExtendedData && hasReportWorkBudget(deadlineAt, 'high', companyCount));
-            const cashFlow = await safeFetch(symbol, cache, 'Cash flow', 'cashFlow', () => stockService.getCashFlow(symbol), fetchExtendedData && hasReportWorkBudget(deadlineAt, 'high', companyCount));
-            const analystRatings = await safeFetch(symbol, cache, 'Analyst ratings', 'analystRatings', () => stockService.getAnalystRatings(symbol), hasReportWorkBudget(deadlineAt, 'high', companyCount));
-            const insiderTrading = await safeFetch(symbol, cache, 'Insider trading', 'insiderTrading', () => stockService.getInsiderTrading(symbol), fetchExtendedData && hasReportWorkBudget(deadlineAt, 'optional', companyCount));
-            const priceTargets = await safeFetch(symbol, cache, 'Price targets', 'priceTargets', () => stockService.getPriceTargets(symbol), hasReportWorkBudget(deadlineAt, 'high', companyCount));
-            const peers = await safeFetch(symbol, cache, 'Peers', 'peers', () => stockService.getPeers(symbol), fetchExtendedData && hasReportWorkBudget(deadlineAt, 'optional', companyCount));
-            const newsSentiment = await safeFetch(symbol, cache, 'News sentiment', 'newsSentiment', () => stockService.getNewsSentiment(symbol), fetchExtendedData && hasReportWorkBudget(deadlineAt, 'optional', companyCount));
-            const companyNews = await safeFetch(symbol, cache, 'Company news', 'companyNews', () => stockService.getCompanyNews(symbol, 14), fetchExtendedData && hasReportWorkBudget(deadlineAt, 'optional', companyCount));
+            const price = await safeFetch(symbol, cache, 'Price', 'price', () => stockService.getStockPrice(symbol), allowCritical, forceCoreFetch, 'critical');
+            const overview = await safeFetch(symbol, cache, 'Company overview', 'overview', () => stockService.getCompanyOverview(symbol), allowCritical, forceCoreFetch, 'critical');
+            const basicFinancials = await safeFetch(symbol, cache, 'Basic financials', 'basicFinancials', () => stockService.getBasicFinancials(symbol), allowCritical, forceCoreFetch, 'critical');
+            const priceHistory = await safeFetch(symbol, cache, 'Price history', `priceHistory:${range}`, () => stockService.getPriceHistory(symbol, range), allowCritical, forceCoreFetch, 'critical');
+            const incomeStatement = await safeFetch(symbol, cache, 'Income statement', 'incomeStatement', () => stockService.getIncomeStatement(symbol), fetchExtendedData && hasReportWorkBudget(deadlineAt, 'high', companyCount), false, 'high');
+            const balanceSheet = await safeFetch(symbol, cache, 'Balance sheet', 'balanceSheet', () => stockService.getBalanceSheet(symbol), fetchExtendedData && hasReportWorkBudget(deadlineAt, 'high', companyCount), false, 'high');
+            const cashFlow = await safeFetch(symbol, cache, 'Cash flow', 'cashFlow', () => stockService.getCashFlow(symbol), fetchExtendedData && hasReportWorkBudget(deadlineAt, 'high', companyCount), false, 'high');
+            const analystRatings = await safeFetch(symbol, cache, 'Analyst ratings', 'analystRatings', () => stockService.getAnalystRatings(symbol), hasReportWorkBudget(deadlineAt, 'high', companyCount), false, 'high');
+            const insiderTrading = await safeFetch(symbol, cache, 'Insider trading', 'insiderTrading', () => stockService.getInsiderTrading(symbol), fetchExtendedData && hasReportWorkBudget(deadlineAt, 'optional', companyCount), false, 'optional');
+            const priceTargets = await safeFetch(symbol, cache, 'Price targets', 'priceTargets', () => stockService.getPriceTargets(symbol), hasReportWorkBudget(deadlineAt, 'high', companyCount), false, 'high');
+            const peers = await safeFetch(symbol, cache, 'Peers', 'peers', () => stockService.getPeers(symbol), fetchExtendedData && hasReportWorkBudget(deadlineAt, 'optional', companyCount), false, 'optional');
+            const newsSentiment = await safeFetch(symbol, cache, 'News sentiment', 'newsSentiment', () => stockService.getNewsSentiment(symbol), fetchExtendedData && hasReportWorkBudget(deadlineAt, 'optional', companyCount), false, 'optional');
+            const companyNews = await safeFetch(symbol, cache, 'Company news', 'companyNews', () => stockService.getCompanyNews(symbol, 14), fetchExtendedData && hasReportWorkBudget(deadlineAt, 'optional', companyCount), false, 'optional');
             return {
               symbol,
               cache,
@@ -4030,21 +4069,25 @@ export async function executeTool(
           return { success: false, error: 'Could not collect enough data before the runtime deadline to build a deep sector report.' };
         }
 
-        // Optional single-pass ecosystem analysis. This runs only after a
-        // data-backed report body is already possible.
-        if (options?.llmFill && items.length > 0 && hasReportLLMBudget(deadlineAt) && hasReportWorkBudget(deadlineAt, 'optional', items.length)) {
-          try {
-            const ecosystemData = items.map((item) => ({
-              symbol: item.symbol,
-              overview: item.overview,
-              news: item.newsSentiment,
-              peers: item.peers,
-            }));
-            const depPrompt = buildDeepSectorDependencyPrompt(resolverSector, items.length, ecosystemData);
-            const raw = await options.llmFill(depPrompt);
-            const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
-            const parsed = JSON.parse(cleaned);
-            if (parsed && typeof parsed === 'object') {
+        // Optional ecosystem analysis. This runs only after a data-backed report
+        // body is already possible; Vercel may stop after zero or one pass, while
+        // local runs can deepen it via DEEP_RESEARCH_DEPTH.
+        if (options?.llmFill && items.length > 0) {
+          const ecosystemData = items.map((item) => ({
+            symbol: item.symbol,
+            overview: item.overview,
+            news: item.newsSentiment,
+            peers: item.peers,
+          }));
+          let previousPass: DeepSectorPassContext | undefined;
+          for (let passIndex = 0; passIndex < DEEP_RESEARCH_DEPTH; passIndex++) {
+            if (!hasReportLLMBudget(deadlineAt) || !hasReportWorkBudget(deadlineAt, 'optional', items.length)) break;
+            try {
+              const depPrompt = buildDeepSectorDependencyPrompt(resolverSector, items.length, ecosystemData, previousPass);
+              const raw = await withReportTaskTimeout(options.llmFill(depPrompt), 'llm', deadlineAt);
+              const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+              const parsed = JSON.parse(cleaned);
+              if (!parsed || typeof parsed !== 'object') break;
               if (typeof parsed.dependencyAnalysis === 'string') {
                 dependencyAnalysis = parsed.dependencyAnalysis;
               }
@@ -4060,9 +4103,18 @@ export async function executeTool(
                   if (typeof v === 'string') companySnapshots[k.replace(/[^A-Z0-9.]/gi, '').toUpperCase()] = v;
                 }
               }
+              previousPass = {
+                dependencyAnalysis,
+                ecosystemDiagram,
+                refinementNotes,
+                companySnapshots,
+                universe,
+                passIndex,
+              };
+            } catch {
+              // Optional ecosystem analysis failed or hit a model limit; keep the data-backed report.
+              break;
             }
-          } catch {
-            // Optional ecosystem analysis failed or hit a model limit; keep the data-backed report.
           }
         }
 
@@ -4072,7 +4124,7 @@ export async function executeTool(
             const moatPrompt = buildBatchMoatAnalysisPrompt(
               items.map((item) => ({ symbol: item.symbol, overview: item.overview, basicFinancials: item.basicFinancials }))
             );
-            const raw = await options.llmFill(moatPrompt);
+            const raw = await withReportTaskTimeout(options.llmFill(moatPrompt), 'llm', deadlineAt);
             const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
             const parsed = JSON.parse(cleaned);
             if (parsed && typeof parsed === 'object') {
@@ -4118,7 +4170,7 @@ export async function executeTool(
                 };
               })
             );
-            const raw = await options.llmFill(rationalePrompt);
+            const raw = await withReportTaskTimeout(options.llmFill(rationalePrompt), 'llm', deadlineAt);
             const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
             const parsed = JSON.parse(cleaned);
             if (parsed && typeof parsed === 'object') {
@@ -4150,7 +4202,7 @@ export async function executeTool(
                 score: getComparisonPromptScore(item),
               }))
             );
-            llmConclusionDeep = (await options.llmFill(conclusionPrompt)).trim();
+            llmConclusionDeep = (await withReportTaskTimeout(options.llmFill(conclusionPrompt), 'llm', deadlineAt)).trim();
           } catch {
             // LLM unavailable — use structured fallback
           }

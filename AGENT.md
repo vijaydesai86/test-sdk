@@ -48,7 +48,7 @@ General chat is supported for data-only questions (e.g. "what is NVDA's P/E?") b
 
 5. **No production hardcoding.** Do not hardcode company/ticker lists, provider facts, financial values, or special-case production behavior for individual companies. Hardcoded symbols and values are acceptable only in tests, fixtures, and mocks.
 
-6. **Local and Vercel both matter.** Vercel must respect the hard function timeout and still return a saved report with the highest-value verified data collected before the deadline. Local runs are not Vercel-truncated and should attempt the full available data set, subject to sensible provider rate-limit handling.
+6. **Local and Vercel both matter.** Vercel must respect the hard function timeout and still return a saved report with the highest-value verified data collected before the deadline. Local runs are not Vercel-truncated and should attempt the full available data set, subject to sensible provider rate-limit handling. Timeouts must be priority-aware: fetch critical decision inputs before optional enrichment, cap individual upstream waits, and reserve enough time to render, persist, and return the report.
 
 7. **Use tools by data fit and quota.** Pick the provider/tool best suited to each data type, and treat all free-tier quotas as scarce. Low-quota providers such as Alpha Vantage must not be the default hammer when roomier or no-key providers can supply the same data.
 
@@ -300,6 +300,7 @@ See `web/.env.example` for annotated defaults. All variables prefixed with `STOC
 
 **Scaling:**
 - `NUM_COMPANIES` — companies per sector/comparison report (2–15, default 10)
+- `DEEP_RESEARCH_DEPTH` — optional post-core-data ecosystem/refinement passes for deep-sector reports (1–3, default 1)
 - `DEEP_RESEARCH_MAX_MS` — deep-research runtime budget in ms (default 240000)
 - `DATA_FETCH_CONCURRENCY` — parallel ticker fetches (1–4, default 3)
 - `VERCEL_EXTENDED_DATA_MAX_COMPANIES` — on Vercel, large reports prioritize core decision inputs and cached optional sections
@@ -311,6 +312,7 @@ See `web/.env.example` for annotated defaults. All variables prefixed with `STOC
 
 **Throttling:**
 - `ALPHA_VANTAGE_MIN_INTERVAL_MS` (12000), `FINNHUB_MIN_INTERVAL_MS` (1100), `FMP_MIN_INTERVAL_MS` (12000), `TWELVE_DATA_MIN_INTERVAL_MS` (8000), `STOOQ_MIN_INTERVAL_MS` (1000)
+- `LLM_REQUEST_TIMEOUT_MS` (30000 on Vercel, 90000 local), `LLM_FILL_REQUEST_TIMEOUT_MS` (12000 on Vercel, 60000 local), `LLM_FILL_TOTAL_BUDGET_MS` (20000 on Vercel, 120000 local)
 - `LLM_MODEL_COOLDOWN_MS` (120000), `STOCK_PROVIDER_COOLDOWN_MS` (300000)
 
 **Debug:**
@@ -329,6 +331,7 @@ GEMINI_TOKEN=your_gemini_key
 ALPHA_VANTAGE_API_KEY=your_av_key
 FINNHUB_API_KEY=your_finnhub_key
 NUM_COMPANIES=15
+DEEP_RESEARCH_DEPTH=1
 ```
 
 These give broader sector analysis and better free-tier resilience than the code defaults.

@@ -294,6 +294,41 @@ async function testDeepSectorImmediateDeadlineStillSaves() {
   assert.match(result.data.content, /\(AMD\)[^\n]*\$/);
 }
 
+async function testDeepSectorUsesOneOptionalEcosystemPassWhenBudgetAllows() {
+  let dependencyCalls = 0;
+  const result = await executeTool(
+    'generate_research_report',
+    { sector: 'AI infrastructure stocks', range: '1y', count: 6 },
+    createMockStockService(),
+    {
+      deadlineAt: Date.now() + 240000,
+      async llmFill(prompt) {
+        if (prompt.includes('valid JSON array')) {
+          return JSON.stringify(['NVDA', 'AMD', 'AVGO', 'MSFT', 'AMZN', 'GOOGL']);
+        }
+        if (prompt.includes('deep sector ecosystem analysis')) {
+          dependencyCalls += 1;
+          return JSON.stringify({
+            refinedList: ['NVDA', 'AMD', 'AVGO', 'MSFT', 'AMZN', 'GOOGL'],
+            dependencyAnalysis: '### Supply Chain & Dependencies\n\nGPU, CPU, cloud, and networking companies form the core AI infrastructure stack.',
+            ecosystemDiagram: 'graph LR\n  NVDA-->Cloud\n  AMD-->Cloud',
+            refinementNotes: 'NVDA selected for accelerator leadership\nAMD selected for accelerator alternatives',
+            companySnapshots: {
+              NVDA: 'Accelerator leader in the AI infrastructure stack.',
+              AMD: 'Compute alternative across CPUs and accelerators.',
+            },
+          });
+        }
+        return '{}';
+      },
+    }
+  );
+  await assertSavedReport(result, 'deep-sector');
+  assert.equal(dependencyCalls, 1, 'default deep research depth should perform one optional ecosystem pass when budget allows');
+  assert.match(result.data.content, /Supply Chain & Dependencies/);
+  assert.match(result.data.content, /graph LR/);
+}
+
 async function testComparisonDeadlineStillSaves() {
   const result = await executeTool(
     'generate_comparison_report',
@@ -382,6 +417,7 @@ async function main() {
   await fs.rm(testRoot, { recursive: true, force: true });
   await testDeepSectorDeadlineStillSaves();
   await testDeepSectorImmediateDeadlineStillSaves();
+  await testDeepSectorUsesOneOptionalEcosystemPassWhenBudgetAllows();
   await testComparisonDeadlineStillSaves();
   await testComparisonImmediateDeadlineStillSaves();
   await testWatchlistImmediateDeadlineStillSaves();
