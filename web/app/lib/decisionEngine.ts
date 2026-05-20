@@ -12,7 +12,8 @@
  * 1. Each PILLAR computes a 0–100 score AND a human-readable detail string showing the real data.
  * 2. Pillars are combined via explicit weighted average (weights documented).
  * 3. The summary shows every pillar's score + data so the user sees exactly HOW the decision was made.
- * 4. Missing data reduces CONFIDENCE only, never the score itself.
+ * 4. Missing critical data prevents a buy/add decision. A score is only shown
+ *    when enough core pillars are present to support a real decision.
  */
 import type {
   ActionLabel,
@@ -444,9 +445,12 @@ export function buildDecisionSnapshot(input: DecisionInput): DecisionSnapshot {
 
   const activePillars = pillars.filter(p => p.result !== null);
   const totalWeight = activePillars.reduce((s, p) => s + p.weight, 0);
-  const overallScore = totalWeight > 0
+  const rawOverallScore = totalWeight > 0
     ? activePillars.reduce((s, p) => s + p.result!.score * p.weight, 0) / totalWeight
     : null;
+  const corePillarCount = [profitability, growth, valuation].filter(Boolean).length;
+  const hasMinimumDecisionCoverage = price !== null && corePillarCount >= 2 && totalWeight >= 40;
+  const overallScore = hasMinimumDecisionCoverage ? rawOverallScore : null;
 
   // Legacy sub-scores (for backward compatibility with report generators)
   const qualityScore = profitability?.score ?? null;
@@ -462,7 +466,7 @@ export function buildDecisionSnapshot(input: DecisionInput): DecisionSnapshot {
       : 'aging';
   const staleCritical = freshness === 'stale';
 
-  // ── Missing data (affects confidence only) ──
+  // ── Missing data ──
   const missingInputs: string[] = [];
   if (price === null) missingInputs.push('current price');
   if (!profitability) missingInputs.push('profitability metrics');
@@ -508,7 +512,8 @@ export function buildDecisionSnapshot(input: DecisionInput): DecisionSnapshot {
   // ── Confidence (separate from score — based on data completeness & freshness) ──
   const pillarCoverage = activePillars.length / pillars.length; // 0..1
   const freshnessModifier = staleCritical ? 0.3 : freshness === 'aging' ? 0.7 : 1.0;
-  const confidenceScore = (pillarCoverage * 0.6 + freshnessModifier * 0.4) * 100;
+  const coverageModifier = hasMinimumDecisionCoverage ? 1.0 : 0.45;
+  const confidenceScore = (pillarCoverage * 0.6 + freshnessModifier * 0.4) * 100 * coverageModifier;
   const confidence: ConfidenceLabel = confidenceScore >= 72 ? 'High' : confidenceScore >= 50 ? 'Medium' : 'Low';
 
   // ── whyNow / whyNot (built from pillar metrics) ──
@@ -535,6 +540,15 @@ export function buildDecisionSnapshot(input: DecisionInput): DecisionSnapshot {
   if (staleCritical) {
     whyNot.push(`Critical data is stale: ${(trust?.staleLabels || []).join(', ')}.`);
   }
+  if (!hasMinimumDecisionCoverage) {
+    const missingCore = [
+      price === null ? 'current price' : null,
+      !profitability ? 'profitability' : null,
+      !growth ? 'growth' : null,
+      !valuation ? 'valuation' : null,
+    ].filter(Boolean).join(', ');
+    whyNot.push(`Insufficient verified core data for a buy/sell decision${missingCore ? ` (${missingCore})` : ''}.`);
+  }
   if (ownershipStatus === 'owned' && currentWeight !== null && maxWeight !== null && currentWeight > maxWeight) {
     whyNot.push(`Position ${currentWeight}% exceeds max-weight guardrail ${maxWeight}%.`);
   }
@@ -550,14 +564,16 @@ export function buildDecisionSnapshot(input: DecisionInput): DecisionSnapshot {
   const topPro = whyNow[0] || null;
   const topCon = whyNot[0] || null;
   let leadReason = '';
-  if (topPro && topCon) {
+  if (activePillars.length === 0) {
+    leadReason = ' No reliable live/cached decision pillars were available, so the only defensible action is to wait for fresh inputs rather than force a buy or sell.';
+  } else if (!hasMinimumDecisionCoverage) {
+    leadReason = ' Insufficient verified core data was available, so the only defensible action is to wait for fresh inputs rather than force a buy or sell.';
+  } else if (topPro && topCon) {
     leadReason = ` ${topPro} ${topCon}`;
   } else if (topPro) {
     leadReason = ` ${topPro}`;
   } else if (topCon) {
     leadReason = ` ${topCon}`;
-  } else if (activePillars.length === 0) {
-    leadReason = ' No reliable live/cached decision pillars were available, so the only defensible action is to wait for fresh inputs rather than force a buy or sell.';
   }
   const summary = `${actionToSummaryLabel(action)}.${scoreTag}${leadReason}${pillarLine}`.trim();
 

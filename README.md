@@ -11,7 +11,7 @@ Type a question in plain English and the assistant calls the right data tools, f
 | Mode | How to ask | What you get |
 |---|---|---|
 | **Stock report** | `Generate a stock report for NVDA` | Full deep-dive: price, financials, earnings, insider activity, analyst ratings, technicals (RSI, MACD, Bollinger, Stochastic), dividend analysis, DCF valuation, moat analysis, investment thesis |
-| **Research report** | `Compare NVDA, AMD, INTC` · `Deep research on semiconductors` · `Best dividend stocks` · `Tesla vs Rivian` | Handles any multi-company, sector, theme, industry, or research question. Ecosystem dependency map, universe refinement, full comparison body, multi-pass synthesis |
+| **Research report** | `Compare NVDA, AMD, INTC` · `Deep research on semiconductors` · `Best dividend stocks` · `Tesla vs Rivian` | Handles any multi-company, sector, theme, industry, or research question. Fetches verified core market data first, then adds ecosystem/dependency synthesis when budget allows |
 | **Watchlist daily** | `Generate daily report for my watchlist` | One combined report covering every company in the saved watchlist |
 
 **Transparent decision engine:**
@@ -28,7 +28,7 @@ Every report includes a multi-factor decision for each company, powered by a 7-p
 | Insider Activity | 5% | Net insider buying as % of market cap (no fixed $ thresholds) |
 | Financial Health | 5% | Debt/equity, current ratio, cash flow |
 
-The decision summary shows the **real data behind each score** so you can see exactly how the Buy/Hold/Sell recommendation was reached. Missing data lowers confidence, never the score.
+The decision summary shows the **real data behind each score** so you can see exactly how the Buy/Hold/Sell recommendation was reached. If critical pillars are missing, the engine withholds a buy/add score and waits for verified inputs instead of forcing a decision from one partial signal.
 
 **Additional research tools** (use via natural language questions):
 
@@ -112,7 +112,6 @@ _Note: SEC EDGAR filings (`get_sec_filings`) require no API key — the SEC EDGA
 | Variable | Default | Description |
 |---|---|---|
 | `NUM_COMPANIES` | `10` | Companies in comparison/sector/deep-sector reports. Range: 2–15. |
-| `DEEP_RESEARCH_DEPTH` | `2` | Recursive refinement passes in deep sector research. Range: 1–3. |
 | `DEEP_RESEARCH_MAX_MS` | `240000` on Vercel, `600000` local | Runtime budget for deep research (ms). Vercel is clamped under the 300 s function limit; local can run longer for completeness. |
 | `DATA_FETCH_CONCURRENCY` | `3` | Parallel ticker fetches per report round. Range: 1–4. |
 | `VERCEL_EXTENDED_DATA_MAX_COMPANIES` | `3` | On Vercel, reports larger than this prioritize core decision inputs and cached optional data so free-tier providers do not consume the whole 300 s function window. Local runs still attempt extended data. |
@@ -148,7 +147,6 @@ GEMINI_TOKEN=your_gemini_key
 ALPHA_VANTAGE_API_KEY=your_av_key
 FINNHUB_API_KEY=your_finnhub_key
 NUM_COMPANIES=15
-DEEP_RESEARCH_DEPTH=3
 ```
 
 ### Supabase setup (optional but recommended for Vercel)

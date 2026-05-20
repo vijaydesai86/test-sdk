@@ -3,8 +3,10 @@ All notable changes to this project are recorded here.
 ## [Unreleased]
 ### Changed
 - **Agent operating contract**: `AGENT.md` now captures the standing collaboration rules for discuss-before-change, holistic impact review, local/Vercel parity, truthful-data requirements, LLM/tool fallback discipline, mandatory practical validation, test expectations, docs alignment, and commit/push boundaries.
+- **Deep research execution order**: Deep-sector reports now use one fixed core-data-first pass. They resolve a verified universe, fetch critical market data before optional ecosystem LLM enrichment, and reserve model calls for after a data-backed report body is already possible.
 
 ### Fixed
+- **Wrong or weakly supported report decisions**: Single-stock and watchlist ticker inputs are live-search/validated before market-data fetches, so display names like `TSMC` resolve to official provider tickers. The decision engine no longer turns a single available pillar such as momentum into a buy/add score when core profitability/growth/valuation data is missing.
 - **Vercel deadline report salvage**: Research, sector, comparison, and watchlist reports now keep a minimum saveable path under tight Vercel deadlines instead of returning no artifact after a universe has been identified. Thematic queries such as "Deep research on AI infrastructure stocks" are normalized for provider search, and no-LLM thematic fallback now saves truthful unavailable/partial reports rather than failing outright.
 - **Local/Vercel report artifact parity**: Report download URLs now point to Supabase saved-report IDs when Supabase is configured and to `/api/reports/...` for local filesystem files. Added the missing local report GET/DELETE route and filesystem listing fallback for the Saved tab.
 - **Placeholder environment values treated as missing**: Example values such as `ghp_your_token_here` and `your_*_key_here` are no longer treated as configured GitHub, Gemini, stock-data, FRED, or Supabase credentials.

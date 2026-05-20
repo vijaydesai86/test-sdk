@@ -41,9 +41,9 @@ function parseBoundedEnvInt(name: string, fallback: number, min: number, max: nu
 // Number of companies to include in comparison/sector/deep-sector reports.
 // Clamp to a free-tier-safe ceiling so a bad env value cannot fan out into dozens of API calls.
 const NUM_COMPANIES = parseBoundedEnvInt('NUM_COMPANIES', 10, 2, 15);
-// Number of recursive refinement passes in deep sector research.
-// Deepening beyond 3 passes sharply increases latency without proportional insight on free tier.
-const DEEP_RESEARCH_DEPTH = parseBoundedEnvInt('DEEP_RESEARCH_DEPTH', 2, 1, 3);
+// Keep deep-sector refinement intentionally shallow. Core market data is more
+// valuable than repeated LLM refinement, especially under Vercel's hard runtime.
+const DEEP_RESEARCH_DEPTH = 1;
 // Keep enough headroom under Vercel's overall runtime limit for rendering and persistence work.
 const DEFAULT_DEEP_RESEARCH_MAX_MS = process.env.VERCEL ? 240000 : 600000;
 const MAX_DEEP_RESEARCH_MAX_MS = process.env.VERCEL ? 270000 : 900000;
@@ -105,10 +105,10 @@ function pushDeadlineNote(notes: string[], deadlineAt?: number): boolean {
 function budgetedCompanyLimit(requestedCount: number, deadlineAt?: number): number {
   if (!deadlineAt || !process.env.VERCEL) return requestedCount;
   const remaining = remainingMs(deadlineAt);
-  if (remaining > 210000) return requestedCount;
+  if (remaining > 210000) return Math.min(requestedCount, 8);
   if (remaining > 150000) return Math.min(requestedCount, 8);
   if (remaining > 100000) return Math.min(requestedCount, 6);
-  return Math.min(requestedCount, 4);
+  return Math.min(requestedCount, 3);
 }
 
 async function mapWithConcurrency<T, R>(
@@ -2321,21 +2321,30 @@ export async function executeTool(
         // load.  The caller does batch LLM calls afterward.
         const skipPerCompanyLLM = Boolean(args.skipLLM);
         const coreOnly = Boolean(args.coreOnly);
+        const forceCriticalData = Boolean(args.forceCriticalData);
 
-        // Step 1: LLM resolves the input to the correct official ticker.
-        // LLM is the primary resolver — it maps informal names to official tickers
-        // without needing an API search call.
-        // When skipPerCompanyLLM is set the caller already provides an official ticker.
+        // Resolve to a live provider-confirmed ticker before fetching financials.
+        // Search comes before LLM for company names so a model cannot map a live
+        // company to a stale or unrelated ticker such as an old delisted symbol.
         let symbol: string | undefined;
-        if (skipPerCompanyLLM) {
-          // Caller guarantees the symbol is already an official ticker.
-          const cleaned = normalizeTickerCandidate(symbolQuery);
-          if (cleaned) symbol = cleaned;
-        } else if (hasExchangePrefix(symbolQuery)) {
-          const directTicker = normalizeTickerCandidate(symbolQuery);
-          if (directTicker) symbol = directTicker;
+        let apiResolved: Awaited<ReturnType<typeof resolveSymbolFromQuery>> | undefined;
+        const directTicker = normalizeTickerCandidate(symbolQuery);
+        if (hasExchangePrefix(symbolQuery)) {
+          if (directTicker && await validateResolvedTicker(stockService, directTicker)) {
+            symbol = directTicker;
+          }
+        } else {
+          apiResolved = await resolveSymbolFromQuery(stockService, symbolQuery);
+          const apiTicker = normalizeTickerCandidate((apiResolved as any)?.symbol);
+          if (apiResolved.ok && apiTicker && await validateResolvedTicker(stockService, apiTicker)) {
+            symbol = apiTicker;
+          }
+          if (!symbol && directTicker && await validateResolvedTicker(stockService, directTicker)) {
+            symbol = directTicker;
+          }
         }
-        if (!symbol && options?.llmFill) {
+
+        if (!symbol && !skipPerCompanyLLM && options?.llmFill) {
           const prompt = buildTickerResolutionPrompt([symbolQuery]);
           try {
             const raw = await options.llmFill(prompt);
@@ -2349,21 +2358,15 @@ export async function executeTool(
           }
         }
 
-        // Step 2: LLM couldn't resolve (or not available) — fall back to AV symbol search.
         if (!symbol) {
-          const apiResolved = await resolveSymbolFromQuery(stockService, symbolQuery);
-          if (apiResolved.ok && apiResolved.symbol) {
-            symbol = apiResolved.symbol;
-          } else {
-            const candidates = (apiResolved.candidates || [])
-              .map((item: any) => `${item.name || item.symbol} (${item.symbol})`)
-              .join(', ');
-            return {
-              success: false,
-              error: `Could not resolve "${symbolQuery}". ${candidates ? `Did you mean: ${candidates}?` : 'No matches found.'}`,
-              data: { candidates: apiResolved.candidates || [] },
-            };
-          }
+          const candidates = (apiResolved?.candidates || [])
+            .map((item: any) => `${item.name || item.symbol} (${item.symbol})`)
+            .join(', ');
+          return {
+            success: false,
+            error: `Could not resolve "${symbolQuery}" to a live provider-confirmed ticker. ${candidates ? `Did you mean: ${candidates}?` : 'No matches found.'}`,
+            data: { candidates: apiResolved?.candidates || [] },
+          };
         }
         const range = args.range || '5y';
         const notes: string[] = [];
@@ -2376,7 +2379,13 @@ export async function executeTool(
         const portfolioProfile = watchlist?.profile;
         const previousDecision = await getLatestDecision(symbol).catch(() => null);
         const isRateLimit = (message: string) => isRateLimitError(message);
-        const safeFetch = async <T>(label: string, key: string, request: () => Promise<T>, allowRequest = true) => {
+        const safeFetch = async <T>(
+          label: string,
+          key: string,
+          request: () => Promise<T>,
+          allowRequest = true,
+          allowNearDeadline = false
+        ) => {
           const cachedEntry = getCachedEntry(cache, key);
           const cachedValue = getCachedValue(cache, key);
           const registerTrust = (value: any, fetchedAt: string, provider: string) => {
@@ -2391,7 +2400,12 @@ export async function executeTool(
             registerTrust(cachedValue, cachedEntry?.updatedAt || new Date().toISOString(), provider);
             return cachedValue as T;
           }
-          if (rateLimitHit || !allowRequest || pushDeadlineNote(notes, deadlineAt)) return undefined as T;
+          if (rateLimitHit || !allowRequest) return undefined as T;
+          if (allowNearDeadline) {
+            pushDeadlineNote(notes, deadlineAt);
+          } else if (pushDeadlineNote(notes, deadlineAt)) {
+            return undefined as T;
+          }
           try {
             const result = await request();
             const provider = result && typeof result === 'object' && '__source' in result
@@ -2455,10 +2469,11 @@ export async function executeTool(
             (Array.isArray(stmt.annualReports) && stmt.annualReports.length > 0)
           );
 
-        const price = await safeFetch('Price', 'price', () => stockService.getStockPrice(symbol), hasReportWorkBudget(deadlineAt, 'critical', 1));
-        const rawCompanyOverview = await safeFetch('Company overview', 'overview', () => stockService.getCompanyOverview(symbol), hasReportWorkBudget(deadlineAt, 'critical', 1));
-        const basicFinancials = await safeFetch('Basic financials', 'basicFinancials', () => stockService.getBasicFinancials(symbol), hasReportWorkBudget(deadlineAt, 'critical', 1));
-        const priceHistory = await safeFetch('Price history', `priceHistory:${range}`, () => stockService.getPriceHistory(symbol, range), hasReportWorkBudget(deadlineAt, 'critical', 1));
+        const allowCritical = forceCriticalData || hasReportWorkBudget(deadlineAt, 'critical', 1);
+        const price = await safeFetch('Price', 'price', () => stockService.getStockPrice(symbol), allowCritical, forceCriticalData);
+        const rawCompanyOverview = await safeFetch('Company overview', 'overview', () => stockService.getCompanyOverview(symbol), allowCritical, forceCriticalData);
+        const basicFinancials = await safeFetch('Basic financials', 'basicFinancials', () => stockService.getBasicFinancials(symbol), allowCritical, forceCriticalData);
+        const priceHistory = await safeFetch('Price history', `priceHistory:${range}`, () => stockService.getPriceHistory(symbol, range), allowCritical, forceCriticalData);
         const { overview: companyOverview, notes: overviewNotes } = sanitizeMarketScaledOverview(rawCompanyOverview, price, priceHistory);
         notes.push(...overviewNotes);
         const earningsHistory = await safeFetch('Earnings history', 'earningsHistory', () => stockService.getEarningsHistory(symbol), !coreOnly && hasReportWorkBudget(deadlineAt, 'high', 1));
@@ -2766,31 +2781,31 @@ export async function executeTool(
           request: () => Promise<T>,
           allowRequest = true
         ) => {
-        const cachedValue = getCachedValue(cache, key);
-        if (cachedValue !== null) {
-          if (cachedValue && typeof cachedValue === 'object') {
-            const sourceValue = '__source' in cachedValue
-              ? String((cachedValue as any).__source)
-              : DEFAULT_SOURCE;
-            sourceMap[symbol] = sourceMap[symbol] || {};
-            sourceMap[symbol][label] = sourceValue;
+          const cachedValue = getCachedValue(cache, key);
+          if (cachedValue !== null) {
+            if (cachedValue && typeof cachedValue === 'object') {
+              const sourceValue = '__source' in cachedValue
+                ? String((cachedValue as any).__source)
+                : DEFAULT_SOURCE;
+              sourceMap[symbol] = sourceMap[symbol] || {};
+              sourceMap[symbol][label] = sourceValue;
+            }
+            return cachedValue as T;
           }
-          return cachedValue as T;
-        }
           if (rateLimitHit || !allowRequest) return undefined as T;
           if (pushDeadlineNote(notes, deadlineAt)) return undefined as T;
-        try {
-          const result = await request();
-          if (result && typeof result === 'object') {
-            const sourceValue = '__source' in result ? String((result as any).__source) : DEFAULT_SOURCE;
-            sourceMap[symbol] = sourceMap[symbol] || {};
-            sourceMap[symbol][label] = sourceValue;
-            setCachedValue(cache, key, result, { provider: sourceValue });
-          } else {
-            setCachedValue(cache, key, result);
-          }
-          return result;
-        } catch (error: any) {
+          try {
+            const result = await request();
+            if (result && typeof result === 'object') {
+              const sourceValue = '__source' in result ? String((result as any).__source) : DEFAULT_SOURCE;
+              sourceMap[symbol] = sourceMap[symbol] || {};
+              sourceMap[symbol][label] = sourceValue;
+              setCachedValue(cache, key, result, { provider: sourceValue });
+            } else {
+              setCachedValue(cache, key, result);
+            }
+            return result;
+          } catch (error: any) {
             const message = error?.message || 'Unavailable';
             if (isRateLimit(message)) {
               rateLimitHit = true;
@@ -2801,16 +2816,16 @@ export async function executeTool(
             if (!isSuppressedProviderError(message)) {
               notes.push(`${label}: ${message}`);
             }
-          if (cachedValue && typeof cachedValue === 'object') {
-            const sourceValue = '__source' in cachedValue
-              ? String((cachedValue as any).__source)
-              : DEFAULT_SOURCE;
-            sourceMap[symbol] = sourceMap[symbol] || {};
-            sourceMap[symbol][label] = sourceValue;
+            if (cachedValue && typeof cachedValue === 'object') {
+              const sourceValue = '__source' in cachedValue
+                ? String((cachedValue as any).__source)
+                : DEFAULT_SOURCE;
+              sourceMap[symbol] = sourceMap[symbol] || {};
+              sourceMap[symbol][label] = sourceValue;
+            }
+            return cachedValue !== null ? (cachedValue as T) : (undefined as T);
           }
-          return cachedValue !== null ? (cachedValue as T) : (undefined as T);
-        }
-      };
+        };
         const buildBasicFinancialsFallback = (overview: any) => {
           if (!overview) return undefined;
           const revenue = Number(overview.revenueTTM);
@@ -3093,7 +3108,7 @@ export async function executeTool(
           async (item) => {
             const result = await executeTool(
               'generate_stock_report',
-              { symbol: item.symbol, range, skipSave: true, includeRawData: true, skipLLM: true, coreOnly },
+              { symbol: item.symbol, range, skipSave: true, includeRawData: true, skipLLM: true, coreOnly, forceCriticalData: true },
               stockService,
               options
             );
@@ -3110,7 +3125,7 @@ export async function executeTool(
           const rawData = entry.result.data?.rawData;
           if (entry.result.success && rawData) {
             successfulItems.push({
-              symbol: entry.item.symbol,
+              symbol: entry.result.data?.symbol || entry.item.symbol,
               companyName: entry.item.companyName,
               stock: rawData,
             });
@@ -3130,7 +3145,7 @@ export async function executeTool(
             async (item) => {
               const result = await executeTool(
                 'generate_stock_report',
-              { symbol: item.symbol, range, skipSave: true, includeRawData: true, skipLLM: true, coreOnly },
+              { symbol: item.symbol, range, skipSave: true, includeRawData: true, skipLLM: true, coreOnly, forceCriticalData: true },
               stockService,
               options
             );
@@ -3143,7 +3158,7 @@ export async function executeTool(
             const rawData = entry.result.data?.rawData;
             if (entry.result.success && rawData) {
               successfulItems.push({
-                symbol: entry.item.symbol,
+                symbol: entry.result.data?.symbol || entry.item.symbol,
                 companyName: entry.item.companyName,
                 stock: rawData,
               });
@@ -3333,7 +3348,8 @@ export async function executeTool(
             }
             return cachedValue as T;
           }
-          if (rateLimitHit || !allowRequest || pushDeadlineNote(notes, deadlineAt)) return undefined as T;
+          if (rateLimitHit || !allowRequest) return undefined as T;
+          if (pushDeadlineNote(notes, deadlineAt)) return undefined as T;
           try {
             const result = await request();
             if (result && typeof result === 'object') {
@@ -3757,105 +3773,15 @@ export async function executeTool(
           };
         }
 
-        // ── Phase 2: Fetch lightweight ecosystem data for each candidate ─────────
-        // overview + news sentiment + peers — used by the LLM for dependency analysis.
-        // Uses cache where available; silently skips on error (rate limits, unknown tickers).
-        const ecosystemData: Array<{ symbol: string; overview: any; news: any; peers: any }> = [];
-        if (hasReportWorkBudget(deadlineAt, 'optional', initialCandidates.length)) {
-          for (const sym of initialCandidates) {
-            if (timeBudgetExceeded()) {
-              noteTimeBudget();
-              break;
-            }
-            try {
-              const cache = await loadSymbolCache(sym);
-              const overview =
-                getCachedValue(cache, 'overview') ??
-                await stockService.getCompanyOverview(sym).catch(() => null);
-              const news =
-                hasReportWorkBudget(deadlineAt, 'optional', initialCandidates.length)
-                  ? getCachedValue(cache, 'newsSentiment') ?? await stockService.getNewsSentiment(sym).catch(() => null)
-                  : null;
-              const peers =
-                hasReportWorkBudget(deadlineAt, 'optional', initialCandidates.length)
-                  ? getCachedValue(cache, 'peers') ?? await stockService.getPeers(sym).catch(() => null)
-                  : null;
-              // Persist anything freshly fetched back to cache (best-effort).
-              const updated = await loadSymbolCache(sym);
-              if (overview && !getCachedValue(updated, 'overview')) {
-                setCachedValue(updated, 'overview', overview);
-                await saveSymbolCache(sym, updated).catch(() => {});
-              }
-              ecosystemData.push({ symbol: sym, overview, news, peers });
-            } catch {
-              ecosystemData.push({ symbol: sym, overview: null, news: null, peers: null });
-            }
-          }
-        }
-
-        // ── Phase 3: LLM builds dependency analysis and refines the list ─────────
-        // Runs DEEP_RESEARCH_DEPTH times. Each pass feeds the prior analysis as context
-        // so the LLM progressively deepens its insights and further refines the universe.
-        let universe: string[] = [];
+        // Vercel/local priority: lock a saveable universe and fetch market data
+        // before any optional ecosystem/refinement LLM work.
+        const universe = initialCandidates.slice(0, finalCount);
         let dependencyAnalysis: string | undefined;
         let ecosystemDiagram: string | undefined;
         let refinementNotes: string | undefined;
         let companySnapshots: Record<string, string> | undefined;
-        let previousPass: DeepSectorPassContext | undefined;
 
-        for (let passIndex = 0; passIndex < DEEP_RESEARCH_DEPTH; passIndex++) {
-          if (timeBudgetExceeded()) {
-            noteTimeBudget();
-            break;
-          }
-          if (!options?.llmFill || !hasReportLLMBudget(deadlineAt) || !hasReportWorkBudget(deadlineAt, 'optional', initialCandidates.length)) {
-            noteTimeBudget();
-            break;
-          }
-          const depPrompt = buildDeepSectorDependencyPrompt(resolverSector, finalCount, ecosystemData, previousPass);
-          try {
-            const raw = await options.llmFill(depPrompt);
-            const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
-            const parsed = JSON.parse(cleaned);
-            if (parsed && typeof parsed === 'object') {
-              let passUniverse: string[] = universe;
-              if (Array.isArray(parsed.refinedList)) {
-                passUniverse = parsed.refinedList
-                  .map((t: any) => String(t || '').replace(/[^A-Z0-9.]/gi, '').toUpperCase())
-                  .filter((t: string) => t.length > 0)
-                  .slice(0, finalCount);
-                if (passUniverse.length >= 2) universe = passUniverse;
-              }
-              if (typeof parsed.dependencyAnalysis === 'string') {
-                dependencyAnalysis = parsed.dependencyAnalysis;
-              }
-              if (typeof parsed.ecosystemDiagram === 'string') {
-                ecosystemDiagram = parsed.ecosystemDiagram;
-              }
-              if (typeof parsed.refinementNotes === 'string') {
-                refinementNotes = parsed.refinementNotes;
-              }
-              if (parsed.companySnapshots && typeof parsed.companySnapshots === 'object' && !Array.isArray(parsed.companySnapshots)) {
-                companySnapshots = {};
-                for (const [k, v] of Object.entries(parsed.companySnapshots)) {
-                  if (typeof v === 'string') companySnapshots[k.replace(/[^A-Z0-9.]/gi, '').toUpperCase()] = v;
-                }
-              }
-              // Carry this pass's output forward as context for the next pass
-              previousPass = { dependencyAnalysis, ecosystemDiagram, refinementNotes, companySnapshots, universe, passIndex };
-            }
-          } catch {
-            // Pass failed — stop recursion and use what we have so far
-            break;
-          }
-        }
-
-        // Fall back to the initial list if refinement failed
-        if (universe.length < 2) {
-          universe = initialCandidates.slice(0, finalCount);
-        }
-
-        // ── Phase 4: Fetch full comparison data for the refined universe ──────────
+        // ── Phase 2: Fetch full comparison data for the locked universe ──────────
         const notes: string[] = [
           `Universe refined through deep sector analysis (${DEEP_RESEARCH_DEPTH} pass${DEEP_RESEARCH_DEPTH > 1 ? 'es' : ''}) for: "${sector}"`,
           `Initial candidates: ${initialCandidates.join(', ')}`,
@@ -3872,6 +3798,7 @@ export async function executeTool(
         if (!fetchExtendedData) {
           notes.push('Large-report Vercel mode: prioritized core decision inputs and cached optional sections to stay within free-tier limits.');
         }
+        const minimumCoreSymbols = new Set(universe.slice(0, Math.min(2, universe.length)));
         let rateLimitHit = false;
         const isRateLimit = (message: string) => isRateLimitError(message);
         const safeFetch = async <T>(
@@ -3880,7 +3807,8 @@ export async function executeTool(
           label: string,
           key: string,
           request: () => Promise<T>,
-          allowRequest = true
+          allowRequest = true,
+          allowNearDeadline = false
         ) => {
           const cachedValue = getCachedValue(cache, key);
           if (cachedValue !== null) {
@@ -3893,7 +3821,12 @@ export async function executeTool(
             }
             return cachedValue as T;
           }
-          if (rateLimitHit || !allowRequest || pushDeadlineNote(notes, deadlineAt)) return undefined as T;
+          if (rateLimitHit || !allowRequest) return undefined as T;
+          if (allowNearDeadline) {
+            pushDeadlineNote(notes, deadlineAt);
+          } else if (pushDeadlineNote(notes, deadlineAt)) {
+            return undefined as T;
+          }
           try {
             const result = await request();
             if (result && typeof result === 'object') {
@@ -3971,7 +3904,8 @@ export async function executeTool(
           universe,
           DATA_FETCH_CONCURRENCY,
           async (symbol) => {
-            if (timeBudgetExceeded()) {
+            const forceCoreFetch = minimumCoreSymbols.has(symbol);
+            if (timeBudgetExceeded() && !forceCoreFetch) {
               noteTimeBudget();
               return {
                 symbol,
@@ -3993,10 +3927,11 @@ export async function executeTool(
             }
             const cache = await loadSymbolCache(symbol);
             const companyCount = universe.length;
-            const price = await safeFetch(symbol, cache, 'Price', 'price', () => stockService.getStockPrice(symbol), hasReportWorkBudget(deadlineAt, 'critical', companyCount));
-            const overview = await safeFetch(symbol, cache, 'Company overview', 'overview', () => stockService.getCompanyOverview(symbol), hasReportWorkBudget(deadlineAt, 'critical', companyCount));
-            const basicFinancials = await safeFetch(symbol, cache, 'Basic financials', 'basicFinancials', () => stockService.getBasicFinancials(symbol), hasReportWorkBudget(deadlineAt, 'critical', companyCount));
-            const priceHistory = await safeFetch(symbol, cache, 'Price history', `priceHistory:${range}`, () => stockService.getPriceHistory(symbol, range), hasReportWorkBudget(deadlineAt, 'critical', companyCount));
+            const allowCritical = forceCoreFetch || hasReportWorkBudget(deadlineAt, 'critical', companyCount);
+            const price = await safeFetch(symbol, cache, 'Price', 'price', () => stockService.getStockPrice(symbol), allowCritical, forceCoreFetch);
+            const overview = await safeFetch(symbol, cache, 'Company overview', 'overview', () => stockService.getCompanyOverview(symbol), allowCritical, forceCoreFetch);
+            const basicFinancials = await safeFetch(symbol, cache, 'Basic financials', 'basicFinancials', () => stockService.getBasicFinancials(symbol), allowCritical, forceCoreFetch);
+            const priceHistory = await safeFetch(symbol, cache, 'Price history', `priceHistory:${range}`, () => stockService.getPriceHistory(symbol, range), allowCritical, forceCoreFetch);
             const incomeStatement = await safeFetch(symbol, cache, 'Income statement', 'incomeStatement', () => stockService.getIncomeStatement(symbol), fetchExtendedData && hasReportWorkBudget(deadlineAt, 'high', companyCount));
             const balanceSheet = await safeFetch(symbol, cache, 'Balance sheet', 'balanceSheet', () => stockService.getBalanceSheet(symbol), fetchExtendedData && hasReportWorkBudget(deadlineAt, 'high', companyCount));
             const cashFlow = await safeFetch(symbol, cache, 'Cash flow', 'cashFlow', () => stockService.getCashFlow(symbol), fetchExtendedData && hasReportWorkBudget(deadlineAt, 'high', companyCount));
@@ -4093,6 +4028,42 @@ export async function executeTool(
 
         if (items.length === 0) {
           return { success: false, error: 'Could not collect enough data before the runtime deadline to build a deep sector report.' };
+        }
+
+        // Optional single-pass ecosystem analysis. This runs only after a
+        // data-backed report body is already possible.
+        if (options?.llmFill && items.length > 0 && hasReportLLMBudget(deadlineAt) && hasReportWorkBudget(deadlineAt, 'optional', items.length)) {
+          try {
+            const ecosystemData = items.map((item) => ({
+              symbol: item.symbol,
+              overview: item.overview,
+              news: item.newsSentiment,
+              peers: item.peers,
+            }));
+            const depPrompt = buildDeepSectorDependencyPrompt(resolverSector, items.length, ecosystemData);
+            const raw = await options.llmFill(depPrompt);
+            const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+            const parsed = JSON.parse(cleaned);
+            if (parsed && typeof parsed === 'object') {
+              if (typeof parsed.dependencyAnalysis === 'string') {
+                dependencyAnalysis = parsed.dependencyAnalysis;
+              }
+              if (typeof parsed.ecosystemDiagram === 'string') {
+                ecosystemDiagram = parsed.ecosystemDiagram;
+              }
+              if (typeof parsed.refinementNotes === 'string') {
+                refinementNotes = parsed.refinementNotes;
+              }
+              if (parsed.companySnapshots && typeof parsed.companySnapshots === 'object' && !Array.isArray(parsed.companySnapshots)) {
+                companySnapshots = {};
+                for (const [k, v] of Object.entries(parsed.companySnapshots)) {
+                  if (typeof v === 'string') companySnapshots[k.replace(/[^A-Z0-9.]/gi, '').toUpperCase()] = v;
+                }
+              }
+            }
+          } catch {
+            // Optional ecosystem analysis failed or hit a model limit; keep the data-backed report.
+          }
         }
 
         // LLM batch moat analysis for the refined deep sector universe (single call)

@@ -23,6 +23,7 @@ const COMPANIES = {
   AMZN: { name: 'Amazon.com Inc', sector: 'Consumer Cyclical', industry: 'Internet Retail' },
   GOOGL: { name: 'Alphabet Inc', sector: 'Communication Services', industry: 'Internet Content' },
   TSM: { name: 'TSMC Taiwan Semiconductor Manufacturing Company', sector: 'Technology', industry: 'Semiconductors' },
+  ARM: { name: 'Arm Holdings PLC', sector: 'Technology', industry: 'Semiconductors' },
 };
 
 function numericSeed(symbol) {
@@ -41,6 +42,13 @@ function searchRecord(symbol) {
 }
 
 function overviewFor(symbol) {
+  if (symbol === 'ARMH') {
+    return {
+      symbol: 'ARMH',
+      name: 'ARMH',
+      __source: 'Mock',
+    };
+  }
   if (symbol === 'TSM') {
     return {
       symbol: 'TSM',
@@ -138,6 +146,7 @@ function historyFor(symbol) {
 }
 
 function basicFinancialsFor(symbol) {
+  if (symbol === 'ARMH') return { symbol, metric: {}, series: {}, __source: 'Mock' };
   return {
     symbol,
     metric: {
@@ -163,6 +172,9 @@ function createMockStockService() {
       const normalized = String(query || '').toUpperCase().replace(/[^A-Z0-9.]/g, '');
       if (/AI|INFRASTRUCTURE|SEMICONDUCTOR|DATA/.test(normalized)) {
         return { results: ['NVDA', 'AMD', 'AVGO', 'MSFT', 'AMZN', 'GOOGL'].map(searchRecord), __source: 'Mock' };
+      }
+      if (normalized === 'ARMHOLDINGS' || normalized === 'ARMHOLDINGSPLC') {
+        return { results: [searchRecord('ARM')], __source: 'Mock' };
       }
       if (normalized === 'TSMC') {
         return { results: [searchRecord('TSM')], __source: 'Mock' };
@@ -256,6 +268,8 @@ async function testDeepSectorDeadlineStillSaves() {
   assert.equal(llmCalls, 0, 'tight budget should skip thematic LLM refinement');
   assert.match(result.data.content, /Vercel budget prioritized|Time budget reached|runtime budget/i);
   assert.match(result.data.content, /NVDA|AMD/);
+  assert.match(result.data.content, /\(NVDA\)[^\n]*\$/);
+  assert.match(result.data.content, /\(AMD\)[^\n]*\$/);
 }
 
 async function testDeepSectorImmediateDeadlineStillSaves() {
@@ -276,6 +290,8 @@ async function testDeepSectorImmediateDeadlineStillSaves() {
   assert.equal(llmCalls, 0, 'immediate deadline should not spend time on LLM refinement');
   assert.match(result.data.content, /Vercel budget|Time budget reached|runtime budget/i);
   assert.match(result.data.content, /NVDA|AMD/);
+  assert.match(result.data.content, /\(NVDA\)[^\n]*\$/);
+  assert.match(result.data.content, /\(AMD\)[^\n]*\$/);
 }
 
 async function testComparisonDeadlineStillSaves() {
@@ -310,6 +326,8 @@ async function testWatchlistImmediateDeadlineStillSaves() {
   );
   await assertSavedReport(result, 'watchlist-daily');
   assert.match(result.data.content, /Partial Coverage|Position Guidance/i);
+  assert.match(result.data.content, /Taiwan Semiconductor Manufacturing Company \(TSM\)|TSM \(TSM\)/);
+  assert.doesNotMatch(result.data.content, /TSMC \(TSMC\)/);
 }
 
 async function testTsmMixedScaleFieldsAreSuppressed() {
@@ -329,6 +347,37 @@ async function testTsmMixedScaleFieldsAreSuppressed() {
   assert.match(result.data.content, /Provider market capitalization was inconsistent/);
 }
 
+async function testLiveSearchBeatsWrongLlmTicker() {
+  let llmCalls = 0;
+  const result = await executeTool(
+    'generate_stock_report',
+    { symbol: 'Arm Holdings', range: '1y', skipSave: true, includeRawData: true, skipLLM: true, coreOnly: true },
+    createMockStockService(),
+    {
+      async llmFill() {
+        llmCalls += 1;
+        return JSON.stringify({ 'Arm Holdings': 'ARMH' });
+      },
+    }
+  );
+  assert.equal(result.success, true, result.error || 'stock report failed');
+  assert.equal(result.data.symbol, 'ARM');
+  assert.equal(llmCalls, 0, 'live provider search should resolve company names before model fallback');
+}
+
+async function testSinglePillarMomentumCannotForceBuy() {
+  const result = await executeTool(
+    'generate_stock_report',
+    { symbol: 'ARMH', range: '1y', skipSave: true, includeRawData: true, coreOnly: true },
+    createMockStockService(),
+    {}
+  );
+  assert.equal(result.success, true, result.error || 'stock report failed');
+  assert.equal(result.data.decisionSnapshot.action, 'Wait');
+  assert.equal(result.data.decisionSnapshot.overallScore, null);
+  assert.match(result.data.decisionSnapshot.summary, /Insufficient verified core data/i);
+}
+
 async function main() {
   await fs.rm(testRoot, { recursive: true, force: true });
   await testDeepSectorDeadlineStillSaves();
@@ -337,6 +386,8 @@ async function main() {
   await testComparisonImmediateDeadlineStillSaves();
   await testWatchlistImmediateDeadlineStillSaves();
   await testTsmMixedScaleFieldsAreSuppressed();
+  await testLiveSearchBeatsWrongLlmTicker();
+  await testSinglePillarMomentumCannotForceBuy();
   await fs.rm(testRoot, { recursive: true, force: true });
   console.log('report deadline smoke tests passed');
 }

@@ -177,7 +177,7 @@ User message
 6. `saveReport()` persists to Supabase or filesystem.
 7. Report artifact is returned to the chat UI.
 
-Deep-sector research adds two more phases before step 4: Phase 2 fetches overview + news for each candidate company in parallel; Phase 3 calls `buildDeepSectorDependencyPrompt` to map ecosystem dependencies, produce a Mermaid diagram, and refine the candidate list (repeated `DEEP_RESEARCH_DEPTH` times).
+Deep-sector research is fixed at one core-data-first refinement pass. It resolves a live provider-confirmed universe, locks the saveable company list, fetches critical market data (price, overview, basic financials, price history) before optional ecosystem/dependency LLM enrichment, and never spends model calls refining a universe before a data-backed report body is possible.
 
 ---
 
@@ -204,6 +204,7 @@ TWELVE_DATA_API_KEY     →  TwelveDataService
 - Disk cache at `CACHE_DIR` (inside `REPORTS_DIR`) with `STOCK_CACHE_TTL_MS` TTL (default 7 days) prevents redundant API calls across report runs.
 - Vercel report generation must spend time in priority order: critical decision inputs first, high-value enrichment second, optional context third, LLM narration/refinement only when enough time remains to render and save the report.
 - Local report generation should not use Vercel deadline truncation; it should try to collect the full configured data set while still respecting provider throttles/cooldowns.
+- Single-stock and watchlist ticker inputs must be resolved through live provider search/validation before fetching market data. Display symbols or informal names (for example company names stored in a watchlist) must not be assumed to be official tickers.
 
 ### Standalone services (not part of StockDataService interface)
 
@@ -299,7 +300,6 @@ See `web/.env.example` for annotated defaults. All variables prefixed with `STOC
 
 **Scaling:**
 - `NUM_COMPANIES` — companies per sector/comparison report (2–15, default 10)
-- `DEEP_RESEARCH_DEPTH` — recursive refinement passes (1–3, default 2)
 - `DEEP_RESEARCH_MAX_MS` — deep-research runtime budget in ms (default 240000)
 - `DATA_FETCH_CONCURRENCY` — parallel ticker fetches (1–4, default 3)
 - `VERCEL_EXTENDED_DATA_MAX_COMPANIES` — on Vercel, large reports prioritize core decision inputs and cached optional sections
@@ -329,7 +329,6 @@ GEMINI_TOKEN=your_gemini_key
 ALPHA_VANTAGE_API_KEY=your_av_key
 FINNHUB_API_KEY=your_finnhub_key
 NUM_COMPANIES=15
-DEEP_RESEARCH_DEPTH=3
 ```
 
 These give broader sector analysis and better free-tier resilience than the code defaults.
@@ -400,7 +399,7 @@ The decision engine produces a `DecisionSnapshot` for every company analysed. It
 
 ### 7-pillar scoring model
 
-Each pillar returns a 0–100 score **and** a human-readable detail string showing the real numbers behind the score. Missing data makes a pillar return `null` — its weight is redistributed to available pillars, and overall confidence is lowered rather than the score being penalised.
+Each pillar returns a 0–100 score **and** a human-readable detail string showing the real numbers behind the score. Missing data makes a pillar return `null`. A buy/add score is only shown when enough verified core decision coverage exists: current price plus at least two of profitability, growth, and valuation with at least 40% total pillar weight. If coverage is weaker, the engine waits for verified inputs instead of forcing a decision from one partial signal.
 
 | Pillar | Weight | Inputs | Rationale |
 |---|---|---|---|
