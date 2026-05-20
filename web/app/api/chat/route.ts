@@ -69,6 +69,17 @@ const REPORT_TOOL_NAMES = new Set([
   'generate_watchlist_daily_report',
 ]);
 
+type ReportArtifact = {
+  filename: string;
+  content: string;
+  downloadUrl: string;
+  title?: string;
+  summary?: string;
+  reportDate?: string;
+  reportKind?: string;
+  storagePath?: string;
+};
+
 type LLMFailureAttempt = {
   provider: RuntimeLLMProvider;
   model: string;
@@ -294,6 +305,56 @@ function isSmallContextModel(model?: string | null): boolean {
 function isToolCallLike(content: string | null | undefined): boolean {
   if (!content) return false;
   return /"name"\s*:\s*"functions\./.test(content) || /"arguments"\s*:\s*\{/.test(content);
+}
+
+function toReportArtifact(toolResult: any): ReportArtifact | null {
+  const data = toolResult?.data;
+  if (!toolResult?.success || !data?.filename || !data?.content) return null;
+  return {
+    filename: data.filename as string,
+    content: data.content as string,
+    downloadUrl: data.downloadUrl as string,
+    title: data.title as string | undefined,
+    summary: data.summary as string | undefined,
+    reportDate: data.reportDate as string | undefined,
+    reportKind: data.reportKind as string | undefined,
+    storagePath: data.storagePath as string | undefined,
+  };
+}
+
+function getTopSearchSymbol(toolResult: any): string | undefined {
+  const first = toolResult?.data?.results?.[0] ?? toolResult?.data?.bestMatches?.[0];
+  const symbol = first?.symbol ?? first?.['1. symbol'];
+  return typeof symbol === 'string' && symbol.trim() ? symbol.trim().toUpperCase() : undefined;
+}
+
+function inferReportFallback(userMessage: string, resolvedSymbol?: string): { toolName: string; args: Record<string, any> } | null {
+  const text = userMessage.trim();
+  if (!text) return null;
+  const lower = text.toLowerCase();
+
+  if (/\bwatchlist\b|\bdaily report\b|\bportfolio pulse\b/.test(lower)) {
+    return { toolName: 'generate_watchlist_daily_report', args: { range: '1y' } };
+  }
+
+  const multiIntent = /\b(compare|comparison|vs\.?|versus|sector|theme|industry|industries|deep research|best|top|basket|stocks|companies)\b/i.test(text);
+  if (multiIntent) {
+    return { toolName: 'generate_research_report', args: { sector: text, range: '1y' } };
+  }
+
+  const singleReportIntent = /\b(stock report|report on|report for|research on|deep dive on|comprehensive report)\b/i.test(text);
+  if (singleReportIntent) {
+    return {
+      toolName: 'generate_stock_report',
+      args: {
+        symbol: resolvedSymbol || text,
+        range: '5y',
+        ...(resolvedSymbol ? { skipLLM: true } : {}),
+      },
+    };
+  }
+
+  return null;
 }
 
 function buildFallbackModels(requestedModel: string, extraModels: string[] = []): string[] {
@@ -844,7 +905,8 @@ export async function POST(request: NextRequest) {
     let assistantContent: string | null = null;
     let toolDefinitionsUsed = toolDefinitions;
     const llmFailureAttempts: LLMFailureAttempt[] = [];
-    const reportArtifacts: Array<{ filename: string; content: string; downloadUrl: string; title?: string; summary?: string; reportDate?: string; reportKind?: string; storagePath?: string }> = [];
+    const reportArtifacts: ReportArtifact[] = [];
+    let lastResolvedSearchSymbol: string | undefined;
      const executionStrategies = await buildLLMExecutionStrategies(
        activeProvider,
        requestedModel,
@@ -923,9 +985,29 @@ export async function POST(request: NextRequest) {
 
     while (rounds < MAX_TOOL_ROUNDS) {
       if (isRouteDeadlineNear(requestDeadlineAt, LLM_REQUEST_TIMEOUT_MS + VERCEL_INTERNAL_DEADLINE_BUFFER_MS)) {
+        if (reportArtifacts.length === 0) {
+          const fallback = inferReportFallback(String(message), lastResolvedSearchSymbol);
+          if (fallback && !isRouteDeadlineNear(requestDeadlineAt, VERCEL_INTERNAL_DEADLINE_BUFFER_MS + 5000)) {
+            try {
+              const fallbackResult = await executeTool(
+                fallback.toolName,
+                { ...fallback.args, sessionId: currentSessionId },
+                stockService,
+                {
+                  llmFill: createLLMFiller(githubToken, geminiToken, requestDeadlineAt),
+                  deadlineAt: requestDeadlineAt,
+                }
+              );
+              const artifact = REPORT_TOOL_NAMES.has(fallback.toolName) ? toReportArtifact(fallbackResult) : null;
+              if (artifact) reportArtifacts.push(artifact);
+            } catch (error) {
+              console.warn('Deadline report fallback failed:', summarizeErrorMessage(error));
+            }
+          }
+        }
         assistantContent = reportArtifacts.length > 0
-          ? 'The report was saved before the Vercel runtime deadline. I skipped the final narrative response to avoid a function timeout.'
-          : 'The request reached the Vercel runtime budget before another model call could be started.';
+          ? 'The report has been saved. I skipped the final model narration on Vercel so the request returns before the 300 second hard timeout.'
+          : 'I could not safely finish the report before the Vercel runtime deadline. No report was saved; please retry the same request.';
         break;
       }
       rounds++;
@@ -1040,26 +1122,21 @@ export async function POST(request: NextRequest) {
               llmFill: loopLLMFill,
               deadlineAt: requestDeadlineAt,
             });
+            if (toolName === 'search_stock' && toolResult.success) {
+              lastResolvedSearchSymbol = getTopSearchSymbol(toolResult) || lastResolvedSearchSymbol;
+            }
             // Collect report artifacts; strip full content from model response to avoid echoing
-            if (REPORT_TOOL_NAMES.has(toolName) && toolResult.success && toolResult.data?.filename && toolResult.data?.content) {
-              reportArtifacts.push({
-                filename: toolResult.data.filename as string,
-                content: toolResult.data.content as string,
-                downloadUrl: toolResult.data.downloadUrl as string,
-                title: toolResult.data.title as string | undefined,
-                summary: toolResult.data.summary as string | undefined,
-                reportDate: toolResult.data.reportDate as string | undefined,
-                reportKind: toolResult.data.reportKind as string | undefined,
-                storagePath: toolResult.data.storagePath as string | undefined,
-              });
+            const artifact = REPORT_TOOL_NAMES.has(toolName) ? toReportArtifact(toolResult) : null;
+            if (artifact) {
+              reportArtifacts.push(artifact);
               return {
                 role: 'tool' as const,
                 tool_call_id: toolCall.id,
                 content: JSON.stringify({
                   success: true,
-                  message: `Report saved to Artifacts panel: ${toolResult.data.filename}`,
-                  filename: toolResult.data.filename,
-                  downloadUrl: toolResult.data.downloadUrl,
+                  message: `Report saved to Artifacts panel: ${artifact.filename}`,
+                  filename: artifact.filename,
+                  downloadUrl: artifact.downloadUrl,
                 }),
               };
             }
