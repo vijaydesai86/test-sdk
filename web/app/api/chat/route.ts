@@ -49,6 +49,9 @@ const TOOL_RESULT_MAX_STRING = 500;
 // to the next model instead. Default: 60s. Override via LLM_REQUEST_TIMEOUT_MS.
 const DEFAULT_LLM_REQUEST_TIMEOUT_MS = process.env.VERCEL ? 60000 : 90000;
 const LLM_REQUEST_TIMEOUT_MS = Number(process.env.LLM_REQUEST_TIMEOUT_MS || DEFAULT_LLM_REQUEST_TIMEOUT_MS);
+const VERCEL_FUNCTION_TIMEOUT_MS = Number(process.env.VERCEL_FUNCTION_TIMEOUT_MS || 300000);
+const VERCEL_INTERNAL_DEADLINE_BUFFER_MS = Number(process.env.VERCEL_INTERNAL_DEADLINE_BUFFER_MS || 25000);
+const VERCEL_REQUEST_DEADLINE_MS = Math.max(60000, VERCEL_FUNCTION_TIMEOUT_MS - VERCEL_INTERNAL_DEADLINE_BUFFER_MS);
 
 const RATE_LIMIT_GUIDANCE =
   'This model allows 50 requests per day. ' +
@@ -57,6 +60,14 @@ const RATE_LIMIT_GUIDANCE =
 const MODEL_COOLDOWN_MS = Number(process.env.LLM_MODEL_COOLDOWN_MS || 120000);
 const modelCooldowns = new Map<string, number>();
 const invalidModels = new Set<string>();
+const REPORT_TOOL_NAMES = new Set([
+  'generate_stock_report',
+  'generate_comparison_report',
+  'generate_sector_report',
+  'generate_research_report',
+  'generate_deep_sector_report',
+  'generate_watchlist_daily_report',
+]);
 
 function parseRetryAfterMs(headerValue: string | null): number | undefined {
   if (!headerValue) return undefined;
@@ -91,6 +102,15 @@ function isModelCoolingDown(modelId: string): boolean {
 function markModelCooldown(modelId: string, retryAfterMs?: number) {
   const cooldown = retryAfterMs && retryAfterMs > 0 ? retryAfterMs : MODEL_COOLDOWN_MS;
   modelCooldowns.set(modelId, Date.now() + cooldown);
+}
+
+function routeRemainingMs(deadlineAt?: number): number {
+  if (!deadlineAt) return Number.POSITIVE_INFINITY;
+  return deadlineAt - Date.now();
+}
+
+function isRouteDeadlineNear(deadlineAt?: number, bufferMs = VERCEL_INTERNAL_DEADLINE_BUFFER_MS): boolean {
+  return routeRemainingMs(deadlineAt) <= bufferMs;
 }
 
 // Vercel: allow up to 5 minutes for deep research requests
@@ -672,7 +692,10 @@ async function callLLMForDataFill(
   prompt: string,
   githubToken: string | undefined,
   geminiToken: string | undefined,
+  deadlineAt?: number,
 ): Promise<string> {
+  if (isRouteDeadlineNear(deadlineAt, LLM_REQUEST_TIMEOUT_MS + 5000)) return '{}';
+
   const fillMessages: ChatMessage[] = [
     {
       role: 'system',
@@ -718,6 +741,7 @@ async function callLLMForDataFill(
 
   // Try each strategy in order; on retriable errors (429, 5xx), wait and try next
   for (let i = 0; i < strategies.length; i++) {
+    if (isRouteDeadlineNear(deadlineAt, LLM_REQUEST_TIMEOUT_MS + 5000)) return '{}';
     try {
       const content = await strategies[i]();
       if (content && content !== '{}') return content;
@@ -726,7 +750,7 @@ async function callLLMForDataFill(
     } catch (err: any) {
       console.info(`[callLLMForDataFill] Strategy ${i + 1}/${strategies.length} failed: ${err?.message || err}`);
       if (err?.statusCode === 429 || (err?.statusCode >= 500 && err?.statusCode <= 503)) {
-        const delayMs = Math.min(err?.retryAfterMs ?? 2000, 10000);
+        const delayMs = Math.min(err?.retryAfterMs ?? 2000, 10000, Math.max(0, routeRemainingMs(deadlineAt) - VERCEL_INTERNAL_DEADLINE_BUFFER_MS));
         await new Promise((resolve) => setTimeout(resolve, delayMs));
       }
       // Continue to next strategy
@@ -740,13 +764,15 @@ async function callLLMForDataFill(
 function createLLMFiller(
   githubToken: string | undefined,
   geminiToken: string | undefined,
+  deadlineAt?: number,
 ): LLMFiller | undefined {
   if (!githubToken && !geminiToken) return undefined;
-  return (prompt: string) => callLLMForDataFill(prompt, githubToken, geminiToken);
+  return (prompt: string) => callLLMForDataFill(prompt, githubToken, geminiToken, deadlineAt);
 }
 
 export async function POST(request: NextRequest) {
   const activeProvider: RuntimeLLMProvider | null = null;
+  const requestDeadlineAt = process.env.VERCEL ? Date.now() + VERCEL_REQUEST_DEADLINE_MS : undefined;
 
   try {
     const body = await request.json();
@@ -906,6 +932,12 @@ export async function POST(request: NextRequest) {
     };
 
     while (rounds < MAX_TOOL_ROUNDS) {
+      if (isRouteDeadlineNear(requestDeadlineAt, LLM_REQUEST_TIMEOUT_MS + VERCEL_INTERNAL_DEADLINE_BUFFER_MS)) {
+        assistantContent = reportArtifacts.length > 0
+          ? 'The report was saved before the Vercel runtime deadline. I skipped the final narrative response to avoid a function timeout.'
+          : 'The request reached the Vercel runtime budget before another model call could be started.';
+        break;
+      }
       rounds++;
       let result: any;
       let attempt = 0;
@@ -981,17 +1013,17 @@ export async function POST(request: NextRequest) {
       // If the model wants to call tools, execute all of them in parallel
       if (assistantMessage.tool_calls && assistantMessage.tool_calls.length > 0) {
         totalToolCalls += assistantMessage.tool_calls.length;
-        const loopLLMFill = createLLMFiller(githubToken, geminiToken);
+        const loopLLMFill = createLLMFiller(githubToken, geminiToken, requestDeadlineAt);
         const toolResults = await Promise.all(
           assistantMessage.tool_calls.map(async (toolCall: { id: string; function: { name: string; arguments: string } }) => {
             const toolName = toolCall.function.name;
             const toolArgs = JSON.parse(toolCall.function.arguments);
-            const toolResult = await executeTool(toolName, { ...toolArgs, sessionId: currentSessionId }, stockService, { llmFill: loopLLMFill });
+            const toolResult = await executeTool(toolName, { ...toolArgs, sessionId: currentSessionId }, stockService, {
+              llmFill: loopLLMFill,
+              deadlineAt: requestDeadlineAt,
+            });
             // Collect report artifacts; strip full content from model response to avoid echoing
-            if (
-              (toolName === 'generate_stock_report' || toolName === 'generate_research_report' || toolName === 'generate_watchlist_daily_report') &&
-              toolResult.success && toolResult.data?.filename && toolResult.data?.content
-            ) {
+            if (REPORT_TOOL_NAMES.has(toolName) && toolResult.success && toolResult.data?.filename && toolResult.data?.content) {
               reportArtifacts.push({
                 filename: toolResult.data.filename as string,
                 content: toolResult.data.content as string,
@@ -1021,6 +1053,10 @@ export async function POST(request: NextRequest) {
           })
         );
         conversationMessages.push(...toolResults);
+        if (process.env.VERCEL && reportArtifacts.length > 0) {
+          assistantContent = 'The report has been saved. I skipped the final model narration on Vercel so the request returns before the 300 second hard timeout.';
+          break;
+        }
         // Continue the loop so the model can process tool results
         continue;
       }

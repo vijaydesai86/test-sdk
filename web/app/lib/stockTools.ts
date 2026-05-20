@@ -56,21 +56,46 @@ const DEEP_RESEARCH_MAX_MS = parseBoundedEnvInt(
 // Bound parallel fetch fan-out so one request cannot overwhelm free-tier provider quotas.
 const DATA_FETCH_CONCURRENCY = parseBoundedEnvInt('DATA_FETCH_CONCURRENCY', 3, 1, 4);
 const VERCEL_EXTENDED_DATA_MAX_COMPANIES = parseBoundedEnvInt('VERCEL_EXTENDED_DATA_MAX_COMPANIES', 3, 1, 15);
+const VERCEL_REPORT_RETURN_BUFFER_MS = parseBoundedEnvInt('VERCEL_REPORT_RETURN_BUFFER_MS', 25000, 5000, 120000);
+const VERCEL_REPORT_LLM_MIN_REMAINING_MS = parseBoundedEnvInt('VERCEL_REPORT_LLM_MIN_REMAINING_MS', 120000, 30000, 240000);
 
 function shouldFetchExtendedReportData(companyCount: number): boolean {
   return !process.env.VERCEL || companyCount <= VERCEL_EXTENDED_DATA_MAX_COMPANIES;
 }
 
+function remainingMs(deadlineAt?: number): number {
+  if (!deadlineAt) return Number.POSITIVE_INFINITY;
+  return deadlineAt - Date.now();
+}
+
+function isDeadlineNear(deadlineAt?: number, bufferMs = VERCEL_REPORT_RETURN_BUFFER_MS): boolean {
+  return remainingMs(deadlineAt) <= bufferMs;
+}
+
+function hasReportLLMBudget(deadlineAt?: number): boolean {
+  return remainingMs(deadlineAt) > VERCEL_REPORT_LLM_MIN_REMAINING_MS;
+}
+
+function pushDeadlineNote(notes: string[], deadlineAt?: number): boolean {
+  if (!isDeadlineNear(deadlineAt)) return false;
+  if (!notes.some((note) => note.includes('Vercel runtime budget'))) {
+    notes.push('Vercel runtime budget reached; report returned with the highest-value data collected before the deadline.');
+  }
+  return true;
+}
+
 async function mapWithConcurrency<T, R>(
   items: T[],
   concurrency: number,
-  handler: (item: T) => Promise<R>
+  handler: (item: T) => Promise<R>,
+  shouldContinue?: () => boolean
 ): Promise<R[]> {
   const results: R[] = [];
   let index = 0;
 
   const runners = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
     while (index < items.length) {
+      if (shouldContinue && !shouldContinue()) break;
       const currentIndex = index;
       index += 1;
       results[currentIndex] = await handler(items[currentIndex]);
@@ -78,7 +103,7 @@ async function mapWithConcurrency<T, R>(
   });
 
   await Promise.all(runners);
-  return results;
+  return results.filter((result): result is R => result !== undefined);
 }
 const DEFAULT_SOURCE = 'Multi-source';
 const SOURCE_LEGEND =
@@ -117,6 +142,8 @@ export type LLMFiller = (prompt: string) => Promise<string>;
 export interface ExecuteToolOptions {
   /** When provided, called to resolve tickers that the search API could not validate. */
   llmFill?: LLMFiller;
+  /** Absolute wall-clock deadline for the current request. Used on Vercel to return before maxDuration kills the function. */
+  deadlineAt?: number;
 }
 
 /** Parses and cleans an LLM response expected to be JSON. Returns null if unparseable. */
@@ -2140,6 +2167,7 @@ export async function executeTool(
         }
         const range = args.range || '5y';
         const notes: string[] = [];
+        const deadlineAt = options?.deadlineAt;
         const sources = new Map<string, string>();
         const cache = await loadSymbolCache(symbol);
         const trustEntries: DataTrustEntry[] = [];
@@ -2164,7 +2192,7 @@ export async function executeTool(
             registerTrust(cachedValue, cachedEntry?.updatedAt || new Date().toISOString(), provider);
             return cachedValue as T;
           }
-          if (rateLimitHit || !allowRequest) return undefined as T;
+          if (rateLimitHit || !allowRequest || pushDeadlineNote(notes, deadlineAt)) return undefined as T;
           try {
             const result = await request();
             const provider = result && typeof result === 'object' && '__source' in result
@@ -2286,7 +2314,7 @@ export async function executeTool(
         // LLM moat analysis — best-effort; report still builds without it
         // Skipped when called from batch callers (watchlist/comparison) that do their own batch moat.
         let moatAnalysis: MoatAnalysis | undefined;
-        if (!skipPerCompanyLLM && options?.llmFill) {
+        if (!skipPerCompanyLLM && options?.llmFill && hasReportLLMBudget(deadlineAt)) {
           try {
             const moatPrompt = buildMoatAnalysisPrompt(symbol, companyOverview, finalBasicFinancials);
             const raw = await options.llmFill(moatPrompt);
@@ -2321,7 +2349,7 @@ export async function executeTool(
         // LLM investment conclusion — rich narrative, best-effort
         // Skipped when called from batch callers that provide their own summary.
         let llmConclusion: string | undefined;
-        if (!skipPerCompanyLLM && options?.llmFill) {
+        if (!skipPerCompanyLLM && options?.llmFill && hasReportLLMBudget(deadlineAt)) {
           try {
             const conclusionPrompt = buildStockConclusionPrompt(
               symbol,
@@ -2464,6 +2492,7 @@ export async function executeTool(
       }
       case 'generate_comparison_report': {
         const range = args.range || '1y';
+        const deadlineAt = options?.deadlineAt;
         const companiesInput = Array.isArray(args.companies)
           ? args.companies
           : String(args.companies || '').split(',');
@@ -2475,7 +2504,7 @@ export async function executeTool(
         // Step 1: LLM resolves ALL inputs to official tickers in one batch call.
         // LLM is the primary resolver — no API search is needed for well-known names.
         const resolvedMap = new Map<string, string>(); // query → official ticker
-        if (options?.llmFill) {
+        if (options?.llmFill && hasReportLLMBudget(deadlineAt)) {
           const prompt = buildTickerResolutionPrompt(companies);
           try {
             const raw = await options.llmFill(prompt);
@@ -2497,6 +2526,7 @@ export async function executeTool(
         // Step 2: For anything LLM couldn't resolve, fall back to AV symbol search.
         const needsApiSearch = companies.filter((q) => !resolvedMap.has(q));
         for (const query of needsApiSearch) {
+          if (isDeadlineNear(deadlineAt)) break;
           const result = await resolveSymbolFromQuery(stockService, query);
           if (result.ok && result.symbol) {
             resolvedMap.set(query, result.symbol);
@@ -2543,6 +2573,7 @@ export async function executeTool(
           return cachedValue as T;
         }
           if (rateLimitHit || !allowRequest) return undefined as T;
+          if (pushDeadlineNote(notes, deadlineAt)) return undefined as T;
         try {
           const result = await request();
           if (result && typeof result === 'object') {
@@ -2651,7 +2682,8 @@ export async function executeTool(
               newsSentiment,
               companyNews,
             };
-          }
+          },
+          () => !isDeadlineNear(deadlineAt)
         );
 
         // Phase 2: Build items from API data
@@ -2716,8 +2748,12 @@ export async function executeTool(
           await saveSymbolCache(symbol, item.cache);
         }
 
+        if (items.length === 0) {
+          return { success: false, error: 'Could not collect enough data before the runtime deadline to build a comparison report.' };
+        }
+
         // Phase 3: LLM batch moat analysis for all companies (single call)
-        if (options?.llmFill && items.length > 0) {
+        if (options?.llmFill && items.length > 0 && hasReportLLMBudget(deadlineAt)) {
           try {
             const moatPrompt = buildBatchMoatAnalysisPrompt(
               items.map((item) => ({ symbol: item.symbol, overview: item.overview, basicFinancials: item.basicFinancials }))
@@ -2741,7 +2777,7 @@ export async function executeTool(
         }
 
         // LLM position rationale — clear 1-2 sentence "Why" for the guidance table
-        if (options?.llmFill && items.length > 0) {
+        if (options?.llmFill && items.length > 0 && hasReportLLMBudget(deadlineAt)) {
           try {
             const rationalePrompt = buildBatchPositionRationalePrompt(
               items.map((item) => {
@@ -2789,7 +2825,7 @@ export async function executeTool(
 
         // Phase 4: LLM investment conclusion — rich narrative, best-effort
         let llmConclusionComparison: string | undefined;
-        if (options?.llmFill && items.length > 0) {
+        if (options?.llmFill && items.length > 0 && hasReportLLMBudget(deadlineAt)) {
           try {
             const conclusionPrompt = buildComparisonConclusionPrompt(
               items,
@@ -2835,6 +2871,7 @@ export async function executeTool(
       }
       case 'generate_watchlist_daily_report': {
         const range = args.range || '1y';
+        const deadlineAt = options?.deadlineAt;
         const watchlist = await getDefaultWatchlist();
         if (!watchlist.items.length) {
           return { success: false, error: 'The watchlist is empty. Add companies before requesting a daily report.' };
@@ -2852,7 +2889,8 @@ export async function executeTool(
               options
             );
             return { item, result };
-          }
+          },
+          () => !isDeadlineNear(deadlineAt)
         );
 
         const successfulItems: Array<{ symbol: string; companyName: string; stock: any }> = [];
@@ -2872,7 +2910,7 @@ export async function executeTool(
         }
 
         // Retry failed items after a brief delay to let rate limits reset
-        if (failures.length > 0 && successfulItems.length > 0) {
+        if (failures.length > 0 && successfulItems.length > 0 && !isDeadlineNear(deadlineAt, 45000)) {
           console.info(`[watchlist] Retrying ${failures.length} failed items after rate-limit cooldown: ${failures.join(', ')}`);
           await new Promise((resolve) => setTimeout(resolve, 5000));
           const retryItems = watchlist.items.filter((item) => failures.includes(item.symbol));
@@ -2882,12 +2920,13 @@ export async function executeTool(
             async (item) => {
               const result = await executeTool(
                 'generate_stock_report',
-                { symbol: item.symbol, range, skipSave: true, includeRawData: true, skipLLM: true, coreOnly },
-                stockService,
-                options
-              );
-              return { item, result };
-            }
+              { symbol: item.symbol, range, skipSave: true, includeRawData: true, skipLLM: true, coreOnly },
+              stockService,
+              options
+            );
+            return { item, result };
+          },
+          () => !isDeadlineNear(deadlineAt)
           );
           const retryFailures: string[] = [];
           for (const entry of retryResults) {
@@ -2911,7 +2950,7 @@ export async function executeTool(
           return { success: false, error: 'Could not build any company sections for the watchlist daily report.' };
         }
 
-        if (options?.llmFill && successfulItems.length > 0) {
+        if (options?.llmFill && successfulItems.length > 0 && hasReportLLMBudget(deadlineAt)) {
           try {
             const moatPrompt = buildBatchMoatAnalysisPrompt(
               successfulItems.map((item) => ({
@@ -2937,7 +2976,7 @@ export async function executeTool(
         }
 
         // LLM position rationale — clear 1-2 sentence "Why" for the guidance table
-        if (options?.llmFill && successfulItems.length > 0) {
+        if (options?.llmFill && successfulItems.length > 0 && hasReportLLMBudget(deadlineAt)) {
           try {
             const rationalePrompt = buildBatchPositionRationalePrompt(
               successfulItems.map((item) => {
@@ -2993,6 +3032,9 @@ export async function executeTool(
         };
 
         const reportBody = buildWatchlistDailyReport(reportData);
+        if (isDeadlineNear(deadlineAt) && failures.length === 0) {
+          failures.push('Vercel runtime budget reached; later watchlist items or optional enrichment may have been skipped.');
+        }
         const content = failures.length
           ? reportBody.replace(
               '## 🎯 Position Guidance',
@@ -3024,11 +3066,12 @@ export async function executeTool(
         if (!sector) {
           return { success: false, error: 'A sector or theme query is required.' };
         }
+        const deadlineAt = options?.deadlineAt;
         const count = Math.min(NUM_COMPANIES, Math.max(2, Number(args.count) || NUM_COMPANIES));
         const range = args.range || '1y';
 
         // Step 1: Use LLM (with API search fallback) to identify the top companies.
-        const universe = await resolveSectorTickers(sector, count, options?.llmFill, stockService);
+        const universe = await resolveSectorTickers(sector, count, hasReportLLMBudget(deadlineAt) ? options?.llmFill : undefined, stockService);
 
         if (universe.length < 2) {
           return {
@@ -3070,7 +3113,7 @@ export async function executeTool(
             }
             return cachedValue as T;
           }
-          if (rateLimitHit || !allowRequest) return undefined as T;
+          if (rateLimitHit || !allowRequest || pushDeadlineNote(notes, deadlineAt)) return undefined as T;
           try {
             const result = await request();
             if (result && typeof result === 'object') {
@@ -3179,7 +3222,8 @@ export async function executeTool(
               newsSentiment,
               companyNews,
             };
-          }
+          },
+          () => !isDeadlineNear(deadlineAt)
         );
 
         const items: any[] = [];
@@ -3243,8 +3287,12 @@ export async function executeTool(
           await saveSymbolCache(symbol, item.cache);
         }
 
+        if (items.length === 0) {
+          return { success: false, error: 'Could not collect enough data before the runtime deadline to build a sector report.' };
+        }
+
         // LLM batch moat analysis for all sector companies (single call)
-        if (options?.llmFill && items.length > 0) {
+        if (options?.llmFill && items.length > 0 && hasReportLLMBudget(deadlineAt)) {
           try {
             const moatPrompt = buildBatchMoatAnalysisPrompt(
               items.map((item) => ({ symbol: item.symbol, overview: item.overview, basicFinancials: item.basicFinancials }))
@@ -3268,7 +3316,7 @@ export async function executeTool(
         }
 
         // LLM position rationale — clear 1-2 sentence "Why" for the guidance table
-        if (options?.llmFill && items.length > 0) {
+        if (options?.llmFill && items.length > 0 && hasReportLLMBudget(deadlineAt)) {
           try {
             const rationalePrompt = buildBatchPositionRationalePrompt(
               items.map((item) => {
@@ -3316,7 +3364,7 @@ export async function executeTool(
 
         // LLM investment conclusion — rich narrative, best-effort
         let llmConclusionSector: string | undefined;
-        if (options?.llmFill && items.length > 0) {
+        if (options?.llmFill && items.length > 0 && hasReportLLMBudget(deadlineAt)) {
           try {
             const conclusionPrompt = buildComparisonConclusionPrompt(
               items,
@@ -3363,9 +3411,10 @@ export async function executeTool(
         if (!sector) {
           return { success: false, error: 'A sector or theme query is required.' };
         }
+        const deadlineAt = options?.deadlineAt;
         const startTime = Date.now();
         const timeNotes: string[] = [];
-        const timeBudgetExceeded = () => Date.now() - startTime > DEEP_RESEARCH_MAX_MS;
+        const timeBudgetExceeded = () => Date.now() - startTime > DEEP_RESEARCH_MAX_MS || isDeadlineNear(deadlineAt);
         const noteTimeBudget = () => {
           if (timeNotes.length === 0) {
             timeNotes.push('Time budget reached; remaining deep-research steps truncated to fit runtime limits.');
@@ -3422,7 +3471,9 @@ export async function executeTool(
           };
         }
 
-        const companyProbe = await resolveSymbolFromQuery(stockService, sector);
+        const companyProbe = !timeBudgetExceeded()
+          ? await resolveSymbolFromQuery(stockService, sector)
+          : { ok: false as const };
         if (companyProbe.ok && companyProbe.symbol) {
           const stockResult = await executeTool(
             'generate_stock_report',
@@ -3460,7 +3511,12 @@ export async function executeTool(
         }
 
         // ── Phase 1: LLM identifies initial broad candidate list (with fallback) ──
-        const initialCandidates = await resolveSectorTickers(sector, initialCount, options.llmFill, stockService);
+        const initialCandidates = await resolveSectorTickers(
+          sector,
+          initialCount,
+          hasReportLLMBudget(deadlineAt) ? options.llmFill : undefined,
+          stockService
+        );
 
         if (initialCandidates.length < 2) {
           return {
@@ -3596,7 +3652,7 @@ export async function executeTool(
             }
             return cachedValue as T;
           }
-          if (rateLimitHit || !allowRequest) return undefined as T;
+          if (rateLimitHit || !allowRequest || pushDeadlineNote(notes, deadlineAt)) return undefined as T;
           try {
             const result = await request();
             if (result && typeof result === 'object') {
@@ -3725,7 +3781,8 @@ export async function executeTool(
               newsSentiment,
               companyNews,
             };
-          }
+          },
+          () => !timeBudgetExceeded()
         );
 
         const items: any[] = [];
@@ -3789,8 +3846,12 @@ export async function executeTool(
           await saveSymbolCache(symbol, item.cache);
         }
 
+        if (items.length === 0) {
+          return { success: false, error: 'Could not collect enough data before the runtime deadline to build a deep sector report.' };
+        }
+
         // LLM batch moat analysis for the refined deep sector universe (single call)
-        if (options?.llmFill && items.length > 0) {
+        if (options?.llmFill && items.length > 0 && hasReportLLMBudget(deadlineAt)) {
           try {
             const moatPrompt = buildBatchMoatAnalysisPrompt(
               items.map((item) => ({ symbol: item.symbol, overview: item.overview, basicFinancials: item.basicFinancials }))
@@ -3814,7 +3875,7 @@ export async function executeTool(
         }
 
         // LLM position rationale — clear 1-2 sentence "Why" for the guidance table
-        if (options?.llmFill && items.length > 0) {
+        if (options?.llmFill && items.length > 0 && hasReportLLMBudget(deadlineAt)) {
           try {
             const rationalePrompt = buildBatchPositionRationalePrompt(
               items.map((item) => {
@@ -3862,7 +3923,7 @@ export async function executeTool(
 
         // LLM investment conclusion — rich narrative, best-effort
         let llmConclusionDeep: string | undefined;
-        if (options?.llmFill && items.length > 0) {
+        if (options?.llmFill && items.length > 0 && hasReportLLMBudget(deadlineAt)) {
           try {
             const conclusionPrompt = buildComparisonConclusionPrompt(
               items,
