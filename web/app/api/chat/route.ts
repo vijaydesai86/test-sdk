@@ -69,6 +69,18 @@ const REPORT_TOOL_NAMES = new Set([
   'generate_watchlist_daily_report',
 ]);
 
+type LLMFailureAttempt = {
+  provider: RuntimeLLMProvider;
+  model: string;
+  statusCode?: number;
+  reason: string;
+  message: string;
+};
+
+function summarizeErrorMessage(error: any): string {
+  return String(error?.message || error || 'Unknown error').replace(/\s+/g, ' ').slice(0, 240);
+}
+
 function parseRetryAfterMs(headerValue: string | null): number | undefined {
   if (!headerValue) return undefined;
   const seconds = Number(headerValue);
@@ -434,6 +446,16 @@ async function callGitHubModelsAPI(
         `API response: ${errorText}`
       ) as Error & { statusCode: number; isProviderAuthError: boolean };
       err.statusCode = 401;
+      err.isProviderAuthError = true;
+      throw err;
+    }
+    if (response.status === 403) {
+      const err = new Error(
+        `Gemini API access denied (403) for model '${model}'. ` +
+        'The API key may not have access to this model, the API may be disabled for the project, or billing/quota access may be restricted. ' +
+        `API response: ${errorText}`
+      ) as Error & { statusCode: number; isProviderAuthError: boolean };
+      err.statusCode = 403;
       err.isProviderAuthError = true;
       throw err;
     }
@@ -821,6 +843,7 @@ export async function POST(request: NextRequest) {
     let fallbackCount = 0;
     let assistantContent: string | null = null;
     let toolDefinitionsUsed = toolDefinitions;
+    const llmFailureAttempts: LLMFailureAttempt[] = [];
     const reportArtifacts: Array<{ filename: string; content: string; downloadUrl: string; title?: string; summary?: string; reportDate?: string; reportKind?: string; storagePath?: string }> = [];
      const executionStrategies = await buildLLMExecutionStrategies(
        activeProvider,
@@ -926,13 +949,33 @@ export async function POST(request: NextRequest) {
           const isUnknownModel = Boolean(error?.isUnknownModel);
           const isProviderAuthError = Boolean(error?.isProviderAuthError);
           const isTokensLimit = error?.statusCode === 413;
+          const failureReason = isRateLimit
+            ? 'rate_limit'
+            : isServerError
+            ? 'temporary_provider_error'
+            : isUnknownModel
+            ? 'unknown_model'
+            : isProviderAuthError
+            ? 'provider_auth_or_access'
+            : isTokensLimit
+            ? 'token_limit'
+            : 'fatal_provider_error';
+          llmFailureAttempts.push({
+            provider: activeRuntimeProvider,
+            model: activeModel,
+            statusCode: error?.statusCode,
+            reason: failureReason,
+            message: summarizeErrorMessage(error),
+          });
           if (isRouteDeadlineNear(requestDeadlineAt, LLM_REQUEST_TIMEOUT_MS + VERCEL_INTERNAL_DEADLINE_BUFFER_MS)) {
+            (error as any).llmFailureAttempts = llmFailureAttempts;
             throw error;
           }
           if (isUnknownModel) {
             if (advanceCandidate()) {
               continue;
             }
+            (error as any).llmFailureAttempts = llmFailureAttempts;
             throw error;
           }
           if (isRateLimit || isServerError) {
@@ -948,6 +991,7 @@ export async function POST(request: NextRequest) {
             if (advanceCandidate()) {
               continue;
             }
+            (error as any).llmFailureAttempts = llmFailureAttempts;
             throw error;
           }
           if (isProviderAuthError) {
@@ -955,6 +999,7 @@ export async function POST(request: NextRequest) {
             if (advanceCandidate(activeRuntimeProvider)) {
               continue;
             }
+            (error as any).llmFailureAttempts = llmFailureAttempts;
             throw error;
           }
           if (isTokensLimit && !compactedForTokenLimit) {
@@ -968,6 +1013,7 @@ export async function POST(request: NextRequest) {
             syncActiveCandidate();
             continue;
           }
+          (error as any).llmFailureAttempts = llmFailureAttempts;
           throw error;
         }
       }
@@ -1083,6 +1129,12 @@ export async function POST(request: NextRequest) {
     });
   } catch (error: any) {
     console.error('Chat API error:', error);
+    const llmFailureAttempts = Array.isArray(error?.llmFailureAttempts)
+      ? (error.llmFailureAttempts as LLMFailureAttempt[])
+      : [];
+    if (llmFailureAttempts.length > 0) {
+      console.error('LLM fallback attempts:', llmFailureAttempts);
+    }
     const isRateLimit = error.statusCode === 429;
     const isServerError = Boolean(error.isTransientServerError);
     const isUnknownModel = Boolean(error.isUnknownModel);
@@ -1138,6 +1190,9 @@ export async function POST(request: NextRequest) {
       {
         error: userFacingError,
         details,
+        diagnostics: llmFailureAttempts.length > 0 ? {
+          llmAttempts: llmFailureAttempts,
+        } : undefined,
       },
       { status: statusCode }
     );
