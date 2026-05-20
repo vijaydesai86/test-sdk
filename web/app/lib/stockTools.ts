@@ -172,8 +172,8 @@ function parseLLMTickerArray(raw: string, maxCount: number): string[] {
     const parsed = JSON.parse(cleaned);
     if (Array.isArray(parsed)) {
       return parsed
-        .map((item: any) => String(item || '').replace(/[^A-Z0-9.]/gi, '').toUpperCase())
-        .filter((t) => t.length > 0 && t.length <= 6)
+        .map((item: any) => normalizeTickerCandidate(item))
+        .filter((t): t is string => Boolean(t))
         .slice(0, maxCount);
     }
     // If the LLM returned an object with a key containing an array (e.g. { tickers: [...] })
@@ -181,8 +181,8 @@ function parseLLMTickerArray(raw: string, maxCount: number): string[] {
       for (const key of Object.keys(parsed)) {
         if (Array.isArray(parsed[key])) {
           return parsed[key]
-            .map((item: any) => String(item || '').replace(/[^A-Z0-9.]/gi, '').toUpperCase())
-            .filter((t: string) => t.length > 0 && t.length <= 6)
+            .map((item: any) => normalizeTickerCandidate(item))
+            .filter((t: string | undefined): t is string => Boolean(t))
             .slice(0, maxCount);
         }
       }
@@ -568,6 +568,26 @@ type SymbolCache = Record<string, CacheEntry>;
 /** Normalises a raw ticker string from LLM output to uppercase alphanumeric. */
 const cleanTicker = (raw: string): string =>
   String(raw || '').replace(/[^A-Z0-9.]/gi, '').toUpperCase();
+
+function normalizeTickerCandidate(raw: unknown): string | undefined {
+  if (typeof raw !== 'string') return undefined;
+  const cleaned = cleanTicker(raw);
+  // US tickers are short; allow share-class dots but reject malformed values like ARMNULL.
+  if (!/^[A-Z0-9](?:[A-Z0-9.]{0,5})$/.test(cleaned)) return undefined;
+  if (cleaned.includes('NULL') || cleaned.includes('NAN') || cleaned.includes('UNDEFINED')) return undefined;
+  return cleaned;
+}
+
+async function validateResolvedTicker(stockService: StockDataService, ticker: string): Promise<boolean> {
+  try {
+    const price = await stockService.getStockPrice(ticker);
+    const returnedSymbol = normalizeTickerCandidate(price?.symbol);
+    if (!returnedSymbol) return true;
+    return returnedSymbol === ticker;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Parses one entry from an LLM batch moat response and returns a validated MoatAnalysis,
@@ -2133,16 +2153,16 @@ export async function executeTool(
         let symbol: string | undefined;
         if (skipPerCompanyLLM) {
           // Caller guarantees the symbol is already an official ticker.
-          const cleaned = symbolQuery.replace(/[^A-Z0-9.]/gi, '').toUpperCase();
+          const cleaned = normalizeTickerCandidate(symbolQuery);
           if (cleaned) symbol = cleaned;
         } else if (options?.llmFill) {
           const prompt = buildTickerResolutionPrompt([symbolQuery]);
           try {
             const raw = await options.llmFill(prompt);
             const parsed = parseLLMFillJSON(raw);
-            if (parsed?.[symbolQuery] && typeof parsed[symbolQuery] === 'string') {
-              const llmTicker = String(parsed[symbolQuery]).replace(/[^A-Z0-9.]/gi, '').toUpperCase();
-              if (llmTicker) symbol = llmTicker;
+            const llmTicker = normalizeTickerCandidate(parsed?.[symbolQuery]);
+            if (llmTicker && await validateResolvedTicker(stockService, llmTicker)) {
+              symbol = llmTicker;
             }
           } catch {
             // LLM unavailable; fall through to API search
@@ -2512,10 +2532,8 @@ export async function executeTool(
             if (parsed && typeof parsed === 'object') {
               for (const query of companies) {
                 const llmTicker = parsed[query];
-                if (llmTicker && typeof llmTicker === 'string') {
-                  const clean = String(llmTicker).replace(/[^A-Z0-9.]/gi, '').toUpperCase();
-                  if (clean) resolvedMap.set(query, clean);
-                }
+                const clean = normalizeTickerCandidate(llmTicker);
+                if (clean && await validateResolvedTicker(stockService, clean)) resolvedMap.set(query, clean);
               }
             }
           } catch {
