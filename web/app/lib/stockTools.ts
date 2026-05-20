@@ -1206,6 +1206,18 @@ const parseExplicitComparisonCompanies = (query: string): string[] => {
     .map((item) => item.trim())
     .filter(Boolean);
 };
+
+function shouldTrySingleCompanyDeepResearch(query: string): boolean {
+  const trimmed = query.trim();
+  if (!trimmed) return false;
+  if (/^\$?[A-Z]{1,6}(?:\.[A-Z])?$/i.test(trimmed)) return true;
+  const thematicIntent =
+    /\b(stocks|companies|sector|theme|industry|industries|ecosystem|leaders|top|best|basket|space|market|plays|beneficiaries|supply\s+chain)\b/i.test(trimmed) ||
+    /\b(ai|artificial\s+intelligence|infrastructure|data\s*centers?|datacenters?|cloud|semiconductors?|chips?|cybersecurity|robotics|quantum|nuclear|biotech|fintech)\b/i.test(trimmed);
+  if (thematicIntent) return false;
+  return /\b(inc\.?|corp\.?|corporation|ltd\.?|limited|plc|holdings?|group|co\.?|company|technologies|systems)\b/i.test(trimmed)
+    || trimmed.split(/\s+/).length <= 3;
+}
 function buildToolDefinitions() {
   return [
     {
@@ -3489,7 +3501,7 @@ export async function executeTool(
           };
         }
 
-        const companyProbe = !timeBudgetExceeded()
+        const companyProbe = !timeBudgetExceeded() && shouldTrySingleCompanyDeepResearch(sector)
           ? await resolveSymbolFromQuery(stockService, sector)
           : { ok: false as const };
         if (companyProbe.ok && companyProbe.symbol) {
