@@ -34,6 +34,8 @@ General chat is supported for data-only questions (e.g. "what is NVDA's P/E?") b
 
 8. **Keep common report plumbing shared.** New report types must reuse the existing data-fetching, timing, valuation, chart, moat analysis, conclusion, and persistence helpers. No copy-pasted report pipelines.
 
+9. **Deployment-impacting changes require a clean install check.** Any dependency, lockfile, package manager, Vercel config, build script, or install-related change must be verified from a clean dependency state with the Vercel install command (`npm ci --no-audit --no-fund`) followed by `npm run build`. Do not rely only on an existing `node_modules` build.
+
 9. **Optimise for free-tier operation.** Assume Vercel free tier, free provider quotas, and rate-limited model access. Prefer bounded concurrency (`DATA_FETCH_CONCURRENCY`), caching (`STOCK_CACHE_TTL_MS`), and graceful partial-data handling over brute force.
 
 ---
