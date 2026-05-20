@@ -115,15 +115,17 @@ async function mapWithConcurrency<T, R>(
   items: T[],
   concurrency: number,
   handler: (item: T) => Promise<R>,
-  shouldContinue?: () => boolean
+  shouldContinue?: () => boolean,
+  minItems = 0
 ): Promise<R[]> {
   const results: R[] = [];
   let index = 0;
+  const minimumToStart = Math.min(items.length, Math.max(0, minItems));
 
   const runners = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
     while (index < items.length) {
-      if (shouldContinue && !shouldContinue()) break;
       const currentIndex = index;
+      if (shouldContinue && !shouldContinue() && currentIndex >= minimumToStart) break;
       index += 1;
       results[currentIndex] = await handler(items[currentIndex]);
     }
@@ -222,6 +224,39 @@ function parseLLMTickerArray(raw: string, maxCount: number): string[] {
     }
   }
   return [];
+}
+
+function normalizeThematicResearchQuery(query: string): string {
+  let normalized = query.trim();
+  if (!normalized) return normalized;
+  normalized = normalized
+    .replace(/^\s*(please\s+)?(generate|create|write|make|give\s+me|show\s+me)\s+(a\s+)?/i, '')
+    .replace(/^\s*(deep\s+research|research|report|stock\s+report|sector\s+study|study|analysis)\s+(on|for|about|of)\s+/i, '')
+    .replace(/^\s*(deep\s+research|research|report|sector\s+study|study|analysis)\s+/i, '')
+    .replace(/\b(publicly\s+traded|listed|equity|equities|companies|company|stocks|stock|sector|theme|industry|industries)\b/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return normalized || query.trim();
+}
+
+function buildUnavailableResearchContent(query: string, reason: string, generatedAt = new Date().toISOString()): string {
+  return [
+    `# Research Report: ${query}`,
+    '',
+    `Generated: ${generatedAt}`,
+    '',
+    '## Verified Data Status',
+    '',
+    reason,
+    '',
+    'No market-data-backed decision was generated because the company universe could not be verified from the configured providers before the request deadline.',
+    '',
+    '## Decision',
+    '',
+    'Action: Wait for verified inputs.',
+    '',
+    'This report intentionally does not include guessed tickers, market data, or LLM-derived financial facts.',
+  ].join('\n');
 }
 
 /**
@@ -603,6 +638,9 @@ const stripExchangePrefix = (raw: string): string =>
     .trim()
     .replace(/^(?:NYSE|NASDAQ|NASDAQGS|NASDAQGM|NASDAQCM|AMEX|NYSEAMERICAN|NYSEARCA|OTC|OTCMKTS)\s*[:.-]?\s*/i, '')
     .trim();
+
+const hasExchangePrefix = (raw: string): boolean =>
+  /^(?:NYSE|NASDAQ|NASDAQGS|NASDAQGM|NASDAQCM|AMEX|NYSEAMERICAN|NYSEARCA|OTC|OTCMKTS)\s*[:.-]?\s*/i.test(String(raw || '').trim());
 
 function normalizeTickerCandidate(raw: unknown): string | undefined {
   if (typeof raw !== 'string') return undefined;
@@ -2277,6 +2315,7 @@ export async function executeTool(
       }
       case 'generate_stock_report': {
         const symbolQuery = args.symbol || '';
+        const deadlineAt = options?.deadlineAt;
         // When called from watchlist/comparison with a known ticker, skip per-company
         // LLM calls (ticker resolution, moat, conclusion) to avoid redundant API/LLM
         // load.  The caller does batch LLM calls afterward.
@@ -2292,7 +2331,11 @@ export async function executeTool(
           // Caller guarantees the symbol is already an official ticker.
           const cleaned = normalizeTickerCandidate(symbolQuery);
           if (cleaned) symbol = cleaned;
-        } else if (options?.llmFill) {
+        } else if (hasExchangePrefix(symbolQuery)) {
+          const directTicker = normalizeTickerCandidate(symbolQuery);
+          if (directTicker) symbol = directTicker;
+        }
+        if (!symbol && options?.llmFill) {
           const prompt = buildTickerResolutionPrompt([symbolQuery]);
           try {
             const raw = await options.llmFill(prompt);
@@ -2324,7 +2367,6 @@ export async function executeTool(
         }
         const range = args.range || '5y';
         const notes: string[] = [];
-        const deadlineAt = options?.deadlineAt;
         const sources = new Map<string, string>();
         const cache = await loadSymbolCache(symbol);
         const trustEntries: DataTrustEntry[] = [];
@@ -2663,6 +2705,10 @@ export async function executeTool(
         // Step 1: LLM resolves ALL inputs to official tickers in one batch call.
         // LLM is the primary resolver — no API search is needed for well-known names.
         const resolvedMap = new Map<string, string>(); // query → official ticker
+        for (const query of companies) {
+          const directTicker = hasExchangePrefix(query) ? normalizeTickerCandidate(query) : undefined;
+          if (directTicker) resolvedMap.set(query, directTicker);
+        }
         if (options?.llmFill && hasReportLLMBudget(deadlineAt)) {
           const prompt = buildTickerResolutionPrompt(companies);
           try {
@@ -2682,8 +2728,10 @@ export async function executeTool(
 
         // Step 2: For anything LLM couldn't resolve, fall back to AV symbol search.
         const needsApiSearch = companies.filter((q) => !resolvedMap.has(q));
-        for (const query of needsApiSearch) {
-          if (isDeadlineNear(deadlineAt)) break;
+        const minimumSearches = Math.min(2, needsApiSearch.length);
+        for (let searchIndex = 0; searchIndex < needsApiSearch.length; searchIndex++) {
+          if (isDeadlineNear(deadlineAt) && searchIndex >= minimumSearches) break;
+          const query = needsApiSearch[searchIndex];
           const result = await resolveSymbolFromQuery(stockService, query);
           if (result.ok && result.symbol) {
             resolvedMap.set(query, result.symbol);
@@ -2841,7 +2889,8 @@ export async function executeTool(
               companyNews,
             };
           },
-          () => !isDeadlineNear(deadlineAt)
+          () => !isDeadlineNear(deadlineAt),
+          Math.min(2, universe.length)
         );
 
         // Phase 2: Build items from API data
@@ -3050,7 +3099,8 @@ export async function executeTool(
             );
             return { item, result };
           },
-          () => !isDeadlineNear(deadlineAt)
+          () => !isDeadlineNear(deadlineAt),
+          1
         );
 
         const successfulItems: Array<{ symbol: string; companyName: string; stock: any }> = [];
@@ -3229,22 +3279,32 @@ export async function executeTool(
         const deadlineAt = options?.deadlineAt;
         const count = Math.min(NUM_COMPANIES, Math.max(2, Number(args.count) || NUM_COMPANIES));
         const range = args.range || '1y';
+        const resolverSector = normalizeThematicResearchQuery(sector);
 
         // Step 1: Use LLM (with API search fallback) to identify the top companies.
-        const universe = await resolveSectorTickers(sector, count, hasReportLLMBudget(deadlineAt) ? options?.llmFill : undefined, stockService);
+        const universe = await resolveSectorTickers(resolverSector, count, hasReportLLMBudget(deadlineAt) ? options?.llmFill : undefined, stockService);
 
-        if (universe.length < 2) {
+        if (universe.length === 0) {
+          const reason = `Could not identify verified listed companies for "${sector}" using the configured resolver and market-data providers.`;
+          const content = buildUnavailableResearchContent(sector, reason);
+          const safeTitle = sector.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'research';
+          const saved = await saveReport(content, `${safeTitle}-sector-report`, undefined, {
+            reportKind: 'sector',
+            summary: 'No verified company universe was available; wait for verified inputs.',
+          });
           return {
-            success: false,
-            error:
-              `Could not identify companies for sector "${sector}". ` +
-              'Please provide the specific company tickers instead.',
+            success: true,
+            data: { content, ...saved, downloadUrl: buildReportDownloadUrl(saved) },
+            message: `Saved unavailable-data sector report for "${sector}" to ${saved.filePath}`,
           };
         }
 
         // Step 2: Fetch comparison data for the identified companies
         // (same logic as generate_comparison_report).
-        const notes: string[] = [`Universe identified by AI for sector: "${sector}"`];
+        const notes: string[] = [`Universe identified for sector/theme: "${sector}"`];
+        if (resolverSector !== sector) {
+          notes.push(`Resolved search theme: "${resolverSector}".`);
+        }
         const sourceMap: Record<string, Record<string, string>> = {};
         const watchlist = await getDefaultWatchlist().catch(() => null);
         const portfolioProfile = watchlist?.profile;
@@ -3384,7 +3444,8 @@ export async function executeTool(
               companyNews,
             };
           },
-          () => !isDeadlineNear(deadlineAt)
+          () => !isDeadlineNear(deadlineAt),
+          Math.min(2, universe.length)
         );
 
         const items: any[] = [];
@@ -3593,13 +3654,7 @@ export async function executeTool(
           ? Math.min(NUM_COMPANIES * 2, finalCount * 2)
           : finalCount;
         const range = args.range || '1y';
-
-        if (!options?.llmFill) {
-          return {
-            success: false,
-            error: 'Deep research requires an LLM connection. Please ensure a valid API token is configured.',
-          };
-        }
+        const resolverSector = normalizeThematicResearchQuery(sector);
 
         const explicitCompanies = parseExplicitComparisonCompanies(sector);
         if (explicitCompanies.length >= 2) {
@@ -3681,18 +3736,24 @@ export async function executeTool(
 
         // ── Phase 1: LLM identifies initial broad candidate list (with fallback) ──
         const initialCandidates = await resolveSectorTickers(
-          sector,
+          resolverSector,
           initialCount,
-          hasReportLLMBudget(deadlineAt) ? options.llmFill : undefined,
+          hasReportLLMBudget(deadlineAt) ? options?.llmFill : undefined,
           stockService
         );
 
-        if (initialCandidates.length < 2) {
+        if (initialCandidates.length === 0) {
+          const reason = `Could not identify verified listed companies for "${sector}" using the configured resolver and market-data providers.`;
+          const content = buildUnavailableResearchContent(sector, reason);
+          const safeTitle = sector.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'research';
+          const saved = await saveReport(content, `${safeTitle}-deep-sector-report`, undefined, {
+            reportKind: 'deep-sector',
+            summary: 'No verified company universe was available; wait for verified inputs.',
+          });
           return {
-            success: false,
-            error:
-              `Could not identify companies for sector "${sector}". ` +
-              'Please provide specific company tickers instead.',
+            success: true,
+            data: { content, ...saved, downloadUrl: buildReportDownloadUrl(saved) },
+            message: `Saved unavailable-data deep sector report for "${sector}" to ${saved.filePath}`,
           };
         }
 
@@ -3747,11 +3808,11 @@ export async function executeTool(
             noteTimeBudget();
             break;
           }
-          if (!hasReportLLMBudget(deadlineAt) || !hasReportWorkBudget(deadlineAt, 'optional', initialCandidates.length)) {
+          if (!options?.llmFill || !hasReportLLMBudget(deadlineAt) || !hasReportWorkBudget(deadlineAt, 'optional', initialCandidates.length)) {
             noteTimeBudget();
             break;
           }
-          const depPrompt = buildDeepSectorDependencyPrompt(sector, finalCount, ecosystemData, previousPass);
+          const depPrompt = buildDeepSectorDependencyPrompt(resolverSector, finalCount, ecosystemData, previousPass);
           try {
             const raw = await options.llmFill(depPrompt);
             const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
@@ -3801,6 +3862,9 @@ export async function executeTool(
           `Refined universe: ${universe.join(', ')}`,
           ...timeNotes,
         ];
+        if (resolverSector !== sector) {
+          notes.push(`Resolved search theme: "${resolverSector}".`);
+        }
         const sourceMap: Record<string, Record<string, string>> = {};
         const watchlist = await getDefaultWatchlist().catch(() => null);
         const portfolioProfile = watchlist?.profile;
@@ -3960,7 +4024,8 @@ export async function executeTool(
               companyNews,
             };
           },
-          () => !timeBudgetExceeded()
+          () => !timeBudgetExceeded(),
+          Math.min(2, universe.length)
         );
 
         const items: any[] = [];

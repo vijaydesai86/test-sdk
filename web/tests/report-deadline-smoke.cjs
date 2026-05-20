@@ -258,6 +258,26 @@ async function testDeepSectorDeadlineStillSaves() {
   assert.match(result.data.content, /NVDA|AMD/);
 }
 
+async function testDeepSectorImmediateDeadlineStillSaves() {
+  let llmCalls = 0;
+  const result = await executeTool(
+    'generate_research_report',
+    { sector: 'Deep research on AI infrastructure stocks', range: '1y', count: 10 },
+    createMockStockService(),
+    {
+      deadlineAt: Date.now() + 1000,
+      async llmFill() {
+        llmCalls += 1;
+        throw new Error('LLM should not be called when the Vercel deadline is already tight');
+      },
+    }
+  );
+  await assertSavedReport(result, 'deep-sector');
+  assert.equal(llmCalls, 0, 'immediate deadline should not spend time on LLM refinement');
+  assert.match(result.data.content, /Vercel budget|Time budget reached|runtime budget/i);
+  assert.match(result.data.content, /NVDA|AMD/);
+}
+
 async function testComparisonDeadlineStillSaves() {
   const result = await executeTool(
     'generate_comparison_report',
@@ -268,6 +288,28 @@ async function testComparisonDeadlineStillSaves() {
   await assertSavedReport(result, 'comparison');
   assert.match(result.data.content, /NVDA/);
   assert.match(result.data.content, /AMD/);
+}
+
+async function testComparisonImmediateDeadlineStillSaves() {
+  const result = await executeTool(
+    'generate_comparison_report',
+    { companies: ['NVDA', 'AMD'], range: '1y' },
+    createMockStockService(),
+    { deadlineAt: Date.now() + 1000 }
+  );
+  await assertSavedReport(result, 'comparison');
+  assert.match(result.data.content, /NVDA/);
+}
+
+async function testWatchlistImmediateDeadlineStillSaves() {
+  const result = await executeTool(
+    'generate_watchlist_daily_report',
+    { range: '1y' },
+    createMockStockService(),
+    { deadlineAt: Date.now() + 1000 }
+  );
+  await assertSavedReport(result, 'watchlist-daily');
+  assert.match(result.data.content, /Partial Coverage|Position Guidance/i);
 }
 
 async function testTsmMixedScaleFieldsAreSuppressed() {
@@ -290,7 +332,10 @@ async function testTsmMixedScaleFieldsAreSuppressed() {
 async function main() {
   await fs.rm(testRoot, { recursive: true, force: true });
   await testDeepSectorDeadlineStillSaves();
+  await testDeepSectorImmediateDeadlineStillSaves();
   await testComparisonDeadlineStillSaves();
+  await testComparisonImmediateDeadlineStillSaves();
+  await testWatchlistImmediateDeadlineStillSaves();
   await testTsmMixedScaleFieldsAreSuppressed();
   await fs.rm(testRoot, { recursive: true, force: true });
   console.log('report deadline smoke tests passed');

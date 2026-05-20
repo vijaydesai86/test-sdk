@@ -4,6 +4,26 @@ This file is the operating contract for any agent or contributor changing this r
 
 ---
 
+## Collaboration contract
+
+These rules apply before implementation details:
+
+1. **Discuss until explicitly released to implement.** Unless the user clearly says "go do", "make the change", "update it", or an equivalent direct instruction, only discuss, inspect, analyze, and design. Do not edit files, run mutating commands, commit, or push.
+
+2. **Read this file at the start of repo work.** Any agent working in this repository must read `AGENT.md` before changing code or docs, then keep the implementation aligned with this contract and the current `README.md`.
+
+3. **Use a holistic approach.** Do not make a narrow local fix without checking the impact on the product modes, shared report pipeline, provider fallbacks, Vercel runtime behavior, local behavior, persistence, docs, and tests.
+
+4. **Verify before claiming done.** Run every practical relevant check before saying work is complete: targeted tests, broader test suites when available, typecheck, lint, production build, and install/build checks for dependency or deployment changes. If a check cannot run, state exactly why.
+
+5. **Add tests for behavior changes.** New features, bug fixes, routing changes, provider fallback changes, data-quality guards, report-generation changes, and timeout behavior require focused tests where the repo has a practical test path.
+
+6. **Commit and push only when requested.** Do not commit or push unless the user explicitly asks. When committing, include only related files and leave unrelated user changes untouched.
+
+7. **Keep docs aligned.** Any change that affects behavior, setup, environment variables, supported flows, runtime assumptions, or architecture must update the relevant docs in the same change. If docs are not changed, be prepared to explain why.
+
+---
+
 ## Product scope
 
 The product is an AI-powered stock research assistant with exactly **three user-facing research modes**:
@@ -20,23 +40,33 @@ General chat is supported for data-only questions (e.g. "what is NVDA's P/E?") b
 
 1. **Never fabricate financial data.** Prices, ratios, revenues, EPS, margins, insider activity, analyst targets — all must come from real provider API responses or direct arithmetic on those responses. If a field is unavailable, say so; do not fill it.
 
-2. **Never reintroduce synthetic fallbacks.** Do not generate fake income statement rows, balance sheet entries, cash flow entries, or EPS history from LLM memory, heuristics, or descriptions.
+2. **Correctness beats completeness.** Wrong, guessed, stale-looking-but-unverified, non-meaningful, or training-data-derived values are worse than missing data. Suppress implausible provider values and mark data as unavailable rather than showing false precision.
 
-3. **Provider truth beats LLM confidence.** The LLM orchestrates, explains, and synthesises. It must not silently substitute missing provider data with model memory.
+3. **Never reintroduce synthetic fallbacks.** Do not generate fake income statement rows, balance sheet entries, cash flow entries, EPS history, market caps, 52-week ranges, yields, or price-derived fields from LLM memory, heuristics, or descriptions.
 
-4. **Report tools are the three user-facing tools.** `generate_stock_report`, `generate_research_report`, and `generate_watchlist_daily_report` are the only tools the LLM exposes to users. Internal routing tools (`generate_comparison_report`, `generate_sector_report`, `generate_deep_sector_report`) exist in `executeTool` for internal delegation only and are not in `CHAT_TOOL_NAMES`.
+4. **Provider truth beats LLM confidence.** The LLM orchestrates, explains, and synthesises. It may reason from supplied verified data, but it must not silently substitute missing provider data with model memory or web/training knowledge.
 
-5. **Keep user input simple.** Users must be able to type `google vs microsoft` or `deep research on tesla` and get the right report. Entity resolution may use the LLM for name-to-ticker mapping, but real provider verification (`search_stock`) is required before any market-data fetch.
+5. **No production hardcoding.** Do not hardcode company/ticker lists, provider facts, financial values, or special-case production behavior for individual companies. Hardcoded symbols and values are acceptable only in tests, fixtures, and mocks.
 
-6. **Research report is one mode.** The UI exposes one `generate_research_report` tool. Internally it routes by query type (explicit comparison → comparison path; single-company name → deep stock path; sector/theme → full ecosystem analysis), but this routing is hidden from the user and the LLM.
+6. **Local and Vercel both matter.** Vercel must respect the hard function timeout and still return a saved report with the highest-value verified data collected before the deadline. Local runs are not Vercel-truncated and should attempt the full available data set, subject to sensible provider rate-limit handling.
 
-7. **Only three top-level markdown docs.** `README.md`, `AGENT.md`, and `CHANGELOG.md` are the only markdown documents committed to the repo root. Do not add stale or duplicate docs.
+7. **Use tools by data fit and quota.** Pick the provider/tool best suited to each data type, and treat all free-tier quotas as scarce. Low-quota providers such as Alpha Vantage must not be the default hammer when roomier or no-key providers can supply the same data.
 
-8. **Keep common report plumbing shared.** New report types must reuse the existing data-fetching, timing, valuation, chart, moat analysis, conclusion, and persistence helpers. No copy-pasted report pipelines.
+8. **Use LLMs deliberately.** Use stronger models for accuracy-critical reasoning and lighter models only for lower-risk routing/formatting. Full fallback ladders and cooldowns must be honored before reporting provider/model exhaustion.
 
-9. **Deployment-impacting changes require a clean install check.** Any dependency, lockfile, package manager, Vercel config, build script, or install-related change must be verified from a clean dependency state with the Vercel install command (`npm ci --no-audit --no-fund`) followed by `npm run build`. Do not rely only on an existing `node_modules` build.
+9. **Report tools are the three user-facing tools.** `generate_stock_report`, `generate_research_report`, and `generate_watchlist_daily_report` are the only tools the LLM exposes to users. Internal routing tools (`generate_comparison_report`, `generate_sector_report`, `generate_deep_sector_report`) exist in `executeTool` for internal delegation only and are not in `CHAT_TOOL_NAMES`.
 
-9. **Optimise for free-tier operation.** Assume Vercel free tier, free provider quotas, and rate-limited model access. Prefer bounded concurrency (`DATA_FETCH_CONCURRENCY`), caching (`STOCK_CACHE_TTL_MS`), and graceful partial-data handling over brute force.
+10. **Keep user input simple.** Users must be able to type `google vs microsoft` or `deep research on tesla` and get the right report. Entity resolution may use the LLM for name-to-ticker mapping, but real provider verification (`search_stock`) is required before any market-data fetch.
+
+11. **Research report is one mode.** The UI exposes one `generate_research_report` tool. Internally it routes by query type (explicit comparison → comparison path; single-company name → deep stock path; sector/theme → full ecosystem analysis), but this routing is hidden from the user and the LLM.
+
+12. **Only three top-level markdown docs.** `README.md`, `AGENT.md`, and `CHANGELOG.md` are the only markdown documents committed to the repo root. Do not add stale or duplicate docs.
+
+13. **Keep common report plumbing shared.** New report types must reuse the existing data-fetching, timing, valuation, chart, moat analysis, conclusion, and persistence helpers. No copy-pasted report pipelines.
+
+14. **Deployment-impacting changes require a clean install check.** Any dependency, lockfile, package manager, Vercel config, build script, or install-related change must be verified from a clean dependency state with the Vercel install command (`npm ci --no-audit --no-fund`) followed by `npm run build`. Do not rely only on an existing `node_modules` build.
+
+15. **Optimise for free-tier operation.** Assume Vercel free tier, free provider quotas, and rate-limited model access. Prefer bounded concurrency (`DATA_FETCH_CONCURRENCY`), caching (`STOCK_CACHE_TTL_MS`), provider/model cooldowns, and graceful partial-data handling over brute force.
 
 ---
 
@@ -172,6 +202,8 @@ TWELVE_DATA_API_KEY     →  TwelveDataService
 - Each provider has a per-instance throttle queue (`ALPHA_VANTAGE_MIN_INTERVAL_MS` etc.) to prevent bursting.
 - `MultiSourceStockDataService` tracks provider cooldowns (`STOCK_PROVIDER_COOLDOWN_MS`, default 5 minutes) and skips cooled-down providers automatically.
 - Disk cache at `CACHE_DIR` (inside `REPORTS_DIR`) with `STOCK_CACHE_TTL_MS` TTL (default 7 days) prevents redundant API calls across report runs.
+- Vercel report generation must spend time in priority order: critical decision inputs first, high-value enrichment second, optional context third, LLM narration/refinement only when enough time remains to render and save the report.
+- Local report generation should not use Vercel deadline truncation; it should try to collect the full configured data set while still respecting provider throttles/cooldowns.
 
 ### Standalone services (not part of StockDataService interface)
 
@@ -270,13 +302,15 @@ See `web/.env.example` for annotated defaults. All variables prefixed with `STOC
 - `DEEP_RESEARCH_DEPTH` — recursive refinement passes (1–3, default 2)
 - `DEEP_RESEARCH_MAX_MS` — deep-research runtime budget in ms (default 240000)
 - `DATA_FETCH_CONCURRENCY` — parallel ticker fetches (1–4, default 3)
+- `VERCEL_EXTENDED_DATA_MAX_COMPANIES` — on Vercel, large reports prioritize core decision inputs and cached optional sections
+- `VERCEL_REPORT_RETURN_BUFFER_MS` — minimum Vercel time reserved for report rendering/persistence before the hard timeout
 
 **Storage:**
 - `REPORTS_DIR`, `WATCHLISTS_FILE`, `STOCK_CACHE_TTL_MS`
 - `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`
 
 **Throttling:**
-- `ALPHA_VANTAGE_MIN_INTERVAL_MS` (1200), `FINNHUB_MIN_INTERVAL_MS` (500), `FMP_MIN_INTERVAL_MS` (800), `TWELVE_DATA_MIN_INTERVAL_MS` (800), `STOOQ_MIN_INTERVAL_MS` (800)
+- `ALPHA_VANTAGE_MIN_INTERVAL_MS` (12000), `FINNHUB_MIN_INTERVAL_MS` (1100), `FMP_MIN_INTERVAL_MS` (12000), `TWELVE_DATA_MIN_INTERVAL_MS` (8000), `STOOQ_MIN_INTERVAL_MS` (1000)
 - `LLM_MODEL_COOLDOWN_MS` (120000), `STOCK_PROVIDER_COOLDOWN_MS` (300000)
 
 **Debug:**
@@ -306,11 +340,22 @@ These give broader sector analysis and better free-tier resilience than the code
 
 Before merging any change, verify:
 
+- [ ] Did the user explicitly authorize implementation, mutation, commit, or push?
+- [ ] Was `AGENT.md` read before changing code/docs?
+- [ ] Does this align with the product intent in `README.md` and the architecture in this file?
 - [ ] Does this keep all report data truthful (no fabricated fields)?
+- [ ] Does this prefer missing/suppressed data over wrong or non-meaningful data?
 - [ ] Does this preserve the three research modes (stock report, research report, watchlist daily)?
 - [ ] Does this keep the user input flow simple?
+- [ ] Does this work correctly both locally and on Vercel?
+- [ ] On Vercel, does it reserve enough time to save/return a report before the hard timeout?
+- [ ] Locally, does it avoid unnecessary Vercel-style truncation?
 - [ ] Does this stay within free-tier rate-limit budgets?
+- [ ] Does this use the right data provider/tool for each data type?
+- [ ] Does this use LLMs only for orchestration/reasoning/synthesis, not factual market data?
 - [ ] Does this avoid duplicating report/data logic that should be shared?
+- [ ] Were focused tests added for new or changed behavior where practical?
+- [ ] Were all practical relevant checks run (targeted tests, suites, typecheck, lint, build, install/build when needed)?
 - [ ] Does this keep README.md, AGENT.md, and CHANGELOG.md aligned with the current code?
 - [ ] Does CHANGELOG.md have an entry for this change?
 
