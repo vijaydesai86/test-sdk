@@ -8,6 +8,7 @@ import { buildDecisionSnapshot, decisionSnapshotToLegacyAction } from './decisio
 import { createTrustEntry, getTtlMinutesForKey, summarizeTrust } from './dataTrust';
 import { appendDecisionJournal, getLatestDecision, upsertCompanyThesis } from './researchMemoryStore';
 import type { DataTrustEntry, DecisionSnapshot } from './investmentTypes';
+import { DEFAULT_REPORTS_DIR } from './reportFileStore';
 
 /**
  * OpenAI-compatible tool definitions for stock information
@@ -25,7 +26,7 @@ export function getToolDefinitionsByName(toolNames?: string[]) {
   return definitions.filter((tool) => allowList.has(tool.function.name));
 }
 
-const REPORTS_DIR = process.env.REPORTS_DIR || (process.env.VERCEL ? '/tmp/reports' : 'reports');
+const REPORTS_DIR = DEFAULT_REPORTS_DIR;
 const CACHE_DIR = path.join(REPORTS_DIR, 'cache');
 const CACHE_TTL_MS = Number(process.env.STOCK_CACHE_TTL_MS || 1000 * 60 * 60 * 24 * 7);
 
@@ -44,9 +45,21 @@ const NUM_COMPANIES = parseBoundedEnvInt('NUM_COMPANIES', 10, 2, 15);
 // Deepening beyond 3 passes sharply increases latency without proportional insight on free tier.
 const DEEP_RESEARCH_DEPTH = parseBoundedEnvInt('DEEP_RESEARCH_DEPTH', 2, 1, 3);
 // Keep enough headroom under Vercel's overall runtime limit for rendering and persistence work.
-const DEEP_RESEARCH_MAX_MS = parseBoundedEnvInt('DEEP_RESEARCH_MAX_MS', 240000, 60000, 270000);
+const DEFAULT_DEEP_RESEARCH_MAX_MS = process.env.VERCEL ? 240000 : 600000;
+const MAX_DEEP_RESEARCH_MAX_MS = process.env.VERCEL ? 270000 : 900000;
+const DEEP_RESEARCH_MAX_MS = parseBoundedEnvInt(
+  'DEEP_RESEARCH_MAX_MS',
+  DEFAULT_DEEP_RESEARCH_MAX_MS,
+  60000,
+  MAX_DEEP_RESEARCH_MAX_MS
+);
 // Bound parallel fetch fan-out so one request cannot overwhelm free-tier provider quotas.
 const DATA_FETCH_CONCURRENCY = parseBoundedEnvInt('DATA_FETCH_CONCURRENCY', 3, 1, 4);
+const VERCEL_EXTENDED_DATA_MAX_COMPANIES = parseBoundedEnvInt('VERCEL_EXTENDED_DATA_MAX_COMPANIES', 3, 1, 15);
+
+function shouldFetchExtendedReportData(companyCount: number): boolean {
+  return !process.env.VERCEL || companyCount <= VERCEL_EXTENDED_DATA_MAX_COMPANIES;
+}
 
 async function mapWithConcurrency<T, R>(
   items: T[],
@@ -67,27 +80,16 @@ async function mapWithConcurrency<T, R>(
   await Promise.all(runners);
   return results;
 }
-const DEFAULT_SOURCE = (() => {
-  const provider = (process.env.STOCK_DATA_PROVIDER || 'alphavantage').toLowerCase();
-  if (provider === 'finnhub') return 'Finnhub';
-  if (provider === 'fmp') return 'Financial Modeling Prep';
-  if (provider === 'twelvedata') return 'Twelve Data';
-  if (provider === 'stooq') return 'Stooq';
-  if (provider === 'multi') return 'Multi-source';
-  return 'Alpha Vantage';
-})();
-const SOURCE_LEGEND = (() => {
-  const provider = (process.env.STOCK_DATA_PROVIDER || 'alphavantage').toLowerCase();
-  if (provider === 'hybrid') return '_Legend: Alpha Vantage is primary; Finnhub fills gaps._';
-  if (provider === 'finnhub') return '_Legend: Finnhub provider._';
-  if (provider === 'fmp') return '_Legend: Financial Modeling Prep provider._';
-  if (provider === 'twelvedata') return '_Legend: Twelve Data provider._';
-  if (provider === 'stooq') return '_Legend: Stooq provider._';
-  if (provider === 'multi') {
-    return '_Legend: Multi-source chain: Alpha Vantage → Finnhub → Financial Modeling Prep → Twelve Data → Stooq._';
-  }
-  return '_Legend: Alpha Vantage provider._';
-})();
+const DEFAULT_SOURCE = 'Multi-source';
+const SOURCE_LEGEND =
+  '_Legend: Automatic provider chain uses all configured providers: Alpha Vantage, Finnhub, Financial Modeling Prep, Twelve Data, then Stooq where supported._';
+
+type SavedReport = Awaited<ReturnType<typeof saveReport>>;
+
+function buildReportDownloadUrl(saved: SavedReport): string {
+  if (saved.supabaseId) return `/api/saved-reports/${saved.supabaseId}`;
+  return `/api/reports/${saved.storagePath ?? saved.filename}`;
+}
 
 const RATE_LIMIT_PROVIDERS = [
   { pattern: /finnhub/i, label: 'Finnhub' },
@@ -2095,6 +2097,7 @@ export async function executeTool(
         // LLM calls (ticker resolution, moat, conclusion) to avoid redundant API/LLM
         // load.  The caller does batch LLM calls afterward.
         const skipPerCompanyLLM = Boolean(args.skipLLM);
+        const coreOnly = Boolean(args.coreOnly);
 
         // Step 1: LLM resolves the input to the correct official ticker.
         // LLM is the primary resolver — it maps informal names to official tickers
@@ -2146,7 +2149,7 @@ export async function executeTool(
         const portfolioProfile = watchlist?.profile;
         const previousDecision = await getLatestDecision(symbol).catch(() => null);
         const isRateLimit = (message: string) => isRateLimitError(message);
-        const safeFetch = async <T>(label: string, key: string, request: Promise<T>) => {
+        const safeFetch = async <T>(label: string, key: string, request: () => Promise<T>, allowRequest = true) => {
           const cachedEntry = getCachedEntry(cache, key);
           const cachedValue = getCachedValue(cache, key);
           const registerTrust = (value: any, fetchedAt: string, provider: string) => {
@@ -2161,9 +2164,9 @@ export async function executeTool(
             registerTrust(cachedValue, cachedEntry?.updatedAt || new Date().toISOString(), provider);
             return cachedValue as T;
           }
-          if (rateLimitHit) return undefined as T;
+          if (rateLimitHit || !allowRequest) return undefined as T;
           try {
-            const result = await request;
+            const result = await request();
             const provider = result && typeof result === 'object' && '__source' in result
               ? String((result as any).__source)
               : DEFAULT_SOURCE;
@@ -2225,29 +2228,31 @@ export async function executeTool(
             (Array.isArray(stmt.annualReports) && stmt.annualReports.length > 0)
           );
 
-        const price = await safeFetch('Price', 'price', stockService.getStockPrice(symbol));
-        const companyOverview = await safeFetch('Company overview', 'overview', stockService.getCompanyOverview(symbol));
-        const priceHistory = await safeFetch('Price history', `priceHistory:${range}`, stockService.getPriceHistory(symbol, range));
-        const earningsHistory = await safeFetch('Earnings history', 'earningsHistory', stockService.getEarningsHistory(symbol));
-        const incomeStatement = await safeFetch('Income statement', 'incomeStatement', stockService.getIncomeStatement(symbol));
-        const balanceSheet = await safeFetch('Balance sheet', 'balanceSheet', stockService.getBalanceSheet(symbol));
-        const cashFlow = await safeFetch('Cash flow', 'cashFlow', stockService.getCashFlow(symbol));
-        const analystRatings = await safeFetch('Analyst ratings', 'analystRatings', stockService.getAnalystRatings(symbol));
+        const price = await safeFetch('Price', 'price', () => stockService.getStockPrice(symbol));
+        const companyOverview = await safeFetch('Company overview', 'overview', () => stockService.getCompanyOverview(symbol));
+        const basicFinancials = await safeFetch('Basic financials', 'basicFinancials', () => stockService.getBasicFinancials(symbol));
+        const priceHistory = await safeFetch('Price history', `priceHistory:${range}`, () => stockService.getPriceHistory(symbol, range));
+        const earningsHistory = await safeFetch('Earnings history', 'earningsHistory', () => stockService.getEarningsHistory(symbol), !coreOnly);
+        const incomeStatement = await safeFetch('Income statement', 'incomeStatement', () => stockService.getIncomeStatement(symbol), !coreOnly);
+        const balanceSheet = await safeFetch('Balance sheet', 'balanceSheet', () => stockService.getBalanceSheet(symbol), !coreOnly);
+        const cashFlow = await safeFetch('Cash flow', 'cashFlow', () => stockService.getCashFlow(symbol), !coreOnly);
+        const analystRatings = await safeFetch('Analyst ratings', 'analystRatings', () => stockService.getAnalystRatings(symbol));
         const analystRecommendations = await safeFetch(
           'Analyst recommendations',
           'analystRecommendations',
-          stockService.getAnalystRecommendations(symbol)
+          () => stockService.getAnalystRecommendations(symbol),
+          !coreOnly
         );
-        const insiderTrading = await safeFetch('Insider trading', 'insiderTrading', stockService.getInsiderTrading(symbol));
-        const priceTargets = await safeFetch('Price targets', 'priceTargets', stockService.getPriceTargets(symbol));
-        const peers = await safeFetch('Peers', 'peers', stockService.getPeers(symbol));
-        const newsSentiment = await safeFetch('News sentiment', 'newsSentiment', stockService.getNewsSentiment(symbol));
-        const companyNews = await safeFetch('Company news', 'companyNews', stockService.getCompanyNews(symbol, 14));
+        const insiderTrading = await safeFetch('Insider trading', 'insiderTrading', () => stockService.getInsiderTrading(symbol), !coreOnly);
+        const priceTargets = await safeFetch('Price targets', 'priceTargets', () => stockService.getPriceTargets(symbol));
+        const peers = await safeFetch('Peers', 'peers', () => stockService.getPeers(symbol), !coreOnly);
+        const newsSentiment = await safeFetch('News sentiment', 'newsSentiment', () => stockService.getNewsSentiment(symbol), !coreOnly);
+        const companyNews = await safeFetch('Company news', 'companyNews', () => stockService.getCompanyNews(symbol, 14), !coreOnly);
 
 
         // Build basic financials from the overview. These are direct provider fields
         // or simple arithmetic on provider fields, not synthetic statement rows.
-        const finalBasicFinancials = companyOverview ? buildBasicFinancialsFallback(companyOverview) : undefined;
+        const finalBasicFinancials = basicFinancials || (companyOverview ? buildBasicFinancialsFallback(companyOverview) : undefined);
 
         const hasIncomeData = hasReports(incomeStatement);
         const hasBalanceData = hasReports(balanceSheet);
@@ -2452,7 +2457,7 @@ export async function executeTool(
             decisionSnapshot,
             dataTrust: trustSummary,
             ...saved,
-            downloadUrl: `/api/reports/${saved.storagePath ?? saved.filename}`,
+            downloadUrl: buildReportDownloadUrl(saved),
           },
           message: `Saved stock report to ${saved.filePath}`,
         };
@@ -2512,6 +2517,10 @@ export async function executeTool(
         const sourceMap: Record<string, Record<string, string>> = {};
         const watchlist = await getDefaultWatchlist().catch(() => null);
         const portfolioProfile = watchlist?.profile;
+        const fetchExtendedData = shouldFetchExtendedReportData(universe.length);
+        if (!fetchExtendedData) {
+          notes.push('Large-report Vercel mode: prioritized core decision inputs and cached optional sections to stay within free-tier limits.');
+        }
         let rateLimitHit = false;
         const isRateLimit = (message: string) => isRateLimitError(message);
         const safeFetch = async <T>(
@@ -2519,7 +2528,8 @@ export async function executeTool(
           cache: SymbolCache,
           label: string,
           key: string,
-          request: Promise<T>
+          request: () => Promise<T>,
+          allowRequest = true
         ) => {
         const cachedValue = getCachedValue(cache, key);
         if (cachedValue !== null) {
@@ -2532,9 +2542,9 @@ export async function executeTool(
           }
           return cachedValue as T;
         }
-          if (rateLimitHit) return undefined as T;
+          if (rateLimitHit || !allowRequest) return undefined as T;
         try {
-          const result = await request;
+          const result = await request();
           if (result && typeof result === 'object') {
             const sourceValue = '__source' in result ? String((result as any).__source) : DEFAULT_SOURCE;
             sourceMap[symbol] = sourceMap[symbol] || {};
@@ -2611,19 +2621,19 @@ export async function executeTool(
           DATA_FETCH_CONCURRENCY,
           async (symbol) => {
             const cache = await loadSymbolCache(symbol);
-            const price = await safeFetch(symbol, cache, 'Price', 'price', stockService.getStockPrice(symbol));
-            const overview = await safeFetch(symbol, cache, 'Company overview', 'overview', stockService.getCompanyOverview(symbol));
-            const basicFinancials = await safeFetch(symbol, cache, 'Basic financials', 'basicFinancials', stockService.getBasicFinancials(symbol));
-            const priceHistory = await safeFetch(symbol, cache, 'Price history', `priceHistory:${range}`, stockService.getPriceHistory(symbol, range));
-            const incomeStatement = await safeFetch(symbol, cache, 'Income statement', 'incomeStatement', stockService.getIncomeStatement(symbol));
-            const balanceSheet = await safeFetch(symbol, cache, 'Balance sheet', 'balanceSheet', stockService.getBalanceSheet(symbol));
-            const cashFlow = await safeFetch(symbol, cache, 'Cash flow', 'cashFlow', stockService.getCashFlow(symbol));
-            const analystRatings = await safeFetch(symbol, cache, 'Analyst ratings', 'analystRatings', stockService.getAnalystRatings(symbol));
-            const insiderTrading = await safeFetch(symbol, cache, 'Insider trading', 'insiderTrading', stockService.getInsiderTrading(symbol));
-            const priceTargets = await safeFetch(symbol, cache, 'Price targets', 'priceTargets', stockService.getPriceTargets(symbol));
-            const peers = await safeFetch(symbol, cache, 'Peers', 'peers', stockService.getPeers(symbol));
-            const newsSentiment = await safeFetch(symbol, cache, 'News sentiment', 'newsSentiment', stockService.getNewsSentiment(symbol));
-            const companyNews = await safeFetch(symbol, cache, 'Company news', 'companyNews', stockService.getCompanyNews(symbol, 14));
+            const price = await safeFetch(symbol, cache, 'Price', 'price', () => stockService.getStockPrice(symbol));
+            const overview = await safeFetch(symbol, cache, 'Company overview', 'overview', () => stockService.getCompanyOverview(symbol));
+            const basicFinancials = await safeFetch(symbol, cache, 'Basic financials', 'basicFinancials', () => stockService.getBasicFinancials(symbol));
+            const priceHistory = await safeFetch(symbol, cache, 'Price history', `priceHistory:${range}`, () => stockService.getPriceHistory(symbol, range));
+            const incomeStatement = await safeFetch(symbol, cache, 'Income statement', 'incomeStatement', () => stockService.getIncomeStatement(symbol), fetchExtendedData);
+            const balanceSheet = await safeFetch(symbol, cache, 'Balance sheet', 'balanceSheet', () => stockService.getBalanceSheet(symbol), fetchExtendedData);
+            const cashFlow = await safeFetch(symbol, cache, 'Cash flow', 'cashFlow', () => stockService.getCashFlow(symbol), fetchExtendedData);
+            const analystRatings = await safeFetch(symbol, cache, 'Analyst ratings', 'analystRatings', () => stockService.getAnalystRatings(symbol));
+            const insiderTrading = await safeFetch(symbol, cache, 'Insider trading', 'insiderTrading', () => stockService.getInsiderTrading(symbol), fetchExtendedData);
+            const priceTargets = await safeFetch(symbol, cache, 'Price targets', 'priceTargets', () => stockService.getPriceTargets(symbol));
+            const peers = await safeFetch(symbol, cache, 'Peers', 'peers', () => stockService.getPeers(symbol), fetchExtendedData);
+            const newsSentiment = await safeFetch(symbol, cache, 'News sentiment', 'newsSentiment', () => stockService.getNewsSentiment(symbol), fetchExtendedData);
+            const companyNews = await safeFetch(symbol, cache, 'Company news', 'companyNews', () => stockService.getCompanyNews(symbol, 14), fetchExtendedData);
             return {
               symbol,
               cache,
@@ -2819,7 +2829,7 @@ export async function executeTool(
         });
         return {
           success: true,
-          data: { content, universe, range, ...saved, downloadUrl: `/api/reports/${saved.storagePath ?? saved.filename}` },
+          data: { content, universe, range, ...saved, downloadUrl: buildReportDownloadUrl(saved) },
           message: `Saved comparison report to ${saved.filePath}`,
         };
       }
@@ -2829,6 +2839,7 @@ export async function executeTool(
         if (!watchlist.items.length) {
           return { success: false, error: 'The watchlist is empty. Add companies before requesting a daily report.' };
         }
+        const coreOnly = !shouldFetchExtendedReportData(watchlist.items.length);
 
         const companyResults = await mapWithConcurrency(
           watchlist.items,
@@ -2836,7 +2847,7 @@ export async function executeTool(
           async (item) => {
             const result = await executeTool(
               'generate_stock_report',
-              { symbol: item.symbol, range, skipSave: true, includeRawData: true, skipLLM: true },
+              { symbol: item.symbol, range, skipSave: true, includeRawData: true, skipLLM: true, coreOnly },
               stockService,
               options
             );
@@ -2871,7 +2882,7 @@ export async function executeTool(
             async (item) => {
               const result = await executeTool(
                 'generate_stock_report',
-                { symbol: item.symbol, range, skipSave: true, includeRawData: true, skipLLM: true },
+                { symbol: item.symbol, range, skipSave: true, includeRawData: true, skipLLM: true, coreOnly },
                 stockService,
                 options
               );
@@ -3004,7 +3015,7 @@ export async function executeTool(
         });
         return {
           success: true,
-          data: { content, watchlist, range, ...saved, downloadUrl: `/api/reports/${saved.storagePath ?? saved.filename}` },
+          data: { content, watchlist, range, ...saved, downloadUrl: buildReportDownloadUrl(saved) },
           message: `Saved daily watchlist report to ${saved.filePath}`
         };
       }
@@ -3024,7 +3035,7 @@ export async function executeTool(
             success: false,
             error:
               `Could not identify companies for sector "${sector}". ` +
-              'Please provide the specific company tickers using generate_comparison_report instead.',
+              'Please provide the specific company tickers instead.',
           };
         }
 
@@ -3034,6 +3045,10 @@ export async function executeTool(
         const sourceMap: Record<string, Record<string, string>> = {};
         const watchlist = await getDefaultWatchlist().catch(() => null);
         const portfolioProfile = watchlist?.profile;
+        const fetchExtendedData = shouldFetchExtendedReportData(universe.length);
+        if (!fetchExtendedData) {
+          notes.push('Large-report Vercel mode: prioritized core decision inputs and cached optional sections to stay within free-tier limits.');
+        }
         let rateLimitHit = false;
         const isRateLimit = (message: string) => isRateLimitError(message);
         const safeFetch = async <T>(
@@ -3041,7 +3056,8 @@ export async function executeTool(
           cache: SymbolCache,
           label: string,
           key: string,
-          request: Promise<T>
+          request: () => Promise<T>,
+          allowRequest = true
         ) => {
           const cachedValue = getCachedValue(cache, key);
           if (cachedValue !== null) {
@@ -3054,9 +3070,9 @@ export async function executeTool(
             }
             return cachedValue as T;
           }
-          if (rateLimitHit) return undefined as T;
+          if (rateLimitHit || !allowRequest) return undefined as T;
           try {
-            const result = await request;
+            const result = await request();
             if (result && typeof result === 'object') {
               const sourceValue = '__source' in result ? String((result as any).__source) : DEFAULT_SOURCE;
               sourceMap[symbol] = sourceMap[symbol] || {};
@@ -3133,19 +3149,19 @@ export async function executeTool(
           DATA_FETCH_CONCURRENCY,
           async (symbol) => {
             const cache = await loadSymbolCache(symbol);
-            const price = await safeFetch(symbol, cache, 'Price', 'price', stockService.getStockPrice(symbol));
-            const overview = await safeFetch(symbol, cache, 'Company overview', 'overview', stockService.getCompanyOverview(symbol));
-            const basicFinancials = await safeFetch(symbol, cache, 'Basic financials', 'basicFinancials', stockService.getBasicFinancials(symbol));
-            const priceHistory = await safeFetch(symbol, cache, 'Price history', `priceHistory:${range}`, stockService.getPriceHistory(symbol, range));
-            const incomeStatement = await safeFetch(symbol, cache, 'Income statement', 'incomeStatement', stockService.getIncomeStatement(symbol));
-            const balanceSheet = await safeFetch(symbol, cache, 'Balance sheet', 'balanceSheet', stockService.getBalanceSheet(symbol));
-            const cashFlow = await safeFetch(symbol, cache, 'Cash flow', 'cashFlow', stockService.getCashFlow(symbol));
-            const analystRatings = await safeFetch(symbol, cache, 'Analyst ratings', 'analystRatings', stockService.getAnalystRatings(symbol));
-            const insiderTrading = await safeFetch(symbol, cache, 'Insider trading', 'insiderTrading', stockService.getInsiderTrading(symbol));
-            const priceTargets = await safeFetch(symbol, cache, 'Price targets', 'priceTargets', stockService.getPriceTargets(symbol));
-            const peers = await safeFetch(symbol, cache, 'Peers', 'peers', stockService.getPeers(symbol));
-            const newsSentiment = await safeFetch(symbol, cache, 'News sentiment', 'newsSentiment', stockService.getNewsSentiment(symbol));
-            const companyNews = await safeFetch(symbol, cache, 'Company news', 'companyNews', stockService.getCompanyNews(symbol, 14));
+            const price = await safeFetch(symbol, cache, 'Price', 'price', () => stockService.getStockPrice(symbol));
+            const overview = await safeFetch(symbol, cache, 'Company overview', 'overview', () => stockService.getCompanyOverview(symbol));
+            const basicFinancials = await safeFetch(symbol, cache, 'Basic financials', 'basicFinancials', () => stockService.getBasicFinancials(symbol));
+            const priceHistory = await safeFetch(symbol, cache, 'Price history', `priceHistory:${range}`, () => stockService.getPriceHistory(symbol, range));
+            const incomeStatement = await safeFetch(symbol, cache, 'Income statement', 'incomeStatement', () => stockService.getIncomeStatement(symbol), fetchExtendedData);
+            const balanceSheet = await safeFetch(symbol, cache, 'Balance sheet', 'balanceSheet', () => stockService.getBalanceSheet(symbol), fetchExtendedData);
+            const cashFlow = await safeFetch(symbol, cache, 'Cash flow', 'cashFlow', () => stockService.getCashFlow(symbol), fetchExtendedData);
+            const analystRatings = await safeFetch(symbol, cache, 'Analyst ratings', 'analystRatings', () => stockService.getAnalystRatings(symbol));
+            const insiderTrading = await safeFetch(symbol, cache, 'Insider trading', 'insiderTrading', () => stockService.getInsiderTrading(symbol), fetchExtendedData);
+            const priceTargets = await safeFetch(symbol, cache, 'Price targets', 'priceTargets', () => stockService.getPriceTargets(symbol));
+            const peers = await safeFetch(symbol, cache, 'Peers', 'peers', () => stockService.getPeers(symbol), fetchExtendedData);
+            const newsSentiment = await safeFetch(symbol, cache, 'News sentiment', 'newsSentiment', () => stockService.getNewsSentiment(symbol), fetchExtendedData);
+            const companyNews = await safeFetch(symbol, cache, 'Company news', 'companyNews', () => stockService.getCompanyNews(symbol, 14), fetchExtendedData);
             return {
               symbol,
               cache,
@@ -3336,7 +3352,7 @@ export async function executeTool(
         });
         return {
           success: true,
-          data: { content, ...saved, downloadUrl: `/api/reports/${saved.storagePath ?? saved.filename}` },
+          data: { content, ...saved, downloadUrl: buildReportDownloadUrl(saved) },
           message: `Saved sector report for "${sector}" to ${saved.filePath}`,
         };
       }
@@ -3401,7 +3417,7 @@ export async function executeTool(
           });
           return {
             success: true,
-            data: { content, ...saved, downloadUrl: `/api/reports/${saved.storagePath ?? saved.filename}` },
+            data: { content, ...saved, downloadUrl: buildReportDownloadUrl(saved) },
             message: `Saved deep research comparison report for "${sector}" to ${saved.filePath}`,
           };
         }
@@ -3438,7 +3454,7 @@ export async function executeTool(
           });
           return {
             success: true,
-            data: { content, ...saved, downloadUrl: `/api/reports/${saved.storagePath ?? saved.filename}` },
+            data: { content, ...saved, downloadUrl: buildReportDownloadUrl(saved) },
             message: `Saved deep research company report for "${sector}" to ${saved.filePath}`,
           };
         }
@@ -3451,7 +3467,7 @@ export async function executeTool(
             success: false,
             error:
               `Could not identify companies for sector "${sector}". ` +
-              'Please provide specific tickers using generate_comparison_report instead.',
+              'Please provide specific company tickers instead.',
           };
         }
 
@@ -3555,6 +3571,10 @@ export async function executeTool(
         const sourceMap: Record<string, Record<string, string>> = {};
         const watchlist = await getDefaultWatchlist().catch(() => null);
         const portfolioProfile = watchlist?.profile;
+        const fetchExtendedData = shouldFetchExtendedReportData(universe.length);
+        if (!fetchExtendedData) {
+          notes.push('Large-report Vercel mode: prioritized core decision inputs and cached optional sections to stay within free-tier limits.');
+        }
         let rateLimitHit = false;
         const isRateLimit = (message: string) => isRateLimitError(message);
         const safeFetch = async <T>(
@@ -3562,7 +3582,8 @@ export async function executeTool(
           cache: SymbolCache,
           label: string,
           key: string,
-          request: Promise<T>
+          request: () => Promise<T>,
+          allowRequest = true
         ) => {
           const cachedValue = getCachedValue(cache, key);
           if (cachedValue !== null) {
@@ -3575,9 +3596,9 @@ export async function executeTool(
             }
             return cachedValue as T;
           }
-          if (rateLimitHit) return undefined as T;
+          if (rateLimitHit || !allowRequest) return undefined as T;
           try {
-            const result = await request;
+            const result = await request();
             if (result && typeof result === 'object') {
               const sourceValue = '__source' in result ? String((result as any).__source) : DEFAULT_SOURCE;
               sourceMap[symbol] = sourceMap[symbol] || {};
@@ -3674,19 +3695,19 @@ export async function executeTool(
               };
             }
             const cache = await loadSymbolCache(symbol);
-            const price = await safeFetch(symbol, cache, 'Price', 'price', stockService.getStockPrice(symbol));
-            const overview = await safeFetch(symbol, cache, 'Company overview', 'overview', stockService.getCompanyOverview(symbol));
-            const basicFinancials = await safeFetch(symbol, cache, 'Basic financials', 'basicFinancials', stockService.getBasicFinancials(symbol));
-            const priceHistory = await safeFetch(symbol, cache, 'Price history', `priceHistory:${range}`, stockService.getPriceHistory(symbol, range));
-            const incomeStatement = await safeFetch(symbol, cache, 'Income statement', 'incomeStatement', stockService.getIncomeStatement(symbol));
-            const balanceSheet = await safeFetch(symbol, cache, 'Balance sheet', 'balanceSheet', stockService.getBalanceSheet(symbol));
-            const cashFlow = await safeFetch(symbol, cache, 'Cash flow', 'cashFlow', stockService.getCashFlow(symbol));
-            const analystRatings = await safeFetch(symbol, cache, 'Analyst ratings', 'analystRatings', stockService.getAnalystRatings(symbol));
-            const insiderTrading = await safeFetch(symbol, cache, 'Insider trading', 'insiderTrading', stockService.getInsiderTrading(symbol));
-            const priceTargets = await safeFetch(symbol, cache, 'Price targets', 'priceTargets', stockService.getPriceTargets(symbol));
-            const peers = await safeFetch(symbol, cache, 'Peers', 'peers', stockService.getPeers(symbol));
-            const newsSentiment = await safeFetch(symbol, cache, 'News sentiment', 'newsSentiment', stockService.getNewsSentiment(symbol));
-            const companyNews = await safeFetch(symbol, cache, 'Company news', 'companyNews', stockService.getCompanyNews(symbol, 14));
+            const price = await safeFetch(symbol, cache, 'Price', 'price', () => stockService.getStockPrice(symbol));
+            const overview = await safeFetch(symbol, cache, 'Company overview', 'overview', () => stockService.getCompanyOverview(symbol));
+            const basicFinancials = await safeFetch(symbol, cache, 'Basic financials', 'basicFinancials', () => stockService.getBasicFinancials(symbol));
+            const priceHistory = await safeFetch(symbol, cache, 'Price history', `priceHistory:${range}`, () => stockService.getPriceHistory(symbol, range));
+            const incomeStatement = await safeFetch(symbol, cache, 'Income statement', 'incomeStatement', () => stockService.getIncomeStatement(symbol), fetchExtendedData);
+            const balanceSheet = await safeFetch(symbol, cache, 'Balance sheet', 'balanceSheet', () => stockService.getBalanceSheet(symbol), fetchExtendedData);
+            const cashFlow = await safeFetch(symbol, cache, 'Cash flow', 'cashFlow', () => stockService.getCashFlow(symbol), fetchExtendedData);
+            const analystRatings = await safeFetch(symbol, cache, 'Analyst ratings', 'analystRatings', () => stockService.getAnalystRatings(symbol));
+            const insiderTrading = await safeFetch(symbol, cache, 'Insider trading', 'insiderTrading', () => stockService.getInsiderTrading(symbol), fetchExtendedData);
+            const priceTargets = await safeFetch(symbol, cache, 'Price targets', 'priceTargets', () => stockService.getPriceTargets(symbol));
+            const peers = await safeFetch(symbol, cache, 'Peers', 'peers', () => stockService.getPeers(symbol), fetchExtendedData);
+            const newsSentiment = await safeFetch(symbol, cache, 'News sentiment', 'newsSentiment', () => stockService.getNewsSentiment(symbol), fetchExtendedData);
+            const companyNews = await safeFetch(symbol, cache, 'Company news', 'companyNews', () => stockService.getCompanyNews(symbol, 14), fetchExtendedData);
             return {
               symbol,
               cache,
@@ -3882,7 +3903,7 @@ export async function executeTool(
         });
         return {
           success: true,
-          data: { content, ...saved, downloadUrl: `/api/reports/${saved.storagePath ?? saved.filename}` },
+          data: { content, ...saved, downloadUrl: buildReportDownloadUrl(saved) },
           message: `Saved deep sector report for "${sector}" to ${saved.filePath}`,
         };
       }

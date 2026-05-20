@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseClient } from '../../../lib/supabaseClient';
+import { decodeReportStorageId, deleteReportFile, readReportFile } from '../../../lib/reportFileStore';
 
 /**
  * GET /api/saved-reports/[id]
@@ -10,6 +11,21 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
+
+  const filesystemPath = decodeReportStorageId(id);
+  if (filesystemPath) {
+    const report = await readReportFile(filesystemPath);
+    if (!report) {
+      return NextResponse.json({ error: 'Report not found' }, { status: 404 });
+    }
+    return new NextResponse(report.content, {
+      status: 200,
+      headers: {
+        'Content-Type': 'text/markdown; charset=utf-8',
+        'Content-Disposition': `attachment; filename="${report.filename}"`,
+      },
+    });
+  }
 
   if (!id || !/^[0-9a-f-]{36}$/i.test(id)) {
     return NextResponse.json({ error: 'Invalid report id' }, { status: 400 });
@@ -51,6 +67,15 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
+
+  const filesystemPath = decodeReportStorageId(id);
+  if (filesystemPath) {
+    const deleted = await deleteReportFile(filesystemPath);
+    if (!deleted) {
+      return NextResponse.json({ error: 'Report not found' }, { status: 404 });
+    }
+    return NextResponse.json({ success: true });
+  }
 
   if (!id || !/^[0-9a-f-]{36}$/i.test(id)) {
     return NextResponse.json({ error: 'Invalid report id' }, { status: 400 });

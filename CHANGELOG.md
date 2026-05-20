@@ -2,6 +2,16 @@
 All notable changes to this project are recorded here.
 ## [Unreleased]
 ### Fixed
+- **Local/Vercel report artifact parity**: Report download URLs now point to Supabase saved-report IDs when Supabase is configured and to `/api/reports/...` for local filesystem files. Added the missing local report GET/DELETE route and filesystem listing fallback for the Saved tab.
+- **Placeholder environment values treated as missing**: Example values such as `ghp_your_token_here` and `your_*_key_here` are no longer treated as configured GitHub, Gemini, stock-data, FRED, or Supabase credentials.
+- **`.env.example` Vercel parity without secret leakage**: Expanded `.env.example` to include the variable names used in local/Vercel environments while keeping all secrets blank.
+- **Stale stock provider mode reporting**: `/api/health` and report source legends now reflect the automatic all-configured-providers chain instead of reading removed `STOCK_DATA_PROVIDER` mode.
+- **Internal tool-name leakage**: User-facing research errors no longer instruct users to call internal routing tool names.
+- **Free-tier provider pressure**: Report fetches now check cache/rate-limit state before starting upstream requests, provider throttles are serialized across concurrent report fetches, and Alpha Vantage is pushed later in the method-specific fallback order where roomier/no-key providers can satisfy the data.
+- **Single-stock report fundamentals**: `generate_stock_report` now calls the dedicated `getBasicFinancials` provider method before falling back to overview-derived metrics, so profitability/growth/financial-ratio inputs have a better chance of being real provider data.
+- **Large Vercel reports finish with useful decisions**: Multi-company and watchlist reports on Vercel prioritize core decision inputs (price, overview, basic financials, price history, analyst ratings, price targets) and use cached optional sections for large universes instead of spending free-tier quota on lower-priority endpoints first.
+- **LLM fallback resilience**: Invalid GitHub/Gemini credentials for one provider now skip to the next configured provider instead of blocking the whole request.
+- **Local vs Vercel budgets**: Deep research and LLM request timeouts stay conservative on Vercel, while local runs can spend longer collecting data when no 300 s platform timeout applies.
 - **Gemini tool-calling 400 (`Value is not a string: null`)**: Gemini's OpenAI-compatible endpoint rejected assistant tool-call messages when `content` was `null`. `callGeminiAPI()` now sanitizes every Gemini-bound message so `content` is always a string before each tool-calling round.
 - **Misleading Gemini 400 errors**: Gemini 400 responses no longer blame the user's selected model or tell users to open a dropdown. The route now distinguishes invalid model IDs from generic bad requests and returns server-side guidance.
 - **Invalid Gemini fallback IDs**: Removed stale Gemini fallback IDs (`gemini-3.0-flash`, `gemini-3.1-flash-lite`) and replaced the safe internal Gemini ladder with `gemini-2.5-flash` → `gemini-2.5-flash-lite` → `gemini-2.0-flash`.

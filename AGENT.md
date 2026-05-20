@@ -71,12 +71,13 @@ User message
 | `web/app/lib/supabaseClient.ts` | Lazy Supabase client singleton; returns `null` when env vars are absent. |
 | `web/app/components/ChatInterface.tsx` | Full single-page UI: chat pane, workspace sidebar (Watchlist / Artifacts / Saved tabs), 4 themes (Aurora, Solstice, Ember, Graphite), ECharts and Mermaid rendering, quick prompts, automatic routing messaging. |
 | `web/app/api/health/route.ts` | Provider health check. Reports which API keys are configured and whether the service is ready. Supports optional live price check via `HEALTH_CHECK_SYMBOL`. |
-| `web/app/api/saved-reports/route.ts` | GET (list) and POST (persist) for the saved-report library. Falls back to legacy schema when migration columns are absent. |
+| `web/app/api/saved-reports/route.ts` | GET (list) and POST (persist) for the saved-report library. Uses Supabase when configured and local report files as fallback. Falls back to legacy schema when migration columns are absent. |
+| `web/app/api/reports/[...path]/route.ts` | GET/DELETE route for local Markdown report artifacts created by filesystem fallback. |
 | `web/app/api/watchlist/route.ts` | GET default watchlist; PATCH/DELETE individual items. |
 | `web/app/api/models/route.ts` | Returns available GitHub Models from live catalog. |
 | `web/app/api/providers/route.ts` | Returns combined list of available LLM models (GitHub + Gemini) for internal inventory/debug use. |
 
-### Tool catalog (34 definitions / 31 chat-exposed tools)
+### Tool catalog (31 definitions / 28 chat-exposed tools)
 
 **Data tools** — fetch real data, return structured JSON, make zero report-side decisions:
 

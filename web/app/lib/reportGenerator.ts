@@ -2,6 +2,8 @@
 import { promises as fs } from 'fs';
 import path from 'path';
 import type { DataTrustSummary, DecisionSnapshot, PortfolioProfile, WatchlistPositionMeta } from './investmentTypes';
+import { getConfiguredEnv } from './env';
+import { DEFAULT_REPORTS_DIR } from './reportFileStore';
 
 type PricePoint = { date: string; close: string | number };
 type EarningsPoint = { fiscalQuarter: string; reportedEPS: string | number };
@@ -121,9 +123,6 @@ export interface MoatAnalysis {
   /** 1-2 sentences: what this company excels at and who/what it is best for */
   bestFor: string;
 }
-
-const DEFAULT_REPORTS_DIR =
-  process.env.REPORTS_DIR || (process.env.VERCEL ? '/tmp/reports' : 'reports');
 
 function formatDateLabel(date: string): string {
   const parsed = new Date(date);
@@ -2970,8 +2969,8 @@ export async function saveReport(
       );
 
   let supabaseId: string | undefined;
-  const supabaseUrl = process.env.SUPABASE_URL;
-  const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const supabaseUrl = getConfiguredEnv('SUPABASE_URL');
+  const supabaseKey = getConfiguredEnv('SUPABASE_SERVICE_ROLE_KEY');
   if (supabaseUrl && supabaseKey) {
     try {
       const { getSupabaseClient } = await import('./supabaseClient');
@@ -3044,20 +3043,8 @@ export function buildComparisonReport(data: ComparisonReportData): string {
   const header = `# Company Comparison Report`;
   const notes = data.notes?.length ? data.notes.map((note) => `- ${note}`).join('\n') : '';
   const sources = data.sources || {};
-  const provider = (process.env.STOCK_DATA_PROVIDER || 'alphavantage').toLowerCase();
-  const sourceLegend = provider === 'hybrid'
-    ? '_Legend: Alpha Vantage is primary; Finnhub fills gaps._'
-    : provider === 'finnhub'
-      ? '_Legend: Finnhub provider._'
-      : provider === 'fmp'
-        ? '_Legend: Financial Modeling Prep provider._'
-        : provider === 'twelvedata'
-          ? '_Legend: Twelve Data provider._'
-          : provider === 'stooq'
-            ? '_Legend: Stooq provider._'
-            : provider === 'multi'
-              ? '_Legend: Multi-source chain: Alpha Vantage → Finnhub → Financial Modeling Prep → Twelve Data → Stooq._'
-              : '_Legend: Alpha Vantage provider._';
+  const sourceLegend =
+    '_Legend: Automatic provider chain uses all configured providers: Alpha Vantage, Finnhub, Financial Modeling Prep, Twelve Data, then Stooq where supported._';
   const items = data.items;
 
   // Render data sources as a compact per-company bullet list instead of a 14-column table

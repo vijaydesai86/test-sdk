@@ -1,4 +1,5 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import { getConfiguredEnv } from './env';
 
 let _client: SupabaseClient | null = null;
 
@@ -10,8 +11,8 @@ let _client: SupabaseClient | null = null;
  */
 export function getSupabaseClient(): SupabaseClient | null {
   if (_client) return _client;
-  const supabaseUrl = process.env.SUPABASE_URL ?? '';
-  const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY ?? '';
+  const supabaseUrl = getConfiguredEnv('SUPABASE_URL') ?? '';
+  const supabaseServiceRoleKey = getConfiguredEnv('SUPABASE_SERVICE_ROLE_KEY') ?? '';
   if (!supabaseUrl || !supabaseServiceRoleKey) return null;
   _client = createClient(supabaseUrl, supabaseServiceRoleKey, {
     auth: { persistSession: false },

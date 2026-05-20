@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseClient } from '../../lib/supabaseClient';
+import { encodeReportStorageId, listFilesystemReports } from '../../lib/reportFileStore';
+import { saveReport } from '../../lib/reportGenerator';
 
 const DETAILED_COLUMNS = 'id, filename, title, summary, storage_path, report_kind, report_date, created_at';
 const BASIC_COLUMNS = 'id, filename, title, created_at';
@@ -54,7 +56,7 @@ function normalizeLegacyReport(row: BasicSavedReportRow): DetailedSavedReportRow
 export async function GET() {
   const supabase = getSupabaseClient();
   if (!supabase) {
-    return NextResponse.json({ reports: [] });
+    return NextResponse.json({ reports: await listFilesystemReports(), storage: 'filesystem' });
   }
 
   const detailedQuery = await supabase
@@ -71,7 +73,11 @@ export async function GET() {
 
     if (legacyQuery.error) {
       console.error('[saved-reports] Supabase error:', truncateErrorMsg(legacyQuery.error.message));
-      return NextResponse.json({ reports: [], setupRequired: true });
+      return NextResponse.json({
+        reports: await listFilesystemReports(),
+        setupRequired: true,
+        storage: 'filesystem',
+      });
     }
 
     return NextResponse.json({
@@ -81,7 +87,11 @@ export async function GET() {
 
   if (detailedQuery.error) {
     console.error('[saved-reports] Supabase error:', truncateErrorMsg(detailedQuery.error.message));
-    return NextResponse.json({ reports: [], setupRequired: true });
+    return NextResponse.json({
+      reports: await listFilesystemReports(),
+      setupRequired: true,
+      storage: 'filesystem',
+    });
   }
 
   return NextResponse.json({ reports: (detailedQuery.data ?? []) as DetailedSavedReportRow[] });
@@ -128,7 +138,26 @@ export async function POST(request: NextRequest) {
 
   const supabase = getSupabaseClient();
   if (!supabase) {
-    return NextResponse.json({ error: 'Supabase not configured' }, { status: 503 });
+    const saved = await saveReport(content, title || filename.replace(/\.md$/i, ''), undefined, {
+      summary: summary || undefined,
+      reportKind: reportKind || undefined,
+    });
+    return NextResponse.json(
+      {
+        report: {
+          id: encodeReportStorageId(saved.storagePath),
+          filename: saved.filename,
+          title: saved.title,
+          summary: saved.summary || null,
+          storage_path: saved.storagePath,
+          report_kind: saved.reportKind || null,
+          report_date: saved.reportDate,
+          created_at: new Date().toISOString(),
+        },
+        storage: 'filesystem',
+      },
+      { status: 201 }
+    );
   }
 
   const detailedInsert = await supabase

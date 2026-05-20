@@ -557,7 +557,7 @@ export function buildDecisionSnapshot(input: DecisionInput): DecisionSnapshot {
   } else if (topCon) {
     leadReason = ` ${topCon}`;
   } else if (activePillars.length === 0) {
-    leadReason = ' Insufficient data to form a view.';
+    leadReason = ' No reliable live/cached decision pillars were available, so the only defensible action is to wait for fresh inputs rather than force a buy or sell.';
   }
   const summary = `${actionToSummaryLabel(action)}.${scoreTag}${leadReason}${pillarLine}`.trim();
 

@@ -3,83 +3,52 @@ import { NextResponse } from 'next/server';
 
 export const runtime = 'nodejs';
 import { createStockService } from '@/app/lib/stockDataService';
+import { getConfiguredEnv } from '@/app/lib/env';
 
-function buildProviderStatus(configured: boolean, role: 'required' | 'optional' | 'fallback', missingKey: string) {
-  if (configured) {
-    return { ok: true, configured: true, role };
-  }
-
-  if (role === 'required') {
-    return { ok: false, configured: false, role, error: `${missingKey} not set` };
-  }
-
-  return {
-    ok: true,
-    configured: false,
-    role,
-    note: role === 'fallback' ? 'Always available as fallback.' : 'Optional for the selected provider mode.',
-  };
+function buildProviderStatus(configured: boolean, label: string, envName?: string) {
+  return configured
+    ? { ok: true, configured: true, role: 'configured', label }
+    : {
+      ok: true,
+      configured: false,
+      role: 'optional',
+      label,
+      note: envName ? `${envName} not set; provider skipped.` : 'Always available as final fallback.',
+    };
 }
 
 export async function GET() {
-  const provider = (process.env.STOCK_DATA_PROVIDER || 'alphavantage').toLowerCase();
-  const alphaVantageKey = process.env.ALPHA_VANTAGE_API_KEY;
-  const finnhubKey = process.env.FINNHUB_API_KEY;
-  const fmpKey = process.env.FINANCIAL_MODELING_PREP_API_KEY;
-  const twelveKey = process.env.TWELVE_DATA_API_KEY;
+  const provider = 'automatic';
+  const alphaVantageKey = getConfiguredEnv('ALPHA_VANTAGE_API_KEY');
+  const finnhubKey = getConfiguredEnv('FINNHUB_API_KEY');
+  const fmpKey = getConfiguredEnv('FINANCIAL_MODELING_PREP_API_KEY');
+  const twelveKey = getConfiguredEnv('TWELVE_DATA_API_KEY');
   const testSymbol = process.env.HEALTH_CHECK_SYMBOL;
-
-  const alphaRole = provider === 'alphavantage' ? 'required' : provider === 'hybrid' || provider === 'multi' ? 'optional' : null;
-  const finnhubRole = provider === 'finnhub' ? 'required' : provider === 'hybrid' || provider === 'multi' ? 'optional' : null;
-  const fmpRole = provider === 'fmp' ? 'required' : provider === 'multi' ? 'optional' : null;
-  const twelveRole = provider === 'twelvedata' ? 'required' : provider === 'multi' ? 'optional' : null;
-  const stooqRole = provider === 'stooq' ? 'required' : provider === 'multi' ? 'fallback' : null;
-
-  const results: Record<string, any> = { provider };
-
-  if (alphaRole) {
-    results.alphaVantage = buildProviderStatus(Boolean(alphaVantageKey), alphaRole, 'ALPHA_VANTAGE_API_KEY');
-  }
-  if (finnhubRole) {
-    results.finnhub = buildProviderStatus(Boolean(finnhubKey), finnhubRole, 'FINNHUB_API_KEY');
-  }
-  if (fmpRole) {
-    results.financialModelingPrep = buildProviderStatus(Boolean(fmpKey), fmpRole, 'FINANCIAL_MODELING_PREP_API_KEY');
-  }
-  if (twelveRole) {
-    results.twelveData = buildProviderStatus(Boolean(twelveKey), twelveRole, 'TWELVE_DATA_API_KEY');
-  }
-  if (stooqRole) {
-    results.stooq = buildProviderStatus(true, stooqRole, '');
-  }
 
   const configuredProviders = [
     alphaVantageKey ? 'alphavantage' : null,
     finnhubKey ? 'finnhub' : null,
     fmpKey ? 'fmp' : null,
     twelveKey ? 'twelvedata' : null,
-    provider === 'multi' || provider === 'stooq' ? 'stooq' : null,
   ].filter(Boolean);
-
-  let ready = false;
-  if (provider === 'alphavantage') ready = Boolean(alphaVantageKey);
-  else if (provider === 'finnhub') ready = Boolean(finnhubKey);
-  else if (provider === 'fmp') ready = Boolean(fmpKey);
-  else if (provider === 'twelvedata') ready = Boolean(twelveKey);
-  else if (provider === 'stooq') ready = true;
-  else if (provider === 'hybrid') ready = Boolean(alphaVantageKey || finnhubKey);
-  else if (provider === 'multi') ready = true;
-
   const optionalMissing = [
-    provider === 'multi' && !alphaVantageKey ? 'alphavantage' : null,
-    provider === 'multi' && !finnhubKey ? 'finnhub' : null,
-    provider === 'multi' && !fmpKey ? 'fmp' : null,
-    provider === 'multi' && !twelveKey ? 'twelvedata' : null,
-    provider === 'hybrid' && !alphaVantageKey ? 'alphavantage' : null,
-    provider === 'hybrid' && !finnhubKey ? 'finnhub' : null,
+    !alphaVantageKey ? 'alphavantage' : null,
+    !finnhubKey ? 'finnhub' : null,
+    !fmpKey ? 'fmp' : null,
+    !twelveKey ? 'twelvedata' : null,
   ].filter(Boolean);
+  const ready = configuredProviders.length > 0;
 
-  if (testSymbol && ['alphavantage', 'finnhub', 'fmp', 'twelvedata', 'stooq'].includes(provider) && ready) {
+  const results: Record<string, any> = {
+    provider,
+    alphaVantage: buildProviderStatus(Boolean(alphaVantageKey), 'Alpha Vantage', 'ALPHA_VANTAGE_API_KEY'),
+    finnhub: buildProviderStatus(Boolean(finnhubKey), 'Finnhub', 'FINNHUB_API_KEY'),
+    financialModelingPrep: buildProviderStatus(Boolean(fmpKey), 'Financial Modeling Prep', 'FINANCIAL_MODELING_PREP_API_KEY'),
+    twelveData: buildProviderStatus(Boolean(twelveKey), 'Twelve Data', 'TWELVE_DATA_API_KEY'),
+    stooq: buildProviderStatus(true, 'Stooq'),
+  };
+
+  if (testSymbol && ready) {
     const service = createStockService(alphaVantageKey);
     try {
       const price = await service.getStockPrice(testSymbol);
@@ -92,7 +61,7 @@ export async function GET() {
       ok: true,
       skipped: true,
       symbol: testSymbol,
-      note: 'Live price checks are skipped for multi/hybrid because the active provider chain is composite.',
+      note: 'Live price check skipped because no keyed stock data provider is configured.',
     };
   }
 
@@ -104,11 +73,7 @@ export async function GET() {
       configuredProviders,
       configuredProviderCount: configuredProviders.length,
       optionalMissing,
-      note: provider === 'multi'
-        ? 'Multi mode can still run with a subset of providers; missing providers here are optional, not hard failures.'
-        : provider === 'hybrid'
-          ? 'Hybrid mode only requires one of Alpha Vantage or Finnhub; the other provider is optional.'
-          : undefined,
+      note: 'The stock data service automatically tries all configured providers; Stooq is always available as final price-history fallback.',
     },
     results,
   });

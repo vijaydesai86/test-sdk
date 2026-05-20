@@ -103,8 +103,9 @@ _Note: SEC EDGAR filings (`get_sec_filings`) require no API key — the SEC EDGA
 
 | Variable | Description |
 |---|---|
-| `SUPABASE_URL` | Supabase project URL. When set with `SUPABASE_SERVICE_ROLE_KEY`, reports and watchlists persist in Supabase instead of the local filesystem. |
+| `SUPABASE_URL` | Supabase project URL. When set with `SUPABASE_SERVICE_ROLE_KEY`, reports and watchlists persist in Supabase; local filesystem report files remain available as artifact fallback. |
 | `SUPABASE_SERVICE_ROLE_KEY` | Supabase service-role key (server-side only, never expose to browser). |
+| `SUPABASE_ANON_KEY` | Optional deployment parity variable. Current server routes do not require it, but it is safe to keep in Vercel envs if already configured. |
 
 ### Tuning (all optional)
 
@@ -112,10 +113,12 @@ _Note: SEC EDGAR filings (`get_sec_filings`) require no API key — the SEC EDGA
 |---|---|---|
 | `NUM_COMPANIES` | `10` | Companies in comparison/sector/deep-sector reports. Range: 2–15. |
 | `DEEP_RESEARCH_DEPTH` | `2` | Recursive refinement passes in deep sector research. Range: 1–3. |
-| `DEEP_RESEARCH_MAX_MS` | `240000` | Runtime budget for deep research (ms). Keep under Vercel's 300 s limit. |
+| `DEEP_RESEARCH_MAX_MS` | `240000` on Vercel, `600000` local | Runtime budget for deep research (ms). Vercel is clamped under the 300 s function limit; local can run longer for completeness. |
 | `DATA_FETCH_CONCURRENCY` | `3` | Parallel ticker fetches per report round. Range: 1–4. |
+| `VERCEL_EXTENDED_DATA_MAX_COMPANIES` | `3` | On Vercel, reports larger than this prioritize core decision inputs and cached optional data so free-tier providers do not consume the whole 300 s function window. Local runs still attempt extended data. |
 | `REPORTS_DIR` | `reports` (local) / `/tmp/reports` (Vercel) | Where generated report files are stored. |
 | `STOCK_CACHE_TTL_MS` | `604800000` (7 days) | How long fetched data is cached on disk. |
+| `LLM_REQUEST_TIMEOUT_MS` | `60000` on Vercel, `90000` local | Per-request LLM timeout before trying the next model/provider. |
 | `LLM_MODEL_COOLDOWN_MS` | `120000` | How long a rate-limited LLM model is skipped before retrying. |
 | `STOCK_PROVIDER_COOLDOWN_MS` | `300000` | How long a rate-limited data provider is paused. |
 | `ALPHA_VANTAGE_MIN_INTERVAL_MS` | `12000` | Min ms between Alpha Vantage requests. Matches the documented 5 req/min free-tier ceiling. |

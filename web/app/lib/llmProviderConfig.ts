@@ -1,4 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import { getConfiguredEnvAny } from './env';
 
 export type RuntimeLLMProvider = 'github' | 'gemini';
 
@@ -39,7 +40,7 @@ export function normalizeGeminiModel(model?: string | null): string {
 }
 
 export function getGitHubToken(): string | undefined {
-  return process.env.GITHUB_TOKEN || process.env.GH_TOKEN || process.env.COPILOT_GITHUB_TOKEN;
+  return getConfiguredEnvAny(['GITHUB_TOKEN', 'GH_TOKEN', 'COPILOT_GITHUB_TOKEN']);
 }
 
 export function getConfiguredGeminiModel(): string {

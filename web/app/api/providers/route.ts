@@ -4,11 +4,12 @@ import {
   fetchGitHubModels,
   getGitHubToken,
 } from '@/app/lib/llmProviderConfig';
+import { getConfiguredEnv } from '@/app/lib/env';
 
 export async function GET() {
   try {
     const githubToken = getGitHubToken();
-    const geminiToken = process.env.GEMINI_TOKEN;
+    const geminiToken = getConfiguredEnv('GEMINI_TOKEN');
     const githubAvailable = Boolean(githubToken);
     const geminiAvailable = Boolean(geminiToken);
     const githubModels = githubAvailable ? await fetchGitHubModels() : [];

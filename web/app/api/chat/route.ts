@@ -14,6 +14,7 @@ import {
   SAFE_GITHUB_MODELS,
   type RuntimeLLMProvider,
 } from '@/app/lib/llmProviderConfig';
+import { getConfiguredEnv } from '@/app/lib/env';
 
 // GitHub Models API — new endpoint (azure endpoint deprecated Oct 2025)
 // Works with PATs from github.com/settings/personal-access-tokens (models:read scope)
@@ -46,7 +47,8 @@ const TOOL_RESULT_MAX_STRING = 500;
 // Per-request timeout for individual LLM API calls. Keeps a hung upstream call
 // from consuming the entire Vercel 300s budget — the fallback chain advances
 // to the next model instead. Default: 60s. Override via LLM_REQUEST_TIMEOUT_MS.
-const LLM_REQUEST_TIMEOUT_MS = Number(process.env.LLM_REQUEST_TIMEOUT_MS || 60000);
+const DEFAULT_LLM_REQUEST_TIMEOUT_MS = process.env.VERCEL ? 60000 : 90000;
+const LLM_REQUEST_TIMEOUT_MS = Number(process.env.LLM_REQUEST_TIMEOUT_MS || DEFAULT_LLM_REQUEST_TIMEOUT_MS);
 
 const RATE_LIMIT_GUIDANCE =
   'This model allows 50 requests per day. ' +
@@ -389,21 +391,27 @@ async function callGitHubModelsAPI(
     const errorText = await response.text();
     console.error(`GitHub Models API ${response.status}:`, errorText.slice(0, 300));
     if (response.status === 401) {
-      throw new Error(
+      const err = new Error(
         'GitHub Models API authentication failed (401). ' +
         'Your GITHUB_TOKEN may be invalid, expired, or missing the required permissions. ' +
         'Please use a classic PAT from https://github.com/settings/tokens with no specific scopes needed, ' +
         'or a fine-grained PAT from https://github.com/settings/personal-access-tokens with "Models" read permission enabled. ' +
         `API response: ${errorText}`
-      );
+      ) as Error & { statusCode: number; isProviderAuthError: boolean };
+      err.statusCode = 401;
+      err.isProviderAuthError = true;
+      throw err;
     }
     if (response.status === 403) {
-      throw new Error(
+      const err = new Error(
         'GitHub Models API access denied (403). ' +
         'Your token does not have permission to use GitHub Models. ' +
         'If using a fine-grained PAT, enable the "Models" permission under "Account permissions". ' +
         `API response: ${errorText}`
-      );
+      ) as Error & { statusCode: number; isProviderAuthError: boolean };
+      err.statusCode = 403;
+      err.isProviderAuthError = true;
+      throw err;
     }
     if (response.status === 429) {
       const headerRetryAfterMs = parseRetryAfterMs(response.headers.get('retry-after'));
@@ -533,12 +541,15 @@ async function callGeminiAPI(
     const errorText = await response.text();
     console.error(`Gemini API ${response.status}:`, errorText.slice(0, 300));
     if (response.status === 401) {
-      throw new Error(
+      const err = new Error(
         'Gemini API authentication failed (401). ' +
         'Your GEMINI_TOKEN may be invalid or expired. ' +
         'Get a new key at https://aistudio.google.com/api-keys. ' +
         `API response: ${errorText}`
-      );
+      ) as Error & { statusCode: number; isProviderAuthError: boolean };
+      err.statusCode = 401;
+      err.isProviderAuthError = true;
+      throw err;
     }
     if (response.status === 429) {
       let retryAfterMs: number | undefined;
@@ -751,7 +762,7 @@ export async function POST(request: NextRequest) {
     // Check if GitHub token is available
     const githubToken = getGitHubToken();
     // Check if Gemini token is available (never exposed client-side — server env only)
-    const geminiToken = process.env.GEMINI_TOKEN;
+    const geminiToken = getConfiguredEnv('GEMINI_TOKEN');
     const usesGeminiPrimary = !githubToken && Boolean(geminiToken);
     const requestedModel = typeof model === 'string' && model.trim()
       ? model
@@ -760,7 +771,7 @@ export async function POST(request: NextRequest) {
         : DEFAULT_MODEL;
 
     // Initialize the stock data service — always multi-source using all configured keys.
-    const alphaVantageKey = process.env.ALPHA_VANTAGE_API_KEY;
+    const alphaVantageKey = getConfiguredEnv('ALPHA_VANTAGE_API_KEY');
     const stockService: StockDataService = createStockService(alphaVantageKey);
     const currentSessionId = typeof sessionId === 'string' && sessionId.trim()
       ? sessionId
@@ -857,6 +868,18 @@ export async function POST(request: NextRequest) {
       return true;
     };
 
+    const advanceProvider = (): boolean => {
+      if (strategyIndex >= executionStrategies.length - 1) {
+        return false;
+      }
+      strategyIndex += 1;
+      modelIndex = 0;
+      fallbackCount += 1;
+      activeRuntimeProvider = executionStrategies[strategyIndex].provider;
+      activeModel = executionStrategies[strategyIndex].models[modelIndex];
+      return true;
+    };
+
     const callProvider = async (
       runtimeProvider: RuntimeLLMProvider,
       messages: ChatMessage[],
@@ -903,6 +926,7 @@ export async function POST(request: NextRequest) {
           const isRateLimit = error?.statusCode === 429;
           const isServerError = Boolean(error?.isTransientServerError);
           const isUnknownModel = Boolean(error?.isUnknownModel);
+          const isProviderAuthError = Boolean(error?.isProviderAuthError);
           const isTokensLimit = error?.statusCode === 413;
           // Unknown model: skip to the next fallback without counting as an attempt —
           // retrying with the same invalid model ID would always fail.
@@ -923,6 +947,13 @@ export async function POST(request: NextRequest) {
               attempt++;
               continue;
             }
+          }
+          if (attempt === 0 && isProviderAuthError) {
+            if (advanceProvider()) {
+              attempt++;
+              continue;
+            }
+            throw error;
           }
           if (attempt === 0 && isTokensLimit) {
             retryMessages = [

@@ -1,5 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import axios from 'axios';
+import { getConfiguredEnv, isPlaceholderEnvValue } from './env';
 
 const DEFAULT_PROVIDER_MIN_INTERVAL_MS = {
   alphavantage: 12000,
@@ -49,6 +50,7 @@ export class AlphaVantageService implements StockDataService {
   private baseUrl = 'https://www.alphavantage.co/query';
   private cache = new Map<string, { expiresAt: number; data: any }>();
   private lastRequestAt = new Map<string, number>();
+  private throttleQueues = new Map<string, Promise<void>>();
   private static sharedCache = new Map<string, { expiresAt: number; data: any }>();
   // Alpha Vantage uses multiple endpoint families behind one base URL, so this service
   // keeps its throttle state in a keyed map instead of a single timestamp.
@@ -57,7 +59,7 @@ export class AlphaVantageService implements StockDataService {
   };
 
   constructor(apiKey?: string) {
-    this.apiKey = apiKey || process.env.ALPHA_VANTAGE_API_KEY || '';
+    this.apiKey = (isPlaceholderEnvValue(apiKey) ? undefined : apiKey) || getConfiguredEnv('ALPHA_VANTAGE_API_KEY') || '';
   }
 
   private buildCacheKey(prefix: string, params: Record<string, string>): string {
@@ -70,13 +72,18 @@ export class AlphaVantageService implements StockDataService {
 
   private async throttle(provider: string, minIntervalMs: number): Promise<void> {
     if (minIntervalMs <= 0) return;
-    const last = this.lastRequestAt.get(provider) || 0;
-    const now = Date.now();
-    const wait = minIntervalMs - (now - last);
-    if (wait > 0) {
-      await new Promise((resolve) => setTimeout(resolve, wait));
-    }
-    this.lastRequestAt.set(provider, Date.now());
+    const previous = this.throttleQueues.get(provider) || Promise.resolve();
+    const next = previous.then(async () => {
+      const last = this.lastRequestAt.get(provider) || 0;
+      const now = Date.now();
+      const wait = minIntervalMs - (now - last);
+      if (wait > 0) {
+        await new Promise((resolve) => setTimeout(resolve, wait));
+      }
+      this.lastRequestAt.set(provider, Date.now());
+    });
+    this.throttleQueues.set(provider, next.catch(() => {}));
+    await next;
   }
 
   private async fetchWithCache(
@@ -666,18 +673,23 @@ export class FinnhubService implements StockDataService {
   private baseUrl = 'https://finnhub.io/api/v1';
   private cache = new Map<string, { expiresAt: number; data: any }>();
   private lastRequestAt = 0;
+  private throttleQueue: Promise<void> = Promise.resolve();
   private minIntervalMs = getProviderMinIntervalMs('FINNHUB_MIN_INTERVAL_MS', DEFAULT_PROVIDER_MIN_INTERVAL_MS.finnhub);
 
   constructor(apiKey?: string) {
-    this.apiKey = apiKey || process.env.FINNHUB_API_KEY || '';
+    this.apiKey = (isPlaceholderEnvValue(apiKey) ? undefined : apiKey) || getConfiguredEnv('FINNHUB_API_KEY') || '';
   }
 
   private async throttle(): Promise<void> {
     if (this.minIntervalMs <= 0) return;
-    const now = Date.now();
-    const wait = this.minIntervalMs - (now - this.lastRequestAt);
-    if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
-    this.lastRequestAt = Date.now();
+    const next = this.throttleQueue.then(async () => {
+      const now = Date.now();
+      const wait = this.minIntervalMs - (now - this.lastRequestAt);
+      if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+      this.lastRequestAt = Date.now();
+    });
+    this.throttleQueue = next.catch(() => {});
+    await next;
   }
 
   private async makeRequest(path: string, params: Record<string, string> = {}, ttlMs = 0): Promise<any> {
@@ -1059,18 +1071,23 @@ export class TwelveDataService implements StockDataService {
   private baseUrl = 'https://api.twelvedata.com';
   private cache = new Map<string, { expiresAt: number; data: any }>();
   private lastRequestAt = 0;
+  private throttleQueue: Promise<void> = Promise.resolve();
   private minIntervalMs = getProviderMinIntervalMs('TWELVE_DATA_MIN_INTERVAL_MS', DEFAULT_PROVIDER_MIN_INTERVAL_MS.twelvedata);
 
   constructor(apiKey?: string) {
-    this.apiKey = apiKey || process.env.TWELVE_DATA_API_KEY || '';
+    this.apiKey = (isPlaceholderEnvValue(apiKey) ? undefined : apiKey) || getConfiguredEnv('TWELVE_DATA_API_KEY') || '';
   }
 
   private async throttle(): Promise<void> {
     if (this.minIntervalMs <= 0) return;
-    const now = Date.now();
-    const wait = this.minIntervalMs - (now - this.lastRequestAt);
-    if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
-    this.lastRequestAt = Date.now();
+    const next = this.throttleQueue.then(async () => {
+      const now = Date.now();
+      const wait = this.minIntervalMs - (now - this.lastRequestAt);
+      if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+      this.lastRequestAt = Date.now();
+    });
+    this.throttleQueue = next.catch(() => {});
+    await next;
   }
 
   private async makeRequest(path: string, params: Record<string, string> = {}, ttlMs = 0): Promise<any> {
@@ -1261,18 +1278,23 @@ export class FinancialModelingPrepService implements StockDataService {
   private baseUrl = 'https://financialmodelingprep.com/api/v3';
   private cache = new Map<string, { expiresAt: number; data: any }>();
   private lastRequestAt = 0;
+  private throttleQueue: Promise<void> = Promise.resolve();
   private minIntervalMs = getProviderMinIntervalMs('FMP_MIN_INTERVAL_MS', DEFAULT_PROVIDER_MIN_INTERVAL_MS.fmp);
 
   constructor(apiKey?: string) {
-    this.apiKey = apiKey || process.env.FINANCIAL_MODELING_PREP_API_KEY || '';
+    this.apiKey = (isPlaceholderEnvValue(apiKey) ? undefined : apiKey) || getConfiguredEnv('FINANCIAL_MODELING_PREP_API_KEY') || '';
   }
 
   private async throttle(): Promise<void> {
     if (this.minIntervalMs <= 0) return;
-    const now = Date.now();
-    const wait = this.minIntervalMs - (now - this.lastRequestAt);
-    if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
-    this.lastRequestAt = Date.now();
+    const next = this.throttleQueue.then(async () => {
+      const now = Date.now();
+      const wait = this.minIntervalMs - (now - this.lastRequestAt);
+      if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+      this.lastRequestAt = Date.now();
+    });
+    this.throttleQueue = next.catch(() => {});
+    await next;
   }
 
   private async makeRequest(path: string, params: Record<string, string> = {}, ttlMs = 0): Promise<any> {
@@ -1671,14 +1693,19 @@ export class StooqService implements StockDataService {
   private baseUrl = 'https://stooq.com';
   private cache = new Map<string, { expiresAt: number; data: any }>();
   private lastRequestAt = 0;
+  private throttleQueue: Promise<void> = Promise.resolve();
   private minIntervalMs = getProviderMinIntervalMs('STOOQ_MIN_INTERVAL_MS', DEFAULT_PROVIDER_MIN_INTERVAL_MS.stooq);
 
   private async throttle(): Promise<void> {
     if (this.minIntervalMs <= 0) return;
-    const now = Date.now();
-    const wait = this.minIntervalMs - (now - this.lastRequestAt);
-    if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
-    this.lastRequestAt = Date.now();
+    const next = this.throttleQueue.then(async () => {
+      const now = Date.now();
+      const wait = this.minIntervalMs - (now - this.lastRequestAt);
+      if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+      this.lastRequestAt = Date.now();
+    });
+    this.throttleQueue = next.catch(() => {});
+    await next;
   }
 
   private async makeRequest(path: string, ttlMs = 0): Promise<string> {
@@ -1877,23 +1904,25 @@ const PROVIDER_LABELS: Record<ProviderId, string> = {
 
 const METHOD_PROVIDER_PRIORITY: Partial<Record<keyof StockDataService, ProviderId[]>> = {
   getStockPrice: ['finnhub', 'fmp', 'twelvedata', 'alphavantage', 'stooq'],
-  getPriceHistory: ['finnhub', 'fmp', 'twelvedata', 'alphavantage', 'stooq'],
-  getCompanyOverview: ['fmp', 'alphavantage', 'finnhub', 'twelvedata', 'stooq'],
+  getPriceHistory: ['finnhub', 'fmp', 'twelvedata', 'stooq', 'alphavantage'],
+  getCompanyOverview: ['fmp', 'finnhub', 'alphavantage', 'twelvedata', 'stooq'],
   getBasicFinancials: ['fmp', 'finnhub', 'alphavantage', 'twelvedata', 'stooq'],
-  getAnalystRatings: ['finnhub', 'alphavantage', 'fmp', 'twelvedata', 'stooq'],
+  getAnalystRatings: ['finnhub', 'fmp', 'alphavantage', 'twelvedata', 'stooq'],
   getAnalystRecommendations: ['finnhub', 'fmp', 'alphavantage', 'twelvedata', 'stooq'],
   getPriceTargets: ['finnhub', 'fmp', 'alphavantage', 'twelvedata', 'stooq'],
   getPeers: ['finnhub', 'fmp', 'alphavantage', 'twelvedata', 'stooq'],
   // Search requests are high-frequency during ticker resolution, so prefer the roomier
   // free-tier providers before spending Alpha Vantage's much tighter daily quota.
   searchStock: ['finnhub', 'fmp', 'alphavantage', 'twelvedata', 'stooq'],
-  getEarningsHistory: ['finnhub', 'alphavantage', 'fmp', 'twelvedata', 'stooq'],
+  getEarningsHistory: ['finnhub', 'fmp', 'alphavantage', 'twelvedata', 'stooq'],
   getIncomeStatement: ['fmp', 'finnhub', 'alphavantage', 'twelvedata', 'stooq'],
   getBalanceSheet: ['fmp', 'finnhub', 'alphavantage', 'twelvedata', 'stooq'],
   getCashFlow: ['fmp', 'finnhub', 'alphavantage', 'twelvedata', 'stooq'],
-  getNewsSentiment: ['finnhub', 'alphavantage', 'fmp', 'twelvedata', 'stooq'],
+  getNewsSentiment: ['finnhub', 'fmp', 'alphavantage', 'twelvedata', 'stooq'],
   getCompanyNews: ['finnhub', 'fmp', 'alphavantage', 'twelvedata', 'stooq'],
   searchNews: ['fmp', 'finnhub', 'alphavantage', 'twelvedata', 'stooq'],
+  getSectorPerformance: ['fmp', 'alphavantage', 'finnhub', 'twelvedata', 'stooq'],
+  getTopGainersLosers: ['fmp', 'alphavantage', 'finnhub', 'twelvedata', 'stooq'],
 };
 
 const MERGEABLE_METHODS = new Set<keyof StockDataService>([
@@ -2110,12 +2139,13 @@ class MultiSourceStockDataService implements StockDataService {
 
 
 export function createStockService(apiKey?: string): StockDataService {
-  const finnhubKey = process.env.FINNHUB_API_KEY;
-  const fmpKey = process.env.FINANCIAL_MODELING_PREP_API_KEY;
-  const twelveKey = process.env.TWELVE_DATA_API_KEY;
+  const alphaVantageKey = (isPlaceholderEnvValue(apiKey) ? undefined : apiKey) || getConfiguredEnv('ALPHA_VANTAGE_API_KEY');
+  const finnhubKey = getConfiguredEnv('FINNHUB_API_KEY');
+  const fmpKey = getConfiguredEnv('FINANCIAL_MODELING_PREP_API_KEY');
+  const twelveKey = getConfiguredEnv('TWELVE_DATA_API_KEY');
   const providers: Array<{ id: ProviderId; service: StockDataService }> = [];
-  if (apiKey || process.env.ALPHA_VANTAGE_API_KEY) {
-    providers.push({ id: 'alphavantage', service: new AlphaVantageService(apiKey) });
+  if (alphaVantageKey) {
+    providers.push({ id: 'alphavantage', service: new AlphaVantageService(alphaVantageKey) });
   }
   if (finnhubKey) {
     providers.push({ id: 'finnhub', service: new FinnhubService(finnhubKey) });
@@ -2268,7 +2298,7 @@ export class FredService {
   private baseUrl = 'https://api.stlouisfed.org/fred';
 
   constructor(apiKey?: string) {
-    this.apiKey = apiKey || process.env.FRED_API_KEY || '';
+    this.apiKey = (isPlaceholderEnvValue(apiKey) ? undefined : apiKey) || getConfiguredEnv('FRED_API_KEY') || '';
   }
 
   isConfigured(): boolean {
