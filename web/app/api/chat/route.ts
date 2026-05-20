@@ -54,8 +54,8 @@ const VERCEL_INTERNAL_DEADLINE_BUFFER_MS = Number(process.env.VERCEL_INTERNAL_DE
 const VERCEL_REQUEST_DEADLINE_MS = Math.max(60000, VERCEL_FUNCTION_TIMEOUT_MS - VERCEL_INTERNAL_DEADLINE_BUFFER_MS);
 
 const RATE_LIMIT_GUIDANCE =
-  'This model allows 50 requests per day. ' +
-  'The system will keep walking the automatic fallback ladder, or you can try again tomorrow.';
+  'All configured AI provider/model candidates were unavailable for this request because of rate limits or temporary capacity errors. ' +
+  'The system tried the automatic fallback ladder across GitHub Models and Gemini before returning this error.';
 
 const MODEL_COOLDOWN_MS = Number(process.env.LLM_MODEL_COOLDOWN_MS || 120000);
 const modelCooldowns = new Map<string, number>();
@@ -296,6 +296,18 @@ function buildFallbackModels(requestedModel: string, extraModels: string[] = [])
   return available.length > 0 ? available : unique;
 }
 
+function buildFillFallbackModels(extraModels: string[] = []): string[] {
+  const fromEnv = (process.env.FILL_FALLBACK_MODELS || process.env.COPILOT_FALLBACK_MODELS || '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const base = fromEnv.length > 0 ? fromEnv : DEFAULT_FALLBACK_MODELS;
+  const combined = [FILL_MODEL, ...base, ...extraModels, FALLBACK_MODEL];
+  const unique = Array.from(new Set(combined.filter(Boolean)));
+  const available = unique.filter((model) => !isModelCoolingDown(model) && !isModelInvalid(model));
+  return available.length > 0 ? available : unique;
+}
+
 function buildGeminiFallbackModels(requestedModel?: string | null): string[] {
   const combined = [normalizeGeminiModel(requestedModel), ...GEMINI_FALLBACK_MODELS];
   const unique = Array.from(new Set(combined.filter(Boolean)));
@@ -322,6 +334,7 @@ async function buildLLMExecutionStrategies(
   requestedModel: string,
   githubToken: string | undefined,
   geminiToken: string | undefined,
+  purpose: 'chat' | 'fill' = 'chat',
 ): Promise<LLMExecutionStrategy[]> {
   const strategies: LLMExecutionStrategy[] = [];
   const githubRequestedModel = isGitHubModelId(requestedModel)
@@ -341,7 +354,9 @@ async function buildLLMExecutionStrategies(
     const catalogModels = (await fetchGitHubModels()).map((item) => item.value);
     strategies.push({
       provider: 'github',
-      models: buildFallbackModels(normalizedGithubModel, catalogModels),
+      models: purpose === 'fill'
+        ? buildFillFallbackModels(catalogModels)
+        : buildFallbackModels(normalizedGithubModel, catalogModels),
     });
   }
 
@@ -639,47 +654,6 @@ async function callGeminiAPI(
 }
 
 /**
- * Call Gemini with automatic model fallback on retriable errors.
- * Steps through GEMINI_FALLBACK_MODELS in order, trying each on:
- *   429 — quota/rate-limit exhausted (separate quota pool per model)
- *   503 — model temporarily unavailable due to high demand
- *   400 — model ID not found / invalid (skip to the next valid model)
- * Any other error (401 auth, 5xx non-503, etc.) is thrown immediately.
- */
-async function callGeminiWithFallback(
-  messages: ChatMessage[],
-  geminiToken: string,
-  tools: ReturnType<typeof getToolDefinitionsByName>,
-  requestedModel?: string | null
-): Promise<any> {
-  // Status codes that mean "this model can't serve right now — try the next one"
-  const RETRIABLE = new Set([429, 503, 400]);
-  const candidateModels = buildGeminiFallbackModels(requestedModel);
-  let lastErr: any;
-  for (const model of candidateModels) {
-    try {
-      const response = await callGeminiAPI(messages, geminiToken, model, tools);
-      if (response && typeof response === 'object') {
-        (response as any).__model = model;
-        (response as any).__fallbackCount = candidateModels.indexOf(model);
-      }
-      return response;
-    } catch (err: any) {
-      lastErr = err;
-      if (!RETRIABLE.has(err?.statusCode)) throw err;
-      const isLast = model === candidateModels[candidateModels.length - 1];
-      if (!isLast) {
-        console.info(`Gemini model '${model}' unavailable (${err?.statusCode}) — trying next model`);
-        // Honor the provider's requested retry delay before moving on (capped at 10 s).
-        const delayMs = Math.min(err?.retryAfterMs ?? 0, 10000);
-        if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
-      }
-    }
-  }
-  throw lastErr;
-}
-
-/**
  * Make a targeted LLM call — used for ticker resolution (resolving informal company
  * names or wrong tickers to official US exchange symbols before any API call).
  * Returns the raw response string (expected to be valid JSON).
@@ -714,46 +688,36 @@ async function callLLMForDataFill(
     return content ? String(content) : '{}';
   };
 
-  // Build ordered list of strategies: try multiple GitHub models, then Gemini models
-  const strategies: Array<() => Promise<string>> = [];
+  const executionStrategies = await buildLLMExecutionStrategies(null, FILL_MODEL, githubToken, geminiToken, 'fill');
+  const candidates = executionStrategies.flatMap((strategy) =>
+    strategy.models.map((model) => ({ provider: strategy.provider, model }))
+  );
+  const providerAuthFailures = new Set<RuntimeLLMProvider>();
 
-  // GitHub Models — try FILL_MODEL first, then fallback models
-  if (githubToken) {
-    const githubModels = [FILL_MODEL, ...DEFAULT_FALLBACK_MODELS].filter(Boolean);
-    const seen = new Set<string>();
-    for (const model of githubModels) {
-      if (seen.has(model)) continue;
-      seen.add(model);
-      strategies.push(async () => {
-        const result = await callGitHubModelsAPI(fillMessages, githubToken, model, []);
-        return extractContent(result);
-      });
-    }
-  }
-
-  // Gemini — always available as final fallback when token exists
-  if (geminiToken) {
-    strategies.push(async () => {
-      const result = await callGeminiWithFallback(fillMessages, geminiToken, []);
-      return extractContent(result);
-    });
-  }
-
-  // Try each strategy in order; on retriable errors (429, 5xx), wait and try next
-  for (let i = 0; i < strategies.length; i++) {
+  for (let i = 0; i < candidates.length; i++) {
     if (isRouteDeadlineNear(deadlineAt, LLM_REQUEST_TIMEOUT_MS + 5000)) return '{}';
+    const candidate = candidates[i];
+    if (providerAuthFailures.has(candidate.provider)) continue;
     try {
-      const content = await strategies[i]();
+      const result = candidate.provider === 'github'
+        ? await callGitHubModelsAPI(fillMessages, githubToken as string, candidate.model, [])
+        : await callGeminiAPI(fillMessages, geminiToken as string, candidate.model, []);
+      const content = extractContent(result);
       if (content && content !== '{}') return content;
-      // Model returned empty — try next strategy
-      console.info(`[callLLMForDataFill] Strategy ${i + 1}/${strategies.length} returned empty, trying next`);
+      console.info(`[callLLMForDataFill] ${candidate.provider}/${candidate.model} returned empty, trying next`);
     } catch (err: any) {
-      console.info(`[callLLMForDataFill] Strategy ${i + 1}/${strategies.length} failed: ${err?.message || err}`);
+      console.info(`[callLLMForDataFill] ${candidate.provider}/${candidate.model} failed: ${err?.message || err}`);
+      if (err?.isProviderAuthError) {
+        providerAuthFailures.add(candidate.provider);
+        continue;
+      }
+      if (err?.isUnknownModel) {
+        continue;
+      }
       if (err?.statusCode === 429 || (err?.statusCode >= 500 && err?.statusCode <= 503)) {
         const delayMs = Math.min(err?.retryAfterMs ?? 2000, 10000, Math.max(0, routeRemainingMs(deadlineAt) - VERCEL_INTERNAL_DEADLINE_BUFFER_MS));
         await new Promise((resolve) => setTimeout(resolve, delayMs));
       }
-      // Continue to next strategy
     }
   }
 
@@ -873,37 +837,40 @@ export async function POST(request: NextRequest) {
       throw err;
     }
 
-    let strategyIndex = 0;
-    let modelIndex = 0;
-    let activeRuntimeProvider = executionStrategies[strategyIndex].provider;
-    let activeModel = executionStrategies[strategyIndex].models[modelIndex];
+    type LLMCandidate = { provider: RuntimeLLMProvider; model: string };
+    const candidateQueue: LLMCandidate[] = executionStrategies.flatMap((strategy) =>
+      strategy.models.map((model) => ({ provider: strategy.provider, model }))
+    );
+    let candidateIndex = 0;
+    let activeRuntimeProvider = candidateQueue[0].provider;
+    let activeModel = candidateQueue[0].model;
+    let compactedForTokenLimit = false;
+    const providerAuthFailures = new Set<RuntimeLLMProvider>();
 
-    const advanceModel = (): boolean => {
-      if (modelIndex < executionStrategies[strategyIndex].models.length - 1) {
-        modelIndex += 1;
-      } else if (strategyIndex < executionStrategies.length - 1) {
-        strategyIndex += 1;
-        modelIndex = 0;
-      } else {
-        return false;
-      }
-
-      fallbackCount += 1;
-      activeRuntimeProvider = executionStrategies[strategyIndex].provider;
-      activeModel = executionStrategies[strategyIndex].models[modelIndex];
+    const syncActiveCandidate = () => {
+      const candidate = candidateQueue[candidateIndex];
+      if (!candidate) return false;
+      activeRuntimeProvider = candidate.provider;
+      activeModel = candidate.model;
       return true;
     };
 
-    const advanceProvider = (): boolean => {
-      if (strategyIndex >= executionStrategies.length - 1) {
-        return false;
+    const advanceCandidate = (skipProvider?: RuntimeLLMProvider): boolean => {
+      candidateIndex += 1;
+      while (candidateIndex < candidateQueue.length) {
+        const candidate = candidateQueue[candidateIndex];
+        if (
+          candidate.provider !== skipProvider &&
+          !providerAuthFailures.has(candidate.provider) &&
+          !isModelCoolingDown(candidate.model) &&
+          !isModelInvalid(candidate.model)
+        ) {
+          fallbackCount += 1;
+          return syncActiveCandidate();
+        }
+        candidateIndex += 1;
       }
-      strategyIndex += 1;
-      modelIndex = 0;
-      fallbackCount += 1;
-      activeRuntimeProvider = executionStrategies[strategyIndex].provider;
-      activeModel = executionStrategies[strategyIndex].models[modelIndex];
-      return true;
+      return false;
     };
 
     const callProvider = async (
@@ -920,7 +887,7 @@ export async function POST(request: NextRequest) {
           err.statusCode = 503;
           throw err;
         }
-        return callGeminiWithFallback(messages, geminiToken, tools, modelId);
+        return callGeminiAPI(messages, geminiToken, modelId, tools);
       }
 
       if (!githubToken) {
@@ -940,10 +907,9 @@ export async function POST(request: NextRequest) {
       }
       rounds++;
       let result: any;
-      let attempt = 0;
       let retryMessages = conversationMessages;
       let retryTools = toolDefinitions;
-      while (attempt < 2) {
+      while (true) {
         try {
           result = await callProvider(activeRuntimeProvider, retryMessages, activeModel, retryTools);
           toolDefinitionsUsed = retryTools;
@@ -960,40 +926,46 @@ export async function POST(request: NextRequest) {
           const isUnknownModel = Boolean(error?.isUnknownModel);
           const isProviderAuthError = Boolean(error?.isProviderAuthError);
           const isTokensLimit = error?.statusCode === 413;
-          // Unknown model: skip to the next fallback without counting as an attempt —
-          // retrying with the same invalid model ID would always fail.
+          if (isRouteDeadlineNear(requestDeadlineAt, LLM_REQUEST_TIMEOUT_MS + VERCEL_INTERNAL_DEADLINE_BUFFER_MS)) {
+            throw error;
+          }
           if (isUnknownModel) {
-            if (advanceModel()) {
+            if (advanceCandidate()) {
               continue;
             }
             throw error;
           }
-          if (attempt === 0 && (isRateLimit || isServerError)) {
+          if (isRateLimit || isServerError) {
             if (isRateLimit) markModelCooldown(activeModel, error?.retryAfterMs);
-            if (advanceModel()) {
-              // Honor the provider's requested retry delay (e.g. Gemini RetryInfo), capped at 10 s.
-              const delayMs = Math.min(error?.retryAfterMs ?? 0, 10000);
-              if (delayMs > 0) {
-                await new Promise((resolve) => setTimeout(resolve, delayMs));
-              }
-              attempt++;
-              continue;
+            const delayMs = Math.min(
+              error?.retryAfterMs ?? 0,
+              10000,
+              Math.max(0, routeRemainingMs(requestDeadlineAt) - VERCEL_INTERNAL_DEADLINE_BUFFER_MS)
+            );
+            if (delayMs > 0) {
+              await new Promise((resolve) => setTimeout(resolve, delayMs));
             }
-          }
-          if (attempt === 0 && isProviderAuthError) {
-            if (advanceProvider()) {
-              attempt++;
+            if (advanceCandidate()) {
               continue;
             }
             throw error;
           }
-          if (attempt === 0 && isTokensLimit) {
+          if (isProviderAuthError) {
+            providerAuthFailures.add(activeRuntimeProvider);
+            if (advanceCandidate(activeRuntimeProvider)) {
+              continue;
+            }
+            throw error;
+          }
+          if (isTokensLimit && !compactedForTokenLimit) {
             retryMessages = [
               { role: 'system', content: COMPACT_SYSTEM_PROMPT },
               { role: 'user', content: message },
             ];
             retryTools = getToolDefinitionsByName(selectChatToolNames().toolNames);
-            attempt++;
+            compactedForTokenLimit = true;
+            candidateIndex = 0;
+            syncActiveCandidate();
             continue;
           }
           throw error;
@@ -1068,7 +1040,7 @@ export async function POST(request: NextRequest) {
         // assistant turn, cool the model down briefly, and let the next fallback model retry.
         conversationMessages.pop();
         markModelCooldown(activeModel, MODEL_COOLDOWN_MS);
-        if (advanceModel()) {
+        if (advanceCandidate()) {
           continue;
         }
         // No models remain in the fallback ladder, so surface the error instead of looping forever.

@@ -21,15 +21,19 @@ export const SAFE_GITHUB_MODELS: LLMModelOption[] = [
 ];
 
 export const SAFE_GEMINI_MODELS: LLMModelOption[] = [
-  { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash', rateLimitTier: 'free-tier' },
   { value: 'gemini-2.5-flash-lite', label: 'Gemini 2.5 Flash Lite', rateLimitTier: 'free-tier' },
+  { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash', rateLimitTier: 'free-tier' },
   { value: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash', rateLimitTier: 'free-tier' },
+  { value: 'gemini-2.0-flash-lite', label: 'Gemini 2.0 Flash Lite', rateLimitTier: 'free-tier' },
+  { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro', rateLimitTier: 'paid-tier' },
 ];
 
 const GEMINI_LABELS: Record<string, string> = {
+  'gemini-2.5-pro': 'Gemini 2.5 Pro',
   'gemini-2.5-flash': 'Gemini 2.5 Flash',
   'gemini-2.5-flash-lite': 'Gemini 2.5 Flash Lite',
   'gemini-2.0-flash': 'Gemini 2.0 Flash',
+  'gemini-2.0-flash-lite': 'Gemini 2.0 Flash Lite',
 };
 
 const GEMINI_MODEL_IDS = new Set(SAFE_GEMINI_MODELS.map((model) => model.value));
@@ -48,8 +52,13 @@ export function getConfiguredGeminiModel(): string {
 }
 
 export function getGeminiFallbackModels(requestedModel?: string | null): string[] {
+  const fromEnv = (process.env.GEMINI_FALLBACK_MODELS || '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
   return Array.from(new Set([
     normalizeGeminiModel(requestedModel),
+    ...fromEnv.map((model) => normalizeGeminiModel(model)),
     ...SAFE_GEMINI_MODELS.map((model) => model.value),
   ]));
 }
