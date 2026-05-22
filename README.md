@@ -38,7 +38,12 @@ The decision summary shows the **real data behind each score** so you can see ex
 |---|---|---|
 | **Technical analysis** | `What are the technical indicators for AAPL?` | RSI(14), MACD(12,26,9), Bollinger Bands, Stochastic, ATR, EMA, SMA, volume analysis |
 | **SEC filings** | `Show me recent SEC filings for TSLA` | Recent 10-K, 10-Q, 8-K filings with dates and links to SEC EDGAR |
+| **SEC company facts** | `Show official SEC facts for AAPL` | Compact official SEC XBRL fundamentals: revenue, net income, assets, liabilities, cash flow, capex, FCF, shares, EPS |
 | **Economic indicators** | `What are the current economic indicators?` | GDP, CPI/inflation, Fed Funds rate, unemployment, Treasury yields, yield curve |
+| **Treasury yield curve** | `Show the latest Treasury yield curve` | Official U.S. Treasury daily yield curve and 10Y-2Y / 30Y-3M spreads |
+| **BLS macro indicators** | `Show BLS inflation and unemployment data` | Official BLS CPI-U, core CPI, unemployment, payrolls, and hourly earnings |
+| **BEA macro indicators** | `Show BEA GDP and spending data` | Official BEA NIPA GDP growth, PCE, investment, trade, government spending, and nominal GDP |
+| **EIA energy indicators** | `Show EIA oil, gas, and electricity data` | Official EIA WTI crude, Henry Hub gas, retail electricity prices, and electricity generation |
 | **Dividend analysis** | `Analyze dividends for KO` | Yield, payout ratio, FCF coverage, safety score, ex-dividend dates |
 | **DCF valuation** | `What's the intrinsic value of MSFT?` | 10-year DCF, WACC, margin of safety, valuation verdict |
 | **Market sentiment** | `What's the market sentiment right now?` | Composite Fear & Greed index (0-100) from real market data |
@@ -48,7 +53,7 @@ The decision summary shows the **real data behind each score** so you can see ex
 
 ## Quick start (local development)
 
-**Prerequisites:** Node.js 20+, a GitHub token with `models:read` scope or a Gemini API key, at least one stock data API key.
+**Prerequisites:** Node.js 22.x with npm 10.x, a GitHub token with `models:read` scope or a Gemini API key, at least one stock data API key.
 
 ```bash
 git clone https://github.com/vijaydesai86/test-sdk.git
@@ -90,6 +95,9 @@ The system **automatically uses all configured providers with full fallback** �
 | `FINNHUB_API_KEY` | Recommended | Free key from [finnhub.io](https://finnhub.io). Free tier: 60 req/min. |
 | `FINANCIAL_MODELING_PREP_API_KEY` | No | Free key from [financialmodelingprep.com](https://financialmodelingprep.com/developer/docs). Adds financial statements and ratios. |
 | `TWELVE_DATA_API_KEY` | No | Free key from [twelvedata.com](https://twelvedata.com/pricing). Adds price history coverage. |
+| `EODHD_API_KEY` | No | Optional EODHD key. Used as a low-quota cached fallback for EOD history, fundamentals, statements, and news gaps. |
+| `MARKETAUX_API_KEY` | No | Optional Marketaux key. Used first for keyword/theme news and company-news fallback. |
+| `OPENFIGI_API_KEY` | No | Optional OpenFIGI key. Used for ticker/identifier mapping fallback during symbol search. |
 
 _Stooq (price history, no key needed) is always included as a final fallback._
 
@@ -98,8 +106,12 @@ _Stooq (price history, no key needed) is always included as a final fallback._
 | Variable | Required | Description |
 |---|---|---|
 | `FRED_API_KEY` | No | Free key from [fred.stlouisfed.org](https://fred.stlouisfed.org/docs/api/api_key.html). Enables the `get_economic_indicators` tool (GDP, CPI, Fed Funds rate, unemployment, Treasury yields, yield curve). |
+| `BLS_API_KEY` | No | Optional free BLS registration key. The `get_bls_macro_indicators` tool also works without a key, but registered access has higher quota. |
+| `BEA_API_KEY` | No | Free key from [bea.gov](https://apps.bea.gov/API/signup/). Enables `get_bea_macro_indicators` for official NIPA GDP and spending data. |
+| `EIA_API_KEY` | No | Free key from [eia.gov](https://www.eia.gov/opendata/register.php). Enables `get_eia_energy_indicators` for official oil, gas, electricity price, and generation data. |
+| `SEC_USER_AGENT` | No | Optional SEC User-Agent override for SEC EDGAR/companyfacts calls. Defaults to a generic app identifier. |
 
-_Note: SEC EDGAR filings (`get_sec_filings`) require no API key — the SEC EDGAR API is completely free._
+_Note: SEC EDGAR filings (`get_sec_filings`), SEC XBRL company facts (`get_sec_company_facts`, `get_sec_financial_statements`), and U.S. Treasury yield curve data (`get_treasury_yield_curve`) require no API key._
 
 ### Persistence (optional — filesystem fallback used when not set)
 
@@ -120,6 +132,11 @@ _Note: SEC EDGAR filings (`get_sec_filings`) require no API key — the SEC EDGA
 | `VERCEL_EXTENDED_DATA_MAX_COMPANIES` | `3` | On Vercel, reports larger than this prioritize core decision inputs and cached optional data so free-tier providers do not consume the whole 300 s function window. Local runs still attempt extended data. |
 | `REPORTS_DIR` | `reports` (local) / `/tmp/reports` (Vercel) | Where generated report files are stored. |
 | `STOCK_CACHE_TTL_MS` | `604800000` (7 days) | How long fetched data is cached on disk. |
+| `SEC_COMPANY_FACTS_CACHE_TTL_MS` | `43200000` (12 hours) | In-memory TTL for SEC ticker mapping and companyfacts responses. |
+| `TREASURY_RATES_CACHE_TTL_MS` | `43200000` (12 hours) | In-memory TTL for official Treasury yield curve responses. |
+| `BEA_CACHE_TTL_MS` | `43200000` (12 hours) | In-memory TTL for BEA NIPA macro responses. |
+| `EIA_CACHE_TTL_MS` | `43200000` (12 hours) | In-memory TTL for EIA energy responses. |
+| `BLS_MACRO_CACHE_TTL_MS` | `43200000` (12 hours) | In-memory TTL for BLS macro indicator responses. |
 | `LLM_REQUEST_TIMEOUT_MS` | `30000` on Vercel, `90000` local | Per-request timeout for main tool-routing LLM calls before trying the next model/provider. |
 | `LLM_FILL_REQUEST_TIMEOUT_MS` | `12000` on Vercel, `60000` local | Per-request timeout for optional report-fill LLM calls such as moat, rationale, conclusion, and ecosystem text. |
 | `LLM_FILL_TOTAL_BUDGET_MS` | `20000` on Vercel, `120000` local | Total per-request budget for optional report-fill LLM fallback attempts. |
@@ -130,6 +147,9 @@ _Note: SEC EDGAR filings (`get_sec_filings`) require no API key — the SEC EDGA
 | `FMP_MIN_INTERVAL_MS` | `12000` | Min ms between FMP requests. Uses a conservative default for the free-tier minute quota. |
 | `TWELVE_DATA_MIN_INTERVAL_MS` | `8000` | Min ms between Twelve Data requests. Keeps the default under the documented 8 req/min free-tier ceiling. |
 | `STOOQ_MIN_INTERVAL_MS` | `1000` | Min ms between Stooq requests. Conservative no-key fallback pacing. |
+| `EODHD_MIN_INTERVAL_MS` | `12000` | Min ms between EODHD fallback requests. Conservative for low-quota free-tier use. |
+| `MARKETAUX_MIN_INTERVAL_MS` | `1500` | Min ms between Marketaux news requests. |
+| `OPENFIGI_MIN_INTERVAL_MS` | `3000` | Min ms between OpenFIGI mapping requests. |
 | `GITHUB_MODELS_CACHE_TTL_MS` | `900000` (15 min) | Cache TTL for the live GitHub Models catalog so every chat request does not re-fetch the catalog. |
 | `DEBUG` | `false` | Set to `true` to show data-source and data-coverage sections in reports. |
 | `HEALTH_CHECK_SYMBOL` | — | Optional ticker for a live price check in the `/api/health` response. |
@@ -181,7 +201,7 @@ test-sdk/
 │   │   ├── components/
 │   │   │   └── ChatInterface.tsx  # Full UI: chat, workspace, themes, charts
 │   │   └── lib/
-│   │       ├── stockTools.ts      # 30 tool definitions, executeTool, report orchestration
+│   │       ├── stockTools.ts      # 37 tool definitions, executeTool, report orchestration
 │   │       ├── reportIntent.ts    # Free-form report intent guard/fallback classifier
 │   │       ├── stockDataService.ts# All data providers + SecEdgarService + FredService
 │   │       ├── reportGenerator.ts # Report builders, technical indicators, chart builders

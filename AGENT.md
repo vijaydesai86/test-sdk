@@ -112,7 +112,7 @@ User message
 | `web/app/api/models/route.ts` | Returns available GitHub Models from live catalog. |
 | `web/app/api/providers/route.ts` | Returns combined list of available LLM models (GitHub + Gemini) for internal inventory/debug use. |
 
-### Tool catalog (31 definitions / 28 chat-exposed tools)
+### Tool catalog (37 definitions / 34 chat-exposed tools)
 
 **Data tools** — fetch real data, return structured JSON, make zero report-side decisions:
 
@@ -152,7 +152,13 @@ User message
 | Tool | Service class |
 |---|---|
 | `get_sec_filings` | `SecEdgarService` — SEC EDGAR (free, no API key) |
+| `get_sec_company_facts` | `SecCompanyFactsService` — SEC XBRL companyfacts (free, no API key) |
+| `get_sec_financial_statements` | `SecCompanyFactsService` — normalized SEC XBRL fundamentals (free, no API key) |
 | `get_economic_indicators` | `FredService` — FRED API (free key from fred.stlouisfed.org) |
+| `get_treasury_yield_curve` | `TreasuryYieldCurveService` — U.S. Treasury daily yield curve (free, no API key) |
+| `get_bls_macro_indicators` | `BlsPublicDataService` — BLS Public Data API (free unregistered tier, optional key) |
+| `get_bea_macro_indicators` | `BeaService` — BEA NIPA API (free key from apps.bea.gov) |
+| `get_eia_energy_indicators` | `EiaService` — EIA Open Data API (free key from eia.gov) |
 
 **Report tools** — the three user-facing report tools exposed via `CHAT_TOOL_NAMES`:
 
@@ -197,12 +203,16 @@ ALPHA_VANTAGE_API_KEY   →  AlphaVantageService
 FINNHUB_API_KEY         →  FinnhubService
 FINANCIAL_MODELING_PREP_API_KEY  →  FinancialModelingPrepService
 TWELVE_DATA_API_KEY     →  TwelveDataService
+EODHD_API_KEY           →  EodhdService (low-quota fallback only)
+MARKETAUX_API_KEY       →  MarketauxService (news/search-news specialist)
+OPENFIGI_API_KEY        →  OpenFigiService (ticker mapping/search specialist)
 (always)                →  StooqService (no key required)
 ```
 
 ### Rate limiting and caching
 
 - Each provider has a per-instance throttle queue (`ALPHA_VANTAGE_MIN_INTERVAL_MS` etc.) to prevent bursting.
+- Provider priority is field-specific: Marketaux is preferred for keyword/news search, OpenFIGI only participates in ticker mapping/search, and EODHD is late in the chain for low-quota cached fallback.
 - `MultiSourceStockDataService` tracks provider cooldowns (`STOCK_PROVIDER_COOLDOWN_MS`, default 5 minutes) and skips cooled-down providers automatically.
 - Disk cache at `CACHE_DIR` (inside `REPORTS_DIR`) with `STOCK_CACHE_TTL_MS` TTL (default 7 days) prevents redundant API calls across report runs.
 - Vercel report generation must spend time in priority order: critical decision inputs first, high-value enrichment second, optional context third, LLM narration/refinement only when enough time remains to render and save the report.
@@ -216,7 +226,12 @@ These services are instantiated on-demand in `executeTool` and are NOT part of t
 | Service | API | Key required | Tools |
 |---|---|---|---|
 | `SecEdgarService` | SEC EDGAR EFTS | No (free, 10 req/s) | `get_sec_filings` |
+| `SecCompanyFactsService` | SEC XBRL companyfacts | No | `get_sec_company_facts`, `get_sec_financial_statements` |
 | `FredService` | FRED (Federal Reserve) | `FRED_API_KEY` (free) | `get_economic_indicators` |
+| `TreasuryYieldCurveService` | U.S. Treasury daily yield curve | No | `get_treasury_yield_curve` |
+| `BlsPublicDataService` | BLS Public Data API | Optional `BLS_API_KEY` | `get_bls_macro_indicators` |
+| `BeaService` | BEA NIPA API | `BEA_API_KEY` (free) | `get_bea_macro_indicators` |
+| `EiaService` | EIA Open Data API | `EIA_API_KEY` (free) | `get_eia_energy_indicators` |
 
 ### Computed analysis (zero API calls)
 
@@ -295,6 +310,9 @@ See `web/.env.example` for annotated defaults. All variables prefixed with `STOC
 
 **Optional standalone API keys:**
 - `FRED_API_KEY` — free from [fred.stlouisfed.org](https://fred.stlouisfed.org/docs/api/api_key.html). Enables `get_economic_indicators` tool (GDP, CPI, Fed Funds rate, unemployment, Treasury yields, yield curve).
+- `BEA_API_KEY` — free from apps.bea.gov. Enables `get_bea_macro_indicators`.
+- `EIA_API_KEY` — free from eia.gov. Enables `get_eia_energy_indicators`.
+- `BLS_API_KEY` — optional. `get_bls_macro_indicators` works without it under lower public limits.
 
 **LLM model overrides:**
 - `COPILOT_MODEL`, `COPILOT_FALLBACK_MODEL`, `COPILOT_FALLBACK_MODELS`

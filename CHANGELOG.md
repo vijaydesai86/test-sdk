@@ -1,6 +1,10 @@
 # Changelog
 All notable changes to this project are recorded here.
 ## [Unreleased]
+### Added
+- **Official free data tools**: Added SEC XBRL companyfacts tools (`get_sec_company_facts`, `get_sec_financial_statements`), U.S. Treasury yield curve data (`get_treasury_yield_curve`), BLS macro indicators (`get_bls_macro_indicators`), BEA NIPA macro indicators (`get_bea_macro_indicators`), and EIA energy indicators (`get_eia_energy_indicators`). These tools use official sources, return compact normalized data with provenance, and avoid LLM/training-data facts.
+- **Specialist fallback providers**: Added optional OpenFIGI ticker mapping, Marketaux news fallback, and EODHD low-quota market/fundamental fallback. Provider priority is field-specific so the system uses each provider only where it fits.
+
 ### Changed
 - **Agent operating contract**: `AGENT.md` now captures the standing collaboration rules for discuss-before-change, holistic impact review, local/Vercel parity, truthful-data requirements, LLM/tool fallback discipline, mandatory practical validation, test expectations, docs alignment, and commit/push boundaries.
 - **Deep research execution order**: Deep-sector reports now resolve a verified universe, fetch critical market data before optional ecosystem LLM enrichment, and reserve model calls for after a data-backed report body is already possible. `DEEP_RESEARCH_DEPTH` is restored as a bounded optional post-core-data refinement setting with default `1`.
@@ -57,7 +61,7 @@ All notable changes to this project are recorded here.
 - **Data trust tracking** (`dataTrust.ts`): Freshness classification (fresh/aging/stale) per data source. Decision engine uses this to calibrate confidence without penalising scores.
 - **Research memory store** (`researchMemoryStore.ts`): Persistence for research sessions, company theses, and decision journal records (Supabase or filesystem).
 - **Chat tool policy** (`chatToolPolicy.ts`): Allowlist of tool names the LLM may call during a chat session.
-- **7 new research tools** (30 total): `get_technical_indicators`, `get_sec_filings`, `get_economic_indicators`, `get_dividend_analysis`, `get_dcf_valuation`, `get_market_sentiment`, bringing total tool count from 23 to 30.
+- **7 research tools from the earlier decision-engine pass**: `get_technical_indicators`, `get_sec_filings`, `get_economic_indicators`, `get_dividend_analysis`, `get_dcf_valuation`, `get_market_sentiment`, which brought that pass's tool count from 23 to 30 before the later official-data expansion.
 - **Advanced technical indicators**: MACD(12,26,9), Bollinger Bands(20,2), Stochastic Oscillator(14,3,3), ATR(14), EMA(12/26), volume analysis — all computed from existing price data with zero extra API calls.
 - **SEC EDGAR integration**: `SecEdgarService` fetches recent 10-K, 10-Q, 8-K filings with direct links. Completely free — no API key needed.
 - **FRED economic data**: `FredService` provides GDP growth, CPI/inflation, Federal Funds rate, unemployment, 10Y/2Y Treasury yields, yield curve spread (recession indicator), consumer sentiment, initial jobless claims. Requires free `FRED_API_KEY`.

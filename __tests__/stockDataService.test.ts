@@ -1,6 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import axios from 'axios';
-import { AlphaVantageService, FinnhubService } from '../web/app/lib/stockDataService';
+import {
+  AlphaVantageService,
+  BeaService,
+  BlsPublicDataService,
+  createStockService,
+  EiaService,
+  FinnhubService,
+  SecCompanyFactsService,
+  TreasuryYieldCurveService,
+} from '../web/app/lib/stockDataService';
 
 vi.mock('axios');
 
@@ -234,5 +243,344 @@ describe('FinnhubService', () => {
     (FinnhubService as any).rateLimitedUntilMs = future;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect((FinnhubService as any).rateLimitedUntilMs).toBe(future);
+  });
+});
+
+// ─── Official no-key data services ───────────────────────────────────────────
+
+describe('SecCompanyFactsService', () => {
+  beforeEach(() => {
+    mockedAxios.get.mockReset();
+    (SecCompanyFactsService as any).tickerCache = null;
+    (SecCompanyFactsService as any).factsCache?.clear?.();
+  });
+
+  it('normalizes official SEC companyfacts into compact financial facts', async () => {
+    mockedAxios.get
+      .mockResolvedValueOnce({
+        data: {
+          0: { cik_str: 320193, ticker: 'AAPL', title: 'Apple Inc.' },
+        },
+      })
+      .mockResolvedValueOnce({
+        data: {
+          entityName: 'Apple Inc.',
+          facts: {
+            'us-gaap': {
+              Revenues: {
+                units: {
+                  USD: [{ val: 1000, end: '2025-09-30', filed: '2025-10-31', form: '10-K' }],
+                },
+              },
+              NetCashProvidedByUsedInOperatingActivities: {
+                units: {
+                  USD: [{ val: 300, end: '2025-09-30', filed: '2025-10-31', form: '10-K' }],
+                },
+              },
+              PaymentsToAcquirePropertyPlantAndEquipment: {
+                units: {
+                  USD: [{ val: 100, end: '2025-09-30', filed: '2025-10-31', form: '10-K' }],
+                },
+              },
+            },
+          },
+        },
+      });
+
+    const service = new SecCompanyFactsService();
+    const result = await service.getNormalizedFinancialFacts('AAPL');
+
+    expect(result.cik).toBe('0000320193');
+    expect(result.facts.revenue.value).toBe(1000);
+    expect(result.facts.revenue.tag).toBe('Revenues');
+    expect(result.freeCashFlow.value).toBe(200);
+    expect(result.__source).toBe('SEC companyfacts');
+  });
+});
+
+describe('TreasuryYieldCurveService', () => {
+  beforeEach(() => {
+    mockedAxios.get.mockReset();
+    (TreasuryYieldCurveService as any).cache?.clear?.();
+  });
+
+  it('parses the official Treasury XML yield curve feed', async () => {
+    mockedAxios.get.mockResolvedValueOnce({
+      data: `
+        <feed>
+          <entry><content><m:properties>
+            <d:NEW_DATE>2026-05-20T00:00:00</d:NEW_DATE>
+            <d:BC_3MONTH>4.10</d:BC_3MONTH>
+            <d:BC_2YEAR>3.75</d:BC_2YEAR>
+            <d:BC_10YEAR>4.25</d:BC_10YEAR>
+            <d:BC_30YEAR>4.80</d:BC_30YEAR>
+          </m:properties></content></entry>
+        </feed>
+      `,
+    });
+
+    const service = new TreasuryYieldCurveService();
+    const result = await service.getLatestYieldCurve(2026);
+
+    expect(result.latest.date).toBe('2026-05-20');
+    expect(result.latest.year10).toBe(4.25);
+    expect(result.yieldCurve.tenYearMinusTwoYear).toBe(0.5);
+    expect(result.yieldCurve.thirtyYearMinusThreeMonth).toBe(0.7);
+  });
+});
+
+describe('BlsPublicDataService', () => {
+  beforeEach(() => {
+    mockedAxios.post.mockReset();
+    (BlsPublicDataService as any).cache = null;
+    delete process.env.BLS_API_KEY;
+  });
+
+  it('normalizes BLS macro series and computes year-over-year change', async () => {
+    mockedAxios.post.mockResolvedValueOnce({
+      data: {
+        status: 'REQUEST_SUCCEEDED',
+        Results: {
+          series: [
+            {
+              seriesID: 'CUUR0000SA0',
+              data: [
+                { year: '2026', period: 'M01', periodName: 'January', value: '330.0', latest: 'true' },
+                { year: '2025', period: 'M01', periodName: 'January', value: '300.0' },
+              ],
+            },
+          ],
+        },
+      },
+    });
+
+    const service = new BlsPublicDataService();
+    const result = await service.getMacroIndicators();
+    const cpi = result.indicators.find((item: any) => item.id === 'CPI_ALL_URBAN');
+
+    expect(result.status).toBe('REQUEST_SUCCEEDED');
+    expect(result.quotaMode).toBe('unregistered');
+    expect(cpi.latest.value).toBe(330);
+    expect(cpi.yoyPercent).toBe(10);
+  });
+});
+
+describe('BeaService', () => {
+  beforeEach(() => {
+    mockedAxios.get.mockReset();
+    process.env.BEA_API_KEY = 'bea';
+    process.env.BEA_CACHE_TTL_MS = '0';
+  });
+
+  it('normalizes official BEA NIPA tables into macro indicators', async () => {
+    mockedAxios.get
+      .mockResolvedValueOnce({
+        data: {
+          BEAAPI: {
+            Results: {
+              Data: [
+                {
+                  LineDescription: 'Gross domestic product',
+                  TimePeriod: '2026Q1',
+                  DataValue: '1.4',
+                  CL_UNIT: 'Percent change',
+                  TableName: 'T10101',
+                  LineNumber: '1',
+                },
+                {
+                  LineDescription: 'Personal consumption expenditures',
+                  TimePeriod: '2026Q1',
+                  DataValue: '2.8',
+                  CL_UNIT: 'Percent change',
+                  TableName: 'T10101',
+                  LineNumber: '2',
+                },
+              ],
+            },
+          },
+        },
+      })
+      .mockResolvedValueOnce({
+        data: {
+          BEAAPI: {
+            Results: {
+              Data: [
+                {
+                  LineDescription: 'Gross domestic product',
+                  TimePeriod: '2026Q1',
+                  DataValue: '29,100.5',
+                  CL_UNIT: 'Billions of dollars',
+                  TableName: 'T10105',
+                  LineNumber: '1',
+                },
+              ],
+            },
+          },
+        },
+      });
+
+    const service = new BeaService();
+    const result = await service.getMacroIndicators();
+
+    expect(result.__source).toBe('BEA NIPA API');
+    expect(result.indicators.realGdpGrowth.value).toBe(1.4);
+    expect(result.indicators.pceGrowth.value).toBe(2.8);
+    expect(result.indicators.nominalGdp.value).toBe(29100.5);
+    expect(mockedAxios.get.mock.calls[0][0]).toBe('https://apps.bea.gov/api/data');
+    expect(mockedAxios.get.mock.calls[0][1].params.UserID).toBe('bea');
+  });
+});
+
+describe('EiaService', () => {
+  beforeEach(() => {
+    mockedAxios.get.mockReset();
+    process.env.EIA_API_KEY = 'eia';
+    process.env.EIA_CACHE_TTL_MS = '0';
+  });
+
+  it('normalizes official EIA energy series and preserves per-series gaps', async () => {
+    mockedAxios.get
+      .mockResolvedValueOnce({
+        data: {
+          response: {
+            description: 'WTI crude oil spot price',
+            data: [
+              { period: '2026-05-20', value: '62.10', units: 'dollars per barrel' },
+              { period: '2026-05-19', value: '61.80', units: 'dollars per barrel' },
+            ],
+          },
+        },
+      })
+      .mockRejectedValueOnce(Object.assign(new Error('rate limit'), { response: { status: 429 } }))
+      .mockResolvedValueOnce({
+        data: {
+          response: {
+            description: 'Retail electricity price',
+            data: [{ period: '2026-03', value: '13.75', units: 'cents per kilowatthour' }],
+          },
+        },
+      })
+      .mockResolvedValueOnce({
+        data: {
+          response: {
+            description: 'Electricity net generation',
+            data: [{ period: '2026-03', value: '350000', units: 'thousand megawatthours' }],
+          },
+        },
+      });
+
+    const service = new EiaService();
+    const result = await service.getEnergyIndicators();
+
+    expect(result.__source).toBe('EIA Open Data API');
+    expect(result.indicators[0].latest.value).toBe(62.1);
+    expect(result.indicators[1].error).toBe('rate limit');
+    expect(result.indicators[2].latest.value).toBe(13.75);
+    expect(mockedAxios.get.mock.calls[0][0]).toBe('https://api.eia.gov/v2/seriesid/PET.RWTC.D');
+    expect(mockedAxios.get.mock.calls[0][1].params.api_key).toBe('eia');
+  });
+});
+
+describe('expanded provider fallback chain', () => {
+  beforeEach(() => {
+    mockedAxios.get.mockReset();
+    mockedAxios.post.mockReset();
+    process.env.FINNHUB_API_KEY = 'finnhub';
+    process.env.FINANCIAL_MODELING_PREP_API_KEY = 'fmp';
+    process.env.EODHD_API_KEY = 'eodhd';
+    process.env.MARKETAUX_API_KEY = 'marketaux';
+    process.env.OPENFIGI_API_KEY = 'openfigi';
+    process.env.FINNHUB_MIN_INTERVAL_MS = '0';
+    process.env.FMP_MIN_INTERVAL_MS = '0';
+    process.env.EODHD_MIN_INTERVAL_MS = '0';
+    process.env.MARKETAUX_MIN_INTERVAL_MS = '0';
+    process.env.OPENFIGI_MIN_INTERVAL_MS = '0';
+  });
+
+  it('uses Marketaux before stock providers for keyword news search', async () => {
+    mockedAxios.get.mockResolvedValueOnce({
+      data: {
+        data: [
+          {
+            published_at: '2026-05-20T12:00:00Z',
+            title: 'Semiconductor demand rises',
+            source: 'Example News',
+            url: 'https://example.com/news',
+            description: 'Demand update',
+            sentiment_score: 0.4,
+          },
+        ],
+      },
+    });
+
+    const service = createStockService();
+    const result = await service.searchNews('semiconductors', 7);
+
+    expect(result.__source).toBe('Marketaux');
+    expect(result.articles[0].headline).toBe('Semiconductor demand rises');
+    expect(mockedAxios.get.mock.calls[0][0]).toBe('https://api.marketaux.com/v1/news/all');
+    expect(mockedAxios.get.mock.calls[0][1].params.search).toBe('semiconductors');
+  });
+
+  it('falls back to OpenFIGI for ticker search after primary providers are unavailable', async () => {
+    mockedAxios.get
+      .mockRejectedValueOnce(Object.assign(new Error('Finnhub unavailable'), { response: { status: 403 } }))
+      .mockResolvedValueOnce({ data: [] });
+    mockedAxios.post.mockResolvedValueOnce({
+      data: [
+        {
+          data: [
+            {
+              ticker: 'AAPL',
+              name: 'APPLE INC',
+              marketSector: 'Equity',
+              securityType: 'Common Stock',
+              exchCode: 'US',
+              currency: 'USD',
+              figi: 'BBG000B9XRY4',
+              compositeFIGI: 'BBG000B9XRY4',
+            },
+          ],
+        },
+      ],
+    });
+
+    const service = createStockService();
+    const result = await service.searchStock('AAPL');
+
+    expect(result.__source).toBe('OpenFIGI');
+    expect(result.results[0].symbol).toBe('AAPL');
+    expect(mockedAxios.post.mock.calls[0][0]).toBe('https://api.openfigi.com/v3/mapping');
+  });
+
+  it('uses EODHD as a late fallback for company overview gaps', async () => {
+    mockedAxios.get
+      .mockResolvedValueOnce({ data: [] })
+      .mockRejectedValueOnce(Object.assign(new Error('Finnhub unavailable'), { response: { status: 403 } }))
+      .mockResolvedValueOnce({ data: { General: { Name: '' } } })
+      .mockResolvedValueOnce({
+        data: {
+          General: {
+            Name: 'Apple Inc.',
+            Sector: 'Technology',
+            Industry: 'Consumer Electronics',
+            Description: 'Consumer technology company.',
+          },
+          Highlights: {
+            MarketCapitalization: 3000000000000,
+            PERatio: 30,
+            EarningsShare: 6,
+            ProfitMargin: 0.25,
+          },
+        },
+      });
+
+    const service = createStockService();
+    const result = await service.getCompanyOverview('AAPL');
+
+    expect(result.__source).toContain('EODHD');
+    expect(result.name).toBe('Apple Inc.');
+    const calledUrls = mockedAxios.get.mock.calls.map((call) => String(call[0]));
+    expect(calledUrls.some((url) => url.includes('/api/fundamentals/AAPL.US'))).toBe(true);
   });
 });

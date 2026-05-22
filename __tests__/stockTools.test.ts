@@ -1,8 +1,17 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { promises as fsp } from 'fs';
 import path from 'path';
+import axios from 'axios';
 import { executeTool } from '../web/app/lib/stockTools';
 import type { StockDataService } from '../web/app/lib/stockDataService';
+
+vi.mock('axios');
+const mockedAxios = vi.mocked(axios);
+
+beforeEach(() => {
+  mockedAxios.get.mockReset();
+  mockedAxios.post.mockReset();
+});
 
 // ─── Shared stub factory ──────────────────────────────────────────────────────
 
@@ -139,6 +148,37 @@ describe('executeTool routing', () => {
     const service = stubService();
     const result = await executeTool('completely_nonexistent_tool', {}, service);
     expect(result.success).toBe(false);
+  });
+
+  it('uses official Treasury 10Y yield in DCF assumptions when available', async () => {
+    const service = stubService();
+    (service.getCompanyOverview as ReturnType<typeof vi.fn>).mockResolvedValue({
+      sharesOutstanding: '100',
+      beta: '1.2',
+      quarterlyRevenueGrowth: '0.08',
+    });
+    (service.getCashFlow as ReturnType<typeof vi.fn>).mockResolvedValue({
+      annualReports: [
+        { operatingCashflow: '1000', capitalExpenditures: '-200' },
+        { operatingCashflow: '900', capitalExpenditures: '-180' },
+      ],
+    });
+    mockedAxios.get.mockResolvedValueOnce({
+      data: `
+        <feed>
+          <entry><content><m:properties>
+            <d:NEW_DATE>2026-05-20T00:00:00</d:NEW_DATE>
+            <d:BC_10YEAR>4.25</d:BC_10YEAR>
+          </m:properties></content></entry>
+        </feed>
+      `,
+    });
+
+    const result = await executeTool('get_dcf_valuation', { symbol: 'AAPL' }, service);
+
+    expect(result.success).toBe(true);
+    expect(result.data?.assumptions.riskFreeRate).toBe(4.25);
+    expect(result.data?.assumptions.riskFreeRateSource).toContain('U.S. Treasury 10Y');
   });
 });
 

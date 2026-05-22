@@ -5,7 +5,13 @@ describe('chat tool policy', () => {
   it('exposes the expanded decision-grade tool allow-list', () => {
     expect(CHAT_TOOL_NAMES).toContain('get_technical_indicators');
     expect(CHAT_TOOL_NAMES).toContain('get_sec_filings');
+    expect(CHAT_TOOL_NAMES).toContain('get_sec_company_facts');
+    expect(CHAT_TOOL_NAMES).toContain('get_sec_financial_statements');
     expect(CHAT_TOOL_NAMES).toContain('get_economic_indicators');
+    expect(CHAT_TOOL_NAMES).toContain('get_treasury_yield_curve');
+    expect(CHAT_TOOL_NAMES).toContain('get_bls_macro_indicators');
+    expect(CHAT_TOOL_NAMES).toContain('get_bea_macro_indicators');
+    expect(CHAT_TOOL_NAMES).toContain('get_eia_energy_indicators');
     expect(CHAT_TOOL_NAMES).toContain('get_dividend_analysis');
     expect(CHAT_TOOL_NAMES).toContain('get_dcf_valuation');
     expect(CHAT_TOOL_NAMES).toContain('get_market_sentiment');

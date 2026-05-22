@@ -1,7 +1,16 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { promises as fs } from 'fs';
 import path from 'path';
-import { StockDataService, SecEdgarService, FredService } from './stockDataService';
+import {
+  BlsPublicDataService,
+  BeaService,
+  EiaService,
+  StockDataService,
+  SecCompanyFactsService,
+  SecEdgarService,
+  FredService,
+  TreasuryYieldCurveService,
+} from './stockDataService';
 import { buildStockReport, buildComparisonReport, buildSectorReport, buildDeepSectorReport, buildDeepStockReport, buildDeepComparisonReport, buildWatchlistDailyReport, saveReport, MoatAnalysis, computeScorecard, computeTechnicalSnapshot, computeVolumeAnalysis } from './reportGenerator';
 import { getDefaultWatchlist } from './watchlistStore';
 import { buildDecisionSnapshot, decisionSnapshotToLegacyAction } from './decisionEngine';
@@ -1841,8 +1850,82 @@ function buildToolDefinitions() {
     {
       type: 'function',
       function: {
+        name: 'get_sec_company_facts',
+        description: 'Get compact official SEC XBRL company facts for a ticker. Returns selected real us-gaap facts with tag, unit, filing date, period end, and source provenance. Free — no API key required.',
+        parameters: {
+          type: 'object',
+          properties: {
+            symbol: { type: 'string', description: 'Stock ticker symbol' },
+          },
+          required: ['symbol'],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'get_sec_financial_statements',
+        description: 'Get normalized official SEC XBRL fundamentals for a ticker: revenue, net income, assets, liabilities, equity, cash, operating cash flow, capex, free cash flow, diluted shares, and diluted EPS when available. Free — no API key required.',
+        parameters: {
+          type: 'object',
+          properties: {
+            symbol: { type: 'string', description: 'Stock ticker symbol' },
+          },
+          required: ['symbol'],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
         name: 'get_economic_indicators',
         description: 'Get key macroeconomic indicators from FRED (Federal Reserve): GDP growth, CPI/inflation rate, Federal Funds rate, unemployment rate, 10Y & 2Y Treasury yields, yield curve spread (recession indicator), consumer sentiment, and initial jobless claims. Requires free FRED_API_KEY.',
+        parameters: {
+          type: 'object',
+          properties: {},
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'get_treasury_yield_curve',
+        description: 'Get the latest official U.S. Treasury daily yield curve rates and key spreads (10Y-2Y, 30Y-3M). Free — no API key required.',
+        parameters: {
+          type: 'object',
+          properties: {
+            year: { type: 'number', description: 'Calendar year to fetch. Defaults to the current year.' },
+          },
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'get_bls_macro_indicators',
+        description: 'Get official BLS macro indicators from the public API: CPI-U, core CPI, unemployment, nonfarm payrolls, and average hourly earnings. Uses unregistered free tier unless BLS_API_KEY is configured.',
+        parameters: {
+          type: 'object',
+          properties: {},
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'get_bea_macro_indicators',
+        description: 'Get official BEA NIPA macro indicators: real GDP growth, PCE growth, investment, trade, government spending, nominal GDP, and personal consumption. Requires free BEA_API_KEY.',
+        parameters: {
+          type: 'object',
+          properties: {},
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'get_eia_energy_indicators',
+        description: 'Get official EIA energy indicators: WTI crude, Henry Hub natural gas, U.S. retail electricity prices, and electricity generation. Requires free EIA_API_KEY.',
         parameters: {
           type: 'object',
           properties: {},
@@ -2082,6 +2165,31 @@ export async function executeTool(
           message: `Retrieved ${filings.filings?.length || 0} SEC filings for ${sym}`,
         };
       }
+      case 'get_sec_company_facts': {
+        const sym = (args.symbol || '').toUpperCase();
+        if (!sym) return { success: false, error: 'Symbol is required' };
+        const secFacts = new SecCompanyFactsService();
+        const data = await secFacts.getNormalizedFinancialFacts(sym);
+        if (data.error) return { success: false, error: data.error, data };
+        return {
+          success: true,
+          data,
+          message: `Retrieved official SEC XBRL company facts for ${sym}`,
+        };
+      }
+      case 'get_sec_financial_statements': {
+        const sym = (args.symbol || '').toUpperCase();
+        if (!sym) return { success: false, error: 'Symbol is required' };
+        const secFacts = new SecCompanyFactsService();
+        const data = await secFacts.getNormalizedFinancialFacts(sym);
+        if (data.error) return { success: false, error: data.error, data };
+        const available = Object.values(data.facts || {}).filter(Boolean).length;
+        return {
+          success: true,
+          data,
+          message: `Retrieved ${available} normalized official SEC financial facts for ${sym}`,
+        };
+      }
       case 'get_economic_indicators': {
         const fred = new FredService();
         if (!fred.isConfigured()) {
@@ -2095,6 +2203,48 @@ export async function executeTool(
           success: true,
           data: indicators,
           message: 'Retrieved macroeconomic indicators from FRED',
+        };
+      }
+      case 'get_treasury_yield_curve': {
+        const treasury = new TreasuryYieldCurveService();
+        const data = await treasury.getLatestYieldCurve(args.year ? Number(args.year) : undefined);
+        return {
+          success: true,
+          data,
+          message: data.latest
+            ? `Latest Treasury yield curve date ${data.latest.date}; 10Y=${data.latest.year10 ?? 'N/A'}%, 2Y=${data.latest.year2 ?? 'N/A'}%`
+            : 'Treasury yield curve data unavailable',
+        };
+      }
+      case 'get_bls_macro_indicators': {
+        const bls = new BlsPublicDataService();
+        const data = await bls.getMacroIndicators();
+        return {
+          success: true,
+          data,
+          message: `Retrieved ${data.indicators?.length || 0} BLS macro indicators (${data.quotaMode || 'unregistered'} mode)`,
+        };
+      }
+      case 'get_bea_macro_indicators': {
+        const bea = new BeaService();
+        const data = await bea.getMacroIndicators();
+        if (data.error) return { success: false, error: data.error, data };
+        const available = Object.values(data.indicators || {}).filter(Boolean).length;
+        return {
+          success: true,
+          data,
+          message: `Retrieved ${available} BEA macro indicators`,
+        };
+      }
+      case 'get_eia_energy_indicators': {
+        const eia = new EiaService();
+        const data = await eia.getEnergyIndicators();
+        if (data.error) return { success: false, error: data.error, data };
+        const available = (data.indicators || []).filter((item: any) => item.latest?.value !== null && item.latest?.value !== undefined).length;
+        return {
+          success: true,
+          data,
+          message: `Retrieved ${available} EIA energy indicators`,
         };
       }
       case 'get_dividend_analysis': {
@@ -2164,6 +2314,8 @@ export async function executeTool(
 
         const sharesOutstanding = overview?.sharesOutstanding != null ? Number(overview.sharesOutstanding) : null;
         const beta = overview?.beta != null ? Number(overview.beta) : null;
+        const treasuryRates = await new TreasuryYieldCurveService().getLatestYieldCurve().catch(() => null);
+        const treasury10Y = treasuryRates?.latest?.year10 != null ? Number(treasuryRates.latest.year10) : null;
 
         // Get FCF from cash flow statements
         const annualReports = cashFlowData?.annualReports || [];
@@ -2203,8 +2355,10 @@ export async function executeTool(
           growthRate = Math.min(Math.max(revenueGrowth, -0.1), 0.25);
         }
 
-        // WACC proxy: risk-free rate + beta * equity risk premium
-        const riskFreeRate = 0.04; // approximate 10Y Treasury
+        // WACC proxy: risk-free rate + beta * equity risk premium.
+        // Use the official Treasury 10Y yield when available; keep the fallback
+        // visible in assumptions rather than pretending it is live data.
+        const riskFreeRate = treasury10Y !== null && Number.isFinite(treasury10Y) ? treasury10Y / 100 : 0.04;
         const equityRiskPremium = 0.05; // historical ERP
         const effectiveBeta = beta != null && Number.isFinite(beta) && beta > 0 ? beta : 1.0;
         const wacc = riskFreeRate + effectiveBeta * equityRiskPremium;
@@ -2257,6 +2411,10 @@ export async function executeTool(
               latestFCF,
               growthRate: Number((growthRate * 100).toFixed(1)),
               wacc: Number((wacc * 100).toFixed(1)),
+              riskFreeRate: Number((riskFreeRate * 100).toFixed(2)),
+              riskFreeRateSource: treasury10Y !== null && Number.isFinite(treasury10Y)
+                ? `U.S. Treasury 10Y (${treasuryRates?.latest?.date || 'latest available'})`
+                : 'Fallback assumption (Treasury data unavailable)',
               terminalGrowthRate: Number((terminalGrowth * 100).toFixed(1)),
               projectionYears: 10,
               beta: effectiveBeta,

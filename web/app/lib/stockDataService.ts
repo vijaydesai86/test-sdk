@@ -8,6 +8,9 @@ const DEFAULT_PROVIDER_MIN_INTERVAL_MS = {
   fmp: 12000,
   twelvedata: 8000,
   stooq: 1000,
+  eodhd: 12000,
+  marketaux: 1500,
+  openfigi: 3000,
 } as const;
 
 function getProviderMinIntervalMs(envName: string, fallback: number): number {
@@ -1894,34 +1897,513 @@ export class StooqService implements StockDataService {
   }
 }
 
-type ProviderId = 'alphavantage' | 'finnhub' | 'fmp' | 'twelvedata' | 'stooq';
+class OpenFigiService implements StockDataService {
+  private apiKey = getConfiguredEnv('OPENFIGI_API_KEY') || '';
+  private baseUrl = 'https://api.openfigi.com/v3';
+  private lastRequestAt = 0;
+  private throttleQueue: Promise<void> = Promise.resolve();
+  private minIntervalMs = getProviderMinIntervalMs('OPENFIGI_MIN_INTERVAL_MS', DEFAULT_PROVIDER_MIN_INTERVAL_MS.openfigi);
+  private cache = new Map<string, { expiresAt: number; data: any }>();
+
+  private async throttle() {
+    if (this.minIntervalMs <= 0) return;
+    const next = this.throttleQueue.then(async () => {
+      const now = Date.now();
+      const wait = this.minIntervalMs - (now - this.lastRequestAt);
+      if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+      this.lastRequestAt = Date.now();
+    });
+    this.throttleQueue = next.catch(() => {});
+    await next;
+  }
+
+  private async mapTicker(ticker: string): Promise<any[]> {
+    const normalized = ticker.trim().toUpperCase();
+    if (!/^[A-Z0-9.]{1,6}$/.test(normalized)) {
+      throw new Error('Unavailable via OpenFIGI: only ticker mapping is supported');
+    }
+    const cacheKey = `openfigi:${normalized}`;
+    const cached = this.cache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) return cached.data;
+    await this.throttle();
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (this.apiKey) headers['X-OPENFIGI-APIKEY'] = this.apiKey;
+    try {
+      const response = await axios.post(
+        `${this.baseUrl}/mapping`,
+        [{ idType: 'TICKER', idValue: normalized, exchCode: 'US' }],
+        { headers, timeout: 10000 }
+      );
+      const data = response.data?.[0]?.data;
+      const mapped = Array.isArray(data) ? data : [];
+      if (!mapped.length) throw new Error('OpenFIGI returned no US equity matches');
+      this.cache.set(cacheKey, { expiresAt: Date.now() + 24 * 60 * 60 * 1000, data: mapped });
+      return mapped;
+    } catch (error: any) {
+      const statusCode = error?.response?.status;
+      if (statusCode === 429) throw new Error('OpenFIGI rate limit exceeded (429)');
+      throw new Error(`Unavailable via OpenFIGI: ${error?.message || 'mapping failed'}`);
+    }
+  }
+
+  async searchStock(query: string): Promise<any> {
+    const mapped = await this.mapTicker(query);
+    return {
+      results: mapped
+        .filter((item: any) => String(item.marketSector || '').toLowerCase() === 'equity')
+        .slice(0, 8)
+        .map((item: any) => ({
+          symbol: item.ticker,
+          name: item.name,
+          type: item.securityType || item.securityType2 || 'Equity',
+          region: item.exchCode || 'US',
+          currency: item.currency,
+          exchange: item.exchCode,
+          figi: item.figi,
+          compositeFIGI: item.compositeFIGI,
+          source: 'openfigi',
+        })),
+    };
+  }
+
+  async getStockPrice(): Promise<any> { throw new Error('Unavailable via OpenFIGI: market data not supported'); }
+  async getPriceHistory(): Promise<any> { throw new Error('Unavailable via OpenFIGI: market data not supported'); }
+  async getCompanyOverview(): Promise<any> { throw new Error('Unavailable via OpenFIGI: fundamentals not supported'); }
+  async getBasicFinancials(): Promise<any> { throw new Error('Unavailable via OpenFIGI: fundamentals not supported'); }
+  async getInsiderTrading(): Promise<any> { throw new Error('Unavailable via OpenFIGI: insider data not supported'); }
+  async getAnalystRatings(): Promise<any> { throw new Error('Unavailable via OpenFIGI: analyst data not supported'); }
+  async getAnalystRecommendations(): Promise<any> { throw new Error('Unavailable via OpenFIGI: analyst data not supported'); }
+  async getPriceTargets(): Promise<any> { throw new Error('Unavailable via OpenFIGI: analyst data not supported'); }
+  async getPeers(): Promise<any> { throw new Error('Unavailable via OpenFIGI: peer data not supported'); }
+  async getEarningsHistory(): Promise<any> { throw new Error('Unavailable via OpenFIGI: earnings not supported'); }
+  async getIncomeStatement(): Promise<any> { throw new Error('Unavailable via OpenFIGI: statements not supported'); }
+  async getBalanceSheet(): Promise<any> { throw new Error('Unavailable via OpenFIGI: statements not supported'); }
+  async getCashFlow(): Promise<any> { throw new Error('Unavailable via OpenFIGI: statements not supported'); }
+  async getSectorPerformance(): Promise<any> { throw new Error('Unavailable via OpenFIGI: sector performance not supported'); }
+  async getTopGainersLosers(): Promise<any> { throw new Error('Unavailable via OpenFIGI: movers not supported'); }
+  async getNewsSentiment(): Promise<any> { throw new Error('Unavailable via OpenFIGI: news not supported'); }
+  async getCompanyNews(): Promise<any> { throw new Error('Unavailable via OpenFIGI: news not supported'); }
+  async searchNews(): Promise<any> { throw new Error('Unavailable via OpenFIGI: news not supported'); }
+}
+
+class EodhdService implements StockDataService {
+  private apiKey = getConfiguredEnv('EODHD_API_KEY') || '';
+  private baseUrl = 'https://eodhd.com/api';
+  private cache = new Map<string, { expiresAt: number; data: any }>();
+  private lastRequestAt = 0;
+  private throttleQueue: Promise<void> = Promise.resolve();
+  private minIntervalMs = getProviderMinIntervalMs('EODHD_MIN_INTERVAL_MS', DEFAULT_PROVIDER_MIN_INTERVAL_MS.eodhd);
+
+  private formatSymbol(symbol: string): string {
+    const raw = symbol.trim().toUpperCase();
+    if (/\.[A-Z0-9]{2,6}$/.test(raw)) return raw;
+    return `${raw.replace(/\./g, '-')}.US`;
+  }
+
+  private async throttle() {
+    if (this.minIntervalMs <= 0) return;
+    const next = this.throttleQueue.then(async () => {
+      const now = Date.now();
+      const wait = this.minIntervalMs - (now - this.lastRequestAt);
+      if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+      this.lastRequestAt = Date.now();
+    });
+    this.throttleQueue = next.catch(() => {});
+    await next;
+  }
+
+  private async makeRequest(path: string, params: Record<string, string> = {}, ttlMs = 0): Promise<any> {
+    if (!this.apiKey) throw new Error('Unavailable via EODHD: API key not configured');
+    const cacheKey = `eodhd:${path}:${JSON.stringify(params)}`;
+    const cached = ttlMs > 0 ? this.cache.get(cacheKey) : undefined;
+    if (cached && cached.expiresAt > Date.now()) return cached.data;
+    await this.throttle();
+    try {
+      const response = await axios.get(`${this.baseUrl}${path}`, {
+        params: { ...params, api_token: this.apiKey, fmt: 'json' },
+        timeout: 12000,
+      });
+      const data = response.data;
+      const message = typeof data === 'string' ? data : data?.message || data?.error;
+      if (message && /limit|token|forbidden|invalid|error/i.test(String(message))) {
+        throw new Error(String(message));
+      }
+      if (ttlMs > 0) this.cache.set(cacheKey, { expiresAt: Date.now() + ttlMs, data });
+      return data;
+    } catch (error: any) {
+      const statusCode = error?.response?.status;
+      if (statusCode === 429) throw new Error('EODHD rate limit exceeded (429)');
+      if (statusCode === 401 || statusCode === 403) throw new Error(`Unavailable via EODHD (plan limitation: ${statusCode})`);
+      throw new Error(`EODHD request failed: ${error?.message || 'unknown error'}`);
+    }
+  }
+
+  async getStockPrice(symbol: string): Promise<any> {
+    const data = await this.makeRequest(`/real-time/${this.formatSymbol(symbol)}`, {}, 5 * 60 * 1000);
+    const price = data?.close ?? data?.previousClose;
+    if (price === undefined || price === null) throw new Error('Unavailable via EODHD: no price data');
+    return {
+      symbol: symbol.toUpperCase(),
+      price: String(price),
+      change: data.change?.toString(),
+      changePercent: data.change_p ? `${data.change_p}%` : undefined,
+      volume: data.volume?.toString(),
+      latestTradingDay: data.timestamp ? new Date(Number(data.timestamp) * 1000).toISOString() : data.date,
+      open: data.open?.toString(),
+      high: data.high?.toString(),
+      low: data.low?.toString(),
+      previousClose: data.previousClose?.toString(),
+    };
+  }
+
+  async getPriceHistory(symbol: string, range = '1y'): Promise<any> {
+    const lower = range.toLowerCase();
+    const days =
+      lower.includes('1w') ? 7 :
+      lower.includes('1m') ? 30 :
+      lower.includes('3m') ? 90 :
+      lower.includes('6m') ? 180 :
+      lower.includes('3y') ? 365 * 3 :
+      lower.includes('5y') ? 365 * 5 :
+      lower.includes('max') ? 365 * 20 :
+      365;
+    const to = new Date();
+    const from = new Date(to.getTime() - days * 24 * 60 * 60 * 1000);
+    const data = await this.makeRequest(`/eod/${this.formatSymbol(symbol)}`, {
+      from: from.toISOString().slice(0, 10),
+      to: to.toISOString().slice(0, 10),
+      period: 'd',
+    }, 12 * 60 * 60 * 1000);
+    const rows = Array.isArray(data) ? data : [];
+    if (!rows.length) throw new Error('Unavailable via EODHD: no price history');
+    return {
+      symbol: symbol.toUpperCase(),
+      prices: rows.sort((a: any, b: any) => String(b.date).localeCompare(String(a.date))).map((item: any) => ({
+        date: item.date,
+        open: item.open?.toString(),
+        high: item.high?.toString(),
+        low: item.low?.toString(),
+        close: item.close?.toString(),
+        volume: item.volume?.toString(),
+      })),
+    };
+  }
+
+  private async fundamentals(symbol: string): Promise<any> {
+    const data = await this.makeRequest(`/fundamentals/${this.formatSymbol(symbol)}`, {}, 24 * 60 * 60 * 1000);
+    if (!data || typeof data !== 'object' || data.General === undefined) {
+      throw new Error('Unavailable via EODHD: no fundamentals');
+    }
+    return data;
+  }
+
+  async getCompanyOverview(symbol: string): Promise<any> {
+    const data = await this.fundamentals(symbol);
+    return {
+      symbol: symbol.toUpperCase(),
+      name: data.General?.Name,
+      description: data.General?.Description,
+      sector: data.General?.Sector,
+      industry: data.General?.Industry,
+      marketCapitalization: data.Highlights?.MarketCapitalization?.toString(),
+      eps: data.Highlights?.EarningsShare?.toString(),
+      peRatio: data.Highlights?.PERatio?.toString(),
+      forwardPE: data.Valuation?.ForwardPE?.toString(),
+      pegRatio: data.Highlights?.PEGRatio?.toString(),
+      beta: data.Technicals?.Beta?.toString(),
+      dividendYield: data.Highlights?.DividendYield?.toString(),
+      dividendPerShare: data.Highlights?.DividendShare?.toString(),
+      sharesOutstanding: data.SharesStats?.SharesOutstanding?.toString(),
+      analystTargetPrice: data.Highlights?.WallStreetTargetPrice?.toString(),
+      profitMargin: data.Highlights?.ProfitMargin?.toString(),
+      operatingMargin: data.Highlights?.OperatingMarginTTM?.toString(),
+      returnOnEquity: data.Highlights?.ReturnOnEquityTTM?.toString(),
+      returnOnAssets: data.Highlights?.ReturnOnAssetsTTM?.toString(),
+      quarterlyRevenueGrowth: data.Highlights?.QuarterlyRevenueGrowthYOY?.toString(),
+      quarterlyEarningsGrowth: data.Highlights?.QuarterlyEarningsGrowthYOY?.toString(),
+    };
+  }
+
+  async getBasicFinancials(symbol: string): Promise<any> {
+    const data = await this.fundamentals(symbol);
+    return {
+      symbol: symbol.toUpperCase(),
+      metric: {
+        peBasicExclExtraTTM: data.Highlights?.PERatio,
+        epsTTM: data.Highlights?.EarningsShare,
+        revenueGrowthTTM: data.Highlights?.QuarterlyRevenueGrowthYOY,
+        epsGrowthTTM: data.Highlights?.QuarterlyEarningsGrowthYOY,
+        operatingMarginTTM: data.Highlights?.OperatingMarginTTM,
+        netProfitMarginTTM: data.Highlights?.ProfitMargin,
+        roeTTM: data.Highlights?.ReturnOnEquityTTM,
+        roaTTM: data.Highlights?.ReturnOnAssetsTTM,
+      },
+      series: {},
+    };
+  }
+
+  private statementRows(data: any, statement: string, mode: 'yearly' | 'quarterly') {
+    const rows = data.Financials?.[statement]?.[mode] || {};
+    return Object.entries(rows)
+      .sort(([a], [b]) => b.localeCompare(a))
+      .map(([, row]: [string, any]) => row);
+  }
+
+  async getIncomeStatement(symbol: string): Promise<any> {
+    const data = await this.fundamentals(symbol);
+    const mapRow = (row: any) => ({
+      fiscalDateEnding: row.date,
+      totalRevenue: row.totalRevenue?.toString(),
+      grossProfit: row.grossProfit?.toString(),
+      operatingIncome: row.operatingIncome?.toString(),
+      netIncome: row.netIncome?.toString(),
+      ebitda: row.ebitda?.toString(),
+    });
+    return {
+      symbol: symbol.toUpperCase(),
+      annualReports: this.statementRows(data, 'Income_Statement', 'yearly').map(mapRow),
+      quarterlyReports: this.statementRows(data, 'Income_Statement', 'quarterly').map(mapRow),
+    };
+  }
+
+  async getBalanceSheet(symbol: string): Promise<any> {
+    const data = await this.fundamentals(symbol);
+    const mapRow = (row: any) => ({
+      fiscalDateEnding: row.date,
+      totalAssets: row.totalAssets?.toString(),
+      totalLiabilities: row.totalLiab?.toString() ?? row.totalLiabilities?.toString(),
+      totalShareholderEquity: row.totalStockholderEquity?.toString(),
+      cashAndCashEquivalentsAtCarryingValue: row.cash?.toString(),
+      longTermDebt: row.longTermDebt?.toString(),
+    });
+    return {
+      symbol: symbol.toUpperCase(),
+      annualReports: this.statementRows(data, 'Balance_Sheet', 'yearly').map(mapRow),
+      quarterlyReports: this.statementRows(data, 'Balance_Sheet', 'quarterly').map(mapRow),
+    };
+  }
+
+  async getCashFlow(symbol: string): Promise<any> {
+    const data = await this.fundamentals(symbol);
+    const mapRow = (row: any) => {
+      const ocf = row.totalCashFromOperatingActivities ?? row.netCashProvidedByOperatingActivities;
+      const capex = row.capitalExpenditures;
+      return {
+        fiscalDateEnding: row.date,
+        operatingCashflow: ocf?.toString(),
+        capitalExpenditures: capex?.toString(),
+        freeCashFlow: ocf != null && capex != null ? (Number(ocf) - Math.abs(Number(capex))).toString() : undefined,
+        dividendPayout: row.dividendsPaid?.toString(),
+      };
+    };
+    return {
+      symbol: symbol.toUpperCase(),
+      annualReports: this.statementRows(data, 'Cash_Flow', 'yearly').map(mapRow),
+      quarterlyReports: this.statementRows(data, 'Cash_Flow', 'quarterly').map(mapRow),
+    };
+  }
+
+  async searchStock(query: string): Promise<any> {
+    const data = await this.makeRequest(`/search/${encodeURIComponent(query)}`, {}, 24 * 60 * 60 * 1000);
+    const rows = Array.isArray(data) ? data : [];
+    if (!rows.length) throw new Error('Unavailable via EODHD: no search results');
+    return {
+      results: rows.slice(0, 10).map((item: any) => ({
+        symbol: String(item.Code || '').toUpperCase(),
+        name: item.Name,
+        type: item.Type,
+        region: item.Country,
+        currency: item.Currency,
+        exchange: item.Exchange,
+        source: 'eodhd',
+      })),
+    };
+  }
+
+  async getCompanyNews(symbol: string, days = 30): Promise<any> {
+    const to = new Date();
+    const from = new Date(to.getTime() - days * 24 * 60 * 60 * 1000);
+    const data = await this.makeRequest('/news', {
+      s: this.formatSymbol(symbol),
+      from: from.toISOString().slice(0, 10),
+      to: to.toISOString().slice(0, 10),
+      limit: '20',
+    }, 30 * 60 * 1000);
+    const rows = Array.isArray(data) ? data : [];
+    return {
+      symbol: symbol.toUpperCase(),
+      articles: rows.map((item: any) => ({
+        datetime: item.date || null,
+        headline: item.title,
+        source: item.source,
+        url: item.link,
+        summary: item.content,
+      })),
+    };
+  }
+
+  async searchNews(query: string, days = 30): Promise<any> {
+    const to = new Date();
+    const from = new Date(to.getTime() - days * 24 * 60 * 60 * 1000);
+    const data = await this.makeRequest('/news', {
+      t: query,
+      from: from.toISOString().slice(0, 10),
+      to: to.toISOString().slice(0, 10),
+      limit: '20',
+    }, 30 * 60 * 1000);
+    const rows = Array.isArray(data) ? data : [];
+    return {
+      query,
+      articles: rows.map((item: any) => ({
+        datetime: item.date || null,
+        headline: item.title,
+        source: item.source,
+        url: item.link,
+        summary: item.content,
+      })),
+    };
+  }
+
+  async getInsiderTrading(): Promise<any> { throw new Error('Unavailable via EODHD: insider trading not supported'); }
+  async getAnalystRatings(): Promise<any> { throw new Error('Unavailable via EODHD: analyst ratings not supported'); }
+  async getAnalystRecommendations(): Promise<any> { throw new Error('Unavailable via EODHD: analyst recommendations not supported'); }
+  async getPriceTargets(): Promise<any> { throw new Error('Unavailable via EODHD: price targets not supported'); }
+  async getPeers(): Promise<any> { throw new Error('Unavailable via EODHD: peers not supported'); }
+  async getEarningsHistory(): Promise<any> { throw new Error('Unavailable via EODHD: earnings history not supported'); }
+  async getSectorPerformance(): Promise<any> { throw new Error('Unavailable via EODHD: sector performance not supported'); }
+  async getTopGainersLosers(): Promise<any> { throw new Error('Unavailable via EODHD: market movers not supported'); }
+  async getNewsSentiment(): Promise<any> { throw new Error('Unavailable via EODHD: news sentiment not supported'); }
+}
+
+class MarketauxService implements StockDataService {
+  private apiKey = getConfiguredEnv('MARKETAUX_API_KEY') || '';
+  private baseUrl = 'https://api.marketaux.com/v1/news/all';
+  private cache = new Map<string, { expiresAt: number; data: any }>();
+  private lastRequestAt = 0;
+  private throttleQueue: Promise<void> = Promise.resolve();
+  private minIntervalMs = getProviderMinIntervalMs('MARKETAUX_MIN_INTERVAL_MS', DEFAULT_PROVIDER_MIN_INTERVAL_MS.marketaux);
+
+  private async throttle() {
+    if (this.minIntervalMs <= 0) return;
+    const next = this.throttleQueue.then(async () => {
+      const now = Date.now();
+      const wait = this.minIntervalMs - (now - this.lastRequestAt);
+      if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+      this.lastRequestAt = Date.now();
+    });
+    this.throttleQueue = next.catch(() => {});
+    await next;
+  }
+
+  private async news(params: Record<string, string>) {
+    if (!this.apiKey) throw new Error('Unavailable via Marketaux: API key not configured');
+    const cacheKey = `marketaux:${JSON.stringify(params)}`;
+    const cached = this.cache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) return cached.data;
+    await this.throttle();
+    try {
+      const response = await axios.get(this.baseUrl, {
+        params: { ...params, api_token: this.apiKey, language: 'en', limit: params.limit || '20' },
+        timeout: 12000,
+      });
+      const data = response.data;
+      if (data?.error) throw new Error(data.error?.message || data.error);
+      this.cache.set(cacheKey, { expiresAt: Date.now() + 30 * 60 * 1000, data });
+      return data;
+    } catch (error: any) {
+      const statusCode = error?.response?.status;
+      if (statusCode === 429) throw new Error('Marketaux rate limit exceeded (429)');
+      if (statusCode === 401 || statusCode === 403) throw new Error(`Unavailable via Marketaux (plan limitation: ${statusCode})`);
+      throw new Error(`Marketaux request failed: ${error?.message || 'unknown error'}`);
+    }
+  }
+
+  private mapArticles(data: any) {
+    const articles = Array.isArray(data?.data) ? data.data : [];
+    return articles.map((item: any) => ({
+      datetime: item.published_at || null,
+      headline: item.title,
+      source: item.source,
+      url: item.url,
+      summary: item.description || item.snippet,
+      sentimentScore: item.sentiment_score,
+    }));
+  }
+
+  async getCompanyNews(symbol: string, days = 30): Promise<any> {
+    const from = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const data = await this.news({ symbols: symbol.toUpperCase(), published_after: from });
+    return { symbol: symbol.toUpperCase(), articles: this.mapArticles(data) };
+  }
+
+  async searchNews(query: string, days = 30): Promise<any> {
+    const from = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const data = await this.news({ search: query, published_after: from });
+    return { query, articles: this.mapArticles(data) };
+  }
+
+  async getNewsSentiment(symbol: string): Promise<any> {
+    const news = await this.getCompanyNews(symbol, 14);
+    const scores = (news.articles || []).map((a: any) => Number(a.sentimentScore)).filter((v: number) => Number.isFinite(v));
+    const average = scores.length ? scores.reduce((sum: number, value: number) => sum + value, 0) / scores.length : null;
+    return {
+      symbol: symbol.toUpperCase(),
+      sentiment: average === null ? 'Neutral' : average > 0.15 ? 'Bullish' : average < -0.15 ? 'Bearish' : 'Neutral',
+      sentimentScore: average,
+      articleCount: news.articles?.length || 0,
+      articles: news.articles,
+    };
+  }
+
+  async getStockPrice(): Promise<any> { throw new Error('Unavailable via Marketaux: market data not supported'); }
+  async getPriceHistory(): Promise<any> { throw new Error('Unavailable via Marketaux: market data not supported'); }
+  async getCompanyOverview(): Promise<any> { throw new Error('Unavailable via Marketaux: fundamentals not supported'); }
+  async getBasicFinancials(): Promise<any> { throw new Error('Unavailable via Marketaux: fundamentals not supported'); }
+  async getInsiderTrading(): Promise<any> { throw new Error('Unavailable via Marketaux: insider data not supported'); }
+  async getAnalystRatings(): Promise<any> { throw new Error('Unavailable via Marketaux: analyst data not supported'); }
+  async getAnalystRecommendations(): Promise<any> { throw new Error('Unavailable via Marketaux: analyst data not supported'); }
+  async getPriceTargets(): Promise<any> { throw new Error('Unavailable via Marketaux: analyst data not supported'); }
+  async getPeers(): Promise<any> { throw new Error('Unavailable via Marketaux: peer data not supported'); }
+  async searchStock(): Promise<any> { throw new Error('Unavailable via Marketaux: stock search not supported'); }
+  async getEarningsHistory(): Promise<any> { throw new Error('Unavailable via Marketaux: earnings not supported'); }
+  async getIncomeStatement(): Promise<any> { throw new Error('Unavailable via Marketaux: statements not supported'); }
+  async getBalanceSheet(): Promise<any> { throw new Error('Unavailable via Marketaux: statements not supported'); }
+  async getCashFlow(): Promise<any> { throw new Error('Unavailable via Marketaux: statements not supported'); }
+  async getSectorPerformance(): Promise<any> { throw new Error('Unavailable via Marketaux: sector performance not supported'); }
+  async getTopGainersLosers(): Promise<any> { throw new Error('Unavailable via Marketaux: movers not supported'); }
+}
+
+type ProviderId = 'alphavantage' | 'finnhub' | 'fmp' | 'twelvedata' | 'stooq' | 'eodhd' | 'marketaux' | 'openfigi';
 const PROVIDER_LABELS: Record<ProviderId, string> = {
   alphavantage: 'Alpha Vantage',
   finnhub: 'Finnhub',
   fmp: 'Financial Modeling Prep',
   twelvedata: 'Twelve Data',
   stooq: 'Stooq',
+  eodhd: 'EODHD',
+  marketaux: 'Marketaux',
+  openfigi: 'OpenFIGI',
 };
 
 const METHOD_PROVIDER_PRIORITY: Partial<Record<keyof StockDataService, ProviderId[]>> = {
-  getStockPrice: ['finnhub', 'fmp', 'twelvedata', 'alphavantage', 'stooq'],
-  getPriceHistory: ['finnhub', 'fmp', 'twelvedata', 'stooq', 'alphavantage'],
-  getCompanyOverview: ['fmp', 'finnhub', 'alphavantage', 'twelvedata', 'stooq'],
-  getBasicFinancials: ['fmp', 'finnhub', 'alphavantage', 'twelvedata', 'stooq'],
-  getAnalystRatings: ['finnhub', 'fmp', 'alphavantage', 'twelvedata', 'stooq'],
-  getAnalystRecommendations: ['finnhub', 'fmp', 'alphavantage', 'twelvedata', 'stooq'],
-  getPriceTargets: ['finnhub', 'fmp', 'alphavantage', 'twelvedata', 'stooq'],
-  getPeers: ['finnhub', 'fmp', 'alphavantage', 'twelvedata', 'stooq'],
+  getStockPrice: ['finnhub', 'fmp', 'twelvedata', 'alphavantage', 'stooq', 'eodhd'],
+  getPriceHistory: ['finnhub', 'fmp', 'twelvedata', 'stooq', 'alphavantage', 'eodhd'],
+  getCompanyOverview: ['fmp', 'finnhub', 'alphavantage', 'eodhd', 'twelvedata', 'stooq'],
+  getBasicFinancials: ['fmp', 'finnhub', 'alphavantage', 'eodhd', 'twelvedata', 'stooq'],
+  getAnalystRatings: ['finnhub', 'fmp', 'alphavantage', 'eodhd', 'twelvedata', 'stooq'],
+  getAnalystRecommendations: ['finnhub', 'fmp', 'alphavantage', 'eodhd', 'twelvedata', 'stooq'],
+  getPriceTargets: ['finnhub', 'fmp', 'alphavantage', 'eodhd', 'twelvedata', 'stooq'],
+  getPeers: ['finnhub', 'fmp', 'alphavantage', 'eodhd', 'twelvedata', 'stooq'],
   // Search requests are high-frequency during ticker resolution, so prefer the roomier
   // free-tier providers before spending Alpha Vantage's much tighter daily quota.
-  searchStock: ['finnhub', 'fmp', 'alphavantage', 'twelvedata', 'stooq'],
-  getEarningsHistory: ['finnhub', 'fmp', 'alphavantage', 'twelvedata', 'stooq'],
-  getIncomeStatement: ['fmp', 'finnhub', 'alphavantage', 'twelvedata', 'stooq'],
-  getBalanceSheet: ['fmp', 'finnhub', 'alphavantage', 'twelvedata', 'stooq'],
-  getCashFlow: ['fmp', 'finnhub', 'alphavantage', 'twelvedata', 'stooq'],
-  getNewsSentiment: ['finnhub', 'fmp', 'alphavantage', 'twelvedata', 'stooq'],
-  getCompanyNews: ['finnhub', 'fmp', 'alphavantage', 'twelvedata', 'stooq'],
-  searchNews: ['fmp', 'finnhub', 'alphavantage', 'twelvedata', 'stooq'],
+  searchStock: ['finnhub', 'fmp', 'openfigi', 'eodhd', 'alphavantage', 'twelvedata', 'stooq'],
+  getEarningsHistory: ['finnhub', 'fmp', 'alphavantage', 'eodhd', 'twelvedata', 'stooq'],
+  getIncomeStatement: ['fmp', 'finnhub', 'alphavantage', 'eodhd', 'twelvedata', 'stooq'],
+  getBalanceSheet: ['fmp', 'finnhub', 'alphavantage', 'eodhd', 'twelvedata', 'stooq'],
+  getCashFlow: ['fmp', 'finnhub', 'alphavantage', 'eodhd', 'twelvedata', 'stooq'],
+  getNewsSentiment: ['marketaux', 'finnhub', 'fmp', 'alphavantage', 'eodhd', 'twelvedata', 'stooq'],
+  getCompanyNews: ['marketaux', 'finnhub', 'fmp', 'alphavantage', 'eodhd', 'twelvedata', 'stooq'],
+  searchNews: ['marketaux', 'fmp', 'eodhd', 'finnhub', 'alphavantage', 'twelvedata', 'stooq'],
   getSectorPerformance: ['fmp', 'alphavantage', 'finnhub', 'twelvedata', 'stooq'],
   getTopGainersLosers: ['fmp', 'alphavantage', 'finnhub', 'twelvedata', 'stooq'],
 };
@@ -2144,6 +2626,9 @@ export function createStockService(apiKey?: string): StockDataService {
   const finnhubKey = getConfiguredEnv('FINNHUB_API_KEY');
   const fmpKey = getConfiguredEnv('FINANCIAL_MODELING_PREP_API_KEY');
   const twelveKey = getConfiguredEnv('TWELVE_DATA_API_KEY');
+  const openFigiKey = getConfiguredEnv('OPENFIGI_API_KEY');
+  const eodhdKey = getConfiguredEnv('EODHD_API_KEY');
+  const marketauxKey = getConfiguredEnv('MARKETAUX_API_KEY');
   const providers: Array<{ id: ProviderId; service: StockDataService }> = [];
   if (alphaVantageKey) {
     providers.push({ id: 'alphavantage', service: new AlphaVantageService(alphaVantageKey) });
@@ -2156,6 +2641,15 @@ export function createStockService(apiKey?: string): StockDataService {
   }
   if (twelveKey) {
     providers.push({ id: 'twelvedata', service: new TwelveDataService(twelveKey) });
+  }
+  if (openFigiKey) {
+    providers.push({ id: 'openfigi', service: new OpenFigiService() });
+  }
+  if (eodhdKey) {
+    providers.push({ id: 'eodhd', service: new EodhdService() });
+  }
+  if (marketauxKey) {
+    providers.push({ id: 'marketaux', service: new MarketauxService() });
   }
   providers.push({ id: 'stooq', service: new StooqService() });
   return new MultiSourceStockDataService(providers);
@@ -2422,5 +2916,524 @@ export class FredService {
     }
     const history = await this.getSeriesHistory(seriesId, limit);
     return { seriesId, observations: history };
+  }
+}
+
+function parseApiNumber(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') return null;
+  const parsed = Number(String(value).replace(/,/g, ''));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+/**
+ * BEA API service — official U.S. macro/industry data, free API key required.
+ */
+export class BeaService {
+  private apiKey = getConfiguredEnv('BEA_API_KEY') || '';
+  private baseUrl = 'https://apps.bea.gov/api/data';
+  private cache = new Map<string, { expiresAt: number; data: any }>();
+  private cacheTtlMs = Number(process.env.BEA_CACHE_TTL_MS || 12 * 60 * 60 * 1000);
+
+  isConfigured(): boolean {
+    return this.apiKey.length > 0;
+  }
+
+  private async getNipaTable(tableName: string, frequency = 'Q', year = 'LAST5'): Promise<any[]> {
+    if (!this.isConfigured()) {
+      throw new Error('BEA_API_KEY not configured');
+    }
+    const cacheKey = `bea:${tableName}:${frequency}:${year}`;
+    const cached = this.cache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) return cached.data;
+    const resp = await axios.get(this.baseUrl, {
+      params: {
+        UserID: this.apiKey,
+        method: 'GetData',
+        datasetname: 'NIPA',
+        TableName: tableName,
+        Frequency: frequency,
+        Year: year,
+        ResultFormat: 'JSON',
+      },
+      timeout: 15000,
+    });
+    const apiError = resp.data?.BEAAPI?.Error?.APIErrorDescription || resp.data?.BEAAPI?.Results?.Error;
+    if (apiError) throw new Error(String(apiError));
+    const rows = resp.data?.BEAAPI?.Results?.Data;
+    const data = Array.isArray(rows) ? rows : [];
+    this.cache.set(cacheKey, { expiresAt: Date.now() + this.cacheTtlMs, data });
+    return data;
+  }
+
+  private latestMatching(rows: any[], pattern: RegExp) {
+    const matches = rows
+      .filter((row) => pattern.test(String(row.LineDescription || row.LineDescription2 || '')))
+      .sort((a, b) => String(b.TimePeriod || '').localeCompare(String(a.TimePeriod || '')));
+    const row = matches[0];
+    if (!row) return null;
+    return {
+      lineNumber: row.LineNumber ? String(row.LineNumber) : null,
+      description: row.LineDescription || null,
+      timePeriod: row.TimePeriod || null,
+      value: parseApiNumber(row.DataValue),
+      unit: row.CL_UNIT || row.UnitOfMeasure || null,
+      tableName: row.TableName || null,
+    };
+  }
+
+  async getMacroIndicators(): Promise<any> {
+    if (!this.isConfigured()) {
+      return { error: 'BEA_API_KEY not configured. Get a free key from bea.gov/API/signup.' };
+    }
+    const [growthRows, levelRows] = await Promise.all([
+      this.getNipaTable('T10101', 'Q', 'LAST5'),
+      this.getNipaTable('T10105', 'Q', 'LAST5'),
+    ]);
+    const indicators = {
+      realGdpGrowth: this.latestMatching(growthRows, /^Gross domestic product$/i),
+      pceGrowth: this.latestMatching(growthRows, /^Personal consumption expenditures$/i),
+      privateInvestmentGrowth: this.latestMatching(growthRows, /^Gross private domestic investment$/i),
+      exportsGrowth: this.latestMatching(growthRows, /^Exports$/i),
+      importsGrowth: this.latestMatching(growthRows, /^Imports$/i),
+      governmentSpendingGrowth: this.latestMatching(growthRows, /^Government consumption expenditures/i),
+      nominalGdp: this.latestMatching(levelRows, /^Gross domestic product$/i),
+      personalConsumption: this.latestMatching(levelRows, /^Personal consumption expenditures$/i),
+    };
+    return {
+      indicators,
+      sourceTables: [
+        { tableName: 'T10101', description: 'Percent change from preceding period in real GDP and major components' },
+        { tableName: 'T10105', description: 'Gross domestic product and major components, current dollars' },
+      ],
+      fetchedAt: new Date().toISOString(),
+      __source: 'BEA NIPA API',
+    };
+  }
+}
+
+/**
+ * EIA API service — official U.S. energy data, free API key required.
+ */
+export class EiaService {
+  private apiKey = getConfiguredEnv('EIA_API_KEY') || '';
+  private baseUrl = 'https://api.eia.gov/v2/seriesid';
+  private cache = new Map<string, { expiresAt: number; data: any }>();
+  private cacheTtlMs = Number(process.env.EIA_CACHE_TTL_MS || 12 * 60 * 60 * 1000);
+
+  isConfigured(): boolean {
+    return this.apiKey.length > 0;
+  }
+
+  private async getSeries(seriesId: string): Promise<any> {
+    if (!this.isConfigured()) {
+      throw new Error('EIA_API_KEY not configured');
+    }
+    const cacheKey = `eia:${seriesId}`;
+    const cached = this.cache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) return cached.data;
+    const resp = await axios.get(`${this.baseUrl}/${encodeURIComponent(seriesId)}`, {
+      params: {
+        api_key: this.apiKey,
+        length: '24',
+      },
+      timeout: 15000,
+    });
+    const rows = resp.data?.response?.data;
+    const sorted = Array.isArray(rows)
+      ? rows.sort((a: any, b: any) => String(b.period || '').localeCompare(String(a.period || '')))
+      : [];
+    const latest = sorted[0] || null;
+    const data = {
+      seriesId,
+      name: resp.data?.response?.description || resp.data?.response?.name || seriesId,
+      latest: latest ? {
+        period: latest.period || null,
+        value: parseApiNumber(latest.value),
+        units: latest.units || latest.unit || null,
+      } : null,
+      observations: sorted.map((row: any) => ({
+        period: row.period || null,
+        value: parseApiNumber(row.value),
+        units: row.units || row.unit || null,
+      })),
+    };
+    this.cache.set(cacheKey, { expiresAt: Date.now() + this.cacheTtlMs, data });
+    return data;
+  }
+
+  async getEnergyIndicators(): Promise<any> {
+    if (!this.isConfigured()) {
+      return { error: 'EIA_API_KEY not configured. Get a free key from eia.gov/opendata.' };
+    }
+    const series = [
+      { id: 'wtiCrudeSpot', seriesId: 'PET.RWTC.D', label: 'WTI crude oil spot price' },
+      { id: 'henryHubGasSpot', seriesId: 'NG.RNGWHHD.D', label: 'Henry Hub natural gas spot price' },
+      { id: 'usRetailElectricityPrice', seriesId: 'ELEC.PRICE.US-ALL.M', label: 'U.S. average retail electricity price' },
+      { id: 'usElectricityGeneration', seriesId: 'ELEC.GEN.ALL-US-99.M', label: 'U.S. electricity net generation, all fuels' },
+    ];
+    const indicators = await Promise.all(series.map(async (config) => {
+      try {
+        const data = await this.getSeries(config.seriesId);
+        return { ...config, ...data };
+      } catch (error: any) {
+        return { ...config, latest: null, observations: [], error: error?.message || 'Unavailable' };
+      }
+    }));
+    return {
+      indicators,
+      fetchedAt: new Date().toISOString(),
+      __source: 'EIA Open Data API',
+    };
+  }
+}
+
+type SecTickerEntry = {
+  cik_str: number;
+  ticker: string;
+  title: string;
+};
+
+type NormalizedSecFact = {
+  tag: string;
+  label: string;
+  unit: string;
+  value: number;
+  end: string | null;
+  filed: string | null;
+  form: string | null;
+  frame?: string | null;
+};
+
+const SEC_FACT_TAGS: Record<string, { label: string; tags: string[]; units: string[] }> = {
+  revenue: {
+    label: 'Revenue',
+    tags: ['RevenueFromContractWithCustomerExcludingAssessedTax', 'Revenues', 'SalesRevenueNet'],
+    units: ['USD'],
+  },
+  netIncome: {
+    label: 'Net income',
+    tags: ['NetIncomeLoss', 'ProfitLoss'],
+    units: ['USD'],
+  },
+  assets: {
+    label: 'Assets',
+    tags: ['Assets'],
+    units: ['USD'],
+  },
+  liabilities: {
+    label: 'Liabilities',
+    tags: ['Liabilities'],
+    units: ['USD'],
+  },
+  equity: {
+    label: 'Shareholders equity',
+    tags: ['StockholdersEquity', 'StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest'],
+    units: ['USD'],
+  },
+  cash: {
+    label: 'Cash and equivalents',
+    tags: ['CashAndCashEquivalentsAtCarryingValue', 'CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents'],
+    units: ['USD'],
+  },
+  operatingCashFlow: {
+    label: 'Operating cash flow',
+    tags: ['NetCashProvidedByUsedInOperatingActivities'],
+    units: ['USD'],
+  },
+  capex: {
+    label: 'Capital expenditures',
+    tags: ['PaymentsToAcquirePropertyPlantAndEquipment', 'PaymentsToAcquireProductiveAssets'],
+    units: ['USD'],
+  },
+  dilutedShares: {
+    label: 'Diluted shares',
+    tags: ['WeightedAverageNumberOfDilutedSharesOutstanding'],
+    units: ['shares'],
+  },
+  dilutedEps: {
+    label: 'Diluted EPS',
+    tags: ['EarningsPerShareDiluted'],
+    units: ['USD/shares', 'USD/shares'],
+  },
+};
+
+/**
+ * SEC XBRL companyfacts service — official, no API key required.
+ * Returns compact normalized facts only; callers should not dump full companyfacts
+ * payloads into LLM context.
+ */
+export class SecCompanyFactsService {
+  private companyTickersUrl = 'https://www.sec.gov/files/company_tickers.json';
+  private companyFactsUrl = 'https://data.sec.gov/api/xbrl/companyfacts';
+  private userAgent = process.env.SEC_USER_AGENT || 'StockResearchBot/1.0 contact@example.com';
+  private static tickerCache: { expiresAt: number; entries: SecTickerEntry[] } | null = null;
+  private static factsCache = new Map<string, { expiresAt: number; data: any }>();
+  private cacheTtlMs = Number(process.env.SEC_COMPANY_FACTS_CACHE_TTL_MS || 12 * 60 * 60 * 1000);
+
+  private async getTickerEntries(): Promise<SecTickerEntry[]> {
+    const cached = SecCompanyFactsService.tickerCache;
+    if (cached && cached.expiresAt > Date.now()) return cached.entries;
+    const resp = await axios.get(this.companyTickersUrl, {
+      headers: { 'User-Agent': this.userAgent, Accept: 'application/json' },
+      timeout: 10000,
+    });
+    const entries = Object.values(resp.data || {}) as SecTickerEntry[];
+    SecCompanyFactsService.tickerCache = {
+      expiresAt: Date.now() + this.cacheTtlMs,
+      entries,
+    };
+    return entries;
+  }
+
+  async resolveTicker(ticker: string): Promise<{ cik: string; ticker: string; name: string } | null> {
+    const normalized = String(ticker || '').trim().toUpperCase();
+    if (!normalized) return null;
+    const entries = await this.getTickerEntries();
+    const matched = entries.find((entry) => String(entry.ticker).toUpperCase() === normalized);
+    if (!matched) return null;
+    return {
+      cik: String(matched.cik_str).padStart(10, '0'),
+      ticker: String(matched.ticker).toUpperCase(),
+      name: matched.title,
+    };
+  }
+
+  async getCompanyFacts(ticker: string): Promise<any> {
+    const resolved = await this.resolveTicker(ticker);
+    if (!resolved) {
+      return { ticker: String(ticker || '').toUpperCase(), error: 'Ticker not found in SEC company_tickers mapping.' };
+    }
+    const cached = SecCompanyFactsService.factsCache.get(resolved.cik);
+    if (cached && cached.expiresAt > Date.now()) {
+      return { ...cached.data, __source: 'SEC companyfacts' };
+    }
+    const resp = await axios.get(`${this.companyFactsUrl}/CIK${resolved.cik}.json`, {
+      headers: { 'User-Agent': this.userAgent, Accept: 'application/json' },
+      timeout: 15000,
+    });
+    const data = {
+      cik: resolved.cik,
+      ticker: resolved.ticker,
+      name: resolved.name,
+      entityName: resp.data?.entityName || resolved.name,
+      facts: resp.data?.facts || {},
+      fetchedAt: new Date().toISOString(),
+    };
+    SecCompanyFactsService.factsCache.set(resolved.cik, {
+      expiresAt: Date.now() + this.cacheTtlMs,
+      data,
+    });
+    return { ...data, __source: 'SEC companyfacts' };
+  }
+
+  private latestFact(companyFacts: any, config: { label: string; tags: string[]; units: string[] }): NormalizedSecFact | null {
+    const usGaap = companyFacts?.facts?.['us-gaap'] || {};
+    for (const tag of config.tags) {
+      const concept = usGaap[tag];
+      if (!concept?.units) continue;
+      for (const unit of config.units) {
+        const facts = Array.isArray(concept.units[unit]) ? concept.units[unit] : [];
+        const filtered = facts
+          .filter((fact: any) => Number.isFinite(Number(fact.val)))
+          .filter((fact: any) => !fact.form || /^(10-K|10-Q|20-F|40-F|6-K|8-K)$/i.test(String(fact.form)))
+          .sort((a: any, b: any) => String(b.filed || b.end || '').localeCompare(String(a.filed || a.end || '')));
+        const latest = filtered[0];
+        if (latest) {
+          return {
+            tag,
+            label: config.label,
+            unit,
+            value: Number(latest.val),
+            end: latest.end || null,
+            filed: latest.filed || null,
+            form: latest.form || null,
+            frame: latest.frame || null,
+          };
+        }
+      }
+    }
+    return null;
+  }
+
+  async getNormalizedFinancialFacts(ticker: string): Promise<any> {
+    const companyFacts = await this.getCompanyFacts(ticker);
+    if (companyFacts.error) return companyFacts;
+    const facts = Object.fromEntries(
+      Object.entries(SEC_FACT_TAGS).map(([key, config]) => [key, this.latestFact(companyFacts, config)])
+    );
+    const operatingCashFlow = facts.operatingCashFlow as NormalizedSecFact | null;
+    const capex = facts.capex as NormalizedSecFact | null;
+    const freeCashFlow =
+      operatingCashFlow && capex
+        ? {
+          label: 'Free cash flow',
+          unit: 'USD',
+          value: operatingCashFlow.value - Math.abs(capex.value),
+          formula: 'operatingCashFlow - abs(capex)',
+          sourceTags: [operatingCashFlow.tag, capex.tag],
+          end: operatingCashFlow.end,
+          filed: operatingCashFlow.filed,
+        }
+        : null;
+    return {
+      ticker: companyFacts.ticker,
+      cik: companyFacts.cik,
+      name: companyFacts.name,
+      entityName: companyFacts.entityName,
+      facts,
+      freeCashFlow,
+      fetchedAt: companyFacts.fetchedAt,
+      __source: 'SEC companyfacts',
+    };
+  }
+}
+
+/**
+ * U.S. Treasury daily yield curve feed — official XML, no API key required.
+ */
+export class TreasuryYieldCurveService {
+  private baseUrl = 'https://home.treasury.gov/resource-center/data-chart-center/interest-rates/pages/xml';
+  private static cache = new Map<string, { expiresAt: number; data: any }>();
+  private cacheTtlMs = Number(process.env.TREASURY_RATES_CACHE_TTL_MS || 12 * 60 * 60 * 1000);
+
+  private textBetween(block: string, tagName: string): string | null {
+    const escaped = tagName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const pattern = new RegExp(`<d:${escaped}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/d:${escaped}>`, 'i');
+    const match = block.match(pattern);
+    if (!match) return null;
+    return match[1].replace(/<[^>]+>/g, '').trim() || null;
+  }
+
+  private parseNumber(value: string | null): number | null {
+    if (value === null || value === undefined || value === '') return null;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  private parseEntries(xml: string) {
+    const entries = xml.match(/<entry[\s\S]*?<\/entry>/gi) || [];
+    return entries.map((entry) => {
+      const dateRaw = this.textBetween(entry, 'NEW_DATE') || this.textBetween(entry, 'NEW_DATE_1');
+      const date = dateRaw ? dateRaw.slice(0, 10) : null;
+      return {
+        date,
+        month1: this.parseNumber(this.textBetween(entry, 'BC_1MONTH')),
+        month2: this.parseNumber(this.textBetween(entry, 'BC_2MONTH')),
+        month3: this.parseNumber(this.textBetween(entry, 'BC_3MONTH')),
+        month4: this.parseNumber(this.textBetween(entry, 'BC_4MONTH')),
+        month6: this.parseNumber(this.textBetween(entry, 'BC_6MONTH')),
+        year1: this.parseNumber(this.textBetween(entry, 'BC_1YEAR')),
+        year2: this.parseNumber(this.textBetween(entry, 'BC_2YEAR')),
+        year3: this.parseNumber(this.textBetween(entry, 'BC_3YEAR')),
+        year5: this.parseNumber(this.textBetween(entry, 'BC_5YEAR')),
+        year7: this.parseNumber(this.textBetween(entry, 'BC_7YEAR')),
+        year10: this.parseNumber(this.textBetween(entry, 'BC_10YEAR')),
+        year20: this.parseNumber(this.textBetween(entry, 'BC_20YEAR')),
+        year30: this.parseNumber(this.textBetween(entry, 'BC_30YEAR')),
+      };
+    }).filter((entry) => entry.date);
+  }
+
+  async getLatestYieldCurve(year = new Date().getUTCFullYear()): Promise<any> {
+    const cacheKey = `yield:${year}`;
+    const cached = TreasuryYieldCurveService.cache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) return cached.data;
+    const resp = await axios.get(this.baseUrl, {
+      params: {
+        data: 'daily_treasury_yield_curve',
+        field_tdr_date_value: String(year),
+      },
+      timeout: 15000,
+    });
+    const observations = this.parseEntries(String(resp.data || '')).sort((a, b) => String(b.date).localeCompare(String(a.date)));
+    const latest = observations[0] || null;
+    const data = {
+      year,
+      latest,
+      observations,
+      yieldCurve: latest ? {
+        tenYearMinusTwoYear: latest.year10 !== null && latest.year2 !== null ? Number((latest.year10 - latest.year2).toFixed(3)) : null,
+        thirtyYearMinusThreeMonth: latest.year30 !== null && latest.month3 !== null ? Number((latest.year30 - latest.month3).toFixed(3)) : null,
+      } : null,
+      fetchedAt: new Date().toISOString(),
+      __source: 'U.S. Treasury daily yield curve',
+    };
+    TreasuryYieldCurveService.cache.set(cacheKey, { expiresAt: Date.now() + this.cacheTtlMs, data });
+    return data;
+  }
+}
+
+/**
+ * BLS Public Data API — no key required for limited use; optional BLS_API_KEY
+ * raises the daily query ceiling.
+ */
+export class BlsPublicDataService {
+  private baseUrl = 'https://api.bls.gov/publicAPI/v2/timeseries/data/';
+  private apiKey = getConfiguredEnv('BLS_API_KEY') || '';
+  private static cache: { expiresAt: number; data: any } | null = null;
+  private cacheTtlMs = Number(process.env.BLS_MACRO_CACHE_TTL_MS || 12 * 60 * 60 * 1000);
+  private series = [
+    { id: 'CPI_ALL_URBAN', seriesId: 'CUUR0000SA0', name: 'CPI-U: All items' },
+    { id: 'CORE_CPI', seriesId: 'CUSR0000SA0L1E', name: 'Core CPI-U less food and energy' },
+    { id: 'UNEMPLOYMENT_RATE', seriesId: 'LNS14000000', name: 'Unemployment rate' },
+    { id: 'NONFARM_PAYROLLS', seriesId: 'CES0000000001', name: 'All employees, total nonfarm' },
+    { id: 'AVG_HOURLY_EARNINGS', seriesId: 'CES0500000003', name: 'Average hourly earnings, private' },
+  ];
+
+  private parseSeries(series: any) {
+    const observations = (series?.data || [])
+      .filter((point: any) => /^M\d{2}$/.test(String(point.period || '')))
+      .map((point: any) => ({
+        year: String(point.year),
+        period: String(point.period),
+        periodName: String(point.periodName || ''),
+        date: `${point.year}-${String(point.period).slice(1).padStart(2, '0')}`,
+        value: Number.isFinite(Number(point.value)) ? Number(point.value) : null,
+        latest: point.latest === 'true',
+      }))
+      .sort((a: any, b: any) => String(a.date).localeCompare(String(b.date)));
+    const latest = observations[observations.length - 1] || null;
+    const priorYear = latest
+      ? observations.find((point: any) => point.date === `${Number(latest.year) - 1}-${String(latest.period).slice(1).padStart(2, '0')}`)
+      : null;
+    const yoyPercent = latest?.value !== null && priorYear?.value
+      ? Number((((latest.value - priorYear.value) / priorYear.value) * 100).toFixed(2))
+      : null;
+    return { observations, latest, yoyPercent };
+  }
+
+  async getMacroIndicators(): Promise<any> {
+    if (BlsPublicDataService.cache && BlsPublicDataService.cache.expiresAt > Date.now()) {
+      return BlsPublicDataService.cache.data;
+    }
+    const now = new Date();
+    const payload: Record<string, any> = {
+      seriesid: this.series.map((item) => item.seriesId),
+      startyear: String(now.getUTCFullYear() - 2),
+      endyear: String(now.getUTCFullYear()),
+    };
+    if (this.apiKey) payload.registrationkey = this.apiKey;
+    const resp = await axios.post(this.baseUrl, payload, {
+      headers: { 'Content-Type': 'application/json' },
+      timeout: 15000,
+    });
+    const returnedSeries = resp.data?.Results?.series || [];
+    const indicators = this.series.map((config) => {
+      const sourceSeries = returnedSeries.find((series: any) => series.seriesID === config.seriesId);
+      return {
+        ...config,
+        ...this.parseSeries(sourceSeries),
+      };
+    });
+    const data = {
+      status: resp.data?.status || 'UNKNOWN',
+      messages: resp.data?.message || [],
+      indicators,
+      fetchedAt: new Date().toISOString(),
+      quotaMode: this.apiKey ? 'registered' : 'unregistered',
+      __source: 'BLS Public Data API',
+    };
+    BlsPublicDataService.cache = { expiresAt: Date.now() + this.cacheTtlMs, data };
+    return data;
   }
 }
