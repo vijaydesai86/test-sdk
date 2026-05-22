@@ -1243,6 +1243,146 @@ const buildTrustSummaryFromCache = (
     })
 );
 
+function hasReportValue(value: any): boolean {
+  if (value === null || value === undefined) return false;
+  if (typeof value === 'string') return value.trim() !== '' && value !== 'N/A';
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === 'object') return Object.values(value).some((entry) => hasReportValue(entry));
+  return true;
+}
+
+function fillMissingFields<T extends Record<string, any>>(existing: T | undefined, fallback: T | undefined): T | undefined {
+  if (!hasReportValue(existing)) return fallback;
+  if (!hasReportValue(fallback)) return existing;
+  const merged: Record<string, any> = { ...fallback, ...existing };
+  for (const [key, fallbackValue] of Object.entries(fallback || {})) {
+    const existingValue = existing?.[key];
+    if (!hasReportValue(existingValue)) {
+      merged[key] = fallbackValue;
+    } else if (
+      existingValue &&
+      fallbackValue &&
+      typeof existingValue === 'object' &&
+      typeof fallbackValue === 'object' &&
+      !Array.isArray(existingValue) &&
+      !Array.isArray(fallbackValue)
+    ) {
+      merged[key] = fillMissingFields(existingValue, fallbackValue);
+    }
+  }
+  return merged as T;
+}
+
+function buildSecFinancialFallbacks(symbol: string, secFacts: any, priceData?: any) {
+  if (!secFacts || secFacts.error || typeof secFacts !== 'object') return {};
+  const facts = secFacts.facts || {};
+  const valueOf = (key: string) => toFiniteNumber(facts[key]?.value);
+  const revenue = valueOf('revenue');
+  const netIncome = valueOf('netIncome');
+  const assets = valueOf('assets');
+  const liabilities = valueOf('liabilities');
+  const equity = valueOf('equity');
+  const cash = valueOf('cash');
+  const operatingCashFlow = valueOf('operatingCashFlow');
+  const capex = valueOf('capex');
+  const dilutedShares = valueOf('dilutedShares');
+  const dilutedEps = valueOf('dilutedEps');
+  const freeCashFlow = toFiniteNumber(secFacts.freeCashFlow?.value);
+  const currentPrice = toFiniteNumber(priceData?.price);
+
+  const metric: Record<string, any> = {};
+  if (revenue !== null && netIncome !== null && revenue !== 0) metric.netProfitMarginTTM = netIncome / revenue;
+  if (netIncome !== null && equity !== null && equity > 0) metric.roeTTM = netIncome / equity;
+  if (netIncome !== null && assets !== null && assets > 0) metric.roaTTM = netIncome / assets;
+  if (dilutedEps !== null) metric.epsTTM = dilutedEps;
+  if (currentPrice !== null && dilutedEps !== null && dilutedEps > 0) metric.peBasicExclExtraTTM = currentPrice / dilutedEps;
+  if (revenue !== null && dilutedShares !== null && dilutedShares > 0) metric.revenuePerShareTTM = revenue / dilutedShares;
+
+  const date = facts.revenue?.end || facts.netIncome?.end || facts.assets?.end || secFacts.fetchedAt || null;
+  const incomeStatement = revenue !== null || netIncome !== null
+    ? {
+        symbol,
+        annualReports: [{
+          fiscalDateEnding: date,
+          totalRevenue: revenue?.toString(),
+          netIncome: netIncome?.toString(),
+        }],
+        __source: 'SEC companyfacts',
+      }
+    : undefined;
+  const balanceSheet = assets !== null || liabilities !== null || equity !== null || cash !== null
+    ? {
+        symbol,
+        annualReports: [{
+          fiscalDateEnding: facts.assets?.end || facts.liabilities?.end || facts.equity?.end || date,
+          totalAssets: assets?.toString(),
+          totalLiabilities: liabilities?.toString(),
+          totalShareholderEquity: equity?.toString(),
+          cashAndCashEquivalentsAtCarryingValue: cash?.toString(),
+        }],
+        __source: 'SEC companyfacts',
+      }
+    : undefined;
+  const cashFlow = operatingCashFlow !== null || capex !== null || freeCashFlow !== null
+    ? {
+        symbol,
+        annualReports: [{
+          fiscalDateEnding: facts.operatingCashFlow?.end || facts.capex?.end || secFacts.freeCashFlow?.end || date,
+          operatingCashflow: operatingCashFlow?.toString(),
+          capitalExpenditures: capex?.toString(),
+          freeCashFlow: freeCashFlow?.toString(),
+        }],
+        __source: 'SEC companyfacts',
+      }
+    : undefined;
+  const basicFinancials = Object.keys(metric).length
+    ? {
+        symbol,
+        metric,
+        series: {},
+        __source: 'SEC companyfacts',
+      }
+    : undefined;
+
+  return { basicFinancials, incomeStatement, balanceSheet, cashFlow };
+}
+
+function hasStatementReports(stmt: any): boolean {
+  return Boolean(
+    stmt &&
+    (
+      (Array.isArray(stmt.quarterlyReports) && stmt.quarterlyReports.length > 0) ||
+      (Array.isArray(stmt.annualReports) && stmt.annualReports.length > 0)
+    )
+  );
+}
+
+function shouldFetchSecFinancialFallback(input: {
+  basicFinancials?: any;
+  incomeStatement?: any;
+  balanceSheet?: any;
+  cashFlow?: any;
+}) {
+  const metric = input.basicFinancials?.metric || {};
+  const hasProfitability =
+    hasReportValue(metric.grossMarginTTM) ||
+    hasReportValue(metric.operatingMarginTTM) ||
+    hasReportValue(metric.netProfitMarginTTM) ||
+    hasReportValue(metric.roeTTM) ||
+    hasReportValue(metric.roaTTM);
+  const hasHealth =
+    hasReportValue(metric.totalDebtToEquityQuarterly) ||
+    hasReportValue(metric.longTermDebtToEquityQuarterly) ||
+    hasReportValue(metric.currentRatioQuarterly);
+  return (
+    !hasProfitability ||
+    !hasHealth ||
+    !hasStatementReports(input.incomeStatement) ||
+    !hasStatementReports(input.balanceSheet) ||
+    !hasStatementReports(input.cashFlow)
+  );
+}
+
 const buildUniverseSummary = (
   items: Array<{
     symbol: string;
@@ -2686,31 +2826,47 @@ export async function executeTool(
         const peers = await safeFetch('Peers', 'peers', () => stockService.getPeers(symbol), !coreOnly && hasReportWorkBudget(deadlineAt, 'optional', 1), false, 'optional');
         const newsSentiment = await safeFetch('News sentiment', 'newsSentiment', () => stockService.getNewsSentiment(symbol), !coreOnly && hasReportWorkBudget(deadlineAt, 'optional', 1), false, 'optional');
         const companyNews = await safeFetch('Company news', 'companyNews', () => stockService.getCompanyNews(symbol, 14), !coreOnly && hasReportWorkBudget(deadlineAt, 'optional', 1), false, 'optional');
+        const shouldUseSecFallback = shouldFetchSecFinancialFallback({ basicFinancials, incomeStatement, balanceSheet, cashFlow });
+        const secFinancialFacts = shouldUseSecFallback
+          ? await safeFetch(
+              'SEC companyfacts',
+              'secFinancialFacts',
+              () => new SecCompanyFactsService().getNormalizedFinancialFacts(symbol),
+              forceCriticalData || (!coreOnly && hasReportWorkBudget(deadlineAt, 'high', 1)),
+              false,
+              'high'
+            )
+          : undefined;
+        const secFallbacks = buildSecFinancialFallbacks(symbol, secFinancialFacts, price);
 
 
         // Build basic financials from the overview. These are direct provider fields
         // or simple arithmetic on provider fields, not synthetic statement rows.
-        const finalBasicFinancials = basicFinancials || (companyOverview ? buildBasicFinancialsFallback(companyOverview) : undefined);
+        const overviewFinancials = companyOverview ? buildBasicFinancialsFallback(companyOverview) : undefined;
+        const finalBasicFinancials = fillMissingFields(fillMissingFields(basicFinancials, overviewFinancials), secFallbacks.basicFinancials);
 
         const hasIncomeData = hasReports(incomeStatement);
         const hasBalanceData = hasReports(balanceSheet);
-        // Statement-level data must remain real provider output. Do not synthesize
-        // estimated rows from overview fields when free-tier providers return nothing.
-        const finalIncomeStatement = hasIncomeData ? incomeStatement : undefined;
-        const finalBalanceSheet = hasBalanceData ? balanceSheet : undefined;
-        // Cash flow has no reliable overview fallback — use real data only.
-        const finalCashFlow = hasReports(cashFlow) ? cashFlow : undefined;
+        const finalIncomeStatement = hasIncomeData ? incomeStatement : secFallbacks.incomeStatement;
+        const finalBalanceSheet = hasBalanceData ? balanceSheet : secFallbacks.balanceSheet;
+        const finalCashFlow = hasReports(cashFlow) ? cashFlow : secFallbacks.cashFlow;
         const hasEarningsData = earningsHistory?.quarterlyEarnings?.length > 0;
         const finalEarningsHistory = hasEarningsData ? earningsHistory : undefined;
 
-        if (!hasIncomeData) {
-          notes.push('Income statement unavailable from providers; no estimated fallback was used.');
+        if (!hasIncomeData && !finalIncomeStatement) {
+          notes.push('Income statement unavailable from providers and SEC companyfacts; no estimated fallback was used.');
+        } else if (!hasIncomeData && finalIncomeStatement) {
+          notes.push('Income statement vendor endpoint unavailable; filled available revenue/net income from official SEC companyfacts.');
         }
-        if (!hasBalanceData) {
-          notes.push('Balance sheet unavailable from providers; no estimated fallback was used.');
+        if (!hasBalanceData && !finalBalanceSheet) {
+          notes.push('Balance sheet unavailable from providers and SEC companyfacts; no estimated fallback was used.');
+        } else if (!hasBalanceData && finalBalanceSheet) {
+          notes.push('Balance sheet vendor endpoint unavailable; filled available assets/liabilities/equity/cash from official SEC companyfacts.');
         }
         if (!finalCashFlow) {
-          notes.push('Cash flow unavailable from providers; report shows this section as unavailable.');
+          notes.push('Cash flow unavailable from providers and SEC companyfacts; report shows this section as unavailable.');
+        } else if (!hasReports(cashFlow) && finalCashFlow) {
+          notes.push('Cash flow vendor endpoint unavailable; filled available operating cash flow, capex, and FCF from official SEC companyfacts.');
         }
         if (!hasEarningsData) {
           notes.push('Quarterly EPS history unavailable from providers; no synthetic EPS series was generated.');
@@ -3061,6 +3217,7 @@ export async function executeTool(
           peers: any;
           newsSentiment: any;
           companyNews: any;
+          secFinancialFacts: any;
         };
         const rawItems = await mapWithConcurrency<string, RawCompanyData>(
           universe,
@@ -3081,6 +3238,18 @@ export async function executeTool(
             const peers = await safeFetch(symbol, cache, 'Peers', 'peers', () => stockService.getPeers(symbol), fetchExtendedData && hasReportWorkBudget(deadlineAt, 'optional', companyCount), 'optional');
             const newsSentiment = await safeFetch(symbol, cache, 'News sentiment', 'newsSentiment', () => stockService.getNewsSentiment(symbol), fetchExtendedData && hasReportWorkBudget(deadlineAt, 'optional', companyCount), 'optional');
             const companyNews = await safeFetch(symbol, cache, 'Company news', 'companyNews', () => stockService.getCompanyNews(symbol, 14), fetchExtendedData && hasReportWorkBudget(deadlineAt, 'optional', companyCount), 'optional');
+            const shouldUseSecFallback = shouldFetchSecFinancialFallback({ basicFinancials, incomeStatement, balanceSheet, cashFlow });
+            const secFinancialFacts = shouldUseSecFallback
+              ? await safeFetch(
+                  symbol,
+                  cache,
+                  'SEC companyfacts',
+                  'secFinancialFacts',
+                  () => new SecCompanyFactsService().getNormalizedFinancialFacts(symbol),
+                  hasReportWorkBudget(deadlineAt, 'high', companyCount),
+                  'high'
+                )
+              : undefined;
             return {
               symbol,
               cache,
@@ -3097,6 +3266,7 @@ export async function executeTool(
               peers,
               newsSentiment,
               companyNews,
+              secFinancialFacts,
             };
           },
           () => !isDeadlineNear(deadlineAt),
@@ -3109,7 +3279,12 @@ export async function executeTool(
           const { symbol } = item;
           const { overview, notes: overviewNotes } = sanitizeMarketScaledOverview(item.overview, item.price, item.priceHistory);
           notes.push(...overviewNotes.map((note) => `${symbol}: ${note}`));
-          const basicFinancials = item.basicFinancials || (overview ? buildBasicFinancialsFallback(overview) : undefined);
+          const secFallbacks = buildSecFinancialFallbacks(symbol, item.secFinancialFacts, item.price);
+          const overviewFinancials = overview ? buildBasicFinancialsFallback(overview) : undefined;
+          const basicFinancials = fillMissingFields(fillMissingFields(item.basicFinancials, overviewFinancials), secFallbacks.basicFinancials);
+          const incomeStatement = hasStatementReports(item.incomeStatement) ? item.incomeStatement : secFallbacks.incomeStatement;
+          const balanceSheet = hasStatementReports(item.balanceSheet) ? item.balanceSheet : secFallbacks.balanceSheet;
+          const cashFlow = hasStatementReports(item.cashFlow) ? item.cashFlow : secFallbacks.cashFlow;
           const watchlistItem = watchlist?.items.find((entry) => entry.symbol === symbol.toUpperCase());
           const previousDecision = await getLatestDecision(symbol).catch(() => null);
           const trustSummary = buildTrustSummaryFromCache(item.cache, [
@@ -3126,6 +3301,7 @@ export async function executeTool(
             { key: 'peers', label: 'Peers', data: item.peers },
             { key: 'newsSentiment', label: 'News sentiment', data: item.newsSentiment },
             { key: 'companyNews', label: 'Company news', data: item.companyNews },
+            { key: 'secFinancialFacts', label: 'SEC companyfacts', data: item.secFinancialFacts },
           ]);
           const decisionSnapshot = buildDecisionSnapshot({
             symbol,
@@ -3133,9 +3309,9 @@ export async function executeTool(
             priceHistory: item.priceHistory,
             companyOverview: overview,
             basicFinancials,
-            incomeStatement: item.incomeStatement,
-            balanceSheet: item.balanceSheet,
-            cashFlow: item.cashFlow,
+            incomeStatement,
+            balanceSheet,
+            cashFlow,
             analystRatings: item.analystRatings,
             priceTargets: item.priceTargets,
             insiderTrading: item.insiderTrading,
@@ -3152,9 +3328,9 @@ export async function executeTool(
             overview,
             basicFinancials,
             priceHistory: item.priceHistory,
-            incomeStatement: item.incomeStatement,
-            balanceSheet: item.balanceSheet,
-            cashFlow: item.cashFlow,
+            incomeStatement,
+            balanceSheet,
+            cashFlow,
             analystRatings: item.analystRatings,
             insiderTrading: item.insiderTrading,
             priceTargets: item.priceTargets,
@@ -3618,6 +3794,7 @@ export async function executeTool(
           peers: any;
           newsSentiment: any;
           companyNews: any;
+          secFinancialFacts: any;
         };
         const rawItems = await mapWithConcurrency<string, RawSectorItem>(
           universe,
@@ -3638,6 +3815,18 @@ export async function executeTool(
             const peers = await safeFetch(symbol, cache, 'Peers', 'peers', () => stockService.getPeers(symbol), fetchExtendedData && hasReportWorkBudget(deadlineAt, 'optional', companyCount), 'optional');
             const newsSentiment = await safeFetch(symbol, cache, 'News sentiment', 'newsSentiment', () => stockService.getNewsSentiment(symbol), fetchExtendedData && hasReportWorkBudget(deadlineAt, 'optional', companyCount), 'optional');
             const companyNews = await safeFetch(symbol, cache, 'Company news', 'companyNews', () => stockService.getCompanyNews(symbol, 14), fetchExtendedData && hasReportWorkBudget(deadlineAt, 'optional', companyCount), 'optional');
+            const shouldUseSecFallback = shouldFetchSecFinancialFallback({ basicFinancials, incomeStatement, balanceSheet, cashFlow });
+            const secFinancialFacts = shouldUseSecFallback
+              ? await safeFetch(
+                  symbol,
+                  cache,
+                  'SEC companyfacts',
+                  'secFinancialFacts',
+                  () => new SecCompanyFactsService().getNormalizedFinancialFacts(symbol),
+                  hasReportWorkBudget(deadlineAt, 'high', companyCount),
+                  'high'
+                )
+              : undefined;
             return {
               symbol,
               cache,
@@ -3654,6 +3843,7 @@ export async function executeTool(
               peers,
               newsSentiment,
               companyNews,
+              secFinancialFacts,
             };
           },
           () => !isDeadlineNear(deadlineAt),
@@ -3665,7 +3855,12 @@ export async function executeTool(
           const { symbol } = item;
           const { overview, notes: overviewNotes } = sanitizeMarketScaledOverview(item.overview, item.price, item.priceHistory);
           notes.push(...overviewNotes.map((note) => `${symbol}: ${note}`));
-          const basicFinancials = item.basicFinancials || (overview ? buildBasicFinancialsFallbackSector(overview) : undefined);
+          const secFallbacks = buildSecFinancialFallbacks(symbol, item.secFinancialFacts, item.price);
+          const overviewFinancials = overview ? buildBasicFinancialsFallbackSector(overview) : undefined;
+          const basicFinancials = fillMissingFields(fillMissingFields(item.basicFinancials, overviewFinancials), secFallbacks.basicFinancials);
+          const incomeStatement = hasStatementReports(item.incomeStatement) ? item.incomeStatement : secFallbacks.incomeStatement;
+          const balanceSheet = hasStatementReports(item.balanceSheet) ? item.balanceSheet : secFallbacks.balanceSheet;
+          const cashFlow = hasStatementReports(item.cashFlow) ? item.cashFlow : secFallbacks.cashFlow;
           const watchlistItem = watchlist?.items.find((entry) => entry.symbol === symbol.toUpperCase());
           const previousDecision = await getLatestDecision(symbol).catch(() => null);
           const trustSummary = buildTrustSummaryFromCache(item.cache, [
@@ -3682,6 +3877,7 @@ export async function executeTool(
             { key: 'peers', label: 'Peers', data: item.peers },
             { key: 'newsSentiment', label: 'News sentiment', data: item.newsSentiment },
             { key: 'companyNews', label: 'Company news', data: item.companyNews },
+            { key: 'secFinancialFacts', label: 'SEC companyfacts', data: item.secFinancialFacts },
           ]);
           const decisionSnapshot = buildDecisionSnapshot({
             symbol,
@@ -3689,9 +3885,9 @@ export async function executeTool(
             priceHistory: item.priceHistory,
             companyOverview: overview,
             basicFinancials,
-            incomeStatement: item.incomeStatement,
-            balanceSheet: item.balanceSheet,
-            cashFlow: item.cashFlow,
+            incomeStatement,
+            balanceSheet,
+            cashFlow,
             analystRatings: item.analystRatings,
             priceTargets: item.priceTargets,
             insiderTrading: item.insiderTrading,
@@ -3708,9 +3904,9 @@ export async function executeTool(
             overview,
             basicFinancials,
             priceHistory: item.priceHistory,
-            incomeStatement: item.incomeStatement,
-            balanceSheet: item.balanceSheet,
-            cashFlow: item.cashFlow,
+            incomeStatement,
+            balanceSheet,
+            cashFlow,
             analystRatings: item.analystRatings,
             insiderTrading: item.insiderTrading,
             priceTargets: item.priceTargets,
@@ -4096,6 +4292,7 @@ export async function executeTool(
           peers: any;
           newsSentiment: any;
           companyNews: any;
+          secFinancialFacts: any;
         };
         const rawItems = await mapWithConcurrency<string, RawDeepSectorItem>(
           universe,
@@ -4120,6 +4317,7 @@ export async function executeTool(
                 peers: undefined,
                 newsSentiment: undefined,
                 companyNews: undefined,
+                secFinancialFacts: undefined,
               };
             }
             const cache = await loadSymbolCache(symbol);
@@ -4138,6 +4336,19 @@ export async function executeTool(
             const peers = await safeFetch(symbol, cache, 'Peers', 'peers', () => stockService.getPeers(symbol), fetchExtendedData && hasReportWorkBudget(deadlineAt, 'optional', companyCount), false, 'optional');
             const newsSentiment = await safeFetch(symbol, cache, 'News sentiment', 'newsSentiment', () => stockService.getNewsSentiment(symbol), fetchExtendedData && hasReportWorkBudget(deadlineAt, 'optional', companyCount), false, 'optional');
             const companyNews = await safeFetch(symbol, cache, 'Company news', 'companyNews', () => stockService.getCompanyNews(symbol, 14), fetchExtendedData && hasReportWorkBudget(deadlineAt, 'optional', companyCount), false, 'optional');
+            const shouldUseSecFallback = shouldFetchSecFinancialFallback({ basicFinancials, incomeStatement, balanceSheet, cashFlow });
+            const secFinancialFacts = shouldUseSecFallback
+              ? await safeFetch(
+                  symbol,
+                  cache,
+                  'SEC companyfacts',
+                  'secFinancialFacts',
+                  () => new SecCompanyFactsService().getNormalizedFinancialFacts(symbol),
+                  forceCoreFetch || hasReportWorkBudget(deadlineAt, 'high', companyCount),
+                  forceCoreFetch,
+                  'high'
+                )
+              : undefined;
             return {
               symbol,
               cache,
@@ -4154,6 +4365,7 @@ export async function executeTool(
               peers,
               newsSentiment,
               companyNews,
+              secFinancialFacts,
             };
           },
           () => !timeBudgetExceeded(),
@@ -4165,7 +4377,12 @@ export async function executeTool(
           const { symbol } = item;
           const { overview, notes: overviewNotes } = sanitizeMarketScaledOverview(item.overview, item.price, item.priceHistory);
           notes.push(...overviewNotes.map((note) => `${symbol}: ${note}`));
-          const basicFinancials = item.basicFinancials || (overview ? buildBasicFinancialsFallbackDeep(overview) : undefined);
+          const secFallbacks = buildSecFinancialFallbacks(symbol, item.secFinancialFacts, item.price);
+          const overviewFinancials = overview ? buildBasicFinancialsFallbackDeep(overview) : undefined;
+          const basicFinancials = fillMissingFields(fillMissingFields(item.basicFinancials, overviewFinancials), secFallbacks.basicFinancials);
+          const incomeStatement = hasStatementReports(item.incomeStatement) ? item.incomeStatement : secFallbacks.incomeStatement;
+          const balanceSheet = hasStatementReports(item.balanceSheet) ? item.balanceSheet : secFallbacks.balanceSheet;
+          const cashFlow = hasStatementReports(item.cashFlow) ? item.cashFlow : secFallbacks.cashFlow;
           const watchlistItem = watchlist?.items.find((entry) => entry.symbol === symbol.toUpperCase());
           const previousDecision = await getLatestDecision(symbol).catch(() => null);
           const trustSummary = buildTrustSummaryFromCache(item.cache, [
@@ -4182,6 +4399,7 @@ export async function executeTool(
             { key: 'peers', label: 'Peers', data: item.peers },
             { key: 'newsSentiment', label: 'News sentiment', data: item.newsSentiment },
             { key: 'companyNews', label: 'Company news', data: item.companyNews },
+            { key: 'secFinancialFacts', label: 'SEC companyfacts', data: item.secFinancialFacts },
           ]);
           const decisionSnapshot = buildDecisionSnapshot({
             symbol,
@@ -4189,9 +4407,9 @@ export async function executeTool(
             priceHistory: item.priceHistory,
             companyOverview: overview,
             basicFinancials,
-            incomeStatement: item.incomeStatement,
-            balanceSheet: item.balanceSheet,
-            cashFlow: item.cashFlow,
+            incomeStatement,
+            balanceSheet,
+            cashFlow,
             analystRatings: item.analystRatings,
             priceTargets: item.priceTargets,
             insiderTrading: item.insiderTrading,
@@ -4208,9 +4426,9 @@ export async function executeTool(
             overview,
             basicFinancials,
             priceHistory: item.priceHistory,
-            incomeStatement: item.incomeStatement,
-            balanceSheet: item.balanceSheet,
-            cashFlow: item.cashFlow,
+            incomeStatement,
+            balanceSheet,
+            cashFlow,
             analystRatings: item.analystRatings,
             insiderTrading: item.insiderTrading,
             priceTargets: item.priceTargets,
