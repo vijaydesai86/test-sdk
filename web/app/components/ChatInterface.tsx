@@ -110,14 +110,9 @@ const QUICK_PROMPTS = [
     eyebrow: 'Comparison',
   },
   {
-    label: 'AI infrastructure sector',
+    label: 'AI infrastructure research',
     prompt: 'Deep research on AI infrastructure stocks',
-    eyebrow: 'Sector study',
-  },
-  {
-    label: 'Visa vs Mastercard',
-    prompt: 'Deep research on Visa vs Mastercard',
-    eyebrow: 'Competitive moat',
+    eyebrow: 'Research',
   },
   {
     label: 'Daily watchlist report',

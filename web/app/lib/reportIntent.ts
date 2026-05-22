@@ -30,8 +30,11 @@ export function inferReportFallback(userMessage: string, resolvedSymbol?: string
   const comparisonIntent =
     /\b(compare|comparison|versus|vs\.?|against)\b/i.test(text) ||
     /\b[A-Z]{1,6}(?:\.[A-Z])?\b\s*(?:,|\/|\+|&|\band\b)\s*\b[A-Z]{1,6}(?:\.[A-Z])?\b/.test(text);
+  if (comparisonIntent) {
+    return { toolName: 'generate_comparison_report', args: { companies: text, range: '1y' } };
+  }
   const thematicIntent = /\b(sector|theme|industry|industries|deep research|best|top|basket|stocks|companies|opportunities|ideas)\b/i.test(text);
-  if (comparisonIntent || thematicIntent) {
+  if (thematicIntent) {
     return { toolName: 'generate_research_report', args: { sector: text, range: '1y' } };
   }
 

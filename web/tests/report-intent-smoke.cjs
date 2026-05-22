@@ -32,8 +32,8 @@ function main() {
   assertFallback('Arm Holdings', 'generate_stock_report');
   assertFallback('ARM', 'generate_stock_report');
 
-  assertFallback('Compare Nvidia, AMD, and Intel', 'generate_research_report');
-  assertFallback('Nvidia vs AMD vs Intel', 'generate_research_report');
+  assertFallback('Compare Nvidia, AMD, and Intel', 'generate_comparison_report');
+  assertFallback('Nvidia vs AMD vs Intel', 'generate_comparison_report');
   assertFallback('Deep research on AI infrastructure stocks', 'generate_research_report');
 
   assertFallback('Generate daily report for my watchlist', 'generate_watchlist_daily_report');

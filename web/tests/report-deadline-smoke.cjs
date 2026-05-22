@@ -250,7 +250,7 @@ async function assertSavedReport(result, expectedKind) {
   assert.equal(savedContent, result.data.content);
 }
 
-async function testDeepSectorDeadlineStillSaves() {
+async function testResearchDeadlineStillSaves() {
   let llmCalls = 0;
   const result = await executeTool(
     'generate_research_report',
@@ -264,7 +264,7 @@ async function testDeepSectorDeadlineStillSaves() {
       },
     }
   );
-  await assertSavedReport(result, 'deep-sector');
+  await assertSavedReport(result, 'research');
   assert.equal(llmCalls, 0, 'tight budget should skip thematic LLM refinement');
   assert.match(result.data.content, /Vercel budget prioritized|Time budget reached|runtime budget/i);
   assert.match(result.data.content, /NVDA|AMD/);
@@ -272,7 +272,7 @@ async function testDeepSectorDeadlineStillSaves() {
   assert.match(result.data.content, /\(AMD\)[^\n]*\$/);
 }
 
-async function testDeepSectorImmediateDeadlineStillSaves() {
+async function testResearchImmediateDeadlineStillSaves() {
   let llmCalls = 0;
   const result = await executeTool(
     'generate_research_report',
@@ -286,7 +286,7 @@ async function testDeepSectorImmediateDeadlineStillSaves() {
       },
     }
   );
-  await assertSavedReport(result, 'deep-sector');
+  await assertSavedReport(result, 'research');
   assert.equal(llmCalls, 0, 'immediate deadline should not spend time on LLM refinement');
   assert.match(result.data.content, /Vercel budget|Time budget reached|runtime budget/i);
   assert.match(result.data.content, /NVDA|AMD/);
@@ -294,7 +294,7 @@ async function testDeepSectorImmediateDeadlineStillSaves() {
   assert.match(result.data.content, /\(AMD\)[^\n]*\$/);
 }
 
-async function testDeepSectorUsesOneOptionalEcosystemPassWhenBudgetAllows() {
+async function testResearchUsesOneOptionalEcosystemPassWhenBudgetAllows() {
   let dependencyCalls = 0;
   const result = await executeTool(
     'generate_research_report',
@@ -306,7 +306,7 @@ async function testDeepSectorUsesOneOptionalEcosystemPassWhenBudgetAllows() {
         if (prompt.includes('valid JSON array')) {
           return JSON.stringify(['NVDA', 'AMD', 'AVGO', 'MSFT', 'AMZN', 'GOOGL']);
         }
-        if (prompt.includes('deep sector ecosystem analysis')) {
+        if (prompt.includes('deep research ecosystem analysis')) {
           dependencyCalls += 1;
           return JSON.stringify({
             refinedList: ['NVDA', 'AMD', 'AVGO', 'MSFT', 'AMZN', 'GOOGL'],
@@ -323,7 +323,7 @@ async function testDeepSectorUsesOneOptionalEcosystemPassWhenBudgetAllows() {
       },
     }
   );
-  await assertSavedReport(result, 'deep-sector');
+  await assertSavedReport(result, 'research');
   assert.equal(dependencyCalls, 1, 'default deep research depth should perform one optional ecosystem pass when budget allows');
   assert.match(result.data.content, /Supply Chain & Dependencies/);
   assert.match(result.data.content, /graph LR/);
@@ -415,9 +415,9 @@ async function testSinglePillarMomentumCannotForceBuy() {
 
 async function main() {
   await fs.rm(testRoot, { recursive: true, force: true });
-  await testDeepSectorDeadlineStillSaves();
-  await testDeepSectorImmediateDeadlineStillSaves();
-  await testDeepSectorUsesOneOptionalEcosystemPassWhenBudgetAllows();
+  await testResearchDeadlineStillSaves();
+  await testResearchImmediateDeadlineStillSaves();
+  await testResearchUsesOneOptionalEcosystemPassWhenBudgetAllows();
   await testComparisonDeadlineStillSaves();
   await testComparisonImmediateDeadlineStillSaves();
   await testWatchlistImmediateDeadlineStillSaves();

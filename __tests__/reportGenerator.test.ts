@@ -693,9 +693,9 @@ describe('buildDeepSectorReport', () => {
     notes: [],
   });
 
-  it('includes deep sector research header', () => {
+  it('includes research report header', () => {
     const report = buildDeepSectorReport(baseDeep());
-    expect(report).toContain('# Deep Sector Research: Quantum Computing');
+    expect(report).toContain('# Research Report: Quantum Computing');
   });
 
   it('includes research methodology section', () => {
@@ -706,13 +706,13 @@ describe('buildDeepSectorReport', () => {
 
   it('includes ecosystem dependency section', () => {
     const report = buildDeepSectorReport(baseDeep());
-    expect(report).toContain('## 🕸️ Sector Ecosystem & Dependencies');
+    expect(report).toContain('## 🕸️ Research Ecosystem & Dependencies');
     expect(report).toContain('Supply Chain');
   });
 
   it('includes ecosystem mermaid diagram', () => {
     const report = buildDeepSectorReport(baseDeep());
-    expect(report).toContain('## 🗺️ Sector Dependency Map');
+    expect(report).toContain('## 🗺️ Research Dependency Map');
     expect(report).toContain('```mermaid');
     expect(report).toContain('graph LR');
   });
@@ -734,10 +734,10 @@ describe('buildDeepSectorReport', () => {
     expect(report).toContain('## 📊 Snapshot');
   });
 
-  it('includes deep-sector investment conclusion', () => {
+  it('includes research investment conclusion', () => {
     const report = buildDeepSectorReport(baseDeep());
     expect(report).toContain('## 🎯 Investment Conclusion');
-    expect(report).toContain('Deep Sector Outlook');
+    expect(report).toContain('Research Outlook');
   });
 
   it('conclusion appears exactly once (no duplicates)', () => {
@@ -753,7 +753,7 @@ describe('buildDeepSectorReport', () => {
     expect(report).toContain('| Company |');
   });
 
-  it('handles missing optional deep-sector fields gracefully', () => {
+  it('handles missing optional research fields gracefully', () => {
     const minimal: DeepSectorReportData = {
       sectorQuery: 'Biotech',
       selectedBy: 'llm',

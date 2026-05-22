@@ -11,7 +11,7 @@ import {
   FredService,
   TreasuryYieldCurveService,
 } from './stockDataService';
-import { buildStockReport, buildComparisonReport, buildSectorReport, buildDeepSectorReport, buildDeepStockReport, buildDeepComparisonReport, buildWatchlistDailyReport, saveReport, MoatAnalysis, computeScorecard, computeTechnicalSnapshot, computeVolumeAnalysis } from './reportGenerator';
+import { buildStockReport, buildComparisonReport, buildDeepSectorReport, buildDeepStockReport, buildDeepComparisonReport, buildWatchlistDailyReport, saveReport, MoatAnalysis, computeScorecard, computeTechnicalSnapshot, computeVolumeAnalysis } from './reportGenerator';
 import { getDefaultWatchlist } from './watchlistStore';
 import { buildDecisionSnapshot, decisionSnapshotToLegacyAction } from './decisionEngine';
 import { createTrustEntry, getTtlMinutesForKey, summarizeTrust } from './dataTrust';
@@ -47,10 +47,10 @@ function parseBoundedEnvInt(name: string, fallback: number, min: number, max: nu
   return Math.min(max, Math.max(min, normalized));
 }
 
-// Number of companies to include in comparison/sector/deep-sector reports.
+// Number of companies to include in comparison and research reports.
 // Clamp to a free-tier-safe ceiling so a bad env value cannot fan out into dozens of API calls.
 const NUM_COMPANIES = parseBoundedEnvInt('NUM_COMPANIES', 10, 2, 15);
-// Optional post-core-data ecosystem/refinement passes in deep sector research.
+// Optional post-core-data ecosystem/refinement passes in research reports.
 // Core market data is always fetched before any pass is allowed to run.
 const DEEP_RESEARCH_DEPTH = parseBoundedEnvInt('DEEP_RESEARCH_DEPTH', 1, 1, 3);
 // Keep enough headroom under Vercel's overall runtime limit for rendering and persistence work.
@@ -525,7 +525,7 @@ function buildDeepSectorDependencyPrompt(
     : '';
 
   return (
-    `You are a senior equity research analyst. Your task is to perform a deep sector ecosystem analysis for the "${sector}" sector.\n\n` +
+    `You are a senior equity research analyst. Your task is to perform a deep research ecosystem analysis for "${sector}".\n\n` +
     `CRITICAL: All your analysis MUST be grounded in the company data provided below (from live APIs). ` +
     `Do NOT inject financial figures (prices, revenues, margins, etc.) from training memory — use ONLY the data given.\n\n` +
     `CANDIDATE COMPANIES: ${symbolList}\n\n` +
@@ -1080,7 +1080,7 @@ function buildStockConclusionPrompt(
 
 /**
  * Builds a rich LLM prompt for a multi-company investment conclusion
- * (comparison, sector, or deep-sector report).
+ * (comparison, sector, or research report).
  *
  * The LLM receives the full financial snapshot for each company and must produce
  * a 5-7 paragraph narrative covering:
@@ -1103,14 +1103,14 @@ function buildComparisonConclusionPrompt(
     incomeStatement?: any;
     moatAnalysis?: any;
   }>,
-  reportType: 'comparison' | 'sector' | 'deep-sector',
+  reportType: 'comparison' | 'sector' | 'research',
   sectorQuery?: string,
   scored?: Array<{ symbol: string; score: number | null }>
 ): string {
   const theme =
     reportType === 'comparison' ? 'Peer Comparison'
     : reportType === 'sector' ? `Sector: ${sectorQuery || 'Unknown'}`
-    : `Deep Sector Research: ${sectorQuery || 'Unknown'}`;
+    : `Research: ${sectorQuery || 'Unknown'}`;
   const rankedSummary = (scored || [])
     .filter((entry) => entry.score !== null && entry.score !== undefined)
     .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
@@ -1545,9 +1545,18 @@ export const resolveSymbolFromQuery = async (stockService: StockDataService, que
 };
 
 const parseExplicitComparisonCompanies = (query: string): string[] => {
-  if (!/(?:\bvs\.?\b|\bversus\b|,)/i.test(query)) return [];
-  return query
-    .split(/\s*(?:,|\bvs\.?\b|\bversus\b)\s*/i)
+  const raw = String(query || '').trim();
+  const hasComparisonCue = /\b(compare|comparison|against)\b/i.test(raw);
+  if (!/(?:\bvs\.?\b|\bversus\b|,|\/|\+|&|\bagainst\b)/i.test(raw) && !hasComparisonCue) return [];
+  const cleaned = raw
+    .replace(/^(?:compare|comparison\s+of|comparison|analy[sz]e|deep\s+research\s+on|research\s+on)\s+/i, '')
+    .replace(/\b(?:vs\.?|versus|against|to)\b/gi, ',')
+    .replace(/[\/+&]/g, ',')
+    .replace(/,\s*(?:and\s+)?/gi, ',');
+  const normalized = hasComparisonCue ? cleaned.replace(/\s+\band\s+/gi, ',') : cleaned;
+  return normalized
+    .split(/\s*,\s*/i)
+    .map((item) => item.replace(/^(?:and|with|between)\s+/i, '').trim())
     .map((item) => item.trim())
     .filter(Boolean);
 };
@@ -1825,11 +1834,11 @@ function buildToolDefinitions() {
       type: 'function' as const,
       function: {
         name: 'generate_comparison_report',
-        description: 'Internal routing tool for explicit company-vs-company comparisons. Not exposed in the top-level chat allow-list.',
+        description: 'Generate a comparison report for explicit user-given stocks, such as "NVDA vs AMD" or "Compare Nvidia, AMD, and Intel".',
         parameters: {
           type: 'object',
           properties: {
-            symbols: {
+            companies: {
               type: 'array',
               items: { type: 'string' },
               description: 'Ticker symbols or company names to compare',
@@ -1839,57 +1848,7 @@ function buildToolDefinitions() {
               description: 'Price history range for comparison charts (e.g. "1y", "3y"). Default: "1y"',
             },
           },
-          required: ['symbols'],
-        },
-      },
-    },
-    {
-      type: 'function' as const,
-      function: {
-        name: 'generate_sector_report',
-        description: 'Internal routing tool for sector/theme research when the user asks for a basket, industry, or theme report.',
-        parameters: {
-          type: 'object',
-          properties: {
-            sector: {
-              type: 'string',
-              description: 'Sector, industry, or investment-theme query',
-            },
-            count: {
-              type: 'number',
-              description: `Number of companies in the final list (default: ${NUM_COMPANIES}, min: 3, max: ${NUM_COMPANIES})`,
-            },
-            range: {
-              type: 'string',
-              description: 'Price history range for charts (e.g. "1y", "3y"). Default: "1y"',
-            },
-          },
-          required: ['sector'],
-        },
-      },
-    },
-    {
-      type: 'function' as const,
-      function: {
-        name: 'generate_deep_sector_report',
-        description: 'Internal routing tool for recursive deep research on a sector or investment theme.',
-        parameters: {
-          type: 'object',
-          properties: {
-            sector: {
-              type: 'string',
-              description: 'Sector, industry, or investment-theme query',
-            },
-            count: {
-              type: 'number',
-              description: `Number of companies in the refined final list (default: ${NUM_COMPANIES}, min: 3, max: ${NUM_COMPANIES})`,
-            },
-            range: {
-              type: 'string',
-              description: 'Price history range for comparison charts (e.g. "1y", "3y"). Default: "1y"',
-            },
-          },
-          required: ['sector'],
+          required: ['companies'],
         },
       },
     },
@@ -1898,13 +1857,13 @@ function buildToolDefinitions() {
       function: {
         name: 'generate_research_report',
         description:
-          'Generate a research report. Use for comparisons (e.g. \'NVDA vs AMD\'), sector/theme/industry studies (e.g. \'cloud computing\', \'EVs\'), deep research on any topic (e.g. \'growth stocks\', \'AI infrastructure\'), or any multi-company analysis. Handles all non-single-stock research.',
+          'Generate a comprehensive research report. Use for thematic deep research, sector/theme/industry studies, baskets, portfolio ideas, or open-ended topics (e.g. \'cloud computing\', \'EVs\', \'growth stocks\', \'AI infrastructure\').',
         parameters: {
           type: 'object',
           properties: {
             sector: {
               type: 'string',
-              description: 'Deep research query (sector, company comparison, or theme)',
+              description: 'Deep research query (sector, theme, basket, industry, or open-ended topic)',
             },
             count: {
               type: 'number',
@@ -3059,9 +3018,10 @@ export async function executeTool(
       case 'generate_comparison_report': {
         const range = args.range || '1y';
         const deadlineAt = options?.deadlineAt;
-        const companiesInput = Array.isArray(args.companies)
-          ? args.companies
-          : String(args.companies || '').split(',');
+        const rawCompanies = args.companies ?? args.symbols;
+        const companiesInput = Array.isArray(rawCompanies)
+          ? rawCompanies
+          : parseExplicitComparisonCompanies(String(rawCompanies || ''));
         const companies = companiesInput.map((item: string) => item.trim()).filter(Boolean);
         if (companies.length < 2 || companies.length > NUM_COMPANIES) {
           return { success: false, error: `Provide between 2 and ${NUM_COMPANIES} company names or tickers.` };
@@ -3657,388 +3617,7 @@ export async function executeTool(
           message: `Saved daily watchlist report to ${saved.filePath}`
         };
       }
-      case "generate_sector_report": {
-        const sector = String(args.sector || '').trim();
-        if (!sector) {
-          return { success: false, error: 'A sector or theme query is required.' };
-        }
-        const deadlineAt = options?.deadlineAt;
-        const count = Math.min(NUM_COMPANIES, Math.max(2, Number(args.count) || NUM_COMPANIES));
-        const range = args.range || '1y';
-        const resolverSector = normalizeThematicResearchQuery(sector);
-
-        // Step 1: Use LLM (with API search fallback) to identify the top companies.
-        const universe = await resolveSectorTickers(resolverSector, count, hasReportLLMBudget(deadlineAt) ? options?.llmFill : undefined, stockService);
-
-        if (universe.length === 0) {
-          const reason = `Could not identify verified listed companies for "${sector}" using the configured resolver and market-data providers.`;
-          const content = buildUnavailableResearchContent(sector, reason);
-          const safeTitle = sector.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'research';
-          const saved = await saveReport(content, `${safeTitle}-sector-report`, undefined, {
-            reportKind: 'sector',
-            summary: 'No verified company universe was available; wait for verified inputs.',
-          });
-          return {
-            success: true,
-            data: { content, ...saved, downloadUrl: buildReportDownloadUrl(saved) },
-            message: `Saved unavailable-data sector report for "${sector}" to ${saved.filePath}`,
-          };
-        }
-
-        // Step 2: Fetch comparison data for the identified companies
-        // (same logic as generate_comparison_report).
-        const notes: string[] = [`Universe identified for sector/theme: "${sector}"`];
-        if (resolverSector !== sector) {
-          notes.push(`Resolved search theme: "${resolverSector}".`);
-        }
-        const sourceMap: Record<string, Record<string, string>> = {};
-        const watchlist = await getDefaultWatchlist().catch(() => null);
-        const portfolioProfile = watchlist?.profile;
-        const fetchExtendedData = shouldFetchExtendedReportData(universe.length);
-        if (!fetchExtendedData) {
-          notes.push('Large-report Vercel mode: prioritized core decision inputs and cached optional sections to stay within free-tier limits.');
-        }
-        let rateLimitHit = false;
-        const isRateLimit = (message: string) => isRateLimitError(message);
-        const safeFetch = async <T>(
-          symbol: string,
-          cache: SymbolCache,
-          label: string,
-          key: string,
-          request: () => Promise<T>,
-          allowRequest = true,
-          priority: ReportWorkPriority = 'critical'
-        ) => {
-          const cachedValue = getCachedValue(cache, key);
-          if (cachedValue !== null) {
-            if (cachedValue && typeof cachedValue === 'object') {
-              const sourceValue = '__source' in cachedValue
-                ? String((cachedValue as any).__source)
-                : DEFAULT_SOURCE;
-              sourceMap[symbol] = sourceMap[symbol] || {};
-              sourceMap[symbol][label] = sourceValue;
-            }
-            return cachedValue as T;
-          }
-          if (rateLimitHit || !allowRequest) return undefined as T;
-          if (pushDeadlineNote(notes, deadlineAt)) return undefined as T;
-          try {
-            const result = await withReportTaskTimeout(request(), priority, deadlineAt);
-            if (result && typeof result === 'object') {
-              const sourceValue = '__source' in result ? String((result as any).__source) : DEFAULT_SOURCE;
-              sourceMap[symbol] = sourceMap[symbol] || {};
-              sourceMap[symbol][label] = sourceValue;
-              setCachedValue(cache, key, result, { provider: sourceValue });
-            } else {
-              setCachedValue(cache, key, result);
-            }
-            return result;
-          } catch (error: any) {
-            const message = error?.message || 'Unavailable';
-            if (isRateLimit(message)) {
-              rateLimitHit = true;
-              const providerLabel = detectRateLimitProvider(message);
-              notes.push(`${providerLabel} rate limit reached; remaining sections skipped.`);
-              return cachedValue !== null ? (cachedValue as T) : (undefined as T);
-            }
-            if (!isSuppressedProviderError(message)) {
-              notes.push(`${label}: ${message}`);
-            }
-            if (cachedValue && typeof cachedValue === 'object') {
-              const sourceValue = '__source' in cachedValue
-                ? String((cachedValue as any).__source)
-                : DEFAULT_SOURCE;
-              sourceMap[symbol] = sourceMap[symbol] || {};
-              sourceMap[symbol][label] = sourceValue;
-            }
-            return cachedValue !== null ? (cachedValue as T) : (undefined as T);
-          }
-        };
-        const buildBasicFinancialsFallbackSector = (overview: any) => {
-          if (!overview) return undefined;
-          const revenue = Number(overview.revenueTTM);
-          const grossProfit = Number(overview.grossProfitTTM);
-          const grossMarginTTM =
-            Number.isFinite(revenue) && revenue !== 0 && Number.isFinite(grossProfit)
-              ? grossProfit / revenue
-              : Number(overview.profitMargin) || null;
-          return {
-            symbol: overview.symbol,
-            metric: {
-              peBasicExclExtraTTM: overview.peRatio,
-              epsTTM: overview.eps,
-              revenueGrowthTTM: overview.quarterlyRevenueGrowth,
-              epsGrowthTTM: overview.quarterlyEarningsGrowth,
-              grossMarginTTM,
-              operatingMarginTTM: overview.operatingMargin,
-              roeTTM: overview.returnOnEquity,
-              revenuePerShareTTM: overview.revenuePerShare,
-            },
-            series: {},
-          };
-        };
-
-        type RawSectorItem = {
-          symbol: string;
-          cache: SymbolCache;
-          price: any;
-          overview: any;
-          basicFinancials: any;
-          priceHistory: any;
-          incomeStatement: any;
-          balanceSheet: any;
-          cashFlow: any;
-          analystRatings: any;
-          insiderTrading: any;
-          priceTargets: any;
-          peers: any;
-          newsSentiment: any;
-          companyNews: any;
-          secFinancialFacts: any;
-        };
-        const rawItems = await mapWithConcurrency<string, RawSectorItem>(
-          universe,
-          DATA_FETCH_CONCURRENCY,
-          async (symbol) => {
-            const cache = await loadSymbolCache(symbol);
-            const companyCount = universe.length;
-            const price = await safeFetch(symbol, cache, 'Price', 'price', () => stockService.getStockPrice(symbol), hasReportWorkBudget(deadlineAt, 'critical', companyCount), 'critical');
-            const overview = await safeFetch(symbol, cache, 'Company overview', 'overview', () => stockService.getCompanyOverview(symbol), hasReportWorkBudget(deadlineAt, 'critical', companyCount), 'critical');
-            const basicFinancials = await safeFetch(symbol, cache, 'Basic financials', 'basicFinancials', () => stockService.getBasicFinancials(symbol), hasReportWorkBudget(deadlineAt, 'critical', companyCount), 'critical');
-            const priceHistory = await safeFetch(symbol, cache, 'Price history', `priceHistory:${range}`, () => stockService.getPriceHistory(symbol, range), hasReportWorkBudget(deadlineAt, 'critical', companyCount), 'critical');
-            const incomeStatement = await safeFetch(symbol, cache, 'Income statement', 'incomeStatement', () => stockService.getIncomeStatement(symbol), fetchExtendedData && hasReportWorkBudget(deadlineAt, 'high', companyCount), 'high');
-            const balanceSheet = await safeFetch(symbol, cache, 'Balance sheet', 'balanceSheet', () => stockService.getBalanceSheet(symbol), fetchExtendedData && hasReportWorkBudget(deadlineAt, 'high', companyCount), 'high');
-            const cashFlow = await safeFetch(symbol, cache, 'Cash flow', 'cashFlow', () => stockService.getCashFlow(symbol), fetchExtendedData && hasReportWorkBudget(deadlineAt, 'high', companyCount), 'high');
-            const analystRatings = await safeFetch(symbol, cache, 'Analyst ratings', 'analystRatings', () => stockService.getAnalystRatings(symbol), hasReportWorkBudget(deadlineAt, 'high', companyCount), 'high');
-            const insiderTrading = await safeFetch(symbol, cache, 'Insider trading', 'insiderTrading', () => stockService.getInsiderTrading(symbol), fetchExtendedData && hasReportWorkBudget(deadlineAt, 'optional', companyCount), 'optional');
-            const priceTargets = await safeFetch(symbol, cache, 'Price targets', 'priceTargets', () => stockService.getPriceTargets(symbol), hasReportWorkBudget(deadlineAt, 'high', companyCount), 'high');
-            const peers = await safeFetch(symbol, cache, 'Peers', 'peers', () => stockService.getPeers(symbol), fetchExtendedData && hasReportWorkBudget(deadlineAt, 'optional', companyCount), 'optional');
-            const newsSentiment = await safeFetch(symbol, cache, 'News sentiment', 'newsSentiment', () => stockService.getNewsSentiment(symbol), fetchExtendedData && hasReportWorkBudget(deadlineAt, 'optional', companyCount), 'optional');
-            const companyNews = await safeFetch(symbol, cache, 'Company news', 'companyNews', () => stockService.getCompanyNews(symbol, 14), fetchExtendedData && hasReportWorkBudget(deadlineAt, 'optional', companyCount), 'optional');
-            const shouldUseSecFallback = shouldFetchSecFinancialFallback({ basicFinancials, incomeStatement, balanceSheet, cashFlow });
-            const secFinancialFacts = shouldUseSecFallback
-              ? await safeFetch(
-                  symbol,
-                  cache,
-                  'SEC companyfacts',
-                  'secFinancialFacts',
-                  () => new SecCompanyFactsService().getNormalizedFinancialFacts(symbol),
-                  hasReportWorkBudget(deadlineAt, 'high', companyCount),
-                  'high'
-                )
-              : undefined;
-            return {
-              symbol,
-              cache,
-              price,
-              overview,
-              basicFinancials,
-              priceHistory,
-              incomeStatement,
-              balanceSheet,
-              cashFlow,
-              analystRatings,
-              insiderTrading,
-              priceTargets,
-              peers,
-              newsSentiment,
-              companyNews,
-              secFinancialFacts,
-            };
-          },
-          () => !isDeadlineNear(deadlineAt),
-          Math.min(2, universe.length)
-        );
-
-        const items: any[] = [];
-        for (const item of rawItems) {
-          const { symbol } = item;
-          const { overview, notes: overviewNotes } = sanitizeMarketScaledOverview(item.overview, item.price, item.priceHistory);
-          notes.push(...overviewNotes.map((note) => `${symbol}: ${note}`));
-          const secFallbacks = buildSecFinancialFallbacks(symbol, item.secFinancialFacts, item.price);
-          const overviewFinancials = overview ? buildBasicFinancialsFallbackSector(overview) : undefined;
-          const basicFinancials = fillMissingFields(fillMissingFields(item.basicFinancials, overviewFinancials), secFallbacks.basicFinancials);
-          const incomeStatement = hasStatementReports(item.incomeStatement) ? item.incomeStatement : secFallbacks.incomeStatement;
-          const balanceSheet = hasStatementReports(item.balanceSheet) ? item.balanceSheet : secFallbacks.balanceSheet;
-          const cashFlow = hasStatementReports(item.cashFlow) ? item.cashFlow : secFallbacks.cashFlow;
-          const watchlistItem = watchlist?.items.find((entry) => entry.symbol === symbol.toUpperCase());
-          const previousDecision = await getLatestDecision(symbol).catch(() => null);
-          const trustSummary = buildTrustSummaryFromCache(item.cache, [
-            { key: 'price', label: 'Price', data: item.price },
-            { key: 'overview', label: 'Company overview', data: item.overview },
-            { key: 'basicFinancials', label: 'Basic financials', data: item.basicFinancials },
-            { key: `priceHistory:${range}`, label: 'Price history', data: item.priceHistory },
-            { key: 'incomeStatement', label: 'Income statement', data: item.incomeStatement },
-            { key: 'balanceSheet', label: 'Balance sheet', data: item.balanceSheet },
-            { key: 'cashFlow', label: 'Cash flow', data: item.cashFlow },
-            { key: 'analystRatings', label: 'Analyst ratings', data: item.analystRatings },
-            { key: 'insiderTrading', label: 'Insider trading', data: item.insiderTrading },
-            { key: 'priceTargets', label: 'Price targets', data: item.priceTargets },
-            { key: 'peers', label: 'Peers', data: item.peers },
-            { key: 'newsSentiment', label: 'News sentiment', data: item.newsSentiment },
-            { key: 'companyNews', label: 'Company news', data: item.companyNews },
-            { key: 'secFinancialFacts', label: 'SEC companyfacts', data: item.secFinancialFacts },
-          ]);
-          const decisionSnapshot = buildDecisionSnapshot({
-            symbol,
-            price: item.price,
-            priceHistory: item.priceHistory,
-            companyOverview: overview,
-            basicFinancials,
-            incomeStatement,
-            balanceSheet,
-            cashFlow,
-            analystRatings: item.analystRatings,
-            priceTargets: item.priceTargets,
-            insiderTrading: item.insiderTrading,
-            newsSentiment: item.newsSentiment,
-            companyNews: item.companyNews,
-            trust: trustSummary,
-            position: watchlistItem,
-            portfolioProfile,
-            previousDecision,
-          });
-          items.push({
-            symbol,
-            price: item.price,
-            overview,
-            basicFinancials,
-            priceHistory: item.priceHistory,
-            incomeStatement,
-            balanceSheet,
-            cashFlow,
-            analystRatings: item.analystRatings,
-            insiderTrading: item.insiderTrading,
-            priceTargets: item.priceTargets,
-            peers: item.peers,
-            newsSentiment: item.newsSentiment,
-            companyNews: item.companyNews,
-            dataTrust: trustSummary,
-            decisionSnapshot,
-          });
-          await saveSymbolCache(symbol, item.cache);
-        }
-
-        if (items.length === 0) {
-          return { success: false, error: 'Could not collect enough data before the runtime deadline to build a sector report.' };
-        }
-
-        // LLM batch moat analysis for all sector companies (single call)
-        if (options?.llmFill && items.length > 0 && hasReportLLMBudget(deadlineAt)) {
-          try {
-            const moatPrompt = buildBatchMoatAnalysisPrompt(
-              items.map((item) => ({ symbol: item.symbol, overview: item.overview, basicFinancials: item.basicFinancials }))
-            );
-            const raw = await withReportTaskTimeout(options.llmFill(moatPrompt), 'llm', deadlineAt);
-            const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
-            const parsed = JSON.parse(cleaned);
-            if (parsed && typeof parsed === 'object') {
-              for (const sym of Object.keys(parsed)) {
-                const entry = parseMoatEntry(parsed[sym]);
-                if (entry) {
-                  const ticker = cleanTicker(sym);
-                  const target = items.find((it) => it.symbol === ticker);
-                  if (target) target.moatAnalysis = entry;
-                }
-              }
-            }
-          } catch {
-            // LLM unavailable or invalid JSON — proceed without moat analysis
-          }
-        }
-
-        // LLM position rationale — clear 1-2 sentence "Why" for the guidance table
-        if (options?.llmFill && items.length > 0 && hasReportLLMBudget(deadlineAt)) {
-          try {
-            const rationalePrompt = buildBatchPositionRationalePrompt(
-              items.map((item) => {
-                const ds = item.decisionSnapshot;
-                return {
-                  symbol: item.symbol,
-                  name: item.overview?.name || item.symbol,
-                  action: ds?.action ?? 'Wait',
-                  confidence: ds?.confidence ?? 'Medium',
-                  overallScore: ds?.overallScore ?? null,
-                  qualityScore: ds?.qualityScore ?? null,
-                  valuationScore: ds?.valuationScore ?? null,
-                  technicalScore: ds?.technicalScore ?? null,
-                  analystConsensusScore: ds?.analystConsensusScore ?? null,
-                  insiderScore: ds?.insiderScore ?? null,
-                  whyNow: ds?.whyNow ?? [],
-                  whyNot: ds?.whyNot ?? [],
-                  missingInputs: ds?.missingInputs ?? [],
-                  overview: item.overview,
-                  basicFinancials: item.basicFinancials,
-                  priceTargets: item.priceTargets,
-                  analystRatings: item.analystRatings,
-                  price: item.price,
-                };
-              })
-            );
-            const raw = await withReportTaskTimeout(options.llmFill(rationalePrompt), 'llm', deadlineAt);
-            const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
-            const parsed = JSON.parse(cleaned);
-            if (parsed && typeof parsed === 'object') {
-              for (const sym of Object.keys(parsed)) {
-                const rationale = parsePositionRationaleEntry(parsed[sym]);
-                if (!rationale) continue;
-                const ticker = cleanTicker(sym);
-                const target = items.find((it) => it.symbol === ticker);
-                if (target?.decisionSnapshot) {
-                  target.decisionSnapshot = { ...target.decisionSnapshot, summary: rationale };
-                }
-              }
-            }
-          } catch {
-            // Proceed without LLM rationale — structured summary is the fallback
-          }
-        }
-
-        // LLM investment conclusion — rich narrative, best-effort
-        let llmConclusionSector: string | undefined;
-        if (options?.llmFill && items.length > 0 && hasReportLLMBudget(deadlineAt)) {
-          try {
-            const conclusionPrompt = buildComparisonConclusionPrompt(
-              items,
-              'sector',
-              sector,
-              items.map((item) => ({
-                symbol: item.symbol,
-                score: getComparisonPromptScore(item),
-              }))
-            );
-            llmConclusionSector = (await withReportTaskTimeout(options.llmFill(conclusionPrompt), 'llm', deadlineAt)).trim();
-          } catch {
-            // LLM unavailable — use structured fallback
-          }
-        }
-
-        const content = buildSectorReport({
-          sectorQuery: sector,
-          selectedBy: 'llm',
-          generatedAt: new Date().toISOString(),
-          range,
-          universe,
-          items,
-          notes,
-          sources: sourceMap,
-          llmConclusion: llmConclusionSector,
-        });
-        const summary = buildUniverseSummary(items);
-        const safeTitle = sector.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
-        const saved = await saveReport(content, `${safeTitle}-sector-report`, undefined, {
-          reportKind: 'sector',
-          summary,
-        });
-        return {
-          success: true,
-          data: { content, ...saved, downloadUrl: buildReportDownloadUrl(saved) },
-          message: `Saved sector report for "${sector}" to ${saved.filePath}`,
-        };
-      }
-      case 'generate_research_report':
-      // fall through to deep sector / research logic
-      case 'generate_deep_sector_report': {
+      case 'generate_research_report': {
         const sector = String(args.sector || '').trim();
         if (!sector) {
           return { success: false, error: 'A sector or theme query is required.' };
@@ -4049,7 +3628,7 @@ export async function executeTool(
         const timeBudgetExceeded = () => Date.now() - startTime > DEEP_RESEARCH_MAX_MS || isDeadlineNear(deadlineAt);
         const noteTimeBudget = () => {
           if (timeNotes.length === 0) {
-            timeNotes.push('Time budget reached; remaining deep-research steps truncated to fit runtime limits.');
+            timeNotes.push('Time budget reached; remaining research steps truncated to fit runtime limits.');
           }
         };
         const requestedFinalCount = Math.min(NUM_COMPANIES, Math.max(3, Number(args.count) || NUM_COMPANIES));
@@ -4092,14 +3671,14 @@ export async function executeTool(
             ? comparisonResult.data.summary
             : 'Deep comparison report built from the latest multi-company research set.';
           const safeTitle = sector.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
-          const saved = await saveReport(content, `${safeTitle}-deep-research-report`, undefined, {
-            reportKind: 'deep-research',
+          const saved = await saveReport(content, `${safeTitle}-research-report`, undefined, {
+            reportKind: 'research',
             summary,
           });
           return {
             success: true,
             data: { content, ...saved, downloadUrl: buildReportDownloadUrl(saved) },
-            message: `Saved deep research comparison report for "${sector}" to ${saved.filePath}`,
+            message: `Saved research comparison report for "${sector}" to ${saved.filePath}`,
           };
         }
 
@@ -4131,14 +3710,14 @@ export async function executeTool(
               ? stockResult.data.summary
               : 'Deep company report built from the latest single-stock research set.';
           const safeTitle = sector.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
-          const saved = await saveReport(content, `${safeTitle}-deep-research-report`, undefined, {
-            reportKind: 'deep-research',
+          const saved = await saveReport(content, `${safeTitle}-research-report`, undefined, {
+            reportKind: 'research',
             summary,
           });
           return {
             success: true,
             data: { content, ...saved, downloadUrl: buildReportDownloadUrl(saved) },
-            message: `Saved deep research company report for "${sector}" to ${saved.filePath}`,
+            message: `Saved research company report for "${sector}" to ${saved.filePath}`,
           };
         }
 
@@ -4154,14 +3733,14 @@ export async function executeTool(
           const reason = `Could not identify verified listed companies for "${sector}" using the configured resolver and market-data providers.`;
           const content = buildUnavailableResearchContent(sector, reason);
           const safeTitle = sector.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'research';
-          const saved = await saveReport(content, `${safeTitle}-deep-sector-report`, undefined, {
-            reportKind: 'deep-sector',
+          const saved = await saveReport(content, `${safeTitle}-research-report`, undefined, {
+            reportKind: 'research',
             summary: 'No verified company universe was available; wait for verified inputs.',
           });
           return {
             success: true,
             data: { content, ...saved, downloadUrl: buildReportDownloadUrl(saved) },
-            message: `Saved unavailable-data deep sector report for "${sector}" to ${saved.filePath}`,
+            message: `Saved unavailable-data research report for "${sector}" to ${saved.filePath}`,
           };
         }
 
@@ -4175,7 +3754,7 @@ export async function executeTool(
 
         // ── Phase 2: Fetch full comparison data for the locked universe ──────────
         const notes: string[] = [
-          `Universe refined through deep sector analysis (${DEEP_RESEARCH_DEPTH} pass${DEEP_RESEARCH_DEPTH > 1 ? 'es' : ''}) for: "${sector}"`,
+          `Universe refined through research analysis (${DEEP_RESEARCH_DEPTH} pass${DEEP_RESEARCH_DEPTH > 1 ? 'es' : ''}) for: "${sector}"`,
           `Initial candidates: ${initialCandidates.join(', ')}`,
           `Refined universe: ${universe.join(', ')}`,
           ...timeNotes,
@@ -4442,7 +4021,7 @@ export async function executeTool(
         }
 
         if (items.length === 0) {
-          return { success: false, error: 'Could not collect enough data before the runtime deadline to build a deep sector report.' };
+          return { success: false, error: 'Could not collect enough data before the runtime deadline to build a research report.' };
         }
 
         // Optional ecosystem analysis. This runs only after a data-backed report
@@ -4494,7 +4073,7 @@ export async function executeTool(
           }
         }
 
-        // LLM batch moat analysis for the refined deep sector universe (single call)
+        // LLM batch moat analysis for the refined research universe (single call)
         if (options?.llmFill && items.length > 0 && hasReportLLMBudget(deadlineAt)) {
           try {
             const moatPrompt = buildBatchMoatAnalysisPrompt(
@@ -4571,7 +4150,7 @@ export async function executeTool(
           try {
             const conclusionPrompt = buildComparisonConclusionPrompt(
               items,
-              'deep-sector',
+              'research',
               sector,
               items.map((item) => ({
                 symbol: item.symbol,
@@ -4602,14 +4181,14 @@ export async function executeTool(
         });
         const summary = buildUniverseSummary(items);
         const safeTitle = sector.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
-        const saved = await saveReport(content, `${safeTitle}-deep-sector-report`, undefined, {
-          reportKind: 'deep-sector',
+        const saved = await saveReport(content, `${safeTitle}-research-report`, undefined, {
+          reportKind: 'research',
           summary,
         });
         return {
           success: true,
           data: { content, ...saved, downloadUrl: buildReportDownloadUrl(saved) },
-          message: `Saved deep sector report for "${sector}" to ${saved.filePath}`,
+          message: `Saved research report for "${sector}" to ${saved.filePath}`,
         };
       }
       default:

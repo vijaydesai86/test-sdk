@@ -26,11 +26,12 @@ These rules apply before implementation details:
 
 ## Product scope
 
-The product is an AI-powered stock research assistant with exactly **three user-facing research modes**:
+The product is an AI-powered stock research assistant with exactly **four user-facing report types**:
 
 1. **Stock report** — full deep-dive on a single company
-2. **Research report** — handles any multi-company, sector, theme, industry, or research question (comparisons, deep sector analysis, ecosystem dependency maps, universe refinement)
-3. **Watchlist daily report** — daily pulse covering every company in the saved watchlist
+2. **Comparison report** — explicit user-given company comparisons
+3. **Research report** — comprehensive deep research for sectors, themes, industries, baskets, and open-ended research questions
+4. **Watchlist daily report** — daily pulse covering every company in the saved watchlist
 
 General chat is supported for data-only questions (e.g. "what is NVDA's P/E?") but is not a separate report mode and must not grow into a parallel product surface.
 
@@ -54,11 +55,11 @@ General chat is supported for data-only questions (e.g. "what is NVDA's P/E?") b
 
 8. **Use LLMs deliberately.** Use stronger models for accuracy-critical reasoning and lighter models only for lower-risk routing/formatting. Full fallback ladders and cooldowns must be honored before reporting provider/model exhaustion.
 
-9. **Report tools are the three user-facing tools.** `generate_stock_report`, `generate_research_report`, and `generate_watchlist_daily_report` are the only tools the LLM exposes to users. Internal routing tools (`generate_comparison_report`, `generate_sector_report`, `generate_deep_sector_report`) exist in `executeTool` for internal delegation only and are not in `CHAT_TOOL_NAMES`.
+9. **Report tools are the four user-facing tools.** `generate_stock_report`, `generate_comparison_report`, `generate_research_report`, and `generate_watchlist_daily_report` are the only report tools the LLM exposes to users. Do not reintroduce separate sector or deep-sector report tools.
 
 10. **Keep user input simple.** Users must be able to type `google vs microsoft` or `deep research on tesla` and get the right report. Entity resolution may use the LLM for name-to-ticker mapping, but real provider verification (`search_stock`) is required before any market-data fetch.
 
-11. **Research report is one mode.** The UI exposes one `generate_research_report` tool. Internally it routes by query type (explicit comparison → comparison path; single-company name → deep stock path; sector/theme → full ecosystem analysis), but this routing is hidden from the user and the LLM.
+11. **Research and deep research are one mode.** `generate_research_report` always uses the comprehensive research path. Explicit user-given comparisons use `generate_comparison_report`; open-ended themes/sectors/baskets use `generate_research_report`.
 
 12. **Plain chat cannot satisfy report intent.** Users may ask in any natural wording. If a request maps to stock report, comparison/research report, theme/deep research, or watchlist daily and the LLM returns plain text without a report artifact, `route.ts` must run the matching report fallback from `reportIntent.ts`. Do not let stale model memory answer report requests.
 
@@ -112,7 +113,7 @@ User message
 | `web/app/api/models/route.ts` | Returns available GitHub Models from live catalog. |
 | `web/app/api/providers/route.ts` | Returns combined list of available LLM models (GitHub + Gemini) for internal inventory/debug use. |
 
-### Tool catalog (37 definitions / 34 chat-exposed tools)
+### Tool catalog (35 definitions / 35 chat-exposed tools)
 
 **Data tools** — fetch real data, return structured JSON, make zero report-side decisions:
 
@@ -160,21 +161,14 @@ User message
 | `get_bea_macro_indicators` | `BeaService` — BEA NIPA API (free key from apps.bea.gov) |
 | `get_eia_energy_indicators` | `EiaService` — EIA Open Data API (free key from eia.gov) |
 
-**Report tools** — the three user-facing report tools exposed via `CHAT_TOOL_NAMES`:
+**Report tools** — the four user-facing report tools exposed via `CHAT_TOOL_NAMES`:
 
 | Tool | What it generates |
 |---|---|
 | `generate_stock_report` | Single-company deep-dive: `buildStockReport` + `buildDeepStockReport` |
-| `generate_research_report` | All multi-company / thematic research — internally routes to comparison, sector, or deep-sector builder |
+| `generate_comparison_report` | Explicit user-given stock comparison report |
+| `generate_research_report` | Comprehensive thematic/deep research using the research path |
 | `generate_watchlist_daily_report` | Daily pulse across the saved watchlist: `buildWatchlistDailyReport` |
-
-**Internal routing tool definitions** — present in `getToolDefinitions()` for internal delegation, but filtered out of `CHAT_TOOL_NAMES`:
-
-| Tool | What it generates |
-|---|---|
-| `generate_comparison_report` | Explicit ticker-vs-ticker comparison report |
-| `generate_sector_report` | Sector/theme report without recursive deep refinement |
-| `generate_deep_sector_report` | Recursive deep-sector research path |
 
 ### Report pipeline (generate_stock_report example)
 
@@ -321,7 +315,7 @@ See `web/.env.example` for annotated defaults. All variables prefixed with `STOC
 
 **Scaling:**
 - `NUM_COMPANIES` — companies per sector/comparison report (2–15, default 10)
-- `DEEP_RESEARCH_DEPTH` — optional post-core-data ecosystem/refinement passes for deep-sector reports (1–3, default 1)
+- `DEEP_RESEARCH_DEPTH` — optional post-core-data ecosystem/refinement passes for research reports (1–3, default 1)
 - `DEEP_RESEARCH_MAX_MS` — deep-research runtime budget in ms (default 240000)
 - `DATA_FETCH_CONCURRENCY` — parallel ticker fetches (1–4, default 3)
 - `VERCEL_EXTENDED_DATA_MAX_COMPANIES` — on Vercel, large reports prioritize core decision inputs and cached optional sections
@@ -368,7 +362,7 @@ Before merging any change, verify:
 - [ ] Does this align with the product intent in `README.md` and the architecture in this file?
 - [ ] Does this keep all report data truthful (no fabricated fields)?
 - [ ] Does this prefer missing/suppressed data over wrong or non-meaningful data?
-- [ ] Does this preserve the three research modes (stock report, research report, watchlist daily)?
+- [ ] Does this preserve the four report types (stock report, comparison report, research report, watchlist daily)?
 - [ ] Does this keep the user input flow simple?
 - [ ] Does this work correctly both locally and on Vercel?
 - [ ] On Vercel, does it reserve enough time to save/return a report before the hard timeout?
@@ -394,7 +388,7 @@ Do not do these:
 - Hardcode provider-specific fake defaults for missing fields.
 - Let missing fields appear populated (show "N/A" or omit the row instead).
 - Add markdown documentation files anywhere other than `README.md`, `AGENT.md`, and `CHANGELOG.md` in the repo root.
-- Revert parallel `Promise.all` fan-out in comparison/sector/deep-sector phases to sequential loops.
+- Revert parallel `Promise.all` fan-out in comparison/research phases to sequential loops.
 - Introduce a new LLM call that supplies financial data rather than routing to a data tool.
 
 ---
@@ -419,7 +413,7 @@ When improving reports, prefer additions that come from real data:
 
 ## Decision engine (`decisionEngine.ts`)
 
-The decision engine produces a `DecisionSnapshot` for every company analysed. It runs automatically inside all four report types and in comparison/sector/deep-sector per-company loops.
+The decision engine produces a `DecisionSnapshot` for every company analysed. It runs automatically inside all four report types and their per-company loops.
 
 ### 7-pillar scoring model
 

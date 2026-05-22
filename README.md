@@ -8,12 +8,13 @@ Type a question in plain English and the assistant calls the right data tools, f
 
 Report-style requests are guarded server-side: if the model answers a stock, comparison, theme, or watchlist report request in plain chat without creating an artifact, the server runs the matching report tool instead. This keeps free-form prompts such as `Should I buy Arm?`, `Compare Nvidia, AMD, and Intel`, and `AI infrastructure stocks` on the verified report path.
 
-**Three research modes:**
+**Four report types:**
 
 | Mode | How to ask | What you get |
 |---|---|---|
 | **Stock report** | `Generate a stock report for NVDA` | Full deep-dive: price, financials, earnings, insider activity, analyst ratings, technicals (RSI, MACD, Bollinger, Stochastic), dividend analysis, DCF valuation, moat analysis, investment thesis |
-| **Research report** | `Compare NVDA, AMD, INTC` · `Deep research on semiconductors` · `Best dividend stocks` · `Tesla vs Rivian` | Handles any multi-company, sector, theme, industry, or research question. Fetches verified core market data first, then adds ecosystem/dependency synthesis when budget allows |
+| **Comparison report** | `Compare NVDA, AMD, INTC` · `Tesla vs Rivian` | Explicit user-given stock comparisons with verified market data, financials, valuation, technicals, and side-by-side decision guidance |
+| **Research report** | `Deep research on semiconductors` · `Best dividend stocks` | Comprehensive deep research for sectors, themes, industries, baskets, and open-ended topics. Fetches verified core market data first, then adds ecosystem/dependency synthesis when budget allows |
 | **Watchlist daily** | `Generate daily report for my watchlist` | One combined report covering every company in the saved watchlist |
 
 **Transparent decision engine:**
@@ -125,8 +126,8 @@ _Note: SEC EDGAR filings (`get_sec_filings`), SEC XBRL company facts (`get_sec_c
 
 | Variable | Default | Description |
 |---|---|---|
-| `NUM_COMPANIES` | `10` | Companies in comparison/sector/deep-sector reports. Range: 2–15. |
-| `DEEP_RESEARCH_DEPTH` | `1` | Optional post-core-data ecosystem/refinement passes for deep-sector reports. Core market data is fetched before any pass runs. Range: 1–3. |
+| `NUM_COMPANIES` | `10` | Companies in comparison and research reports. Range: 2–15. |
+| `DEEP_RESEARCH_DEPTH` | `1` | Optional post-core-data ecosystem/refinement passes for research reports. Core market data is fetched before any pass runs. Range: 1–3. |
 | `DEEP_RESEARCH_MAX_MS` | `240000` on Vercel, `600000` local | Runtime budget for deep research (ms). Vercel is clamped under the 300 s function limit; local can run longer for completeness. |
 | `DATA_FETCH_CONCURRENCY` | `3` | Parallel ticker fetches per report round. Range: 1–4. |
 | `VERCEL_EXTENDED_DATA_MAX_COMPANIES` | `3` | On Vercel, reports larger than this prioritize core decision inputs and cached optional data so free-tier providers do not consume the whole 300 s function window. Local runs still attempt extended data. |
@@ -201,7 +202,7 @@ test-sdk/
 │   │   ├── components/
 │   │   │   └── ChatInterface.tsx  # Full UI: chat, workspace, themes, charts
 │   │   └── lib/
-│   │       ├── stockTools.ts      # 37 tool definitions, executeTool, report orchestration
+│   │       ├── stockTools.ts      # 35 tool definitions, executeTool, report orchestration
 │   │       ├── reportIntent.ts    # Free-form report intent guard/fallback classifier
 │   │       ├── stockDataService.ts# All data providers + SecEdgarService + FredService
 │   │       ├── reportGenerator.ts # Report builders, technical indicators, chart builders

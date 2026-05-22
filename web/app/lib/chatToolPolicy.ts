@@ -17,6 +17,7 @@ export const CHAT_TOOL_NAMES = [
   'get_peers',
   'get_insider_trading',
   'generate_stock_report',
+  'generate_comparison_report',
   'generate_research_report',
   'generate_watchlist_daily_report',
   'get_technical_indicators',

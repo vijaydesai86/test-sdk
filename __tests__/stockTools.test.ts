@@ -317,27 +317,27 @@ describe('generate_stock_report via executeTool', () => {
   });
 });
 
-// ─── generate_sector_report ───────────────────────────────────────────────────
+// ─── generate_research_report ───────────────────────────────────────────────────
 
-describe('generate_sector_report via executeTool', () => {
+describe('generate_research_report via executeTool', () => {
   let service: StockDataService;
   beforeEach(() => { service = stubService(); });
 
   it('returns error when sector is empty', async () => {
-    const result = await executeTool('generate_sector_report', { sector: '' }, service);
+    const result = await executeTool('generate_research_report', { sector: '' }, service);
     expect(result.success).toBe(false);
     expect(result.error).toMatch(/sector or theme query is required/i);
   });
 
-  it('returns error when LLM is unavailable and cannot identify companies', async () => {
-    const result = await executeTool('generate_sector_report', { sector: 'AI data center' }, service);
-    expect(result.success).toBe(false);
-    expect(result.error).toMatch(/Could not identify companies/i);
+  it('saves an unavailable-data report when LLM is unavailable and cannot identify companies', async () => {
+    const result = await executeTool('generate_research_report', { sector: 'AI data center' }, service);
+    expect(result.success).toBe(true);
+    expect(result.data?.content).toMatch(/Could not identify verified listed companies/i);
   });
 
   it('fetches data for companies identified by LLM', async () => {
     const llmFill = vi.fn().mockResolvedValue('["NVDA","AMD"]');
-    const result = await executeTool('generate_sector_report', { sector: 'AI chips', count: 2 }, service, { llmFill });
+    const result = await executeTool('generate_research_report', { sector: 'AI chips', count: 2 }, service, { llmFill });
 
     expect(result.success).toBe(true);
     expect(service.getStockPrice).toHaveBeenCalledWith('NVDA');
@@ -346,7 +346,7 @@ describe('generate_sector_report via executeTool', () => {
 
   it('report content includes sector query', async () => {
     const llmFill = vi.fn().mockResolvedValue('["NVDA","AMD"]');
-    const result = await executeTool('generate_sector_report', { sector: 'AI chips', count: 2 }, service, { llmFill });
+    const result = await executeTool('generate_research_report', { sector: 'AI chips', count: 2 }, service, { llmFill });
 
     expect(result.success).toBe(true);
     expect(result.data?.content).toContain('AI chips');
@@ -354,15 +354,15 @@ describe('generate_sector_report via executeTool', () => {
 
   it('report includes investment conclusion section', async () => {
     const llmFill = vi.fn().mockResolvedValue('["NVDA","AMD"]');
-    const result = await executeTool('generate_sector_report', { sector: 'Semiconductors', count: 2 }, service, { llmFill });
+    const result = await executeTool('generate_research_report', { sector: 'Semiconductors', count: 2 }, service, { llmFill });
 
     expect(result.success).toBe(true);
     expect(result.data?.content).toContain('## 🎯 Investment Conclusion');
   });
 
-  it('sector report conclusion contains sector-specific outlook (not generic "Peer Group Outlook")', async () => {
+  it('research report conclusion contains sector-specific outlook (not generic "Peer Group Outlook")', async () => {
     const llmFill = vi.fn().mockResolvedValue('["NVDA","AMD"]');
-    const result = await executeTool('generate_sector_report', { sector: 'Cloud', count: 2 }, service, { llmFill });
+    const result = await executeTool('generate_research_report', { sector: 'Cloud', count: 2 }, service, { llmFill });
 
     expect(result.success).toBe(true);
     // Sector conclusion label is "<sectorName> Outlook:" e.g. "Cloud Outlook:"
@@ -370,16 +370,16 @@ describe('generate_sector_report via executeTool', () => {
     expect(result.data?.content).not.toContain('Peer Group Outlook');
   });
 
-  it('llmFill called four times: tickers, batch moat analysis, position rationale, and conclusion', async () => {
+  it('llmFill uses the comprehensive research path', async () => {
     const llmFill = vi.fn().mockResolvedValue('["NVDA","AMD"]');
-    await executeTool('generate_sector_report', { sector: 'AI chips', count: 2 }, service, { llmFill });
-    // Calls: (1) sector company tickers, (2) batch moat analysis, (3) position rationale, (4) investment conclusion
-    expect(llmFill).toHaveBeenCalledTimes(4);
+    await executeTool('generate_research_report', { sector: 'AI chips', count: 2 }, service, { llmFill });
+    // Calls include ticker discovery, optional ecosystem analysis, moat, position rationale, and conclusion.
+    expect(llmFill).toHaveBeenCalledTimes(5);
   });
 
-  it('conclusion appears exactly once in sector report', async () => {
+  it('conclusion appears exactly once in research report', async () => {
     const llmFill = vi.fn().mockResolvedValue('["NVDA","AMD"]');
-    const result = await executeTool('generate_sector_report', { sector: 'EV', count: 2 }, service, { llmFill });
+    const result = await executeTool('generate_research_report', { sector: 'EV', count: 2 }, service, { llmFill });
 
     expect(result.success).toBe(true);
     const content = result.data?.content as string;
@@ -410,6 +410,27 @@ describe('generate_comparison_report via executeTool', () => {
     expect(result.success).toBe(true);
     expect(service.getStockPrice).toHaveBeenCalledWith('AAPL');
     expect(service.getStockPrice).toHaveBeenCalledWith('MSFT');
+  });
+
+  it('parses natural comparison strings with to and between separators', async () => {
+    const result = await executeTool(
+      'generate_comparison_report',
+      { companies: 'Compare AAPL to MSFT', range: '1y' },
+      service
+    );
+    expect(result.success).toBe(true);
+    expect(service.getStockPrice).toHaveBeenCalledWith('AAPL');
+    expect(service.getStockPrice).toHaveBeenCalledWith('MSFT');
+
+    const betweenService = stubService();
+    const betweenResult = await executeTool(
+      'generate_comparison_report',
+      { companies: 'Comparison between NVDA and AMD', range: '1y' },
+      betweenService
+    );
+    expect(betweenResult.success).toBe(true);
+    expect(betweenService.getStockPrice).toHaveBeenCalledWith('NVDA');
+    expect(betweenService.getStockPrice).toHaveBeenCalledWith('AMD');
   });
 
   it('comparison report fetches the same financial and news context used by single-stock reports', async () => {
@@ -506,25 +527,25 @@ describe('LLM conclusion integration in executeTool', () => {
     expect(result.data?.content).toContain('AAPL leads');
   });
 
-  it('sector report: llmFill conclusion prompt contains sector theme', async () => {
+  it('research report: llmFill conclusion prompt contains sector theme', async () => {
     let conclusionPromptReceived = '';
     const llmFill = vi.fn().mockImplementation((prompt: string) => {
-      if (prompt.includes('Deep Sector') || prompt.includes('Sector:')) {
+      if (prompt.includes('Research:') || prompt.includes('Sector:')) {
         conclusionPromptReceived = prompt;
         return Promise.resolve('Semiconductors are experiencing strong AI-driven demand from real API data. BUY NVDA.');
       }
       return Promise.resolve('["NVDA","AMD"]');
     });
-    const result = await executeTool('generate_sector_report', { sector: 'Semiconductors', count: 2 }, service, { llmFill });
+    const result = await executeTool('generate_research_report', { sector: 'Semiconductors', count: 2 }, service, { llmFill });
     expect(result.success).toBe(true);
     // The conclusion prompt sent to the LLM should reference the sector
     expect(conclusionPromptReceived).toContain('Semiconductors');
     expect(result.data?.content).toContain('## 🎯 Investment Conclusion');
   });
 
-  it('sector report fetches financial and news context for each selected company', async () => {
+  it('research report fetches financial and news context for each selected company', async () => {
     const llmFill = vi.fn().mockResolvedValue('["NVDA","AMD"]');
-    const result = await executeTool('generate_sector_report', { sector: 'Semiconductors', count: 2 }, service, { llmFill });
+    const result = await executeTool('generate_research_report', { sector: 'Semiconductors', count: 2 }, service, { llmFill });
     expect(result.success).toBe(true);
     expect(service.getBasicFinancials).toHaveBeenCalledWith('NVDA');
     expect(service.getBasicFinancials).toHaveBeenCalledWith('AMD');
@@ -536,13 +557,13 @@ describe('LLM conclusion integration in executeTool', () => {
     expect(service.getCompanyNews).toHaveBeenCalledWith('AMD', 14);
   });
 
-  it('deep sector report: LLM conclusion narrative appears in report', async () => {
-    const conclusionText = 'Deep sector AI analysis based on real API data shows NVDA dominates with 85% market share. Strong BUY.';
+  it('deep research report: LLM conclusion narrative appears in report', async () => {
+    const conclusionText = 'Deep research AI analysis based on real API data shows NVDA dominates with 85% market share. Strong BUY.';
     let callCount = 0;
     const llmFill = vi.fn().mockImplementation((prompt: string) => {
       callCount++;
       // Call 1: initial candidates, Call 2: dependency/refinement, Call 3: batch moat, Call 4: conclusion
-      if (prompt.includes('Deep Sector') || (callCount >= 4 && !prompt.includes('moatType'))) {
+      if (prompt.includes('Research:') || (callCount >= 4 && !prompt.includes('moatType'))) {
         return Promise.resolve(conclusionText);
       }
       if (prompt.includes('moatType')) {
@@ -558,12 +579,12 @@ describe('LLM conclusion integration in executeTool', () => {
       }
       return Promise.resolve('["NVDA","AMD"]');
     });
-    const result = await executeTool('generate_deep_sector_report', { sector: 'AI chips', count: 2 }, service, { llmFill });
+    const result = await executeTool('generate_research_report', { sector: 'AI chips', count: 2 }, service, { llmFill });
     expect(result.success).toBe(true);
     expect(result.data?.content).toContain('## 🎯 Investment Conclusion');
   });
 
-  it('deep sector report fetches the refined universe with financial and news context', async () => {
+  it('deep research report fetches the refined universe with financial and news context', async () => {
     let callCount = 0;
     const llmFill = vi.fn().mockImplementation((prompt: string) => {
       callCount++;
@@ -581,9 +602,9 @@ describe('LLM conclusion integration in executeTool', () => {
       if (callCount === 1) {
         return Promise.resolve('["NVDA","AMD"]');
       }
-      return Promise.resolve('Deep sector conclusion.');
+      return Promise.resolve('Deep research conclusion.');
     });
-    const result = await executeTool('generate_deep_sector_report', { sector: 'AI chips', count: 2 }, service, { llmFill });
+    const result = await executeTool('generate_research_report', { sector: 'AI chips', count: 2 }, service, { llmFill });
     expect(result.success).toBe(true);
     expect(service.getBasicFinancials).toHaveBeenCalledWith('NVDA');
     expect(service.getBasicFinancials).toHaveBeenCalledWith('AMD');
@@ -638,10 +659,10 @@ describe('getToolDefinitions', () => {
     expect(found).toBeDefined();
   });
 
-  it('generate_sector_report tool definition exists', async () => {
+  it('generate_research_report tool definition exists', async () => {
     const { getToolDefinitions } = await import('../web/app/lib/stockTools');
     const defs = getToolDefinitions();
-    const found = defs.find((d) => d.function.name === 'generate_sector_report');
+    const found = defs.find((d) => d.function.name === 'generate_research_report');
     expect(found).toBeDefined();
   });
 
@@ -650,6 +671,13 @@ describe('getToolDefinitions', () => {
     const defs = getToolDefinitions();
     const found = defs.find((d) => d.function.name === 'generate_comparison_report');
     expect(found).toBeDefined();
+  });
+
+  it('does not expose removed sector/deep-sector report tool definitions', async () => {
+    const { getToolDefinitions } = await import('../web/app/lib/stockTools');
+    const defs = getToolDefinitions();
+    expect(defs.find((d) => d.function.name === 'generate_sector_report')).toBeUndefined();
+    expect(defs.find((d) => d.function.name === 'generate_deep_sector_report')).toBeUndefined();
   });
 });
 

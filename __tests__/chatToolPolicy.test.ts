@@ -16,7 +16,12 @@ describe('chat tool policy', () => {
     expect(CHAT_TOOL_NAMES).toContain('get_dcf_valuation');
     expect(CHAT_TOOL_NAMES).toContain('get_market_sentiment');
     expect(CHAT_TOOL_NAMES).toContain('search_news');
+    expect(CHAT_TOOL_NAMES).toContain('generate_stock_report');
+    expect(CHAT_TOOL_NAMES).toContain('generate_comparison_report');
+    expect(CHAT_TOOL_NAMES).toContain('generate_research_report');
     expect(CHAT_TOOL_NAMES).toContain('generate_watchlist_daily_report');
+    expect(CHAT_TOOL_NAMES).not.toContain('generate_sector_report' as any);
+    expect(CHAT_TOOL_NAMES).not.toContain('generate_deep_sector_report' as any);
   });
 
   it('returns a copy of the allow-list for route use', () => {

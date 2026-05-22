@@ -7,7 +7,7 @@ All notable changes to this project are recorded here.
 
 ### Changed
 - **Agent operating contract**: `AGENT.md` now captures the standing collaboration rules for discuss-before-change, holistic impact review, local/Vercel parity, truthful-data requirements, LLM/tool fallback discipline, mandatory practical validation, test expectations, docs alignment, and commit/push boundaries.
-- **Deep research execution order**: Deep-sector reports now resolve a verified universe, fetch critical market data before optional ecosystem LLM enrichment, and reserve model calls for after a data-backed report body is already possible. `DEEP_RESEARCH_DEPTH` is restored as a bounded optional post-core-data refinement setting with default `1`.
+- **Deep research execution order**: Research reports now resolve a verified universe, fetch critical market data before optional ecosystem LLM enrichment, and reserve model calls for after a data-backed report body is already possible. `DEEP_RESEARCH_DEPTH` is restored as a bounded optional post-core-data refinement setting with default `1`.
 - **Priority-aware timeout scheduling**: Report generation now uses separate critical/high/optional/LLM task ceilings and shorter report-fill LLM budgets on Vercel, so a slow provider or optional model call cannot consume the whole function window before rendering and persistence.
 
 ### Fixed
@@ -22,7 +22,7 @@ All notable changes to this project are recorded here.
 - **Free-tier provider pressure**: Report fetches now check cache/rate-limit state before starting upstream requests, provider throttles are serialized across concurrent report fetches, and Alpha Vantage is pushed later in the method-specific fallback order where roomier/no-key providers can satisfy the data.
 - **Single-stock report fundamentals**: `generate_stock_report` now calls the dedicated `getBasicFinancials` provider method before falling back to overview-derived metrics, so profitability/growth/financial-ratio inputs have a better chance of being real provider data.
 - **Large Vercel reports finish with useful decisions**: Multi-company and watchlist reports on Vercel prioritize core decision inputs (price, overview, basic financials, price history, analyst ratings, price targets) and use cached optional sections for large universes instead of spending free-tier quota on lower-priority endpoints first.
-- **Report-fill LLM prompt wiring**: Optional moat, rationale, conclusion, ticker-resolution, and deep-sector ecosystem calls keep their intended prompts while still obeying per-call timeout ceilings.
+- **Report-fill LLM prompt wiring**: Optional moat, rationale, conclusion, ticker-resolution, and research ecosystem calls keep their intended prompts while still obeying per-call timeout ceilings.
 - **LLM fallback resilience**: Invalid GitHub/Gemini credentials for one provider now skip to the next configured provider instead of blocking the whole request.
 - **Local vs Vercel budgets**: Deep research and LLM request timeouts stay conservative on Vercel, while local runs can spend longer collecting data when no 300 s platform timeout applies.
 - **Gemini tool-calling 400 (`Value is not a string: null`)**: Gemini's OpenAI-compatible endpoint rejected assistant tool-call messages when `content` was `null`. `callGeminiAPI()` now sanitizes every Gemini-bound message so `content` is always a string before each tool-calling round.
@@ -44,11 +44,11 @@ All notable changes to this project are recorded here.
 ### Changed
 - **Exhaustive-by-default AI execution**: Removed `LLM_PROVIDER` config. The system always tries all configured providers in sequence — GitHub Models first (exhausting every fallback model), then Gemini. Never errors out until all models and providers are exhausted.
 - **Exhaustive-by-default stock data**: Removed `STOCK_DATA_PROVIDER` config. `createStockService()` always returns `MultiSourceStockDataService`, using every configured key with full provider fallback chain. `HybridStockDataService` removed.
-- **Three report tools only** (`generate_stock_report`, `generate_research_report`, `generate_watchlist_daily_report`): Removed `generate_comparison_report` and `generate_sector_report` from `CHAT_TOOL_NAMES` and from `buildToolDefinitions()`. Renamed `generate_deep_sector_report` → `generate_research_report`. The research report handles all non-single-stock queries: comparisons, sectors, themes, industries, portfolio ideas. Internal routing tools remain in `executeTool` for delegation only.
+- **Four report tools only** (`generate_stock_report`, `generate_comparison_report`, `generate_research_report`, `generate_watchlist_daily_report`): Comparison is first-class for explicit user-given stocks. Research/deep research are the same comprehensive path for sectors, themes, industries, baskets, and open-ended topics. Removed separate `generate_sector_report` and `generate_deep_sector_report` tool definitions.
 - **AI-first request handling**: Removed `parseReportRequest()` / `parseCompareRequest()` / `parseTimeframe()` fast-path pattern matching. All user messages go through the LLM first. The LLM reads intent and decides which tool to call.
 - **No provider/model selector in UI**: Users no longer see or choose model names. The app routes automatically across the available providers/models and keeps model selection server-side.
 - **Simplified `/api/providers`**: Returns `{ models }` only — a flat combined list of GitHub + Gemini models for internal inventory/debug use.
-- **Updated system prompts**: Both SYSTEM_PROMPT and COMPACT_SYSTEM_PROMPT describe the three report tools and the AI-reads-first rule. Removed hardcoded source citations from prompt.
+- **Updated system prompts**: Both SYSTEM_PROMPT and COMPACT_SYSTEM_PROMPT describe the four report tools and the AI-reads-first rule. Removed hardcoded source citations from prompt.
 - **Source info hidden by default**: Data-source sections in reports only appear when `DEBUG=true` is set in Vercel environment variables.
 
 
@@ -85,7 +85,7 @@ All notable changes to this project are recorded here.
 - Balance sheet and cash-flow sections now prefer the most complete real provider report instead of blindly using the first row returned.
 - Stock financial deep dives now show recent reported periods instead of a single latest row when multiple real statement rows are available.
 - Comparison balance/cash sections now expose more usable real fields, including equity and free cash flow.
-- Root documentation now reflects the current product scope: three report modes, free-tier-safe operation, and no fabricated data.
+- Root documentation now reflects the current product scope: four report types, free-tier-safe operation, and no fabricated data.
 ### Fixed
 - **Watchlist "no companies" error**: Supabase seed failure now returns in-memory default items instead of `null`, so users always see the default 15 companies even when the Supabase insert fails.
 - **Watchlist add item error**: `addWatchlistItem` falls back to basic-column insert when detailed columns fail due to schema mismatch.
@@ -96,7 +96,7 @@ All notable changes to this project are recorded here.
 - Removed extra markdown docs and markdown report artifacts from version-controlled documentation so only `README.md`, `AGENT.md`, and `CHANGELOG.md` remain as repo docs.
 ## [2026-03-26]
 ### Previously completed architectural pass
-- Centered the product around three report modes: stock, comparison, and deep research.
+- Centered the product around four report types: stock, comparison, research/deep research, and watchlist.
 - Routed deep research by target type so single-company, explicit-comparison, and sector/theme requests all stay under one mode.
 - Removed synthetic stock-report fallbacks for missing statement data.
 - Improved stock-provider fallback behavior for `multi` and `hybrid` modes.
