@@ -4,6 +4,7 @@ import path from 'path';
 import type { DataTrustSummary, DecisionSnapshot, PortfolioProfile, WatchlistPositionMeta } from './investmentTypes';
 import { getConfiguredEnv } from './env';
 import { DEFAULT_REPORTS_DIR } from './reportFileStore';
+import { computeDcfValuation, deriveFreeCashFlow } from './dcfValuation';
 
 type PricePoint = { date: string; close: string | number; high?: string | number; low?: string | number };
 type EarningsPoint = { fiscalQuarter: string; reportedEPS: string | number };
@@ -98,10 +99,14 @@ export interface WatchlistDailyReportItem {
   reason?: string;
 }
 
+export type WatchlistSkippedItem = string | { symbol: string; reason?: string };
+
 export interface WatchlistDailyReportData {
   generatedAt: string;
   watchlistName: string;
   items: WatchlistDailyReportItem[];
+  totalItems?: number;
+  skippedItems?: WatchlistSkippedItem[];
 }
 
 /**
@@ -625,15 +630,6 @@ function getRecentReports(reportSet: any, fields: string[], limit: number): any[
   return reports
     .filter((report) => countReportFields(report, fields) > 0)
     .slice(0, limit);
-}
-
-function deriveFreeCashFlow(report: any): number | null {
-  const direct = toNumber(report?.freeCashFlow);
-  if (direct !== null) return direct;
-  const operating = toNumber(report?.operatingCashflow);
-  const capex = toNumber(report?.capitalExpenditures);
-  if (operating === null || capex === null) return null;
-  return operating - Math.abs(capex);
 }
 
 function formatPeriodLabel(report: any): string {
@@ -2854,79 +2850,35 @@ export function buildStockReport(data: StockReportData): string {
   }
 
   // DCF Valuation section — simplified intrinsic value estimate
-  const dcfSharesOutstanding = toNumber(overview.sharesOutstanding);
-  const dcfBeta = toNumber(overview.beta);
-  const dcfAnnualReports = data.cashFlow?.annualReports || [];
-  const dcfFCFs: number[] = [];
-  for (const report of dcfAnnualReports.slice(0, 5)) {
-    const ocf = report?.operatingCashflow != null ? Number(report.operatingCashflow) : null;
-    const capex = report?.capitalExpenditures != null ? Math.abs(Number(report.capitalExpenditures)) : null;
-    if (ocf != null && capex != null && Number.isFinite(ocf) && Number.isFinite(capex)) {
-      dcfFCFs.push(ocf - capex);
-    }
-  }
-  if (dcfFCFs.length > 0 && dcfSharesOutstanding && dcfSharesOutstanding > 0 && price !== null) {
-    const latestFCF = dcfFCFs[0];
-    let dcfGrowth = 0.05;
-    const dcfRevGrowth = toNumber(overview.quarterlyRevenueGrowth);
-    if (dcfFCFs.length >= 2 && dcfFCFs[dcfFCFs.length - 1] > 0) {
-      const cagr = Math.pow(dcfFCFs[0] / dcfFCFs[dcfFCFs.length - 1], 1 / (dcfFCFs.length - 1)) - 1;
-      if (Number.isFinite(cagr) && cagr > -0.5 && cagr < 1.0) dcfGrowth = Math.min(cagr, 0.25);
-    } else if (dcfRevGrowth != null && Number.isFinite(dcfRevGrowth)) {
-      dcfGrowth = Math.min(Math.max(dcfRevGrowth, -0.1), 0.25);
-    }
-    const riskFree = 0.04;
-    const erp = 0.05;
-    const eBeta = dcfBeta != null && Number.isFinite(dcfBeta) && dcfBeta > 0 ? dcfBeta : 1.0;
-    const dcfWacc = riskFree + eBeta * erp;
-    const termGrowth = 0.025;
-    let dcfTotalPV = 0;
-    let projFCF = latestFCF;
-    for (let yr = 1; yr <= 10; yr++) {
-      const effectiveGrowth = yr <= 5
-        ? dcfGrowth
-        : dcfGrowth * (1 - (yr - 5) / 5) + termGrowth * ((yr - 5) / 5);
-      projFCF *= (1 + effectiveGrowth);
-      dcfTotalPV += projFCF / Math.pow(1 + dcfWacc, yr);
-    }
-    const termFCF = projFCF * (1 + termGrowth);
-    const termVal = termFCF / (dcfWacc - termGrowth);
-    const termPV = termVal / Math.pow(1 + dcfWacc, 10);
-    const ev = dcfTotalPV + termPV;
-    const nDebt = (toNumber(overview.longTermDebt) || 0) - (toNumber(overview.cashAndEquivalents) || 0);
-    const eqVal = ev - (Number.isFinite(nDebt) ? nDebt : 0);
-    const intrinsic = eqVal / dcfSharesOutstanding;
-    const mos = ((intrinsic - price) / intrinsic) * 100;
-    let dcfVerdict = 'Unavailable';
-    if (Number.isFinite(mos)) {
-      if (mos > 30) dcfVerdict = '🟢 Significantly Undervalued';
-      else if (mos > 15) dcfVerdict = '🟢 Moderately Undervalued';
-      else if (mos > 0) dcfVerdict = '🟡 Slightly Undervalued';
-      else if (mos > -15) dcfVerdict = '🟡 Fairly Valued';
-      else if (mos > -30) dcfVerdict = '🟠 Moderately Overvalued';
-      else dcfVerdict = '🔴 Significantly Overvalued';
-    }
-    if (Number.isFinite(intrinsic)) {
+  const dcf = computeDcfValuation({
+    overview,
+    balanceSheet: data.balanceSheet,
+    cashFlow: data.cashFlow,
+    currentPrice: price,
+  });
+  if (dcf.intrinsicValuePerShare !== null && price !== null) {
       sections.push(
         '## 📐 DCF Valuation Estimate',
-        '_Simplified 10-year DCF model. Not investment advice — estimates depend on assumptions._',
+        '_Simplified 10-year DCF model. Not investment advice; estimates depend heavily on the free-cash-flow basis and assumptions._',
         buildTable(
           ['Metric', 'Value'],
           [
-            ['**Intrinsic Value / Share**', `$${intrinsic.toFixed(2)}`],
+            ['**Intrinsic Value / Share**', `$${dcf.intrinsicValuePerShare.toFixed(2)}`],
             ['**Current Price**', formatPrice(price)],
-            ['**Margin of Safety**', `${mos.toFixed(1)}%`],
-            ['**Verdict**', dcfVerdict],
-            ['Growth Rate Used', `${(dcfGrowth * 100).toFixed(1)}%`],
-            ['WACC (Discount Rate)', `${(dcfWacc * 100).toFixed(1)}%`],
-            ['Terminal Growth', `${(termGrowth * 100).toFixed(1)}%`],
-            ['Beta', `${eBeta.toFixed(2)}`],
-            ['Latest FCF', formatCurrency(latestFCF)],
+            ['**Margin of Safety**', dcf.marginOfSafetyPercent !== null ? `${dcf.marginOfSafetyPercent.toFixed(1)}%` : 'N/A'],
+            ['**Verdict**', dcf.verdict],
+            ['DCF Confidence', dcf.confidence],
+            ['FCF Basis', dcf.assumptions.fcfBasisLabel],
+            ['Base FCF', formatCurrency(dcf.assumptions.baseFCF)],
+            ['Growth Rate Used', `${dcf.assumptions.growthRate.toFixed(1)}%`],
+            ['WACC (Discount Rate)', `${dcf.assumptions.wacc.toFixed(1)}%`],
+            ['Terminal Growth', `${dcf.assumptions.terminalGrowthRate.toFixed(1)}%`],
+            ['Beta', `${dcf.assumptions.beta.toFixed(2)}`],
           ],
           ['left', 'right']
         ),
+        ...(dcf.notes.length ? [`_DCF notes: ${dcf.notes.join(' ')}_`] : []),
       );
-    }
   }
 
   sections.push(
@@ -2967,12 +2919,12 @@ export function buildStockReport(data: StockReportData): string {
     }
   }
 
-  sections.push('## 🧑‍💼 Ownership, Insider Activity & Sentiment', ...(ownershipLines.length ? ownershipLines : ['- Ownership data unavailable']));
+  sections.push('## Ownership, Insider Activity & Sentiment', ...(ownershipLines.length ? ownershipLines : ['- Ownership data unavailable']));
   if (insiderSummary.table) {
     sections.push('### Recent Insider Transactions');
     sections.push(insiderSummary.table);
   }
-  sections.push('## 🗓️ Guidance & Catalysts', ...(catalystLines.length ? catalystLines : ['- Guidance data unavailable']));
+  sections.push('## Guidance & Catalysts', ...(catalystLines.length ? catalystLines : ['- Guidance data unavailable']));
   if (alternativeLines.length) {
     sections.push('## 🔄 Alternative Stocks To Research', ...alternativeLines);
   }
@@ -3762,7 +3714,7 @@ function buildWatchlistSummaryTable(items: WatchlistDailyReportItem[]): string {
   ].join('\n\n');
 }
 
-function buildWatchlistOverview(items: WatchlistDailyReportItem[]): string {
+function buildWatchlistOverview(items: WatchlistDailyReportItem[], totalItems = items.length): string {
   const decisions = items.map((item) => ({ item, decision: buildWatchlistDecision(item) }));
   const counts = decisions.reduce<Record<ActionLabel, number>>((acc, entry) => {
     acc[entry.decision.action] += 1;
@@ -3776,7 +3728,7 @@ function buildWatchlistOverview(items: WatchlistDailyReportItem[]): string {
   const weakest = scored[scored.length - 1];
 
   const lines = [
-    `- **Signal Mix:** Buy ${counts.Buy} | Hold ${counts.Hold} | Watch ${counts.Watch} | Sell ${counts.Sell}`
+    `- **Signal Mix:** Buy ${counts.Buy} | Hold ${counts.Hold} | Watch ${counts.Watch} | Sell ${counts.Sell}${totalItems > items.length ? ' (full-coverage companies only)' : ''}`
   ];
 
   if (strongest) {
@@ -3787,6 +3739,11 @@ function buildWatchlistOverview(items: WatchlistDailyReportItem[]): string {
   }
 
   return ['## Watchlist Overview', ...lines].join('\n');
+}
+
+function formatWatchlistSkippedItem(item: WatchlistSkippedItem): string {
+  if (typeof item === 'string') return item;
+  return item.reason ? `${item.symbol}: ${item.reason}` : item.symbol;
 }
 
 function stripComparisonReportHeader(body: string): string {
@@ -3846,14 +3803,25 @@ export function buildDeepComparisonReport(data: {
     .join('\n\n');
 }
 export function buildWatchlistDailyReport(data: WatchlistDailyReportData): string {
+  const totalItems = data.totalItems && data.totalItems > data.items.length ? data.totalItems : data.items.length;
+  const skippedItems = data.skippedItems || [];
   const header = [
     `# Watchlist Daily Report: ${data.watchlistName}`,
     `Generated: ${data.generatedAt}`,
-    `**Companies covered:** ${data.items.length}`,
+    totalItems > data.items.length
+      ? `**Full coverage:** ${data.items.length} / ${totalItems}\n\n**Limited/skipped:** ${Math.max(0, totalItems - data.items.length)} / ${totalItems}`
+      : `**Companies covered:** ${data.items.length}`,
   ].join('\n\n');
 
   const summaryTable = buildWatchlistSummaryTable(data.items);
-  const overview = buildWatchlistOverview(data.items);
+  const overview = buildWatchlistOverview(data.items, totalItems);
+  const partialCoverage = skippedItems.length
+    ? [
+        '## Partial Coverage',
+        '_These names were not included in the signal mix because full company sections could not be built before provider/runtime limits._',
+        ...skippedItems.map((item) => `- ${formatWatchlistSkippedItem(item)}`),
+      ].join('\n')
+    : '';
   const companySections = data.items.map((item, index) => {
     const title = item.companyName || item.stock.companyOverview?.name || item.symbol;
     const reportData = buildWatchlistStockReportData(item);
@@ -3871,7 +3839,7 @@ export function buildWatchlistDailyReport(data: WatchlistDailyReportData): strin
     ].join('\n\n');
   });
 
-  return [header, summaryTable, overview, '## Full Company Research', ...companySections]
+  return [header, partialCoverage, summaryTable, overview, '## Full Company Research', ...companySections]
     .filter(Boolean)
     .join('\n\n');
 }
@@ -3932,7 +3900,7 @@ function deriveRating(
   analystBuyPct: number | null
 ): { label: string; emoji: string } {
   if (compositeScore === null && analystBuyPct === null) {
-    return { label: 'WATCH', emoji: '👀' };
+    return { label: 'WATCH', emoji: '•' };
   }
 
   // Start from composite score; fall back to analyst consensus if score unavailable
@@ -3946,14 +3914,14 @@ function deriveRating(
 
   if (base >= 65) return { label: 'BUY', emoji: '✅' };
   if (base >= 45) return { label: 'HOLD', emoji: '⚖️' };
-  if (base >= 30) return { label: 'WATCH', emoji: '👀' };
+  if (base >= 30) return { label: 'WATCH', emoji: '•' };
   return { label: 'SELL / AVOID', emoji: '🔴' };
 }
 
 function deriveRatingFromGuidance(guidance: PositionGuidance): { label: string; emoji: string } {
   if (guidance.stance === 'Buy') return { label: guidance.confidence === 'High' ? 'BUY' : 'BUY CANDIDATE', emoji: '✅' };
   if (guidance.stance === 'Hold') return { label: 'HOLD', emoji: '⚖️' };
-  if (guidance.stance === 'Watch') return { label: 'WATCH', emoji: '👀' };
+  if (guidance.stance === 'Watch') return { label: 'WATCH', emoji: '•' };
   return { label: 'SELL / AVOID', emoji: '🔴' };
 }
 

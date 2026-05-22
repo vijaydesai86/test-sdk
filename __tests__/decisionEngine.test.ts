@@ -57,6 +57,7 @@ describe('decisionEngine', () => {
       companyOverview: { analystTargetPrice: '135', peRatio: '18', operatingMargin: '0.34', profitMargin: '0.32', returnOnEquity: '0.95' },
       basicFinancials: { metric: { grossMarginTTM: 0.68, operatingMarginTTM: 0.34, roeTTM: 0.95, revenueGrowthTTM: 0.18, epsGrowthTTM: 0.2 } },
       priceHistory: { prices: [{ date: '2026-01-01', close: '82' }, { date: '2026-03-30', close: '100' }] },
+      analystRatings: { strongBuy: 8, buy: 8, hold: 2, sell: 0, strongSell: 0 },
       companyNews: { articles: [{ headline: 'Positive catalyst' }] },
       trust: freshTrust,
       position: {
@@ -78,6 +79,36 @@ describe('decisionEngine', () => {
     expect(snapshot.confidence).toBe('High');
     expect(snapshot.whyNow.join(' ')).toContain('preferred entry range');
     expect(snapshot.portfolioImpact).toContain('Start a position');
+  });
+
+  it('does not initiate when valuation is severely unattractive despite strong quality and momentum', () => {
+    const snapshot = buildDecisionSnapshot({
+      symbol: 'RICH',
+      price: { price: '100' },
+      companyOverview: { analystTargetPrice: '160', peRatio: '120', operatingMargin: '0.45', profitMargin: '0.40', returnOnEquity: '1.2' },
+      basicFinancials: { metric: { grossMarginTTM: 0.72, operatingMarginTTM: 0.45, roeTTM: 1.2, revenueGrowthTTM: 0.35, epsGrowthTTM: 0.40 } },
+      priceHistory: { prices: [{ date: '2026-01-01', close: '60' }, { date: '2026-03-30', close: '100' }] },
+      analystRatings: { strongBuy: 10, buy: 10, hold: 1, sell: 0, strongSell: 0 },
+      companyNews: { articles: [{ headline: 'Positive catalyst' }] },
+      trust: freshTrust,
+    });
+
+    expect(snapshot.action).toBe('Wait');
+    expect(snapshot.whyNot.join(' ')).toContain('Valuation');
+  });
+
+  it('caps confidence when analyst ratings or price history are missing', () => {
+    const snapshot = buildDecisionSnapshot({
+      symbol: 'PARTIAL',
+      price: { price: '100' },
+      companyOverview: { analystTargetPrice: '145', peRatio: '18', operatingMargin: '0.40', profitMargin: '0.35', returnOnEquity: '1.0' },
+      basicFinancials: { metric: { grossMarginTTM: 0.70, operatingMarginTTM: 0.40, roeTTM: 1.0, revenueGrowthTTM: 0.22, epsGrowthTTM: 0.25 } },
+      trust: freshTrust,
+    });
+
+    expect(snapshot.confidence).toBe('Medium');
+    expect(snapshot.missingInputs).toContain('price history');
+    expect(snapshot.missingInputs).toContain('analyst ratings');
   });
 
   it('trims an owned position that is oversized and weak', () => {

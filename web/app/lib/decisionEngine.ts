@@ -64,6 +64,11 @@ function clamp(value: number, min = 0, max = 100) {
   return Math.max(min, Math.min(max, value));
 }
 
+function capConfidence(confidence: ConfidenceLabel, max: ConfidenceLabel): ConfidenceLabel {
+  const rank: Record<ConfidenceLabel, number> = { Low: 0, Medium: 1, High: 2 };
+  return rank[confidence] <= rank[max] ? confidence : max;
+}
+
 function fmtPct(v: number): string {
   return `${v >= 0 ? '+' : ''}${v.toFixed(0)}%`;
 }
@@ -514,7 +519,25 @@ export function buildDecisionSnapshot(input: DecisionInput): DecisionSnapshot {
   const freshnessModifier = staleCritical ? 0.3 : freshness === 'aging' ? 0.7 : 1.0;
   const coverageModifier = hasMinimumDecisionCoverage ? 1.0 : 0.45;
   const confidenceScore = (pillarCoverage * 0.6 + freshnessModifier * 0.4) * 100 * coverageModifier;
-  const confidence: ConfidenceLabel = confidenceScore >= 72 ? 'High' : confidenceScore >= 50 ? 'Medium' : 'Low';
+  let confidence: ConfidenceLabel = confidenceScore >= 72 ? 'High' : confidenceScore >= 50 ? 'Medium' : 'Low';
+
+  const materialMissingCount = [
+    price === null,
+    !valuation,
+    !momentum,
+    !analystConsensus,
+  ].filter(Boolean).length;
+  if (price === null || !valuation) {
+    confidence = capConfidence(confidence, 'Low');
+  } else if (!momentum || !analystConsensus || materialMissingCount >= 2) {
+    confidence = capConfidence(confidence, 'Medium');
+  }
+
+  const strongAction = action === 'Initiate' || action === 'Add';
+  const poorValuation = valuation?.score !== undefined && valuation?.score !== null && valuation.score < 15;
+  if (strongAction && (poorValuation || price === null || !valuation || confidence === 'Low')) {
+    action = ownershipStatus === 'owned' ? 'Hold' : 'Wait';
+  }
 
   // ── whyNow / whyNot (built from pillar metrics) ──
   const whyNow: string[] = [];

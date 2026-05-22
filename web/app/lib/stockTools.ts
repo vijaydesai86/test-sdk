@@ -12,6 +12,7 @@ import {
   TreasuryYieldCurveService,
 } from './stockDataService';
 import { buildStockReport, buildComparisonReport, buildDeepSectorReport, buildDeepStockReport, buildDeepComparisonReport, buildWatchlistDailyReport, saveReport, MoatAnalysis, computeScorecard, computeTechnicalSnapshot, computeVolumeAnalysis } from './reportGenerator';
+import { computeDcfValuation } from './dcfValuation';
 import { getDefaultWatchlist } from './watchlistStore';
 import { buildDecisionSnapshot, decisionSnapshotToLegacyAction } from './decisionEngine';
 import { createTrustEntry, getTtlMinutesForKey, summarizeTrust } from './dataTrust';
@@ -2407,119 +2408,38 @@ export async function executeTool(
         const sym = (args.symbol || '').toUpperCase();
         if (!sym) return { success: false, error: 'Symbol is required' };
         const overview = await stockService.getCompanyOverview(sym);
+        const balanceSheet = await stockService.getBalanceSheet(sym).catch(() => null);
         const cashFlowData = await stockService.getCashFlow(sym);
         const priceData = await stockService.getStockPrice(sym);
         const currentPrice = priceData?.price != null ? Number(priceData.price) : null;
 
-        const sharesOutstanding = overview?.sharesOutstanding != null ? Number(overview.sharesOutstanding) : null;
-        const beta = overview?.beta != null ? Number(overview.beta) : null;
         const treasuryRates = await new TreasuryYieldCurveService().getLatestYieldCurve().catch(() => null);
         const treasury10Y = treasuryRates?.latest?.year10 != null ? Number(treasuryRates.latest.year10) : null;
-
-        // Get FCF from cash flow statements
-        const annualReports = cashFlowData?.annualReports || [];
-        const recentFCFs: number[] = [];
-        for (const report of annualReports.slice(0, 5)) {
-          const ocf = report?.operatingCashflow != null ? Number(report.operatingCashflow) : null;
-          const capex = report?.capitalExpenditures != null ? Math.abs(Number(report.capitalExpenditures)) : null;
-          if (ocf != null && capex != null && Number.isFinite(ocf) && Number.isFinite(capex)) {
-            recentFCFs.push(ocf - capex);
-          }
-        }
-
-        if (recentFCFs.length === 0 || !sharesOutstanding || sharesOutstanding <= 0) {
-          return {
-            success: true,
-            data: {
-              symbol: sym,
-              currentPrice,
-              intrinsicValue: null,
-              marginOfSafety: null,
-              verdict: 'Insufficient data for DCF calculation (no FCF or shares data)',
-            },
-            message: `DCF valuation unavailable for ${sym} — insufficient financial data`,
-          };
-        }
-
-        const latestFCF = recentFCFs[0];
-        // Estimate growth from FCF trend or use revenue growth as proxy
-        let growthRate = 0.05; // conservative default
-        const revenueGrowth = overview?.quarterlyRevenueGrowth != null ? Number(overview.quarterlyRevenueGrowth) : null;
-        if (recentFCFs.length >= 2 && recentFCFs[recentFCFs.length - 1] > 0) {
-          const cagr = Math.pow(recentFCFs[0] / recentFCFs[recentFCFs.length - 1], 1 / (recentFCFs.length - 1)) - 1;
-          if (Number.isFinite(cagr) && cagr > -0.5 && cagr < 1.0) {
-            growthRate = Math.min(cagr, 0.25); // cap at 25%
-          }
-        } else if (revenueGrowth != null && Number.isFinite(revenueGrowth)) {
-          growthRate = Math.min(Math.max(revenueGrowth, -0.1), 0.25);
-        }
-
-        // WACC proxy: risk-free rate + beta * equity risk premium.
-        // Use the official Treasury 10Y yield when available; keep the fallback
-        // visible in assumptions rather than pretending it is live data.
         const riskFreeRate = treasury10Y !== null && Number.isFinite(treasury10Y) ? treasury10Y / 100 : 0.04;
-        const equityRiskPremium = 0.05; // historical ERP
-        const effectiveBeta = beta != null && Number.isFinite(beta) && beta > 0 ? beta : 1.0;
-        const wacc = riskFreeRate + effectiveBeta * equityRiskPremium;
-        const terminalGrowth = 0.025; // long-term GDP growth proxy
-
-        // 10-year DCF projection
-        let totalPV = 0;
-        let projectedFCF = latestFCF;
-        for (let year = 1; year <= 10; year++) {
-          // Fade growth toward terminal rate after year 5
-          const effectiveGrowth = year <= 5
-            ? growthRate
-            : growthRate * (1 - (year - 5) / 5) + terminalGrowth * ((year - 5) / 5);
-          projectedFCF *= (1 + effectiveGrowth);
-          totalPV += projectedFCF / Math.pow(1 + wacc, year);
-        }
-
-        // Terminal value
-        const terminalFCF = projectedFCF * (1 + terminalGrowth);
-        const terminalValue = terminalFCF / (wacc - terminalGrowth);
-        const terminalPV = terminalValue / Math.pow(1 + wacc, 10);
-        const enterpriseValue = totalPV + terminalPV;
-
-        // Subtract net debt for equity value
-        const netDebt = (overview?.longTermDebt != null ? Number(overview.longTermDebt) : 0)
-          - (overview?.cashAndEquivalents != null ? Number(overview.cashAndEquivalents) : 0);
-        const equityValue = enterpriseValue - (Number.isFinite(netDebt) ? netDebt : 0);
-        const intrinsicValue = equityValue / sharesOutstanding;
-        const marginOfSafety = currentPrice && intrinsicValue ? ((intrinsicValue - currentPrice) / intrinsicValue) * 100 : null;
-
-        let verdict = 'Unavailable';
-        if (marginOfSafety !== null) {
-          if (marginOfSafety > 30) verdict = 'Significantly Undervalued (30%+ margin of safety)';
-          else if (marginOfSafety > 15) verdict = 'Moderately Undervalued (15-30% margin of safety)';
-          else if (marginOfSafety > 0) verdict = 'Slightly Undervalued (0-15% margin of safety)';
-          else if (marginOfSafety > -15) verdict = 'Fairly Valued (within 15% of intrinsic value)';
-          else if (marginOfSafety > -30) verdict = 'Moderately Overvalued (15-30% above intrinsic value)';
-          else verdict = 'Significantly Overvalued (30%+ above intrinsic value)';
-        }
+        const dcf = computeDcfValuation({
+          overview,
+          balanceSheet,
+          cashFlow: cashFlowData,
+          currentPrice,
+          riskFreeRate,
+          riskFreeRateSource: treasury10Y !== null && Number.isFinite(treasury10Y)
+            ? `U.S. Treasury 10Y (${treasuryRates?.latest?.date || 'latest available'})`
+            : 'Fallback assumption (Treasury data unavailable)',
+        });
 
         return {
           success: true,
           data: {
             symbol: sym,
             currentPrice,
-            intrinsicValuePerShare: Number.isFinite(intrinsicValue) ? Number(intrinsicValue.toFixed(2)) : null,
-            marginOfSafetyPercent: marginOfSafety !== null && Number.isFinite(marginOfSafety) ? Number(marginOfSafety.toFixed(1)) : null,
-            verdict,
-            assumptions: {
-              latestFCF,
-              growthRate: Number((growthRate * 100).toFixed(1)),
-              wacc: Number((wacc * 100).toFixed(1)),
-              riskFreeRate: Number((riskFreeRate * 100).toFixed(2)),
-              riskFreeRateSource: treasury10Y !== null && Number.isFinite(treasury10Y)
-                ? `U.S. Treasury 10Y (${treasuryRates?.latest?.date || 'latest available'})`
-                : 'Fallback assumption (Treasury data unavailable)',
-              terminalGrowthRate: Number((terminalGrowth * 100).toFixed(1)),
-              projectionYears: 10,
-              beta: effectiveBeta,
-            },
+            intrinsicValuePerShare: dcf.intrinsicValuePerShare,
+            marginOfSafetyPercent: dcf.marginOfSafetyPercent,
+            verdict: dcf.verdict,
+            confidence: dcf.confidence,
+            notes: dcf.notes,
+            assumptions: dcf.assumptions,
           },
-          message: `DCF valuation for ${sym}: intrinsic value $${Number.isFinite(intrinsicValue) ? intrinsicValue.toFixed(2) : 'N/A'} vs current $${currentPrice?.toFixed(2) || 'N/A'} — ${verdict}`,
+          message: `DCF valuation for ${sym}: intrinsic value $${dcf.intrinsicValuePerShare?.toFixed(2) || 'N/A'} vs current $${currentPrice?.toFixed(2) || 'N/A'} — ${dcf.verdict}`,
         };
       }
       case 'get_market_sentiment': {
@@ -3450,9 +3370,11 @@ export async function executeTool(
         );
 
         const successfulItems: Array<{ symbol: string; companyName: string; stock: any }> = [];
-        const failures: string[] = [];
+        const failures = new Map<string, string>();
+        const attemptedSymbols = new Set<string>();
 
         for (const entry of companyResults) {
+          attemptedSymbols.add(entry.item.symbol);
           const rawData = entry.result.data?.rawData;
           if (entry.result.success && rawData) {
             successfulItems.push({
@@ -3461,15 +3383,20 @@ export async function executeTool(
               stock: rawData,
             });
           } else {
-            failures.push(entry.item.symbol);
+            failures.set(entry.item.symbol, entry.result.error || entry.result.message || 'Unavailable');
+          }
+        }
+        for (const item of watchlist.items) {
+          if (!attemptedSymbols.has(item.symbol)) {
+            failures.set(item.symbol, 'Runtime budget skipped before this item could be fetched');
           }
         }
 
         // Retry failed items sequentially without adding a fixed sleep; provider
         // throttles/cooldowns already decide when another upstream call is allowed.
-        if (failures.length > 0 && successfulItems.length > 0 && !isDeadlineNear(deadlineAt, 45000)) {
-          console.info(`[watchlist] Retrying ${failures.length} failed items sequentially: ${failures.join(', ')}`);
-          const retryItems = watchlist.items.filter((item) => failures.includes(item.symbol));
+        if (failures.size > 0 && successfulItems.length > 0 && !isDeadlineNear(deadlineAt, 45000)) {
+          console.info(`[watchlist] Retrying ${failures.size} failed items sequentially: ${Array.from(failures.keys()).join(', ')}`);
+          const retryItems = watchlist.items.filter((item) => failures.has(item.symbol));
           const retryResults = await mapWithConcurrency(
             retryItems,
             1, // Sequential retries to avoid triggering rate limits again
@@ -3493,8 +3420,11 @@ export async function executeTool(
                 companyName: entry.item.companyName,
                 stock: rawData,
               });
+              failures.delete(entry.item.symbol);
             } else {
-              retryFailures.push(`${entry.item.symbol}: ${entry.result.error || entry.result.message || "Unavailable"}`);
+              const reason = entry.result.error || entry.result.message || "Unavailable";
+              failures.set(entry.item.symbol, reason);
+              retryFailures.push(`${entry.item.symbol}: ${reason}`);
             }
           }
           if (retryFailures.length > 0) {
@@ -3580,23 +3510,19 @@ export async function executeTool(
         const reportData = {
           generatedAt: new Date().toISOString(),
           watchlistName: watchlist.name,
+          totalItems: watchlist.items.length,
+          skippedItems: Array.from(failures.entries()).map(([symbol, reason]) => ({ symbol, reason })),
           items: successfulItems.map((item) => ({
             symbol: item.symbol,
             companyName: item.companyName,
             stock: item.stock,
           })),
         };
-
-        const reportBody = buildWatchlistDailyReport(reportData);
-        if (isDeadlineNear(deadlineAt) && failures.length === 0) {
-          failures.push('Vercel runtime budget reached; later watchlist items or optional enrichment may have been skipped.');
+        if (isDeadlineNear(deadlineAt) && failures.size === 0 && successfulItems.length < watchlist.items.length) {
+          reportData.skippedItems.push({ symbol: 'Runtime budget', reason: 'Vercel runtime budget reached; later watchlist items or optional enrichment may have been skipped.' });
         }
-        const content = failures.length
-          ? reportBody.replace(
-              '## 🎯 Position Guidance',
-              `## Partial Coverage\n${failures.map((item) => `- ${item}`).join("\n")}\n\n## 🎯 Position Guidance`
-            )
-          : reportBody;
+        const reportBody = buildWatchlistDailyReport(reportData);
+        const content = reportBody;
         const summary = buildWatchlistSummary(reportData.items);
 
         if (args.skipSave) {

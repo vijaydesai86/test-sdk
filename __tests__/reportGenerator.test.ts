@@ -14,6 +14,7 @@ import {
   type DeepSectorReportData,
   type MoatAnalysis,
 } from '../web/app/lib/reportGenerator';
+import { computeDcfValuation } from '../web/app/lib/dcfValuation';
 import { promises as fs } from 'fs';
 import path from 'path';
 import os from 'os';
@@ -163,12 +164,150 @@ const duplicateHeadings = (report: string): string[] => {
     .map(([heading]) => heading);
 };
 
+describe('computeDcfValuation', () => {
+  it('uses current price as the margin-of-safety denominator', () => {
+    const result = computeDcfValuation({
+      currentPrice: 100,
+      riskFreeRate: 0.04,
+      overview: {
+        sharesOutstanding: '100',
+        beta: '1',
+        quarterlyRevenueGrowth: '0',
+      },
+      cashFlow: {
+        annualReports: [
+          { operatingCashflow: '1000', capitalExpenditures: '-100' },
+          { operatingCashflow: '1000', capitalExpenditures: '-100' },
+          { operatingCashflow: '1000', capitalExpenditures: '-100' },
+        ],
+      },
+    });
+
+    expect(result.intrinsicValuePerShare).not.toBeNull();
+    expect(result.marginOfSafetyPercent).toBeCloseTo(((result.intrinsicValuePerShare! - 100) / 100) * 100, 1);
+    expect(result.assumptions.fcfBasis).toBe('annual');
+  });
+
+  it('annualizes only when fewer than four quarterly FCF periods are available and marks low confidence', () => {
+    const result = computeDcfValuation({
+      currentPrice: 100,
+      riskFreeRate: 0.04,
+      overview: {
+        sharesOutstanding: '100',
+        beta: '1',
+      },
+      cashFlow: {
+        quarterlyReports: [
+          { operatingCashflow: '100', capitalExpenditure: '-10' },
+        ],
+      },
+    });
+
+    expect(result.assumptions.baseFCF).toBe(360);
+    expect(result.assumptions.fcfBasis).toBe('annualized-latest-quarter');
+    expect(result.confidence).toBe('Low');
+    expect(result.verdict).toMatch(/Low-confidence DCF/i);
+  });
+
+  it('accepts common provider cash-flow aliases and percent-formatted growth rates', () => {
+    const result = computeDcfValuation({
+      currentPrice: 100,
+      riskFreeRate: 0.04,
+      overview: {
+        sharesOutstanding: '100',
+        beta: '1',
+        quarterlyRevenueGrowth: '10%',
+      },
+      cashFlow: {
+        quarterlyReports: [
+          { totalCashFromOperatingActivities: '120', capitalExpenditure: '-20' },
+          { netCashProvidedByOperatingActivities: '110', capitalExpenditure: '-20' },
+          { netCashProvidedByUsedInOperatingActivities: '100', paymentsToAcquirePropertyPlantAndEquipment: '20' },
+          { operatingCashflow: '90', capitalExpenditures: '-20' },
+        ],
+      },
+    });
+
+    expect(result.assumptions.baseFCF).toBe(340);
+    expect(result.assumptions.growthRate).toBe(10);
+  });
+
+  it('uses balance-sheet cash and debt for the DCF equity-value bridge when available', () => {
+    const withoutBalanceSheet = computeDcfValuation({
+      currentPrice: 100,
+      riskFreeRate: 0.04,
+      overview: {
+        sharesOutstanding: '100',
+        beta: '1',
+        quarterlyRevenueGrowth: '0',
+      },
+      cashFlow: {
+        annualReports: [
+          { operatingCashflow: '1000', capitalExpenditures: '-100' },
+          { operatingCashflow: '1000', capitalExpenditures: '-100' },
+          { operatingCashflow: '1000', capitalExpenditures: '-100' },
+        ],
+      },
+    });
+    const withBalanceSheet = computeDcfValuation({
+      currentPrice: 100,
+      riskFreeRate: 0.04,
+      overview: {
+        sharesOutstanding: '100',
+        beta: '1',
+        quarterlyRevenueGrowth: '0',
+      },
+      balanceSheet: {
+        quarterlyReports: [
+          { cashAndEquivalents: '300', longTermDebt: '100' },
+        ],
+      },
+      cashFlow: {
+        annualReports: [
+          { operatingCashflow: '1000', capitalExpenditures: '-100' },
+          { operatingCashflow: '1000', capitalExpenditures: '-100' },
+          { operatingCashflow: '1000', capitalExpenditures: '-100' },
+        ],
+      },
+    });
+
+    expect(withBalanceSheet.intrinsicValuePerShare).toBeCloseTo(withoutBalanceSheet.intrinsicValuePerShare! + 2, 1);
+  });
+});
+
 // ─── buildStockReport ─────────────────────────────────────────────────────────
 
 describe('buildStockReport', () => {
   it('includes the standard report header', () => {
     const report = buildStockReport(minimalStock());
     expect(report).toContain('# AAPL Comprehensive Equity Research Report');
+  });
+
+  it('uses trailing four-quarter FCF for DCF instead of treating one quarter as annual', () => {
+    const data: StockReportData = {
+      ...richStock(),
+      companyOverview: {
+        ...richStock().companyOverview,
+        sharesOutstanding: '100',
+        beta: '1',
+        quarterlyRevenueGrowth: '0.10',
+      },
+      price: { price: '100' },
+      cashFlow: {
+        quarterlyReports: [
+          { operatingCashflow: '100', capitalExpenditures: '-10' },
+          { operatingCashflow: '90', capitalExpenditures: '-10' },
+          { operatingCashflow: '80', capitalExpenditures: '-10' },
+          { operatingCashflow: '70', capitalExpenditures: '-10' },
+        ],
+      },
+    };
+
+    const report = buildStockReport(data);
+
+    expect(report).toContain('Trailing 4-quarter FCF');
+    expect(report).toContain('Base FCF');
+    expect(report).toContain('$300');
   });
 
   it('contains key structural sections', () => {
@@ -354,7 +493,7 @@ describe('buildStockReport', () => {
     const data = richStock();
     const report = buildStockReport(data);
     // The conclusion section always appears; check that it includes one of the rating emoji+labels
-    expect(report).toMatch(/✅ BUY|⚖️ HOLD|👀 WATCH|🔴 SELL/);
+    expect(report).toMatch(/✅ BUY|⚖️ HOLD|• WATCH|🔴 SELL/);
   });
 
   it('conclusion contains analyst upside when price targets are provided', () => {
@@ -1279,6 +1418,30 @@ describe('buildWatchlistDailyReport', () => {
 
     expect(report).toContain('| Advanced Micro Devices (AMD) | 🟠 Watch | Medium |');
     expect(report).toContain('**Advanced Micro Devices (AMD):** Wait for a better setup.');
+  });
+
+  it('labels partial watchlist coverage and scopes signal mix to full-coverage companies', () => {
+    const report = buildWatchlistDailyReport({
+      generatedAt: '2025-01-02T00:00:00Z',
+      watchlistName: 'Core Watchlist',
+      totalItems: 3,
+      skippedItems: [{ symbol: 'AMD', reason: 'Finnhub rate limit reached' }, 'TSM'],
+      items: [
+        {
+          symbol: 'AAPL',
+          companyName: 'Apple Inc.',
+          stock: richStock(),
+          action: 'Buy',
+          reason: 'Strong profitability and supportive target upside.',
+        },
+      ],
+    });
+
+    expect(report).toContain('**Full coverage:** 1 / 3');
+    expect(report).toContain('**Limited/skipped:** 2 / 3');
+    expect(report).toContain('## Partial Coverage');
+    expect(report).toContain('AMD: Finnhub rate limit reached');
+    expect(report).toContain('Signal Mix:** Buy 1 | Hold 0 | Watch 0 | Sell 0 (full-coverage companies only)');
   });
 
   it('prefers explicit watchlist actions over embedded decision snapshots when both are supplied', () => {
