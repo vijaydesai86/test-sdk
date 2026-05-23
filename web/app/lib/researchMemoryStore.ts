@@ -3,6 +3,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { randomUUID } from 'crypto';
 import { getSupabaseClient } from './supabaseClient';
+import { formatRecentRequestForMemory } from './reportReplayGuard';
 import type {
   CompanyThesisRecord,
   DecisionJournalRecord,
@@ -459,7 +460,7 @@ export async function buildResearchContext(args: {
   const recentUserHistory = previousMessages
     .filter((message) => message.role === 'user' && message.content)
     .slice(-3)
-    .map((message) => `Recent user request: ${message.content}`);
+    .map((message) => formatRecentRequestForMemory(message.content || ''));
   lines.push(...recentUserHistory);
   const recentAssistantHistory = previousMessages
     .filter((message) => message.role === 'assistant' && message.content)

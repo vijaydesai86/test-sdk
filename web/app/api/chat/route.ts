@@ -7,6 +7,10 @@ import { getDefaultWatchlist } from '@/app/lib/watchlistStore';
 import { selectChatToolNames } from '@/app/lib/chatToolPolicy';
 import { inferReportFallback } from '@/app/lib/reportIntent';
 import {
+  neutralizeHistoricalReportRequests,
+  planReportToolExecution,
+} from '@/app/lib/reportReplayGuard';
+import {
   fetchGitHubModels,
   getConfiguredGeminiModel,
   getGeminiFallbackModels,
@@ -871,6 +875,7 @@ export async function POST(request: NextRequest) {
       // minus ~5,500 tokens of fixed overhead = only ~2,500 tokens for history).
       const maxExchanges = isSmallContextModel(requestedModel) ? 1 : 2;
       conversationMessages = trimHistory(conversationMessages, maxExchanges);
+      conversationMessages = neutralizeHistoricalReportRequests(conversationMessages);
     }
 
     // Add user message
@@ -1106,9 +1111,34 @@ export async function POST(request: NextRequest) {
       if (assistantMessage.tool_calls && assistantMessage.tool_calls.length > 0) {
         totalToolCalls += assistantMessage.tool_calls.length;
         const loopLLMFill = createLLMFiller(githubToken, geminiToken, requestDeadlineAt);
+        const reportToolPlan = planReportToolExecution(
+          assistantMessage.tool_calls,
+          String(message),
+          {
+            resolvedSymbol: lastResolvedSearchSymbol,
+            reportAlreadySaved: reportArtifacts.length > 0,
+          }
+        );
+        if (reportToolPlan.skippedReportToolCallIds.size > 0) {
+          console.warn('Skipped duplicate or replayed report tool calls', {
+            allowedReportToolName: reportToolPlan.allowedReportToolName,
+            skippedCount: reportToolPlan.skippedReportToolCallIds.size,
+          });
+        }
         const toolResults = await Promise.all(
           assistantMessage.tool_calls.map(async (toolCall: { id: string; function: { name: string; arguments: string } }) => {
             const toolName = toolCall.function.name;
+            if (reportToolPlan.skippedReportToolCallIds.has(toolCall.id)) {
+              return {
+                role: 'tool' as const,
+                tool_call_id: toolCall.id,
+                content: JSON.stringify({
+                  success: true,
+                  skipped: true,
+                  message: 'Skipped duplicate or replayed report request; only the current prompt can save a report in this turn.',
+                }),
+              };
+            }
             const toolArgs = JSON.parse(toolCall.function.arguments);
             const toolResult = await executeTool(toolName, { ...toolArgs, sessionId: currentSessionId }, stockService, {
               llmFill: loopLLMFill,

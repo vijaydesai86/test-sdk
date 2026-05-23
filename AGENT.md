@@ -39,6 +39,8 @@ General chat is supported for data-only questions (e.g. "what is NVDA's P/E?") b
 
 ## Non-negotiable rules
 
+0. **Design before code.** For any requested change, first analyze the issue, propose the design, and discuss it with the user. Make code changes only after the user approves the design. If the user explicitly asks at the beginning to design and make the change, then complete the full flow: design, implementation, verification, commit, and push when requested.
+
 1. **Never fabricate financial data.** Prices, ratios, revenues, EPS, margins, insider activity, analyst targets — all must come from real provider API responses or direct arithmetic on those responses. If a field is unavailable, say so; do not fill it.
 
    **Golden rule:** `N/A`, `Unavailable`, or an explicit data-gap note is always better than synthetic, inferred, estimated, backfilled, or model-memory financial data. This applies to every report mode and every section, including tables, charts, scorecards, conclusions, summaries, downloaded artifacts, and UI previews.
@@ -65,13 +67,15 @@ General chat is supported for data-only questions (e.g. "what is NVDA's P/E?") b
 
 12. **Plain chat cannot satisfy report intent.** Users may ask in any natural wording. If a request maps to stock report, comparison/research report, theme/deep research, or watchlist daily and the LLM returns plain text without a report artifact, `route.ts` must run the matching report fallback from `reportIntent.ts`. Do not let stale model memory answer report requests.
 
-13. **Only three top-level markdown docs.** `README.md`, `AGENT.md`, and `CHANGELOG.md` are the only markdown documents committed to the repo root. Do not add stale or duplicate docs.
+13. **Completed report prompts are not executable history.** Previous stock, comparison, research, or watchlist report requests may be retained as memory/context, but they must be marked as completed and must never be replayed as active user instructions. A normal chat turn may save only the report requested by the current prompt unless the current prompt explicitly asks for a multi-report workflow.
 
-14. **Keep common report plumbing shared.** New report types must reuse the existing data-fetching, timing, valuation, chart, moat analysis, conclusion, and persistence helpers. No copy-pasted report pipelines.
+14. **Only three top-level markdown docs.** `README.md`, `AGENT.md`, and `CHANGELOG.md` are the only markdown documents committed to the repo root. Do not add stale or duplicate docs.
 
-15. **Deployment-impacting changes require a clean install check.** Any dependency, lockfile, package manager, Vercel config, build script, or install-related change must be verified from a clean dependency state with the Vercel install command (`npm ci --no-audit --no-fund`) followed by `npm run build`. Do not rely only on an existing `node_modules` build.
+15. **Keep common report plumbing shared.** New report types must reuse the existing data-fetching, timing, valuation, chart, moat analysis, conclusion, and persistence helpers. No copy-pasted report pipelines.
 
-16. **Optimise for free-tier operation.** Assume Vercel free tier, free provider quotas, and rate-limited model access. Prefer bounded concurrency (`DATA_FETCH_CONCURRENCY`), caching (`STOCK_CACHE_TTL_MS`), provider/model cooldowns, and graceful partial-data handling over brute force.
+16. **Deployment-impacting changes require a clean install check.** Any dependency, lockfile, package manager, Vercel config, build script, or install-related change must be verified from a clean dependency state with the Vercel install command (`npm ci --no-audit --no-fund`) followed by `npm run build`. Do not rely only on an existing `node_modules` build.
+
+17. **Optimise for free-tier operation.** Assume Vercel free tier, free provider quotas, and rate-limited model access. Prefer bounded concurrency (`DATA_FETCH_CONCURRENCY`), caching (`STOCK_CACHE_TTL_MS`), provider/model cooldowns, and graceful partial-data handling over brute force.
 
 ---
 
@@ -97,6 +101,7 @@ User message
 | `web/app/api/chat/route.ts` | Entry point. Parses requests, auto-routes across the available LLM model ladders, runs the tool-call loop, manages session history, handles rate-limit fallbacks. |
 | `web/app/lib/stockTools.ts` | Tool definitions (`getToolDefinitions`), `executeTool` dispatch, report orchestration (generate_* tools), ticker resolution, sector company selection, moat/conclusion prompt builders, disk cache helpers. |
 | `web/app/lib/reportIntent.ts` | Server-side free-form report intent fallback. Prevents plain LLM answers from satisfying stock/comparison/theme/watchlist report requests without a saved artifact. |
+| `web/app/lib/reportReplayGuard.ts` | Shared guard that marks completed report requests as non-executable history and prevents duplicate/replayed report tool calls from saving multiple artifacts in one turn. |
 | `web/app/lib/stockDataService.ts` | All data provider implementations: `AlphaVantageService`, `FinnhubService`, `FinancialModelingPrepService`, `TwelveDataService`, `StooqService`, `MultiSourceStockDataService`. Also standalone services: `SecEdgarService` (SEC EDGAR filings), `FredService` (FRED economic data). `createStockService()` always returns `MultiSourceStockDataService` using all configured keys. |
 | `web/app/lib/reportGenerator.ts` | Report builders (`buildStockReport`, `buildComparisonReport`, `buildSectorReport`, `buildDeepSectorReport`, `buildDeepStockReport`, `buildDeepComparisonReport`, `buildWatchlistDailyReport`), technical indicator computations (RSI, MACD, Bollinger, Stochastic, ATR, EMA), ECharts and Mermaid chart builders, `saveReport()` persistence. |
 | `web/app/lib/llmProviderConfig.ts` | GitHub Models catalog fetching, Gemini model fallback list, token helpers. No provider selection — all available providers are always used. |
