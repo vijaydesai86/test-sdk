@@ -19,6 +19,14 @@ import { createTrustEntry, getTtlMinutesForKey, summarizeTrust } from './dataTru
 import { appendDecisionJournal, getLatestDecision, upsertCompanyThesis } from './researchMemoryStore';
 import type { DataTrustEntry, DecisionSnapshot } from './investmentTypes';
 import { DEFAULT_REPORTS_DIR } from './reportFileStore';
+import {
+  buildReportRunMetadata,
+  buildUpdateNotes,
+  findPreviousReportForUpdate,
+  type CoverageInput,
+  type PreviousReportMatch,
+  type ReportKind,
+} from './reportUpdate';
 
 /**
  * OpenAI-compatible tool definitions for stock information
@@ -186,6 +194,41 @@ type SavedReport = Awaited<ReturnType<typeof saveReport>>;
 function buildReportDownloadUrl(saved: SavedReport): string {
   if (saved.supabaseId) return `/api/saved-reports/${saved.supabaseId}`;
   return `/api/reports/${saved.storagePath ?? saved.filename}`;
+}
+
+async function prepareReportUpdateContext(args: Record<string, any>, input: {
+  kind: ReportKind;
+  query?: string;
+  symbols?: string[];
+}): Promise<{ previous: PreviousReportMatch | null; notes: string[] }> {
+  if (!args.updateMode) return { previous: null, notes: [] };
+  const previous = await findPreviousReportForUpdate({
+    kind: input.kind,
+    query: String(args.updateQuery || input.query || ''),
+    symbols: input.symbols || [],
+  });
+  return { previous, notes: buildUpdateNotes(previous, input.kind) };
+}
+
+function providerForCoverage(value: any, fallback = DEFAULT_SOURCE): string | undefined {
+  return value && typeof value === 'object' && '__source' in value ? String(value.__source) : fallback;
+}
+
+function coverageEntry(
+  symbol: string,
+  key: string,
+  label: string,
+  data: any,
+  priority: CoverageInput['priority'] = 'optional'
+): CoverageInput {
+  return {
+    symbol,
+    key,
+    label,
+    data,
+    priority,
+    provider: providerForCoverage(data),
+  };
 }
 
 const RATE_LIMIT_PROVIDERS = [
@@ -1900,6 +1943,8 @@ function buildToolDefinitions() {
           properties: {
             symbol: { type: 'string', description: 'Ticker or company name' },
             range: { type: 'string', description: 'Price history range for charts (e.g., "1y", "3y", "5y", "max"). Default is "5y"' },
+            updateMode: { type: 'boolean', description: 'Set true only when the user explicitly asks to update an existing report.' },
+            updateQuery: { type: 'string', description: 'Original user update request, used to find the prior saved report.' },
           },
           required: ['symbol'],
         },
@@ -1922,6 +1967,8 @@ function buildToolDefinitions() {
               type: 'string',
               description: 'Price history range for comparison charts (e.g. "1y", "3y"). Default: "1y"',
             },
+            updateMode: { type: 'boolean', description: 'Set true only when the user explicitly asks to update an existing report.' },
+            updateQuery: { type: 'string', description: 'Original user update request, used to find the prior saved report.' },
           },
           required: ['companies'],
         },
@@ -1948,6 +1995,8 @@ function buildToolDefinitions() {
               type: 'string',
               description: 'Price history range for comparison charts (e.g. "1y", "3y"). Default: "1y"',
             },
+            updateMode: { type: 'boolean', description: 'Set true only when the user explicitly asks to update an existing report.' },
+            updateQuery: { type: 'string', description: 'Original user update request, used to find the prior saved report.' },
           },
           required: ['sector'],
         },
@@ -1965,6 +2014,8 @@ function buildToolDefinitions() {
               type: 'string',
               description: 'Price history range for charts inside each company section (e.g. "1y", "3y", "5y"). Default: "1y"',
             },
+            updateMode: { type: 'boolean', description: 'Set true only when the user explicitly asks to update an existing watchlist report.' },
+            updateQuery: { type: 'string', description: 'Original user update request, used to find the prior saved report.' },
           },
         },
       },
@@ -2659,6 +2710,12 @@ export async function executeTool(
         }
         const range = args.range || '5y';
         const notes: string[] = [];
+        const updateContext = await prepareReportUpdateContext(args, {
+          kind: 'stock',
+          query: String(args.updateQuery || symbolQuery || symbol),
+          symbols: [symbol],
+        });
+        notes.push(...updateContext.notes);
         const sources = new Map<string, string>();
         const cache = await loadSymbolCache(symbol);
         const trustEntries: DataTrustEntry[] = [];
@@ -2898,9 +2955,10 @@ export async function executeTool(
           }
         }
 
+        const generatedAt = new Date().toISOString();
         const reportBody = buildStockReport({
           symbol: symbol.toUpperCase(),
-          generatedAt: new Date().toISOString(),
+          generatedAt,
           price,
           priceHistory,
           companyOverview,
@@ -2938,6 +2996,33 @@ export async function executeTool(
         const finalContent = sourceSection
           ? content.replace('## 📊 Snapshot', `${sourceSection}\n\n## 📊 Snapshot`)
           : content;
+        const runMetadata = buildReportRunMetadata({
+          kind: 'stock',
+          query: String(args.updateQuery || symbolQuery || symbol),
+          symbols: [symbol],
+          range,
+          generatedAt,
+          updatedFrom: updateContext.previous,
+          notes,
+          coverage: [
+            coverageEntry(symbol, 'price', 'Price', price, 'critical'),
+            coverageEntry(symbol, 'overview', 'Company overview', companyOverview, 'critical'),
+            coverageEntry(symbol, 'basicFinancials', 'Basic financials', finalBasicFinancials, 'critical'),
+            coverageEntry(symbol, `priceHistory:${range}`, 'Price history', priceHistory, 'critical'),
+            coverageEntry(symbol, 'earningsHistory', 'Earnings history', finalEarningsHistory, 'high'),
+            coverageEntry(symbol, 'incomeStatement', 'Income statement', finalIncomeStatement, 'high'),
+            coverageEntry(symbol, 'balanceSheet', 'Balance sheet', finalBalanceSheet, 'high'),
+            coverageEntry(symbol, 'cashFlow', 'Cash flow', finalCashFlow, 'high'),
+            coverageEntry(symbol, 'analystRatings', 'Analyst ratings', analystRatings, 'high'),
+            coverageEntry(symbol, 'analystRecommendations', 'Analyst recommendations', analystRecommendations, 'optional'),
+            coverageEntry(symbol, 'insiderTrading', 'Insider trading', insiderTrading, 'optional'),
+            coverageEntry(symbol, 'priceTargets', 'Price targets', priceTargets, 'high'),
+            coverageEntry(symbol, 'peers', 'Peers', peers, 'optional'),
+            coverageEntry(symbol, 'newsSentiment', 'News sentiment', newsSentiment, 'optional'),
+            coverageEntry(symbol, 'companyNews', 'Company news', companyNews, 'optional'),
+            coverageEntry(symbol, 'secFinancialFacts', 'SEC companyfacts', secFinancialFacts, 'high'),
+          ],
+        });
         await saveSymbolCache(symbol, cache);
         if (args.skipSave) {
           return {
@@ -2949,9 +3034,10 @@ export async function executeTool(
               summary: decisionSnapshot.summary,
               decisionSnapshot,
               dataTrust: trustSummary,
+              runMetadata,
               rawData: args.includeRawData ? {
                 symbol: symbol.toUpperCase(),
-                generatedAt: new Date().toISOString(),
+                generatedAt,
                 price,
                 priceHistory,
                 companyOverview,
@@ -2981,6 +3067,7 @@ export async function executeTool(
         const saved = await saveReport(finalContent, `${symbol}-stock-report`, undefined, {
           reportKind: 'stock',
           summary: decisionSnapshot.summary,
+          runMetadata,
         });
         await appendDecisionJournal({
           sessionId: typeof args.sessionId === 'string' ? args.sessionId : undefined,
@@ -3073,6 +3160,12 @@ export async function executeTool(
 
         const universe = companies.map((q) => resolvedMap.get(q) as string);
         const notes: string[] = [];
+        const updateContext = await prepareReportUpdateContext(args, {
+          kind: 'comparison',
+          query: String(args.updateQuery || companies.join(', ')),
+          symbols: universe,
+        });
+        notes.push(...updateContext.notes);
         const sourceMap: Record<string, Record<string, string>> = {};
         const watchlist = await getDefaultWatchlist().catch(() => null);
         const portfolioProfile = watchlist?.profile;
@@ -3396,8 +3489,33 @@ export async function executeTool(
           }
         }
 
+        const generatedAt = new Date().toISOString();
+        const runMetadata = buildReportRunMetadata({
+          kind: 'comparison',
+          query: String(args.updateQuery || companies.join(', ')),
+          symbols: universe,
+          range,
+          generatedAt,
+          updatedFrom: updateContext.previous,
+          notes,
+          coverage: items.flatMap((item) => [
+            coverageEntry(item.symbol, 'price', 'Price', item.price, 'critical'),
+            coverageEntry(item.symbol, 'overview', 'Company overview', item.overview, 'critical'),
+            coverageEntry(item.symbol, 'basicFinancials', 'Basic financials', item.basicFinancials, 'critical'),
+            coverageEntry(item.symbol, `priceHistory:${range}`, 'Price history', item.priceHistory, 'critical'),
+            coverageEntry(item.symbol, 'incomeStatement', 'Income statement', item.incomeStatement, 'high'),
+            coverageEntry(item.symbol, 'balanceSheet', 'Balance sheet', item.balanceSheet, 'high'),
+            coverageEntry(item.symbol, 'cashFlow', 'Cash flow', item.cashFlow, 'high'),
+            coverageEntry(item.symbol, 'analystRatings', 'Analyst ratings', item.analystRatings, 'high'),
+            coverageEntry(item.symbol, 'insiderTrading', 'Insider trading', item.insiderTrading, 'optional'),
+            coverageEntry(item.symbol, 'priceTargets', 'Price targets', item.priceTargets, 'high'),
+            coverageEntry(item.symbol, 'peers', 'Peers', item.peers, 'optional'),
+            coverageEntry(item.symbol, 'newsSentiment', 'News sentiment', item.newsSentiment, 'optional'),
+            coverageEntry(item.symbol, 'companyNews', 'Company news', item.companyNews, 'optional'),
+          ]),
+        });
         const content = buildComparisonReport({
-          generatedAt: new Date().toISOString(),
+          generatedAt,
           range,
           universe,
           items,
@@ -3409,13 +3527,14 @@ export async function executeTool(
         if (args.skipSave) {
           return {
             success: true,
-            data: { content, universe, range, items, summary },
+            data: { content, universe, range, items, summary, runMetadata },
             message: `Built comparison report content for ${universe.join(', ')}`,
           };
         }
         const saved = await saveReport(content, `${universe.join('-')}-comparison-report`, undefined, {
           reportKind: 'comparison',
           summary,
+          runMetadata,
         });
         return {
           success: true,
@@ -3430,6 +3549,11 @@ export async function executeTool(
         if (!watchlist.items.length) {
           return { success: false, error: 'The watchlist is empty. Add companies before requesting a daily report.' };
         }
+        const updateContext = await prepareReportUpdateContext(args, {
+          kind: 'watchlist-daily',
+          query: String(args.updateQuery || watchlist.name),
+          symbols: watchlist.items.map((item) => item.symbol),
+        });
         const coreOnly = !shouldFetchExtendedReportData(watchlist.items.length);
 
         const companyResults = await mapWithConcurrency(
@@ -3601,13 +3725,44 @@ export async function executeTool(
           reportData.skippedItems.push({ symbol: 'Runtime budget', reason: 'Vercel runtime budget reached; later watchlist items or optional enrichment may have been skipped.' });
         }
         const reportBody = buildWatchlistDailyReport(reportData);
-        const content = reportBody;
+        const updateSection = updateContext.notes.length
+          ? `## Report Update\n${updateContext.notes.map((note) => `- ${note}`).join('\n')}`
+          : '';
+        const content = updateSection
+          ? reportBody.replace('## Full Company Research', `${updateSection}\n\n## Full Company Research`)
+          : reportBody;
         const summary = buildWatchlistSummary(reportData.items);
+        const generatedAt = reportData.generatedAt;
+        const runMetadata = buildReportRunMetadata({
+          kind: 'watchlist-daily',
+          query: String(args.updateQuery || watchlist.name),
+          symbols: watchlist.items.map((item) => item.symbol),
+          range,
+          generatedAt,
+          updatedFrom: updateContext.previous,
+          notes: updateContext.notes,
+          coverage: [
+            ...successfulItems.flatMap((item) => [
+              coverageEntry(item.symbol, 'price', 'Price', item.stock.price, 'critical'),
+              coverageEntry(item.symbol, 'overview', 'Company overview', item.stock.companyOverview, 'critical'),
+              coverageEntry(item.symbol, 'basicFinancials', 'Basic financials', item.stock.basicFinancials, 'critical'),
+              coverageEntry(item.symbol, `priceHistory:${range}`, 'Price history', item.stock.priceHistory, 'critical'),
+              coverageEntry(item.symbol, 'incomeStatement', 'Income statement', item.stock.incomeStatement, 'high'),
+              coverageEntry(item.symbol, 'balanceSheet', 'Balance sheet', item.stock.balanceSheet, 'high'),
+              coverageEntry(item.symbol, 'cashFlow', 'Cash flow', item.stock.cashFlow, 'high'),
+              coverageEntry(item.symbol, 'analystRatings', 'Analyst ratings', item.stock.analystRatings, 'high'),
+              coverageEntry(item.symbol, 'priceTargets', 'Price targets', item.stock.priceTargets, 'high'),
+              coverageEntry(item.symbol, 'newsSentiment', 'News sentiment', item.stock.newsSentiment, 'optional'),
+              coverageEntry(item.symbol, 'companyNews', 'Company news', item.stock.companyNews, 'optional'),
+            ]),
+            ...Array.from(failures.keys()).map((symbol) => coverageEntry(symbol, 'companySection', 'Company section', undefined, 'critical')),
+          ],
+        });
 
         if (args.skipSave) {
           return {
             success: true,
-            data: { content, watchlist, range, summary },
+            data: { content, watchlist, range, summary, runMetadata },
             message: `Built daily watchlist report for ${watchlist.name}`
           };
         }
@@ -3615,6 +3770,7 @@ export async function executeTool(
         const saved = await saveReport(content, `${watchlist.slug}-daily-report`, undefined, {
           reportKind: 'watchlist-daily',
           summary,
+          runMetadata,
         });
         return {
           success: true,
@@ -3752,6 +3908,11 @@ export async function executeTool(
         // Vercel/local priority: lock a saveable universe and fetch market data
         // before any optional ecosystem/refinement LLM work.
         const universe = initialCandidates.slice(0, finalCount);
+        const updateContext = await prepareReportUpdateContext(args, {
+          kind: 'research',
+          query: String(args.updateQuery || sector),
+          symbols: universe,
+        });
         let dependencyAnalysis: string | undefined;
         let ecosystemDiagram: string | undefined;
         let refinementNotes: string | undefined;
@@ -3762,6 +3923,7 @@ export async function executeTool(
           `Universe refined through research analysis (${DEEP_RESEARCH_DEPTH} pass${DEEP_RESEARCH_DEPTH > 1 ? 'es' : ''}) for: "${sector}"`,
           `Initial candidates: ${initialCandidates.join(', ')}`,
           `Refined universe: ${universe.join(', ')}`,
+          ...updateContext.notes,
           ...timeNotes,
         ];
         if (resolverSector !== sector) {
@@ -4168,10 +4330,35 @@ export async function executeTool(
           }
         }
 
+        const generatedAt = new Date().toISOString();
+        const runMetadata = buildReportRunMetadata({
+          kind: 'research',
+          query: String(args.updateQuery || sector),
+          symbols: universe,
+          range,
+          generatedAt,
+          updatedFrom: updateContext.previous,
+          notes,
+          coverage: items.flatMap((item) => [
+            coverageEntry(item.symbol, 'price', 'Price', item.price, 'critical'),
+            coverageEntry(item.symbol, 'overview', 'Company overview', item.overview, 'critical'),
+            coverageEntry(item.symbol, 'basicFinancials', 'Basic financials', item.basicFinancials, 'critical'),
+            coverageEntry(item.symbol, `priceHistory:${range}`, 'Price history', item.priceHistory, 'critical'),
+            coverageEntry(item.symbol, 'incomeStatement', 'Income statement', item.incomeStatement, 'high'),
+            coverageEntry(item.symbol, 'balanceSheet', 'Balance sheet', item.balanceSheet, 'high'),
+            coverageEntry(item.symbol, 'cashFlow', 'Cash flow', item.cashFlow, 'high'),
+            coverageEntry(item.symbol, 'analystRatings', 'Analyst ratings', item.analystRatings, 'high'),
+            coverageEntry(item.symbol, 'insiderTrading', 'Insider trading', item.insiderTrading, 'optional'),
+            coverageEntry(item.symbol, 'priceTargets', 'Price targets', item.priceTargets, 'high'),
+            coverageEntry(item.symbol, 'peers', 'Peers', item.peers, 'optional'),
+            coverageEntry(item.symbol, 'newsSentiment', 'News sentiment', item.newsSentiment, 'optional'),
+            coverageEntry(item.symbol, 'companyNews', 'Company news', item.companyNews, 'optional'),
+          ]),
+        });
         const content = buildDeepSectorReport({
           sectorQuery: sector,
           selectedBy: 'llm',
-          generatedAt: new Date().toISOString(),
+          generatedAt,
           range,
           universe,
           items,
@@ -4189,6 +4376,7 @@ export async function executeTool(
         const saved = await saveReport(content, `${safeTitle}-research-report`, undefined, {
           reportKind: 'research',
           summary,
+          runMetadata,
         });
         return {
           success: true,

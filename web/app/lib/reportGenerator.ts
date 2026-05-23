@@ -5,6 +5,7 @@ import type { DataTrustSummary, DecisionSnapshot, PortfolioProfile, WatchlistPos
 import { getConfiguredEnv } from './env';
 import { DEFAULT_REPORTS_DIR } from './reportFileStore';
 import { computeDcfValuation, deriveFreeCashFlow } from './dcfValuation';
+import { writeReportMetadataSidecar, type ReportRunMetadata } from './reportUpdate';
 
 type PricePoint = { date: string; close: string | number; high?: string | number; low?: string | number };
 type EarningsPoint = { fiscalQuarter: string; reportedEPS: string | number };
@@ -2946,7 +2947,7 @@ export async function saveReport(
   content: string,
   title: string,
   directory = DEFAULT_REPORTS_DIR,
-  metadata: { reportKind?: string; summary?: string } = {}
+  metadata: { reportKind?: string; summary?: string; runMetadata?: ReportRunMetadata } = {}
 ) {
   const safeTitle = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
   const createdAt = new Date();
@@ -2984,6 +2985,7 @@ export async function saveReport(
             title: derivedTitle,
             summary: derivedSummary || null,
             content,
+            run_metadata: metadata.runMetadata || null,
             storage_path: storagePath,
             report_kind: metadata.reportKind || null,
             report_date: reportDate,
@@ -3018,11 +3020,13 @@ export async function saveReport(
   try {
     await fs.mkdir(path.dirname(filePath), { recursive: true });
     await fs.writeFile(filePath, content, 'utf8');
+    await writeReportMetadataSidecar(storagePath, metadata.runMetadata, directory);
   } catch {
     filePath = path.join('/tmp', 'reports', reportDate, filename);
     try {
       await fs.mkdir(path.dirname(filePath), { recursive: true });
       await fs.writeFile(filePath, content, 'utf8');
+      await writeReportMetadataSidecar(storagePath, metadata.runMetadata, path.join('/tmp', 'reports'));
     } catch {
       // Filesystem not available — Supabase is the source of truth
     }

@@ -69,6 +69,8 @@ General chat is supported for data-only questions (e.g. "what is NVDA's P/E?") b
 
 13. **Completed report prompts are not executable history.** Previous stock, comparison, research, or watchlist report requests may be retained as memory/context, but they must be marked as completed and must never be replayed as active user instructions. A normal chat turn may save only the report requested by the current prompt unless the current prompt explicitly asks for a multi-report workflow.
 
+13a. **Report updates are opt-in resume passes.** A report update must be requested with the word `update` and must still use one of the four existing report tools with update metadata. Do not add an `update_report` tool. Update passes should locate the latest matching saved report, reuse fresh cached provider data, focus provider calls on missing or stale verified inputs, and clearly state when no prior matching report was found.
+
 14. **Only three top-level markdown docs.** `README.md`, `AGENT.md`, and `CHANGELOG.md` are the only markdown documents committed to the repo root. Do not add stale or duplicate docs.
 
 15. **Keep common report plumbing shared.** New report types must reuse the existing data-fetching, timing, valuation, chart, moat analysis, conclusion, and persistence helpers. No copy-pasted report pipelines.
@@ -102,6 +104,7 @@ User message
 | `web/app/lib/stockTools.ts` | Tool definitions (`getToolDefinitions`), `executeTool` dispatch, report orchestration (generate_* tools), ticker resolution, sector company selection, moat/conclusion prompt builders, disk cache helpers. |
 | `web/app/lib/reportIntent.ts` | Server-side free-form report intent fallback. Prevents plain LLM answers from satisfying stock/comparison/theme/watchlist report requests without a saved artifact. |
 | `web/app/lib/reportReplayGuard.ts` | Shared guard that marks completed report requests as non-executable history and prevents duplicate/replayed report tool calls from saving multiple artifacts in one turn. |
+| `web/app/lib/reportUpdate.ts` | Report-run metadata, filesystem sidecar checkpoints, prior-report lookup, and update-mode notes for resumable report passes. |
 | `web/app/lib/stockDataService.ts` | All data provider implementations: `AlphaVantageService`, `FinnhubService`, `FinancialModelingPrepService`, `TwelveDataService`, `StooqService`, `MultiSourceStockDataService`. Also standalone services: `SecEdgarService` (SEC EDGAR filings), `FredService` (FRED economic data). `createStockService()` always returns `MultiSourceStockDataService` using all configured keys. |
 | `web/app/lib/reportGenerator.ts` | Report builders (`buildStockReport`, `buildComparisonReport`, `buildSectorReport`, `buildDeepSectorReport`, `buildDeepStockReport`, `buildDeepComparisonReport`, `buildWatchlistDailyReport`), technical indicator computations (RSI, MACD, Bollinger, Stochastic, ATR, EMA), ECharts and Mermaid chart builders, `saveReport()` persistence. |
 | `web/app/lib/llmProviderConfig.ts` | GitHub Models catalog fetching, Gemini model fallback list, token helpers. No provider selection — all available providers are always used. |
@@ -370,6 +373,7 @@ Before merging any change, verify:
 - [ ] Does this keep all report data truthful (no fabricated fields)?
 - [ ] Does this prefer missing/suppressed data over wrong or non-meaningful data?
 - [ ] Does this preserve the four report types (stock report, comparison report, research report, watchlist daily)?
+- [ ] If this affects update prompts, does it keep update mode opt-in, use existing report tools only, and avoid replaying historical report requests?
 - [ ] Does this keep the user input flow simple?
 - [ ] Does this work correctly both locally and on Vercel?
 - [ ] On Vercel, does it reserve enough time to save/return a report before the hard timeout?

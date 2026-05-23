@@ -8,6 +8,8 @@ Type a question in plain English and the assistant calls the right data tools, f
 
 Report-style requests are guarded server-side: if the model answers a stock, comparison, theme, or watchlist report request in plain chat without creating an artifact, the server runs the matching report tool instead. This keeps free-form prompts such as `Should I buy Arm?`, `Compare Nvidia, AMD, and Intel`, and `AI infrastructure stocks` on the verified report path.
 
+Reports are also resumable through explicit update prompts. If a prompt includes `update` and names a prior report target, such as `update ARM stock report`, `update comparison report of Nvidia and Arm`, `update research report of AI ecosystem`, or `update watchlist report`, the backend uses the same four report tools in update mode. It locates the latest matching saved report, reuses fresh cached provider data, and spends the next pass on missing or stale verified inputs. If no prior report is found, it falls back to a fresh report and states that in the data-gap notes.
+
 **Four report types:**
 
 | Mode | How to ask | What you get |
@@ -181,7 +183,7 @@ DEEP_RESEARCH_DEPTH=1
 Vercel's filesystem is ephemeral — reports and watchlists written to `/tmp` are lost on each function invocation. To persist them, connect a Supabase project:
 
 1. Create a free project at [supabase.com](https://supabase.com).
-2. Open the SQL editor and run the migrations in `supabase/migrations/` in order.
+2. Open the SQL editor and run the migrations in `supabase/migrations/` in order. Migration `006_add_saved_report_run_metadata.sql` adds structured report-run metadata used by update/resume prompts; filesystem fallback writes the same checkpoint as a sidecar metadata file next to the saved Markdown artifact.
 3. Copy the project URL and service-role key to Vercel environment variables (`SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`).
 
 ---

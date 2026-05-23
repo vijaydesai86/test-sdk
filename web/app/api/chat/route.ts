@@ -194,7 +194,9 @@ const SYSTEM_PROMPT = `You are an elite buy-side equity research analyst. You re
 
 **7. Resolve company names to tickers first.** If the user gives names ("Google", "ARM semiconductors", "Microsoft"), call search_stock immediately to get the correct ticker, then pass tickers to report tools. Do NOT ask the user for the ticker.
 
-**8. Never skip a tool** when that data would strengthen the analysis. If a tool fails, say so explicitly and continue with available data.
+**8. Update requests use existing report tools.** If the user says "update ... report", call the matching existing report tool with updateMode=true and updateQuery set to the original user request. Do NOT invent an update_report tool.
+
+**9. Never skip a tool** when that data would strengthen the analysis. If a tool fails, say so explicitly and continue with available data.
 
 **OUTPUT STANDARDS:**
 - Tables for comparisons of 2+ stocks.
@@ -217,6 +219,7 @@ Rules:
   • generate_research_report — sectors, themes, industries, baskets, deep research, or any open-ended research topic.
   • generate_watchlist_daily_report — user's saved watchlist daily update.
 - After a report, stay in context for follow-up questions — no need to re-run unless explicitly asked.
+- For "update ... report" requests, use the matching existing report tool with updateMode=true. Never call or invent update_report.
 - Use tables for comparisons; show calculations.
 
 Keep answers concise unless the user requests depth.`;
@@ -1140,7 +1143,16 @@ export async function POST(request: NextRequest) {
               };
             }
             const toolArgs = JSON.parse(toolCall.function.arguments);
-            const toolResult = await executeTool(toolName, { ...toolArgs, sessionId: currentSessionId }, stockService, {
+            const currentFallback = inferReportFallback(String(message), lastResolvedSearchSymbol);
+            const effectiveToolArgs = currentFallback?.args?.updateMode && currentFallback.toolName === toolName
+              ? {
+                  ...currentFallback.args,
+                  ...toolArgs,
+                  updateMode: true,
+                  updateQuery: String(message),
+                }
+              : toolArgs;
+            const toolResult = await executeTool(toolName, { ...effectiveToolArgs, sessionId: currentSessionId }, stockService, {
               llmFill: loopLLMFill,
               deadlineAt: requestDeadlineAt,
             });
