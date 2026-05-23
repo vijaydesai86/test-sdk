@@ -10,15 +10,15 @@ export type DcfValuationResult = {
   confidence: DcfConfidence;
   assumptions: {
     baseFCF: number | null;
-    fcfBasis: 'annual' | 'ttm-from-quarterly' | 'annualized-latest-quarter' | 'unavailable';
+    fcfBasis: 'annual' | 'ttm-from-quarterly' | 'unavailable';
     fcfBasisLabel: string;
-    growthRate: number;
-    wacc: number;
-    riskFreeRate: number;
-    riskFreeRateSource: string;
+    growthRate: number | null;
+    wacc: number | null;
+    riskFreeRate: number | null;
+    riskFreeRateSource: string | null;
     terminalGrowthRate: number;
     projectionYears: number;
-    beta: number;
+    beta: number | null;
   };
   notes: string[];
 };
@@ -164,12 +164,12 @@ function resolveDcfBaseFreeCashFlow(cashFlow: any): {
   }
   if (quarterlyFCFs.length > 0) {
     return {
-      baseFCF: quarterlyFCFs[0] * 4,
+      baseFCF: null,
       trendFCFs: [],
-      basis: 'annualized-latest-quarter',
-      basisLabel: 'Annualized latest-quarter FCF',
+      basis: 'unavailable',
+      basisLabel: 'Unavailable',
       confidence: 'Low',
-      notes: ['DCF confidence limited: only quarterly FCF was available, so the latest quarter was annualized.'],
+      notes: ['DCF unavailable: fewer than four quarterly FCF periods were available and no annual cash-flow data was available.'],
     };
   }
 
@@ -197,27 +197,34 @@ export function computeDcfValuation(args: {
   const base = resolveDcfBaseFreeCashFlow(args.cashFlow);
   const riskFreeRate = args.riskFreeRate !== null && args.riskFreeRate !== undefined && Number.isFinite(args.riskFreeRate)
     ? args.riskFreeRate
-    : 0.04;
-  const riskFreeRateSource = args.riskFreeRateSource || 'Fallback assumption (Treasury data unavailable)';
+    : null;
+  const riskFreeRateSource = riskFreeRate !== null ? (args.riskFreeRateSource || 'Provided risk-free rate') : null;
   const equityRiskPremium = 0.05;
-  const effectiveBeta = beta !== null && Number.isFinite(beta) && beta > 0 ? beta : 1.0;
-  const wacc = riskFreeRate + effectiveBeta * equityRiskPremium;
+  const effectiveBeta = beta !== null && Number.isFinite(beta) && beta > 0 ? beta : null;
+  const wacc = riskFreeRate !== null && effectiveBeta !== null ? riskFreeRate + effectiveBeta * equityRiskPremium : null;
   const terminalGrowth = 0.025;
 
   const assumptions = {
     baseFCF: base.baseFCF,
     fcfBasis: base.basis,
     fcfBasisLabel: base.basisLabel,
-    growthRate: 5,
-    wacc: Number((wacc * 100).toFixed(1)),
-    riskFreeRate: Number((riskFreeRate * 100).toFixed(2)),
+    growthRate: null,
+    wacc: wacc !== null ? Number((wacc * 100).toFixed(1)) : null,
+    riskFreeRate: riskFreeRate !== null ? Number((riskFreeRate * 100).toFixed(2)) : null,
     riskFreeRateSource,
     terminalGrowthRate: Number((terminalGrowth * 100).toFixed(1)),
     projectionYears: 10,
     beta: effectiveBeta,
   };
 
-  if (!sharesOutstanding || sharesOutstanding <= 0 || base.baseFCF === null) {
+  const missingRequiredNotes = [
+    ...base.notes,
+    !sharesOutstanding || sharesOutstanding <= 0 ? 'DCF unavailable: shares outstanding was unavailable.' : null,
+    effectiveBeta === null ? 'DCF unavailable: beta was unavailable.' : null,
+    riskFreeRate === null ? 'DCF unavailable: official risk-free rate was unavailable.' : null,
+  ].filter(Boolean) as string[];
+
+  if (!sharesOutstanding || sharesOutstanding <= 0 || base.baseFCF === null || effectiveBeta === null || riskFreeRate === null || wacc === null) {
     return {
       currentPrice,
       intrinsicValuePerShare: null,
@@ -225,10 +232,7 @@ export function computeDcfValuation(args: {
       verdict: 'Insufficient data for DCF calculation',
       confidence: 'Low',
       assumptions,
-      notes: [
-        ...base.notes,
-        !sharesOutstanding || sharesOutstanding <= 0 ? 'DCF unavailable: shares outstanding was unavailable.' : null,
-      ].filter(Boolean) as string[],
+      notes: missingRequiredNotes,
     };
   }
   if (base.baseFCF <= 0) {
@@ -243,7 +247,7 @@ export function computeDcfValuation(args: {
     };
   }
 
-  let growthRate = 0.05;
+  let growthRate: number | null = null;
   const revenueGrowth = toRate(args.overview?.quarterlyRevenueGrowth);
   if (base.trendFCFs.length >= 2 && base.trendFCFs[base.trendFCFs.length - 1] > 0) {
     const cagr = Math.pow(base.trendFCFs[0] / base.trendFCFs[base.trendFCFs.length - 1], 1 / (base.trendFCFs.length - 1)) - 1;
@@ -252,6 +256,17 @@ export function computeDcfValuation(args: {
     }
   } else if (revenueGrowth !== null && Number.isFinite(revenueGrowth)) {
     growthRate = Math.min(Math.max(revenueGrowth, -0.1), 0.25);
+  }
+  if (growthRate === null) {
+    return {
+      currentPrice,
+      intrinsicValuePerShare: null,
+      marginOfSafetyPercent: null,
+      verdict: 'Insufficient data for DCF calculation',
+      confidence: 'Low',
+      assumptions,
+      notes: [...base.notes, 'DCF unavailable: no real FCF trend or provider revenue-growth input was available.'],
+    };
   }
   assumptions.growthRate = Number((growthRate * 100).toFixed(1));
 
@@ -277,9 +292,7 @@ export function computeDcfValuation(args: {
     : null;
 
   let verdict = 'Unavailable';
-  if (base.confidence === 'Low') {
-    verdict = 'Low-confidence DCF estimate (limited FCF history)';
-  } else if (marginOfSafety !== null && Number.isFinite(marginOfSafety)) {
+  if (marginOfSafety !== null && Number.isFinite(marginOfSafety)) {
     if (marginOfSafety > 30) verdict = 'Significantly Undervalued (30%+ margin of safety)';
     else if (marginOfSafety > 15) verdict = 'Moderately Undervalued (15-30% margin of safety)';
     else if (marginOfSafety > 0) verdict = 'Slightly Undervalued (0-15% margin of safety)';

@@ -296,6 +296,114 @@ describe('SecCompanyFactsService', () => {
     expect(result.freeCashFlow.value).toBe(200);
     expect(result.__source).toBe('SEC companyfacts');
   });
+
+  it('does not calculate free cash flow from SEC facts with mismatched periods', async () => {
+    mockedAxios.get
+      .mockResolvedValueOnce({
+        data: {
+          0: { cik_str: 320193, ticker: 'AAPL', title: 'Apple Inc.' },
+        },
+      })
+      .mockResolvedValueOnce({
+        data: {
+          entityName: 'Apple Inc.',
+          facts: {
+            'us-gaap': {
+              NetCashProvidedByUsedInOperatingActivities: {
+                units: {
+                  USD: [{ val: 300, start: '2025-01-01', end: '2025-12-31', filed: '2026-02-01', form: '10-K', fp: 'FY' }],
+                },
+              },
+              PaymentsToAcquirePropertyPlantAndEquipment: {
+                units: {
+                  USD: [{ val: 100, start: '2024-01-01', end: '2024-12-31', filed: '2025-02-01', form: '10-K', fp: 'FY' }],
+                },
+              },
+            },
+          },
+        },
+      });
+
+    const service = new SecCompanyFactsService();
+    const result = await service.getNormalizedFinancialFacts('AAPL');
+
+    expect(result.facts.operatingCashFlow.end).toBe('2025-12-31');
+    expect(result.facts.capex.end).toBe('2024-12-31');
+    expect(result.freeCashFlow).toBeNull();
+  });
+
+  it('prefers latest annual duration facts over newer quarterly filings', async () => {
+    mockedAxios.get
+      .mockResolvedValueOnce({
+        data: {
+          0: { cik_str: 1973239, ticker: 'ARM', title: 'Arm Holdings plc' },
+        },
+      })
+      .mockResolvedValueOnce({
+        data: {
+          entityName: 'Arm Holdings plc',
+          facts: {
+            'us-gaap': {
+              RevenueFromContractWithCustomerExcludingAssessedTax: {
+                units: {
+                  USD: [
+                    { val: 2770000000, start: '2024-04-01', end: '2024-12-31', filed: '2026-01-30', form: '6-K', fp: 'Q3' },
+                    { val: 4920000000, start: '2025-04-01', end: '2026-03-31', filed: '2026-05-15', form: '20-F', fp: 'FY', frame: 'CY2025' },
+                  ],
+                },
+              },
+              GrossProfit: {
+                units: {
+                  USD: [{ val: 4799000000, start: '2025-04-01', end: '2026-03-31', filed: '2026-05-15', form: '20-F', fp: 'FY' }],
+                },
+              },
+              OperatingIncomeLoss: {
+                units: {
+                  USD: [{ val: 900000000, start: '2025-04-01', end: '2026-03-31', filed: '2026-05-15', form: '20-F', fp: 'FY' }],
+                },
+              },
+              NetCashProvidedByUsedInOperatingActivities: {
+                units: {
+                  USD: [
+                    { val: 139000000, start: '2024-10-01', end: '2024-12-31', filed: '2026-01-30', form: '6-K', fp: 'Q3' },
+                    { val: 1524000000, start: '2025-04-01', end: '2026-03-31', filed: '2026-05-15', form: '20-F', fp: 'FY' },
+                  ],
+                },
+              },
+              PaymentsToAcquirePropertyPlantAndEquipment: {
+                units: {
+                  USD: [
+                    { val: 145000000, start: '2024-10-01', end: '2024-12-31', filed: '2026-01-30', form: '6-K', fp: 'Q3' },
+                    { val: 545000000, start: '2025-04-01', end: '2026-03-31', filed: '2026-05-15', form: '20-F', fp: 'FY' },
+                  ],
+                },
+              },
+              Assets: {
+                units: {
+                  USD: [
+                    { val: 8930000000, end: '2025-03-31', filed: '2025-05-15', form: '20-F', fp: 'FY' },
+                    { val: 10703000000, end: '2026-03-31', filed: '2026-05-15', form: '20-F', fp: 'FY' },
+                  ],
+                },
+              },
+            },
+          },
+        },
+      });
+
+    const service = new SecCompanyFactsService();
+    const result = await service.getNormalizedFinancialFacts('ARM');
+
+    expect(result.facts.revenue.value).toBe(4920000000);
+    expect(result.facts.revenue.end).toBe('2026-03-31');
+    expect(result.facts.revenue.period).toBe('annual');
+    expect(result.facts.grossProfit.value).toBe(4799000000);
+    expect(result.facts.operatingIncome.value).toBe(900000000);
+    expect(result.facts.operatingCashFlow.value).toBe(1524000000);
+    expect(result.facts.capex.value).toBe(545000000);
+    expect(result.freeCashFlow.value).toBe(979000000);
+    expect(result.facts.assets.value).toBe(10703000000);
+  });
 });
 
 describe('TreasuryYieldCurveService', () => {

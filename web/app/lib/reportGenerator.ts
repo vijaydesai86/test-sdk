@@ -498,13 +498,15 @@ function trimTrailingZeros(value: string): string {
 function formatMarketCap(value: unknown): string {
   const num = toNumber(value);
   if (num === null) return 'N/A';
-  if (num >= 1e9) {
-    return `${trimTrailingZeros((num / 1e9).toFixed(2))}B`;
+  const sign = num < 0 ? '-' : '';
+  const abs = Math.abs(num);
+  if (abs >= 1e9) {
+    return `${sign}${trimTrailingZeros((abs / 1e9).toFixed(2))}B`;
   }
-  if (num >= 1e6) {
-    return `${trimTrailingZeros((num / 1e6).toFixed(2))}M`;
+  if (abs >= 1e6) {
+    return `${sign}${trimTrailingZeros((abs / 1e6).toFixed(2))}M`;
   }
-  return trimTrailingZeros(num.toFixed(0));
+  return `${sign}${trimTrailingZeros(abs.toFixed(0))}`;
 }
 
 function formatPercent(value: unknown, decimals = 1): string {
@@ -535,6 +537,7 @@ function formatPrice(value: unknown, decimals = 2): string {
 function formatCurrency(value: unknown): string {
   const formatted = formatMarketCap(value);
   if (formatted === 'N/A') return 'N/A';
+  if (formatted.startsWith('-')) return `-$${formatted.slice(1)}`;
   return `$${formatted}`;
 }
 
@@ -585,6 +588,80 @@ function getReportCollection(reportSet?: any): any[] {
   const quarterly = Array.isArray(reportSet?.quarterlyReports) ? reportSet.quarterlyReports : [];
   const annual = Array.isArray(reportSet?.annualReports) ? reportSet.annualReports : [];
   return quarterly.length ? quarterly : annual;
+}
+
+function getAnnualReportCollection(reportSet?: any): any[] {
+  return Array.isArray(reportSet?.annualReports) ? reportSet.annualReports : [];
+}
+
+function getPrimaryIncomeReport(data: Pick<StockReportData, 'incomeStatement'>): any | null {
+  return getMostCompleteReport(data.incomeStatement, ['totalRevenue', 'grossProfit', 'operatingIncome', 'netIncome']);
+}
+
+function getPrimaryAnnualIncomeReport(data: Pick<StockReportData, 'incomeStatement'>): any | null {
+  return getMostCompleteReport({ annualReports: getAnnualReportCollection(data.incomeStatement) }, ['totalRevenue', 'grossProfit', 'operatingIncome', 'netIncome']);
+}
+
+function getSummaryRevenue(data: Pick<StockReportData, 'companyOverview' | 'incomeStatement'>): { value: number | null; label: string; source: 'overview' | 'annual-statement' | 'statement' | null } {
+  const overviewRevenue = toNumber(data.companyOverview?.revenueTTM);
+  if (overviewRevenue !== null) {
+    return { value: overviewRevenue, label: 'Revenue (TTM)', source: 'overview' };
+  }
+  const annualRevenue = toNumber(getPrimaryAnnualIncomeReport(data)?.totalRevenue);
+  if (annualRevenue !== null) {
+    return { value: annualRevenue, label: 'Revenue (latest annual)', source: 'annual-statement' };
+  }
+  const reportedRevenue = toNumber(getPrimaryIncomeReport(data)?.totalRevenue);
+  return {
+    value: reportedRevenue,
+    label: 'Revenue (latest reported)',
+    source: reportedRevenue === null ? null : 'statement',
+  };
+}
+
+function getSummaryGrossMargin(data: Pick<StockReportData, 'companyOverview' | 'basicFinancials' | 'incomeStatement'>): number | null {
+  const direct = normalizePercent(data.basicFinancials?.metric?.grossMarginTTM);
+  if (direct !== null) return direct;
+  const income = getPrimaryAnnualIncomeReport(data) || getPrimaryIncomeReport(data);
+  const revenue = toNumber(income?.totalRevenue);
+  const gross = toNumber(income?.grossProfit);
+  return revenue !== null && revenue !== 0 && gross !== null ? (gross / revenue) * 100 : null;
+}
+
+function getSummaryGrossMarginLabel(data: Pick<StockReportData, 'basicFinancials' | 'incomeStatement'>): string {
+  if (normalizePercent(data.basicFinancials?.metric?.grossMarginTTM) !== null) return 'Gross Margin (TTM)';
+  if (toNumber(getPrimaryAnnualIncomeReport(data)?.grossProfit) !== null) return 'Gross Margin (latest annual)';
+  if (toNumber(getPrimaryIncomeReport(data)?.grossProfit) !== null) return 'Gross Margin (latest reported)';
+  return 'Gross Margin';
+}
+
+function getSummaryOperatingMargin(data: Pick<StockReportData, 'companyOverview' | 'basicFinancials' | 'incomeStatement'>): number | null {
+  const direct = normalizePercent(data.basicFinancials?.metric?.operatingMarginTTM ?? data.companyOverview?.operatingMargin);
+  if (direct !== null) return direct;
+  const income = getPrimaryAnnualIncomeReport(data) || getPrimaryIncomeReport(data);
+  const revenue = toNumber(income?.totalRevenue);
+  const operating = toNumber(income?.operatingIncome);
+  return revenue !== null && revenue !== 0 && operating !== null ? (operating / revenue) * 100 : null;
+}
+
+function getSummaryOperatingMarginLabel(data: Pick<StockReportData, 'companyOverview' | 'basicFinancials' | 'incomeStatement'>): string {
+  if (normalizePercent(data.basicFinancials?.metric?.operatingMarginTTM ?? data.companyOverview?.operatingMargin) !== null) return 'Operating Margin (TTM)';
+  if (toNumber(getPrimaryAnnualIncomeReport(data)?.operatingIncome) !== null) return 'Operating Margin (latest annual)';
+  if (toNumber(getPrimaryIncomeReport(data)?.operatingIncome) !== null) return 'Operating Margin (latest reported)';
+  return 'Operating Margin';
+}
+
+function getSummaryPriceToSales(data: Pick<StockReportData, 'price' | 'companyOverview' | 'incomeStatement'>): number | null {
+  const overview = data.companyOverview || {};
+  const price = toNumber(data.price?.price);
+  const revenuePerShare = toNumber(overview.revenuePerShare);
+  if (price !== null && revenuePerShare !== null && revenuePerShare > 0) return price / revenuePerShare;
+  const marketCap = toNumber(overview.marketCapitalization);
+  const summaryRevenue = getSummaryRevenue(data);
+  const canUseStatementRevenueForValuation = summaryRevenue.source === 'overview' || summaryRevenue.source === 'annual-statement';
+  return marketCap !== null && canUseStatementRevenueForValuation && summaryRevenue.value !== null && summaryRevenue.value > 0
+    ? marketCap / summaryRevenue.value
+    : null;
 }
 
 function hasMeaningfulValue(value: any): boolean {
@@ -1299,63 +1376,6 @@ function decisionActionFromSignal(action: ActionLabel): DecisionSnapshot['action
   return 'Wait';
 }
 
-function canonicalRatingLabel(label: string): 'BUY' | 'HOLD' | 'WATCH' | 'SELL / AVOID' {
-  const normalized = label.trim().toUpperCase();
-  if (normalized.includes('BUY')) return 'BUY';
-  if (normalized.includes('HOLD')) return 'HOLD';
-  if (normalized.includes('WATCH')) return 'WATCH';
-  return 'SELL / AVOID';
-}
-
-function sanitizeLlmConclusionNarrative(value?: string | null): string | null {
-  const trimmed = value?.trim();
-  if (!trimmed) return null;
-
-  const unfenced = trimmed
-    .replace(/^```(?:markdown|md|text)?\s*/i, '')
-    .replace(/\s*```$/i, '')
-    .trim();
-
-  if (!unfenced) return null;
-
-  if ((unfenced.startsWith('{') && unfenced.endsWith('}')) || (unfenced.startsWith('[') && unfenced.endsWith(']'))) {
-    try {
-      JSON.parse(unfenced);
-      return null;
-    } catch {
-      // Keep non-JSON narratives that merely start/end with brackets.
-    }
-  }
-
-  return unfenced;
-}
-
-function extractNarrativeRecommendation(text: string): 'BUY' | 'HOLD' | 'WATCH' | 'SELL / AVOID' | null {
-  const patterns = [
-    /(?:recommendation|rating|stance|status)\s*(?:is|:)?\s*(?:a\s+)?(buy|hold|watch|sell|avoid)\b/i,
-    /(?:recommend|recommended action)\s*(?:is|:)?\s*(?:to\s+)?(buy|hold|watch|sell|avoid)\b/i,
-    /(?:appropriate|prudent|correct)\s+recommendation\s+(?:is|would be)\s*(?:to\s+)?(buy|hold|watch|sell|avoid)\b/i,
-  ];
-
-  for (const pattern of patterns) {
-    const match = text.match(pattern);
-    if (!match) continue;
-    const normalized = match[1].toUpperCase();
-    if (normalized === 'BUY') return 'BUY';
-    if (normalized === 'HOLD') return 'HOLD';
-    if (normalized === 'WATCH') return 'WATCH';
-    return 'SELL / AVOID';
-  }
-
-  return null;
-}
-
-function llmConclusionMatchesRating(text: string, expectedRating: string): boolean {
-  const extracted = extractNarrativeRecommendation(text);
-  if (!extracted) return true;
-  return extracted === canonicalRatingLabel(expectedRating);
-}
-
 function primaryStockScoreLabel(data: StockReportData): 'Decision Score' | 'Composite Score' {
   return data.decisionSnapshot?.overallScore !== null && data.decisionSnapshot?.overallScore !== undefined
     ? 'Decision Score'
@@ -1897,7 +1917,7 @@ function derivePositionGuidanceFromStock(data: StockReportData, score: number | 
 
   // Extract real API metric values for stock-specific rationale text
   const pe = toNumber(overview.peRatio ?? data.basicFinancials?.metric?.peBasicExclExtraTTM);
-  const grossMargin = normalizePercent(data.basicFinancials?.metric?.grossMarginTTM ?? overview.profitMargin);
+  const grossMargin = getSummaryGrossMargin(data);
   const operatingMargin = normalizePercent(data.basicFinancials?.metric?.operatingMarginTTM ?? overview.operatingMargin);
   const roe = normalizePercent(data.basicFinancials?.metric?.roeTTM ?? overview.returnOnEquity);
   const revenueGrowth = normalizePercent(data.basicFinancials?.metric?.revenueGrowthTTM ?? overview.quarterlyRevenueGrowth);
@@ -2095,8 +2115,9 @@ function buildValuationGrowthScatter(items: ComparisonReportItem[]): string {
 
 function buildMarginComparisonChart(items: ComparisonReportItem[]): string {
   const rows = items.map((item) => {
-    const gross = normalizePercent(item.basicFinancials?.metric?.grossMarginTTM ?? item.overview?.profitMargin);
-    const operating = normalizePercent(item.basicFinancials?.metric?.operatingMarginTTM ?? item.overview?.operatingMargin);
+    const stockData = asStockReportData(item, '');
+    const gross = getSummaryGrossMargin(stockData);
+    const operating = getSummaryOperatingMargin(stockData);
     return {
       symbol: item.symbol,
       gross: gross === null ? 0 : Number(gross.toFixed(1)),
@@ -2489,11 +2510,13 @@ export function buildStockReport(data: StockReportData): string {
     `- Industry: ${overview.industry || 'Unavailable'}`,
   ].filter((line) => !line.endsWith('Unavailable') && !line.includes('(Unavailable)'));
 
+  const summaryRevenue = getSummaryRevenue(data);
+
   const description = overview.description ? summarizeDescription(overview.description) : null;
   const businessLines = [
     overview.name ? `- Company: ${overview.name} (${data.symbol})` : `- Company: ${data.symbol}`,
     description ? `- Description: ${description}` : null,
-    overview.revenueTTM ? `- Revenue (TTM): ${formatCurrency(overview.revenueTTM)}` : null,
+    summaryRevenue.value !== null ? `- ${summaryRevenue.label}: ${formatCurrency(summaryRevenue.value)}` : null,
     overview.grossProfitTTM ? `- Gross Profit (TTM): ${formatCurrency(overview.grossProfitTTM)}` : null,
     overview.sharesOutstanding ? `- Shares Outstanding: ${formatCompactNumber(overview.sharesOutstanding)}` : null,
     overview.dividendYield ? `- Dividend Yield: ${formatYieldPercent(overview.dividendYield)}` : null,
@@ -2508,8 +2531,8 @@ export function buildStockReport(data: StockReportData): string {
 
   const revenueGrowth = getStockRevenueGrowth(data);
   const epsGrowth = getStockEpsGrowth(data);
-  const grossMargin = normalizePercent(data.basicFinancials?.metric?.grossMarginTTM ?? overview.profitMargin);
-  const operatingMargin = normalizePercent(data.basicFinancials?.metric?.operatingMarginTTM ?? overview.operatingMargin);
+  const grossMargin = getSummaryGrossMargin(data);
+  const operatingMargin = getSummaryOperatingMargin(data);
   const targetUpside = getTargetUpsideStock(data);
   const technical = getTechnicalSnapshot(price, data.priceHistory?.prices || [], {
     ...overview,
@@ -2598,8 +2621,6 @@ export function buildStockReport(data: StockReportData): string {
     riskLines.push(`- Net debt of ${formatCurrency(netDebt)}`);
   }
 
-  // Build income table: prefer real quarterly/annual data; fall back to a TTM
-  // estimated row derived from the company overview when the statement API is empty.
   let incomeTable: string;
   if (incomeReports.length) {
     incomeTable = buildTable(
@@ -2614,25 +2635,9 @@ export function buildStockReport(data: StockReportData): string {
       ['left', 'right', 'right', 'right', 'right']
     );
   } else {
-    const ttmRevenue = toNumber(overview.revenueTTM);
-    const ttmGross = toNumber(overview.grossProfitTTM);
-    const opMarginRatio = toNumber(overview.operatingMargin);
-    const profitMarginRatio = toNumber(overview.profitMargin);
-    const ttmOpIncome = ttmRevenue !== null && opMarginRatio !== null ? ttmRevenue * opMarginRatio : null;
-    const ttmNetIncome = ttmRevenue !== null && profitMarginRatio !== null ? ttmRevenue * profitMarginRatio : null;
-    if (ttmRevenue !== null) {
-      incomeTable = buildTable(
-        ['Period', 'Revenue', 'Gross', 'Op Income', 'Net Income'],
-        [['TTM (est.)', formatCurrency(ttmRevenue), formatCurrency(ttmGross), formatCurrency(ttmOpIncome), formatCurrency(ttmNetIncome)]],
-        ['left', 'right', 'right', 'right', 'right']
-      );
-    } else {
-      incomeTable = '_Income statement data unavailable (provider or rate limit; no estimated fallback shown)._';
-    }
+    incomeTable = '_Income statement data unavailable (provider or rate limit; no synthetic fallback shown)._';
   }
 
-  // Build balance sheet table: prefer real data; fall back to a latest-estimated
-  // row derived from overview when the balance sheet API is empty.
   let balanceTable: string;
   if (balanceReports.length) {
     balanceTable = buildTable(
@@ -2648,18 +2653,7 @@ export function buildStockReport(data: StockReportData): string {
       ['left', 'right', 'right', 'right', 'right', 'right']
     );
   } else {
-    const bookVal = toNumber(overview.bookValue);
-    const sharesOut = toNumber(overview.sharesOutstanding);
-    const equity = bookVal !== null && sharesOut !== null ? bookVal * sharesOut : null;
-    if (equity !== null) {
-      balanceTable = buildTable(
-        ['Period', 'Cash', 'LT Debt', 'Liabilities', 'Assets', 'Equity'],
-        [['Latest (est.)', '—', '—', '—', '—', formatCurrency(equity)]],
-        ['left', 'right', 'right', 'right', 'right', 'right']
-      );
-    } else {
-      balanceTable = '_Balance sheet data unavailable (provider or rate limit; no estimated fallback shown)._';
-    }
+    balanceTable = '_Balance sheet data unavailable (provider or rate limit; no synthetic fallback shown)._';
   }
 
   const cashTable = cashReports.length
@@ -2680,11 +2674,10 @@ export function buildStockReport(data: StockReportData): string {
   const pegRatio = toNumber(overview.pegRatio);
   const bookValue = toNumber(overview.bookValue);
   const priceToBook = price !== null && bookValue ? price / bookValue : null;
-  const revenuePerShare = toNumber(overview.revenuePerShare);
-  const priceToSales = price !== null && revenuePerShare ? price / revenuePerShare : null;
+  const priceToSales = getSummaryPriceToSales(data);
   const marketCap = toNumber(overview.marketCapitalization);
-  const revenueTTM = toNumber(overview.revenueTTM);
-  const marketCapToRevenue = marketCap && revenueTTM ? marketCap / revenueTTM : null;
+  const canUseRevenueForValuation = summaryRevenue.source === 'overview' || summaryRevenue.source === 'annual-statement';
+  const marketCapToRevenue = marketCap && canUseRevenueForValuation && summaryRevenue.value ? marketCap / summaryRevenue.value : null;
   const valuationTable = buildTable(
     ['Metric', 'Value'],
     [
@@ -2707,9 +2700,9 @@ export function buildStockReport(data: StockReportData): string {
       ['Price', `${formatPrice(price)} (${formatSignedPercentValue(changePercentValue, 2, { alreadyPercent: changePercentIsPercent })})`],
       ['Market Cap', formatCurrency(overview.marketCapitalization)],
       ['52W Range', `${formatCurrency(weekLow)} - ${formatCurrency(weekHigh)}`],
-      ['Revenue (TTM)', formatCurrency(overview.revenueTTM)],
-      ['Gross Margin (TTM)', formatPercent(grossMargin)],
-      ['Operating Margin (TTM)', formatPercent(operatingMargin)],
+      [summaryRevenue.label, formatCurrency(summaryRevenue.value)],
+      [getSummaryGrossMarginLabel(data), formatPercent(grossMargin)],
+      [getSummaryOperatingMarginLabel(data), formatPercent(operatingMargin)],
       ['ROE (TTM)', formatPercent(data.basicFinancials?.metric?.roeTTM)],
     ],
     ['left', 'right']
@@ -2849,7 +2842,7 @@ export function buildStockReport(data: StockReportData): string {
     sections.push('## 💵 Dividend Analysis', ...dividendLines);
   }
 
-  // DCF Valuation section — simplified intrinsic value estimate
+  // DCF Valuation section — only rendered when the valuation model has real required inputs.
   const dcf = computeDcfValuation({
     overview,
     balanceSheet: data.balanceSheet,
@@ -2858,8 +2851,8 @@ export function buildStockReport(data: StockReportData): string {
   });
   if (dcf.intrinsicValuePerShare !== null && price !== null) {
       sections.push(
-        '## 📐 DCF Valuation Estimate',
-        '_Simplified 10-year DCF model. Not investment advice; estimates depend heavily on the free-cash-flow basis and assumptions._',
+        '## 📐 DCF Valuation Model',
+        '_Simplified 10-year DCF model based only on available provider inputs. Not investment advice._',
         buildTable(
           ['Metric', 'Value'],
           [
@@ -2870,10 +2863,10 @@ export function buildStockReport(data: StockReportData): string {
             ['DCF Confidence', dcf.confidence],
             ['FCF Basis', dcf.assumptions.fcfBasisLabel],
             ['Base FCF', formatCurrency(dcf.assumptions.baseFCF)],
-            ['Growth Rate Used', `${dcf.assumptions.growthRate.toFixed(1)}%`],
-            ['WACC (Discount Rate)', `${dcf.assumptions.wacc.toFixed(1)}%`],
+            ['Growth Rate Used', dcf.assumptions.growthRate !== null ? `${dcf.assumptions.growthRate.toFixed(1)}%` : 'N/A'],
+            ['WACC (Discount Rate)', dcf.assumptions.wacc !== null ? `${dcf.assumptions.wacc.toFixed(1)}%` : 'N/A'],
             ['Terminal Growth', `${dcf.assumptions.terminalGrowthRate.toFixed(1)}%`],
-            ['Beta', `${dcf.assumptions.beta.toFixed(2)}`],
+            ['Beta', dcf.assumptions.beta !== null ? `${dcf.assumptions.beta.toFixed(2)}` : 'N/A'],
           ],
           ['left', 'right']
         ),
@@ -2936,7 +2929,7 @@ export function buildStockReport(data: StockReportData): string {
       ...(scorecardRadar ? [scorecardRadar] : []),
       '- Radar chart shows normalized component scores (0-100).',
       `- Growth: ${scorecard.components.growth?.toFixed(1) ?? 'Unavailable'} (avg of revenue/EPS growth %)`,
-      `- Profitability: ${scorecard.components.profitability?.toFixed(1) ?? 'Unavailable'} (avg of gross/operating margin, ROE)`,
+      `- Profitability: ${scorecard.components.profitability?.toFixed(1) ?? 'Unavailable'} (avg of available gross margin, operating margin, and ROE inputs)`,
       `- Valuation: ${scorecard.components.valuation?.toFixed(1) ?? 'Unavailable'} (100 - PE/50*100)`,
       `- Momentum: ${scorecard.components.momentum?.toFixed(1) ?? 'Unavailable'}`,
       `- Moat: ${scorecard.components.moat?.toFixed(1) ?? 'Unavailable'} (data-derived: avg of margin stability, pricing power, analyst conviction)${data.moatAnalysis ? ` | LLM Moat Score: ${Math.round(data.moatAnalysis.moatScore)}/100 (${data.moatAnalysis.moatStrength})` : ''}`,
@@ -3112,11 +3105,13 @@ export function buildComparisonReport(data: ComparisonReportData): string {
 
   const scaleRows = items.map((item) => {
     const overview = item.overview || {};
+    const stockData = asStockReportData(item, data.generatedAt);
+    const summaryRevenue = getSummaryRevenue(stockData);
     return [
       `${overview.name || item.symbol} (${item.symbol})`,
-      formatCurrency(overview.revenueTTM),
-      formatPercent(item.basicFinancials?.metric?.grossMarginTTM ?? overview.profitMargin),
-      formatPercent(item.basicFinancials?.metric?.operatingMarginTTM ?? overview.operatingMargin),
+      formatCurrency(summaryRevenue.value),
+      formatPercent(getSummaryGrossMargin(stockData)),
+      formatPercent(getSummaryOperatingMargin(stockData)),
       formatPercent(item.basicFinancials?.metric?.roeTTM ?? overview.returnOnEquity),
     ];
   });
@@ -3157,15 +3152,15 @@ export function buildComparisonReport(data: ComparisonReportData): string {
 
   const valuationRows = items.map((item) => {
     const overview = item.overview || {};
+    const stockData = asStockReportData(item, data.generatedAt);
     const price = toNumber(item.price?.price);
     const bookValue = toNumber(overview.bookValue);
-    const revenuePerShare = toNumber(overview.revenuePerShare);
     return [
       `${overview.name || item.symbol} (${item.symbol})`,
       toNumber(overview.peRatio ?? item.basicFinancials?.metric?.peBasicExclExtraTTM)?.toFixed(1) ?? 'N/A',
       toNumber(overview.forwardPE)?.toFixed(1) ?? 'N/A',
       toNumber(overview.pegRatio)?.toFixed(2) ?? 'N/A',
-      price && revenuePerShare ? (price / revenuePerShare).toFixed(2) : 'N/A',
+      getSummaryPriceToSales(stockData)?.toFixed(2) ?? 'N/A',
       price && bookValue ? (price / bookValue).toFixed(2) : 'N/A',
     ];
   });
@@ -3985,19 +3980,10 @@ function buildStockConclusion(data: StockReportData, scorecard: ReturnType<typeo
     totalAnalyst > 0 ? `- **Analyst Consensus:** ${formatRatingSummary(data)}` : null,
   ].filter(Boolean) as string[];
 
-  // ── LLM-generated narrative (if available) ───────────────────────────────
-  const llmNarrative = sanitizeLlmConclusionNarrative(data.llmConclusion);
-  if (llmNarrative && llmConclusionMatchesRating(llmNarrative, rating.label)) {
-    return [
-      '## 🎯 Investment Conclusion',
-      `> _Analysis grounded in real market-data API responses. Not financial advice._`,
-      llmNarrative,
-      '### 📋 Quick Reference',
-      ...dataLines,
-    ].join('\n\n');
-  }
-
-  // ── Structured fallback (no LLM available) ───────────────────────────────
+  // ── Structured conclusion ────────────────────────────────────────────────
+  // Do not render freeform LLM narratives here. Even when prompted with real
+  // inputs, narrative text can introduce unsupported numbers or contradict
+  // tables. Reports must prefer deterministic N/A-safe summaries.
   const bullish: string[] = [];
   const bearish: string[] = [];
 
@@ -4044,12 +4030,12 @@ function buildStockConclusion(data: StockReportData, scorecard: ReturnType<typeo
 
   return [
     '## 🎯 Investment Conclusion',
-    `> _All values are sourced from live market-data APIs. This section summarises what the data shows — it is not financial advice._`,
+    `> _Displayed values are sourced from provider/official data or direct arithmetic on those responses. Missing fields remain unavailable. Not financial advice._`,
     `### ${rating.emoji} ${name} (${symbol}) — ${rating.label}`,
     ...dataLines,
     bullLines || null,
     bearLines || null,
-    '_This conclusion is derived entirely from real API data. Always conduct your own due diligence before investing._',
+    '_This conclusion uses only available real provider/official data and does not fill missing metrics. Always conduct your own due diligence before investing._',
   ].filter(Boolean).join('\n\n');
 }
 
@@ -4158,21 +4144,9 @@ function buildComparisonConclusion(
     `- Strategy: ${strategyAdvice}`,
   ].filter(Boolean).join('\n\n');
 
-  const llmNarrative = sanitizeLlmConclusionNarrative(llmConclusion);
-  if (llmNarrative) {
-    return [
-      '## 🎯 Investment Conclusion',
-      `> _Analysis grounded in real market-data API responses. Not financial advice._`,
-      llmNarrative,
-      '### 📊 Company Quick Reference',
-      ...companyRefLines,
-      summaryLines,
-    ].join('\n\n');
-  }
-
   return [
     '## 🎯 Investment Conclusion',
-    `> _All values are derived from live market-data APIs. This conclusion is not financial advice._`,
+    `> _Displayed values are sourced from provider/official data or direct arithmetic on those responses. Missing fields remain unavailable. Not financial advice._`,
     summaryLines,
     '### 📊 Company Quick Reference',
     ...companyRefLines,

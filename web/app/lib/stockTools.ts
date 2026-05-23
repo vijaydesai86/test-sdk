@@ -572,7 +572,7 @@ function buildMoatAnalysisPrompt(
   const description = overview?.description
     ? String(overview.description).slice(0, 400)
     : 'No description available';
-  const grossMargin = overview?.profitMargin ?? basicFinancials?.metric?.grossMarginTTM;
+  const grossMargin = basicFinancials?.metric?.grossMarginTTM;
   const operatingMargin = overview?.operatingMargin ?? basicFinancials?.metric?.operatingMarginTTM;
   const roe = overview?.returnOnEquity ?? basicFinancials?.metric?.roeTTM;
   const revenueGrowth = basicFinancials?.metric?.revenueGrowthTTM ?? overview?.quarterlyRevenueGrowth;
@@ -588,7 +588,7 @@ function buildMoatAnalysisPrompt(
     `You are a senior equity research analyst specialising in Warren Buffett-style economic moat analysis.\n\n` +
     `CRITICAL: Base your entire analysis ONLY on the real API data provided below. ` +
     `Do NOT use training-memory values for prices, margins, revenue, or any financial metric — ` +
-    `all financial inputs come from live market-data APIs and are provided here. ` +
+    `available financial inputs come from provider/official API data or direct arithmetic on those responses and are provided here. ` +
     `If a moat claim is not supported by the provided description or metrics, mark the moat as None.\n\n` +
     `Assess the competitive moat for the following company and return a JSON object.\n\n` +
     `Company: ${name} (${symbol})\n` +
@@ -635,7 +635,7 @@ function buildBatchMoatAnalysisPrompt(
     const sector = overview?.sector || 'N/A';
     const industry = overview?.industry || 'N/A';
     const description = overview?.description ? String(overview.description).slice(0, 200) : '';
-    const grossMargin = overview?.profitMargin ?? basicFinancials?.metric?.grossMarginTTM;
+    const grossMargin = basicFinancials?.metric?.grossMarginTTM;
     const operatingMargin = overview?.operatingMargin ?? basicFinancials?.metric?.operatingMarginTTM;
     const roe = overview?.returnOnEquity ?? basicFinancials?.metric?.roeTTM;
     const revenueGrowth = basicFinancials?.metric?.revenueGrowthTTM ?? overview?.quarterlyRevenueGrowth;
@@ -854,7 +854,7 @@ function buildBatchPositionRationalePrompt(
     const opMargin = fmt(basicFinancials?.metric?.operatingMarginTTM ?? overview?.operatingMargin);
     const roe = fmt(basicFinancials?.metric?.roeTTM ?? overview?.returnOnEquity);
     const revGrowth = fmt(basicFinancials?.metric?.revenueGrowthTTM ?? overview?.quarterlyRevenueGrowth);
-    const grossMargin = fmt(basicFinancials?.metric?.grossMarginTTM ?? overview?.profitMargin);
+    const grossMargin = fmt(basicFinancials?.metric?.grossMarginTTM);
 
     const reasons = [...whyNow, ...whyNot].slice(0, 4).join(' | ') || 'No specific signals computed.';
     const missing = missingInputs.length ? `Missing: ${missingInputs.join(', ')}.` : 'All key inputs present.';
@@ -948,6 +948,11 @@ function buildStockConclusionPrompt(
   decisionSnapshot?: DecisionSnapshot
 ): string {
   const name = companyOverview?.name || symbol;
+  const formatPromptCurrency = (value: any): string => {
+    if (value === null || value === undefined || value === 'N/A' || value === '') return 'N/A';
+    const n = Number(value);
+    return Number.isFinite(n) ? `$${n.toLocaleString()}` : String(value);
+  };
 
   const currentPrice = price?.price ?? 'N/A';
   const changePercent = price?.changePercent ?? 'N/A';
@@ -957,8 +962,15 @@ function buildStockConclusionPrompt(
   const ps = companyOverview?.priceToSalesRatioTTM ?? basicFinancials?.metric?.psTTM ?? 'N/A';
   const ev = companyOverview?.evToEbitda ?? basicFinancials?.metric?.evToEbitda ?? 'N/A';
   const beta = companyOverview?.beta ?? 'N/A';
-  const revTTM = companyOverview?.revenueTTM ?? 'N/A';
-  const grossMargin = formatPromptMetric(basicFinancials?.metric?.grossMarginTTM ?? companyOverview?.profitMargin);
+  const latestIncome = incomeStatement?.quarterlyReports?.[0] || incomeStatement?.annualReports?.[0];
+  const revTTM = companyOverview?.revenueTTM ?? latestIncome?.totalRevenue ?? 'N/A';
+  const incomeRevenue = toFiniteNumber(latestIncome?.totalRevenue);
+  const incomeGrossProfit = toFiniteNumber(latestIncome?.grossProfit);
+  const statementGrossMargin =
+    incomeRevenue !== null && incomeRevenue !== 0 && incomeGrossProfit !== null
+      ? incomeGrossProfit / incomeRevenue
+      : null;
+  const grossMargin = formatPromptMetric(basicFinancials?.metric?.grossMarginTTM ?? statementGrossMargin);
   const opMargin = formatPromptMetric(basicFinancials?.metric?.operatingMarginTTM ?? companyOverview?.operatingMargin);
   const netMargin = formatPromptMetric(companyOverview?.profitMargin);
   const roe = formatPromptMetric(basicFinancials?.metric?.roeTTM ?? companyOverview?.returnOnEquity);
@@ -973,10 +985,10 @@ function buildStockConclusionPrompt(
   const latestQ = earningsHistory?.quarterlyEarnings?.[0];
   const eps1 = latestQ ? `${latestQ.fiscalQuarter}: EPS ${latestQ.reportedEPS}` : 'N/A';
 
-  // Latest quarterly income
-  const latestIncome = incomeStatement?.quarterlyReports?.[0];
-  const revenue1 = latestIncome ? `${latestIncome.fiscalDateEnding}: Revenue $${Number(latestIncome.totalRevenue).toLocaleString()}` : 'N/A';
-  const opIncome1 = latestIncome ? `Op. Income $${Number(latestIncome.operatingIncome).toLocaleString()}` : 'N/A';
+  // Latest reported income period can be quarterly or annual depending on provider availability.
+  const latestIncomePeriod = latestIncome?.fiscalQuarter || latestIncome?.fiscalYear || latestIncome?.fiscalDateEnding || 'N/A';
+  const revenue1 = latestIncome ? `${latestIncomePeriod}: Revenue ${formatPromptCurrency(latestIncome.totalRevenue)}` : 'N/A';
+  const opIncome1 = latestIncome ? `Op. Income ${formatPromptCurrency(latestIncome.operatingIncome)}` : 'N/A';
 
   // Balance sheet
   const latestBS = balanceSheet?.quarterlyReports?.[0];
@@ -1058,14 +1070,14 @@ function buildStockConclusionPrompt(
     `Market Cap: ${marketCap}\n` +
     `P/E: ${pe} | P/B: ${pb} | P/S: ${ps} | EV/EBITDA: ${ev} | Beta: ${beta}\n\n` +
     `── Profitability & Growth ──\n` +
-    `Revenue TTM: ${revTTM}\n` +
+    `Revenue TTM / Latest Reported: ${formatPromptCurrency(revTTM)}\n` +
     `Gross Margin: ${grossMargin} | Operating Margin: ${opMargin} | Net Margin: ${netMargin}\n` +
     `ROE: ${roe} | ROA: ${roa}\n` +
     `Revenue Growth: ${revenueGrowth} | EPS Growth: ${epsGrowth}\n` +
-    `Latest Quarter: ${revenue1}, ${opIncome1}, ${eps1}\n\n` +
+    `Latest Reported Period: ${revenue1}, ${opIncome1}, ${eps1}\n\n` +
     `── Balance Sheet ──\n` +
     `Cash: ${cash} | Total Debt: ${totalDebt} | D/E: ${debtToEquity} | Current Ratio: ${currentRatio}\n` +
-    `Operating Cash Flow: ${ocf} | Free Cash Flow (est): ${fcf} | FCF/Share: ${fcfPerShare}\n\n` +
+    `Operating Cash Flow: ${ocf} | Free Cash Flow (OCF - Capex): ${fcf} | FCF/Share: ${fcfPerShare}\n\n` +
     `── Analyst Consensus ──\n` +
     `Target: Mean $${targetMean} | High $${targetHigh} | Low $${targetLow}\n` +
     `Ratings: Strong Buy ${strongBuy} | Buy ${buyCount} | Hold ${holdCount} | Sell ${sellCount} | Strong Sell ${strongSell}\n\n` +
@@ -1125,9 +1137,18 @@ function buildComparisonConclusionPrompt(
     const price = item.price?.price ?? 'N/A';
     const pe = item.overview?.peRatio ?? item.basicFinancials?.metric?.peBasicExclExtraTTM ?? 'N/A';
     const mc = item.overview?.marketCapitalization ?? 'N/A';
-    const rev = item.overview?.revenueTTM ?? 'N/A';
+    const latestIncome = item.incomeStatement?.quarterlyReports?.[0] || item.incomeStatement?.annualReports?.[0];
+    const latestRevenue = toFiniteNumber(latestIncome?.totalRevenue);
+    const revenueValue = item.overview?.revenueTTM ?? latestIncome?.totalRevenue ?? 'N/A';
+    const revenueLabel = item.overview?.revenueTTM ? 'Revenue TTM' : latestRevenue !== null ? 'Revenue Latest Reported' : 'Revenue';
     const opMargin = formatPromptMetric(item.overview?.operatingMargin ?? item.basicFinancials?.metric?.operatingMarginTTM);
-    const grossMargin = formatPromptMetric(item.overview?.profitMargin ?? item.basicFinancials?.metric?.grossMarginTTM);
+    const incomeRevenue = toFiniteNumber(latestIncome?.totalRevenue);
+    const incomeGrossProfit = toFiniteNumber(latestIncome?.grossProfit);
+    const statementGrossMargin =
+      incomeRevenue !== null && incomeRevenue !== 0 && incomeGrossProfit !== null
+        ? incomeGrossProfit / incomeRevenue
+        : null;
+    const grossMargin = formatPromptMetric(item.basicFinancials?.metric?.grossMarginTTM ?? statementGrossMargin);
     const roe = formatPromptMetric(item.overview?.returnOnEquity ?? item.basicFinancials?.metric?.roeTTM);
     const revGrowth = formatPromptMetric(item.basicFinancials?.metric?.revenueGrowthTTM ?? item.overview?.quarterlyRevenueGrowth);
     const targetMean = item.priceTargets?.targetMean
@@ -1140,14 +1161,14 @@ function buildComparisonConclusionPrompt(
     const moat = item.moatAnalysis
       ? `${item.moatAnalysis.moatType} (${item.moatAnalysis.moatStrength}, ${item.moatAnalysis.moatScore}/100)`
       : 'Not assessed';
-    const latestRevLine = item.incomeStatement?.quarterlyReports?.[0]
-      ? `Latest Q Revenue: $${Number(item.incomeStatement.quarterlyReports[0].totalRevenue).toLocaleString()}`
+    const latestRevLine = latestIncome && latestRevenue !== null
+      ? `Latest Reported Revenue: $${latestRevenue.toLocaleString()}`
       : '';
 
     return (
       `▸ ${name} (${sym})\n` +
       `  Price: $${price} | Market Cap: ${mc} | P/E: ${pe}\n` +
-      `  Revenue TTM: ${rev} | Rev Growth: ${revGrowth} | ${latestRevLine}\n` +
+      `  ${revenueLabel}: ${revenueValue} | Rev Growth: ${revGrowth} | ${latestRevLine}\n` +
       `  Gross Margin: ${grossMargin} | Op Margin: ${opMargin} | ROE: ${roe}\n` +
       `  Analyst Target: ${targetMean === 'N/A' ? 'N/A' : `$${targetMean}`} | Upside: ${upside}\n` +
       `  Score: ${score !== null && score !== undefined ? score.toFixed(1) + '/100' : 'N/A'} (Decision Score when available; otherwise Composite Score)\n` +
@@ -1278,63 +1299,105 @@ function buildSecFinancialFallbacks(symbol: string, secFacts: any, priceData?: a
   if (!secFacts || secFacts.error || typeof secFacts !== 'object') return {};
   const facts = secFacts.facts || {};
   const valueOf = (key: string) => toFiniteNumber(facts[key]?.value);
-  const revenue = valueOf('revenue');
-  const netIncome = valueOf('netIncome');
-  const assets = valueOf('assets');
-  const liabilities = valueOf('liabilities');
-  const equity = valueOf('equity');
-  const cash = valueOf('cash');
-  const operatingCashFlow = valueOf('operatingCashFlow');
-  const capex = valueOf('capex');
+  const endOf = (key: string) => facts[key]?.end ? String(facts[key].end) : null;
+  const bestAlignedEnd = (keys: string[]): string | null => {
+    const counts = new Map<string, number>();
+    for (const key of keys) {
+      const end = endOf(key);
+      if (end) counts.set(end, (counts.get(end) || 0) + 1);
+    }
+    return [...counts.entries()]
+      .sort((a, b) => {
+        if (b[1] !== a[1]) return b[1] - a[1];
+        return b[0].localeCompare(a[0]);
+      })[0]?.[0] || null;
+  };
+  const valueAtEnd = (key: string, end: string | null) => (end && endOf(key) === end ? valueOf(key) : null);
+  const endOfKey = (fact: any) => fact?.end ? String(fact.end) : null;
+  const isAnnualSecFact = (fact: any): boolean => {
+    if (!fact) return false;
+    const form = String(fact.form || '').toUpperCase();
+    const fp = String(fact.fp || '').toUpperCase();
+    const frame = String(fact.frame || '').toUpperCase();
+    return fact.period === 'annual' || fp === 'FY' || /^(10-K|20-F|40-F)$/.test(form) || /^CY\d{4}$/.test(frame);
+  };
+  const reportBucketForEnd = (keys: string[], end: string | null): 'annualReports' | 'quarterlyReports' => {
+    const alignedFacts = keys.map((key) => facts[key]).filter((fact: any) => fact && endOfKey(fact) === end);
+    if (!alignedFacts.length) return 'quarterlyReports';
+    return alignedFacts.every(isAnnualSecFact) ? 'annualReports' : 'quarterlyReports';
+  };
   const dilutedShares = valueOf('dilutedShares');
   const dilutedEps = valueOf('dilutedEps');
   const freeCashFlow = toFiniteNumber(secFacts.freeCashFlow?.value);
   const currentPrice = toFiniteNumber(priceData?.price);
+  const incomeEnd = bestAlignedEnd(['revenue', 'grossProfit', 'operatingIncome', 'netIncome']);
+  const alignedRevenue = valueAtEnd('revenue', incomeEnd);
+  const alignedGrossProfit = valueAtEnd('grossProfit', incomeEnd);
+  const alignedOperatingIncome = valueAtEnd('operatingIncome', incomeEnd);
+  const alignedNetIncome = valueAtEnd('netIncome', incomeEnd);
+  const balanceEnd = bestAlignedEnd(['assets', 'liabilities', 'equity', 'cash']);
+  const alignedAssets = valueAtEnd('assets', balanceEnd);
+  const alignedLiabilities = valueAtEnd('liabilities', balanceEnd);
+  const alignedEquity = valueAtEnd('equity', balanceEnd);
+  const alignedCash = valueAtEnd('cash', balanceEnd);
+  const cashFlowEnd = bestAlignedEnd(['operatingCashFlow', 'capex']);
+  const alignedOperatingCashFlow = valueAtEnd('operatingCashFlow', cashFlowEnd);
+  const alignedCapex = valueAtEnd('capex', cashFlowEnd);
+  const alignedFreeCashFlow = secFacts.freeCashFlow?.end && cashFlowEnd && secFacts.freeCashFlow.end === cashFlowEnd
+    ? freeCashFlow
+    : null;
 
   const metric: Record<string, any> = {};
-  if (revenue !== null && netIncome !== null && revenue !== 0) metric.netProfitMarginTTM = netIncome / revenue;
-  if (netIncome !== null && equity !== null && equity > 0) metric.roeTTM = netIncome / equity;
-  if (netIncome !== null && assets !== null && assets > 0) metric.roaTTM = netIncome / assets;
+  if (alignedRevenue !== null && alignedNetIncome !== null && alignedRevenue !== 0) metric.netProfitMarginTTM = alignedNetIncome / alignedRevenue;
+  if (alignedRevenue !== null && alignedGrossProfit !== null && alignedRevenue !== 0) metric.grossMarginTTM = alignedGrossProfit / alignedRevenue;
+  if (alignedRevenue !== null && alignedOperatingIncome !== null && alignedRevenue !== 0) metric.operatingMarginTTM = alignedOperatingIncome / alignedRevenue;
+  if (alignedNetIncome !== null && alignedEquity !== null && alignedEquity > 0) metric.roeTTM = alignedNetIncome / alignedEquity;
+  if (alignedNetIncome !== null && alignedAssets !== null && alignedAssets > 0) metric.roaTTM = alignedNetIncome / alignedAssets;
   if (dilutedEps !== null) metric.epsTTM = dilutedEps;
   if (currentPrice !== null && dilutedEps !== null && dilutedEps > 0) metric.peBasicExclExtraTTM = currentPrice / dilutedEps;
-  if (revenue !== null && dilutedShares !== null && dilutedShares > 0) metric.revenuePerShareTTM = revenue / dilutedShares;
+  if (alignedRevenue !== null && dilutedShares !== null && dilutedShares > 0 && endOf('dilutedShares') === incomeEnd) metric.revenuePerShareTTM = alignedRevenue / dilutedShares;
 
-  const date = facts.revenue?.end || facts.netIncome?.end || facts.assets?.end || secFacts.fetchedAt || null;
-  const incomeStatement = revenue !== null || netIncome !== null
-    ? {
+  const date = incomeEnd || balanceEnd || cashFlowEnd || secFacts.fetchedAt || null;
+  const incomeBucket = reportBucketForEnd(['revenue', 'grossProfit', 'operatingIncome', 'netIncome'], incomeEnd);
+  const incomeStatement = alignedRevenue !== null || alignedGrossProfit !== null || alignedOperatingIncome !== null || alignedNetIncome !== null
+    ? ({
         symbol,
-        annualReports: [{
-          fiscalDateEnding: date,
-          totalRevenue: revenue?.toString(),
-          netIncome: netIncome?.toString(),
+        [incomeBucket]: [{
+          fiscalDateEnding: incomeEnd,
+          totalRevenue: alignedRevenue?.toString(),
+          grossProfit: alignedGrossProfit?.toString(),
+          operatingIncome: alignedOperatingIncome?.toString(),
+          netIncome: alignedNetIncome?.toString(),
         }],
         __source: 'SEC companyfacts',
-      }
+      } as any)
     : undefined;
-  const balanceSheet = assets !== null || liabilities !== null || equity !== null || cash !== null
-    ? {
+  const balanceBucket = reportBucketForEnd(['assets', 'liabilities', 'equity', 'cash'], balanceEnd);
+  const balanceSheet = alignedAssets !== null || alignedLiabilities !== null || alignedEquity !== null || alignedCash !== null
+    ? ({
         symbol,
-        annualReports: [{
-          fiscalDateEnding: facts.assets?.end || facts.liabilities?.end || facts.equity?.end || date,
-          totalAssets: assets?.toString(),
-          totalLiabilities: liabilities?.toString(),
-          totalShareholderEquity: equity?.toString(),
-          cashAndCashEquivalentsAtCarryingValue: cash?.toString(),
+        [balanceBucket]: [{
+          fiscalDateEnding: balanceEnd,
+          totalAssets: alignedAssets?.toString(),
+          totalLiabilities: alignedLiabilities?.toString(),
+          totalShareholderEquity: alignedEquity?.toString(),
+          cashAndCashEquivalentsAtCarryingValue: alignedCash?.toString(),
         }],
         __source: 'SEC companyfacts',
-      }
+      } as any)
     : undefined;
-  const cashFlow = operatingCashFlow !== null || capex !== null || freeCashFlow !== null
-    ? {
+  const cashFlowBucket = reportBucketForEnd(['operatingCashFlow', 'capex'], cashFlowEnd);
+  const cashFlow = alignedOperatingCashFlow !== null || alignedCapex !== null || alignedFreeCashFlow !== null
+    ? ({
         symbol,
-        annualReports: [{
-          fiscalDateEnding: facts.operatingCashFlow?.end || facts.capex?.end || secFacts.freeCashFlow?.end || date,
-          operatingCashflow: operatingCashFlow?.toString(),
-          capitalExpenditures: capex?.toString(),
-          freeCashFlow: freeCashFlow?.toString(),
+        [cashFlowBucket]: [{
+          fiscalDateEnding: cashFlowEnd,
+          operatingCashflow: alignedOperatingCashFlow?.toString(),
+          capitalExpenditures: alignedCapex?.toString(),
+          freeCashFlow: alignedFreeCashFlow?.toString(),
         }],
         __source: 'SEC companyfacts',
-      }
+      } as any)
     : undefined;
   const basicFinancials = Object.keys(metric).length
     ? {
@@ -2061,7 +2124,7 @@ function buildToolDefinitions() {
       type: 'function',
       function: {
         name: 'get_dcf_valuation',
-        description: 'Compute a simplified Discounted Cash Flow (DCF) intrinsic value estimate for a stock. Uses trailing free cash flow, estimated growth rate, and a discount rate (WACC proxy) derived from the risk-free rate and beta. Returns intrinsic value per share, margin of safety, and valuation verdict. All inputs come from real provider data.',
+        description: 'Compute a simplified Discounted Cash Flow (DCF) model value for a stock. Uses trailing free cash flow, provider growth inputs or FCF trend, and a discount rate (WACC proxy) derived from official risk-free rate and provider beta. Returns intrinsic value per share, margin of safety, and valuation verdict. All inputs come from real provider/official data; unavailable inputs return N/A rather than assumptions.',
         parameters: {
           type: 'object',
           properties: {
@@ -2426,7 +2489,7 @@ export async function executeTool(
 
         const treasuryRates = await new TreasuryYieldCurveService().getLatestYieldCurve().catch(() => null);
         const treasury10Y = treasuryRates?.latest?.year10 != null ? Number(treasuryRates.latest.year10) : null;
-        const riskFreeRate = treasury10Y !== null && Number.isFinite(treasury10Y) ? treasury10Y / 100 : 0.04;
+        const riskFreeRate = treasury10Y !== null && Number.isFinite(treasury10Y) ? treasury10Y / 100 : null;
         const dcf = computeDcfValuation({
           overview,
           balanceSheet,
@@ -2435,7 +2498,7 @@ export async function executeTool(
           riskFreeRate,
           riskFreeRateSource: treasury10Y !== null && Number.isFinite(treasury10Y)
             ? `U.S. Treasury 10Y (${treasuryRates?.latest?.date || 'latest available'})`
-            : 'Fallback assumption (Treasury data unavailable)',
+            : undefined,
         });
 
         return {
@@ -2670,7 +2733,7 @@ export async function executeTool(
           const grossProfit = Number(overview.grossProfitTTM);
           const grossMarginTTM = Number.isFinite(revenue) && revenue !== 0 && Number.isFinite(grossProfit)
             ? grossProfit / revenue
-            : Number(overview.profitMargin) || null;
+            : null;
           return {
             symbol: overview.symbol,
             metric: {
@@ -2749,12 +2812,12 @@ export async function executeTool(
         const finalEarningsHistory = hasEarningsData ? earningsHistory : undefined;
 
         if (!hasIncomeData && !finalIncomeStatement) {
-          notes.push('Income statement unavailable from providers and SEC companyfacts; no estimated fallback was used.');
+          notes.push('Income statement unavailable from providers and SEC companyfacts; no synthetic fallback was used.');
         } else if (!hasIncomeData && finalIncomeStatement) {
-          notes.push('Income statement vendor endpoint unavailable; filled available revenue/net income from official SEC companyfacts.');
+          notes.push('Income statement vendor endpoint unavailable; filled available revenue, gross profit, operating income, and net income from official SEC companyfacts.');
         }
         if (!hasBalanceData && !finalBalanceSheet) {
-          notes.push('Balance sheet unavailable from providers and SEC companyfacts; no estimated fallback was used.');
+          notes.push('Balance sheet unavailable from providers and SEC companyfacts; no synthetic fallback was used.');
         } else if (!hasBalanceData && finalBalanceSheet) {
           notes.push('Balance sheet vendor endpoint unavailable; filled available assets/liabilities/equity/cash from official SEC companyfacts.');
         }
@@ -3079,7 +3142,7 @@ export async function executeTool(
           const grossProfit = Number(overview.grossProfitTTM);
           const grossMarginTTM = Number.isFinite(revenue) && revenue !== 0 && Number.isFinite(grossProfit)
             ? grossProfit / revenue
-            : Number(overview.profitMargin) || null;
+            : null;
           return {
             symbol: overview.symbol,
             metric: {
@@ -3780,7 +3843,7 @@ export async function executeTool(
           const grossMarginTTM =
             Number.isFinite(revenue) && revenue !== 0 && Number.isFinite(grossProfit)
               ? grossProfit / revenue
-              : Number(overview.profitMargin) || null;
+              : null;
           return {
             symbol: overview.symbol,
             metric: {

@@ -765,7 +765,7 @@ describe('generate_stock_report financial-data fallback', () => {
     quarterlyEarningsGrowth: '0.10',
   };
 
-  it('income statement table shows TTM estimated row when provider returns no data', async () => {
+  it('income statement table does not synthesize TTM rows when provider returns no data', async () => {
     (service.getCompanyOverview as ReturnType<typeof vi.fn>).mockResolvedValue(richOverview);
     (service.getIncomeStatement as ReturnType<typeof vi.fn>).mockResolvedValue({});
     (service.getBalanceSheet as ReturnType<typeof vi.fn>).mockResolvedValue({});
@@ -780,9 +780,8 @@ describe('generate_stock_report financial-data fallback', () => {
     expect(result.success).toBe(true);
     const content = result.data?.content as string;
 
-    expect(content).not.toContain('Income statement data unavailable');
-    expect(content).toContain('TTM (est.)');
-    expect(content).toContain('$');
+    expect(content).toContain('Income statement data unavailable');
+    expect(content).not.toContain('TTM (est.)');
   });
 
   it('income statement shows "unavailable" when even overview has no revenue data', async () => {
@@ -799,7 +798,7 @@ describe('generate_stock_report financial-data fallback', () => {
     expect(result.data?.content).toContain('Income statement data unavailable');
   });
 
-  it('balance sheet table shows equity row when provider returns no data', async () => {
+  it('balance sheet table does not synthesize equity rows when provider returns no data', async () => {
     (service.getCompanyOverview as ReturnType<typeof vi.fn>).mockResolvedValue(richOverview);
     (service.getBalanceSheet as ReturnType<typeof vi.fn>).mockResolvedValue({});
 
@@ -812,8 +811,8 @@ describe('generate_stock_report financial-data fallback', () => {
     expect(result.success).toBe(true);
     const content = result.data?.content as string;
 
-    expect(content).not.toContain('Balance sheet data unavailable');
-    expect(content).toContain('Latest (est.)');
+    expect(content).toContain('Balance sheet data unavailable');
+    expect(content).not.toContain('Latest (est.)');
   });
 
   it('cash flow section shows unavailable when no data and no reliable fallback', async () => {
@@ -886,6 +885,46 @@ describe('generate_stock_report financial-data fallback', () => {
 
     expect(content).not.toContain('TTM (est.)');
     expect(content).toContain('2024-09-30');
+  });
+
+  it('does not combine SEC companyfacts from different periods into one statement row', async () => {
+    (service.getCompanyOverview as ReturnType<typeof vi.fn>).mockResolvedValue({ name: 'Period Align Inc.', symbol: SYM });
+    (service.getIncomeStatement as ReturnType<typeof vi.fn>).mockResolvedValue({});
+    (service.getBalanceSheet as ReturnType<typeof vi.fn>).mockResolvedValue({});
+    (service.getCashFlow as ReturnType<typeof vi.fn>).mockResolvedValue({});
+    mockedAxios.get
+      .mockResolvedValueOnce({ data: { 0: { cik_str: 123456, ticker: SYM, title: 'Period Align Inc.' } } })
+      .mockResolvedValueOnce({
+        data: {
+          entityName: 'Period Align Inc.',
+          facts: {
+            'us-gaap': {
+              RevenueFromContractWithCustomerExcludingAssessedTax: {
+                units: {
+                  USD: [{ val: 10920000000, start: '2019-01-28', end: '2020-01-26', filed: '2020-03-01', form: '10-K', fp: 'FY' }],
+                },
+              },
+              NetIncomeLoss: {
+                units: {
+                  USD: [{ val: 18770000000, start: '2024-01-29', end: '2025-01-26', filed: '2025-03-01', form: '10-K', fp: 'FY' }],
+                },
+              },
+            },
+          },
+        },
+      });
+
+    const llmFill = vi.fn()
+      .mockResolvedValueOnce(LLM_TICKER)
+      .mockResolvedValueOnce('{}')
+      .mockResolvedValueOnce('Period alignment check. WATCH.');
+
+    const result = await executeTool('generate_stock_report', { symbol: SYM, range: '1y' }, service, { llmFill });
+    expect(result.success).toBe(true);
+    const content = result.data?.content as string;
+
+    expect(content).not.toContain('| 2020-01-26 | $10.92B | N/A | N/A | $18.77B |');
+    expect(content).not.toContain('$10.92B | N/A | N/A | $18.77B');
   });
 
   it('real earnings history takes priority over fallback when available', async () => {

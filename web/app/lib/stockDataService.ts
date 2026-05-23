@@ -156,7 +156,7 @@ export class AlphaVantageService implements StockDataService {
     const grossProfit = Number(overview.grossProfitTTM);
     const grossMarginTTM = Number.isFinite(revenue) && revenue !== 0 && Number.isFinite(grossProfit)
       ? grossProfit / revenue
-      : overview.profitMargin;
+      : null;
 
     return {
       symbol: overview.symbol || overview.Symbol,
@@ -3098,62 +3098,87 @@ type NormalizedSecFact = {
   label: string;
   unit: string;
   value: number;
+  start: string | null;
   end: string | null;
   filed: string | null;
   form: string | null;
+  fp: string | null;
   frame?: string | null;
+  period: 'annual' | 'interim' | 'instant';
 };
 
-const SEC_FACT_TAGS: Record<string, { label: string; tags: string[]; units: string[] }> = {
+const SEC_FACT_TAGS: Record<string, { label: string; tags: string[]; units: string[]; kind: 'duration' | 'instant' }> = {
   revenue: {
     label: 'Revenue',
     tags: ['RevenueFromContractWithCustomerExcludingAssessedTax', 'Revenues', 'SalesRevenueNet'],
     units: ['USD'],
+    kind: 'duration',
+  },
+  grossProfit: {
+    label: 'Gross profit',
+    tags: ['GrossProfit'],
+    units: ['USD'],
+    kind: 'duration',
+  },
+  operatingIncome: {
+    label: 'Operating income',
+    tags: ['OperatingIncomeLoss', 'IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest'],
+    units: ['USD'],
+    kind: 'duration',
   },
   netIncome: {
     label: 'Net income',
     tags: ['NetIncomeLoss', 'ProfitLoss'],
     units: ['USD'],
+    kind: 'duration',
   },
   assets: {
     label: 'Assets',
     tags: ['Assets'],
     units: ['USD'],
+    kind: 'instant',
   },
   liabilities: {
     label: 'Liabilities',
     tags: ['Liabilities'],
     units: ['USD'],
+    kind: 'instant',
   },
   equity: {
     label: 'Shareholders equity',
     tags: ['StockholdersEquity', 'StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest'],
     units: ['USD'],
+    kind: 'instant',
   },
   cash: {
     label: 'Cash and equivalents',
     tags: ['CashAndCashEquivalentsAtCarryingValue', 'CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents'],
     units: ['USD'],
+    kind: 'instant',
   },
   operatingCashFlow: {
     label: 'Operating cash flow',
     tags: ['NetCashProvidedByUsedInOperatingActivities'],
     units: ['USD'],
+    kind: 'duration',
   },
   capex: {
     label: 'Capital expenditures',
     tags: ['PaymentsToAcquirePropertyPlantAndEquipment', 'PaymentsToAcquireProductiveAssets'],
     units: ['USD'],
+    kind: 'duration',
   },
   dilutedShares: {
     label: 'Diluted shares',
     tags: ['WeightedAverageNumberOfDilutedSharesOutstanding'],
     units: ['shares'],
+    kind: 'duration',
   },
   dilutedEps: {
     label: 'Diluted EPS',
     tags: ['EarningsPerShareDiluted'],
     units: ['USD/shares', 'USD/shares'],
+    kind: 'duration',
   },
 };
 
@@ -3226,31 +3251,69 @@ export class SecCompanyFactsService {
     return { ...data, __source: 'SEC companyfacts' };
   }
 
-  private latestFact(companyFacts: any, config: { label: string; tags: string[]; units: string[] }): NormalizedSecFact | null {
+  private factDurationDays(fact: any): number | null {
+    const start = fact?.start ? Date.parse(String(fact.start)) : NaN;
+    const end = fact?.end ? Date.parse(String(fact.end)) : NaN;
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return null;
+    return Math.round((end - start) / (24 * 60 * 60 * 1000));
+  }
+
+  private isAnnualDurationFact(fact: any): boolean {
+    const fp = String(fact?.fp || '').toUpperCase();
+    const form = String(fact?.form || '').toUpperCase();
+    const frame = String(fact?.frame || '').toUpperCase();
+    const durationDays = this.factDurationDays(fact);
+    return (
+      fp === 'FY' ||
+      /^(10-K|20-F|40-F)$/.test(form) ||
+      (durationDays !== null && durationDays >= 300) ||
+      /^CY\d{4}$/.test(frame)
+    );
+  }
+
+  private sortFactsByPeriod(a: any, b: any): number {
+    const endCompare = String(b.end || '').localeCompare(String(a.end || ''));
+    if (endCompare !== 0) return endCompare;
+    return String(b.filed || '').localeCompare(String(a.filed || ''));
+  }
+
+  private latestFact(companyFacts: any, config: { label: string; tags: string[]; units: string[]; kind: 'duration' | 'instant' }): NormalizedSecFact | null {
     const usGaap = companyFacts?.facts?.['us-gaap'] || {};
-    for (const tag of config.tags) {
+    const candidates: Array<{ tag: string; unit: string; fact: any; tagRank: number }> = [];
+    for (const [tagRank, tag] of config.tags.entries()) {
       const concept = usGaap[tag];
       if (!concept?.units) continue;
       for (const unit of config.units) {
         const facts = Array.isArray(concept.units[unit]) ? concept.units[unit] : [];
-        const filtered = facts
+        candidates.push(...facts
           .filter((fact: any) => Number.isFinite(Number(fact.val)))
           .filter((fact: any) => !fact.form || /^(10-K|10-Q|20-F|40-F|6-K|8-K)$/i.test(String(fact.form)))
-          .sort((a: any, b: any) => String(b.filed || b.end || '').localeCompare(String(a.filed || a.end || '')));
-        const latest = filtered[0];
-        if (latest) {
-          return {
-            tag,
-            label: config.label,
-            unit,
-            value: Number(latest.val),
-            end: latest.end || null,
-            filed: latest.filed || null,
-            form: latest.form || null,
-            frame: latest.frame || null,
-          };
-        }
+          .filter((fact: any) => config.kind === 'instant' || this.factDurationDays(fact) !== null || this.isAnnualDurationFact(fact))
+          .map((fact: any) => ({ tag, unit, fact, tagRank })));
       }
+    }
+    const preferred = config.kind === 'duration'
+      ? candidates.filter((entry) => this.isAnnualDurationFact(entry.fact))
+      : candidates;
+    const latest = [...(preferred.length ? preferred : candidates)].sort((a, b) => {
+      const periodCompare = this.sortFactsByPeriod(a.fact, b.fact);
+      if (periodCompare !== 0) return periodCompare;
+      return a.tagRank - b.tagRank;
+    })[0];
+    if (latest) {
+      return {
+        tag: latest.tag,
+        label: config.label,
+        unit: latest.unit,
+        value: Number(latest.fact.val),
+        start: latest.fact.start || null,
+        end: latest.fact.end || null,
+        filed: latest.fact.filed || null,
+        form: latest.fact.form || null,
+        fp: latest.fact.fp || null,
+        frame: latest.fact.frame || null,
+        period: config.kind === 'instant' ? 'instant' : this.isAnnualDurationFact(latest.fact) ? 'annual' : 'interim',
+      };
     }
     return null;
   }
@@ -3264,7 +3327,7 @@ export class SecCompanyFactsService {
     const operatingCashFlow = facts.operatingCashFlow as NormalizedSecFact | null;
     const capex = facts.capex as NormalizedSecFact | null;
     const freeCashFlow =
-      operatingCashFlow && capex
+      operatingCashFlow && capex && operatingCashFlow.end && capex.end && operatingCashFlow.end === capex.end
         ? {
           label: 'Free cash flow',
           unit: 'USD',

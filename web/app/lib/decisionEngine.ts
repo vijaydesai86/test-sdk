@@ -93,7 +93,7 @@ type PillarResult = {
 // Inspired by Piotroski + Seeking Alpha profitability pillar.
 // Scores each metric on 0–100, averages available ones.
 function scoreProfitability(input: DecisionInput): PillarResult | null {
-  const grossMargin = normalizePercent(input.basicFinancials?.metric?.grossMarginTTM ?? input.companyOverview?.profitMargin);
+  const grossMargin = normalizePercent(input.basicFinancials?.metric?.grossMarginTTM);
   const operatingMargin = normalizePercent(input.basicFinancials?.metric?.operatingMarginTTM ?? input.companyOverview?.operatingMargin);
   const roe = normalizePercent(input.basicFinancials?.metric?.roeTTM ?? input.companyOverview?.returnOnEquity);
   const roa = normalizePercent(input.basicFinancials?.metric?.roaTTM ?? input.companyOverview?.returnOnAssets);

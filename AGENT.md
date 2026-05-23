@@ -41,11 +41,13 @@ General chat is supported for data-only questions (e.g. "what is NVDA's P/E?") b
 
 1. **Never fabricate financial data.** Prices, ratios, revenues, EPS, margins, insider activity, analyst targets — all must come from real provider API responses or direct arithmetic on those responses. If a field is unavailable, say so; do not fill it.
 
+   **Golden rule:** `N/A`, `Unavailable`, or an explicit data-gap note is always better than synthetic, inferred, estimated, backfilled, or model-memory financial data. This applies to every report mode and every section, including tables, charts, scorecards, conclusions, summaries, downloaded artifacts, and UI previews.
+
 2. **Correctness beats completeness.** Wrong, guessed, stale-looking-but-unverified, non-meaningful, or training-data-derived values are worse than missing data. Suppress implausible provider values and mark data as unavailable rather than showing false precision.
 
 3. **Never reintroduce synthetic fallbacks.** Do not generate fake income statement rows, balance sheet entries, cash flow entries, EPS history, market caps, 52-week ranges, yields, or price-derived fields from LLM memory, heuristics, or descriptions.
 
-4. **Provider truth beats LLM confidence.** The LLM orchestrates, explains, and synthesises. It may reason from supplied verified data, but it must not silently substitute missing provider data with model memory or web/training knowledge.
+4. **Provider truth beats LLM confidence.** The LLM orchestrates, explains, and synthesises. It may reason from supplied verified data, but it must not silently substitute missing provider data with model memory or web/training knowledge. Rendered report conclusions must be deterministic or tightly data-derived; do not include freeform LLM narratives that can introduce unsupported numbers or contradict tables.
 
 5. **No production hardcoding.** Do not hardcode company/ticker lists, provider facts, financial values, or special-case production behavior for individual companies. Hardcoded symbols and values are acceptable only in tests, fixtures, and mocks.
 

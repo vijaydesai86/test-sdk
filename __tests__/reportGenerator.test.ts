@@ -188,7 +188,7 @@ describe('computeDcfValuation', () => {
     expect(result.assumptions.fcfBasis).toBe('annual');
   });
 
-  it('annualizes only when fewer than four quarterly FCF periods are available and marks low confidence', () => {
+  it('does not annualize sparse quarterly FCF for DCF', () => {
     const result = computeDcfValuation({
       currentPrice: 100,
       riskFreeRate: 0.04,
@@ -203,10 +203,35 @@ describe('computeDcfValuation', () => {
       },
     });
 
-    expect(result.assumptions.baseFCF).toBe(360);
-    expect(result.assumptions.fcfBasis).toBe('annualized-latest-quarter');
+    expect(result.intrinsicValuePerShare).toBeNull();
+    expect(result.assumptions.baseFCF).toBeNull();
+    expect(result.assumptions.fcfBasis).toBe('unavailable');
     expect(result.confidence).toBe('Low');
-    expect(result.verdict).toMatch(/Low-confidence DCF/i);
+    expect(result.verdict).toBe('Insufficient data for DCF calculation');
+    expect(result.notes).toContain('DCF unavailable: fewer than four quarterly FCF periods were available and no annual cash-flow data was available.');
+  });
+
+  it('does not run DCF with fallback beta or risk-free-rate assumptions', () => {
+    const result = computeDcfValuation({
+      currentPrice: 100,
+      overview: {
+        sharesOutstanding: '100',
+        quarterlyRevenueGrowth: '10%',
+      },
+      cashFlow: {
+        annualReports: [
+          { operatingCashflow: '1000', capitalExpenditures: '-100' },
+          { operatingCashflow: '900', capitalExpenditures: '-100' },
+          { operatingCashflow: '800', capitalExpenditures: '-100' },
+        ],
+      },
+    });
+
+    expect(result.intrinsicValuePerShare).toBeNull();
+    expect(result.assumptions.beta).toBeNull();
+    expect(result.assumptions.riskFreeRate).toBeNull();
+    expect(result.notes).toContain('DCF unavailable: beta was unavailable.');
+    expect(result.notes).toContain('DCF unavailable: official risk-free rate was unavailable.');
   });
 
   it('accepts common provider cash-flow aliases and percent-formatted growth rates', () => {
@@ -283,7 +308,103 @@ describe('buildStockReport', () => {
     expect(report).toContain('# AAPL Comprehensive Equity Research Report');
   });
 
-  it('uses trailing four-quarter FCF for DCF instead of treating one quarter as annual', () => {
+  it('uses reported statement revenue consistently when overview revenue is unavailable', () => {
+    const report = buildStockReport({
+      ...minimalStock(),
+      companyOverview: {
+        name: 'Example Semiconductor',
+        marketCapitalization: '300000000000',
+        peRatio: '40',
+      },
+      incomeStatement: {
+        annualReports: [
+          {
+            fiscalDateEnding: '2026-03-31',
+            totalRevenue: '4920000000',
+            grossProfit: '4799000000',
+            operatingIncome: '900000000',
+            netIncome: '904000000',
+          },
+        ],
+      },
+    });
+
+    expect(report).toContain('- Revenue (latest annual): $4.92B');
+    expect(report).toContain('| Revenue (latest annual) | $4.92B |');
+    expect(report).toContain('| Market Cap / Revenue | 60.98 |');
+    expect(report).toContain('| 2026-03-31 | $4.92B | $4.80B | $900M | $904M |');
+    expect(report).not.toContain('| Revenue (TTM) | N/A |');
+  });
+
+  it('does not use quarterly-only revenue for annual valuation ratios', () => {
+    const report = buildStockReport({
+      ...minimalStock(),
+      companyOverview: {
+        name: 'Quarterly Only Inc.',
+        marketCapitalization: '300000000000',
+      },
+      incomeStatement: {
+        quarterlyReports: [
+          {
+            fiscalDateEnding: '2026-03-31',
+            totalRevenue: '1230000000',
+            grossProfit: '615000000',
+            operatingIncome: '246000000',
+          },
+        ],
+      },
+    });
+
+    expect(report).toContain('- Revenue (latest reported): $1.23B');
+    expect(report).toContain('| Revenue (latest reported) | $1.23B |');
+    expect(report).toContain('| Market Cap / Revenue | N/A |');
+    expect(report).toContain('| Price / Sales | N/A |');
+  });
+
+  it('formats negative free cash flow compactly without synthetic rows', () => {
+    const report = buildStockReport({
+      ...minimalStock(),
+      cashFlow: {
+        annualReports: [
+          {
+            fiscalDateEnding: '2026-03-31',
+            operatingCashflow: '139000000',
+            capitalExpenditures: '145000000',
+          },
+        ],
+      },
+    });
+
+    expect(report).toContain('| 2026-03-31 | $139M | $145M | -$6M | N/A |');
+    expect(report).not.toContain('$-6000000');
+    expect(report).not.toContain('TTM (est.)');
+  });
+
+  it('derives margins from reported statements when provider margin metrics are unavailable', () => {
+    const report = buildStockReport({
+      ...minimalStock(),
+      companyOverview: {
+        name: 'Statement Metrics Inc.',
+        marketCapitalization: '300000000000',
+      },
+      incomeStatement: {
+        annualReports: [
+          {
+            fiscalDateEnding: '2026-03-31',
+            totalRevenue: '4920000000',
+            grossProfit: '4799000000',
+            operatingIncome: '900000000',
+            netIncome: '904000000',
+          },
+        ],
+      },
+    });
+
+    expect(report).toContain('| Gross Margin (latest annual) | 97.5% |');
+    expect(report).toContain('| Operating Margin (latest annual) | 18.3% |');
+  });
+
+  it('does not render DCF in stock reports without an official risk-free-rate input', () => {
     const data: StockReportData = {
       ...richStock(),
       companyOverview: {
@@ -305,9 +426,8 @@ describe('buildStockReport', () => {
 
     const report = buildStockReport(data);
 
-    expect(report).toContain('Trailing 4-quarter FCF');
-    expect(report).toContain('Base FCF');
-    expect(report).toContain('$300');
+    expect(report).not.toContain('## 📐 DCF Valuation Estimate');
+    expect(report).not.toContain('Base FCF');
   });
 
   it('contains key structural sections', () => {
@@ -593,6 +713,36 @@ describe('buildComparisonReport', () => {
     expect(report).toContain('## 🧮 Valuation');
   });
 
+  it('uses reported statement financials consistently in comparison tables when overview revenue is unavailable', () => {
+    const items = twoCompanyItems();
+    items[0] = {
+      ...items[0],
+      overview: {
+        name: 'NVIDIA',
+        marketCapitalization: '300000000000',
+        peRatio: '40',
+        sector: 'Technology',
+      },
+      basicFinancials: { metric: {} },
+      incomeStatement: {
+        annualReports: [
+          {
+            fiscalDateEnding: '2026-03-31',
+            totalRevenue: '4920000000',
+            grossProfit: '4799000000',
+            operatingIncome: '900000000',
+            netIncome: '904000000',
+          },
+        ],
+      },
+    };
+
+    const report = buildComparisonReport({ ...baseComparison(), items });
+
+    expect(report).toContain('| NVIDIA (NVDA) | $4.92B | 97.5% | 18.3% |');
+    expect(report).toContain('| NVIDIA (NVDA) | 40.0 | N/A | N/A | 60.98 |');
+  });
+
   it('includes analyst view section', () => {
     const report = buildComparisonReport(baseComparison());
     expect(report).toContain('## 🧠 Analyst View');
@@ -759,6 +909,21 @@ describe('buildSectorReport', () => {
     expect(report).toContain('## 🧭 Indicative Allocation');
   });
 
+  it('reuses comparison financial semantics for reported statement revenue', () => {
+    const items = twoCompanyItems();
+    items[0] = {
+      ...items[0],
+      overview: { name: 'NVIDIA', marketCapitalization: '300000000000', peRatio: '40' },
+      basicFinancials: { metric: {} },
+      incomeStatement: {
+        annualReports: [{ fiscalDateEnding: '2026-03-31', totalRevenue: '4920000000', grossProfit: '4799000000', operatingIncome: '900000000' }],
+      },
+    };
+    const report = buildSectorReport({ ...baseSector(), items });
+
+    expect(report).toContain('| NVIDIA (NVDA) | $4.92B | 97.5% | 18.3% |');
+  });
+
   it('includes sector-specific investment conclusion', () => {
     const report = buildSectorReport(baseSector());
     expect(report).toContain('## 🎯 Investment Conclusion');
@@ -835,6 +1000,21 @@ describe('buildDeepSectorReport', () => {
   it('includes research report header', () => {
     const report = buildDeepSectorReport(baseDeep());
     expect(report).toContain('# Research Report: Quantum Computing');
+  });
+
+  it('reuses comparison financial semantics inside deep research reports', () => {
+    const data = baseDeep();
+    data.items[0] = {
+      ...data.items[0],
+      overview: { name: 'IBM', marketCapitalization: '300000000000', peRatio: '40' },
+      basicFinancials: { metric: {} },
+      incomeStatement: {
+        annualReports: [{ fiscalDateEnding: '2026-03-31', totalRevenue: '4920000000', grossProfit: '4799000000', operatingIncome: '900000000' }],
+      },
+    };
+    const report = buildDeepSectorReport(data);
+
+    expect(report).toContain('| IBM (IBM) | $4.92B | 97.5% | 18.3% |');
   });
 
   it('includes research methodology section', () => {
@@ -1036,12 +1216,13 @@ describe('investment conclusion derivation', () => {
 // ─── LLM conclusion integration ───────────────────────────────────────────────
 
 describe('LLM conclusion integration', () => {
-  it('stock report uses llmConclusion narrative when provided', () => {
+  it('stock report ignores llmConclusion narrative and uses deterministic conclusion text', () => {
     const llmText = 'After thorough analysis of the real API data, Apple demonstrates exceptional financial strength. Revenue grew strongly. BUY recommendation with a core portfolio allocation.';
     const report = buildStockReport({ ...richStock(), llmConclusion: llmText });
     expect(report).toContain('## 🎯 Investment Conclusion');
-    expect(report).toContain(llmText);
-    expect(report).toContain('### 📋 Quick Reference');
+    expect(report).not.toContain(llmText);
+    expect(report).not.toContain('### 📋 Quick Reference');
+    expect(report).toMatch(/Suggested Portfolio Role:/);
   });
 
   it('stock report without llmConclusion uses structured fallback', () => {
@@ -1052,12 +1233,11 @@ describe('LLM conclusion integration', () => {
     expect(report).not.toContain('### 📋 Quick Reference');
   });
 
-  it('stock report quick reference section shows real metrics when llmConclusion present', () => {
-    const llmText = 'Strong financials observed from API data. BUY.';
-    const report = buildStockReport({ ...richStock(), llmConclusion: llmText });
-    // Rating and composite score should appear in quick reference
+  it('stock report deterministic conclusion shows real metrics even when llmConclusion is present', () => {
+    const report = buildStockReport({ ...richStock(), llmConclusion: 'Unsupported narrative. BUY.' });
     expect(report).toContain('**Rating:**');
     expect(report).toContain('**Composite Score:**');
+    expect(report).not.toContain('Unsupported narrative');
   });
 
   it('ignores malformed llmConclusion payloads and falls back to the structured conclusion', () => {
@@ -1142,7 +1322,7 @@ describe('LLM conclusion integration', () => {
     expect(report).toContain('Score source: Decision Snapshot overall score when available; otherwise the data-only composite score.');
   });
 
-  it('comparison report uses llmConclusion narrative when provided', () => {
+  it('comparison report ignores llmConclusion narrative when provided', () => {
     const llmText = 'Based on the real API data collected, NVDA leads the AI chip sector with superior margins. BUY NVDA as a core position.';
     const data: ComparisonReportData = {
       generatedAt: '2025-01-01T00:00:00Z',
@@ -1154,7 +1334,7 @@ describe('LLM conclusion integration', () => {
     };
     const report = buildComparisonReport(data);
     expect(report).toContain('## 🎯 Investment Conclusion');
-    expect(report).toContain(llmText);
+    expect(report).not.toContain(llmText);
     expect(report).toContain('### 📊 Company Quick Reference');
   });
 
@@ -1174,7 +1354,7 @@ describe('LLM conclusion integration', () => {
     expect(report).not.toContain('After thorough analysis');
   });
 
-  it('sector report uses llmConclusion narrative when provided', () => {
+  it('sector report ignores llmConclusion narrative when provided', () => {
     const llmText = 'The AI chip sector shows robust growth driven by data center demand. NVDA remains the top pick at 85% gross margin.';
     const data: SectorReportData = {
       sectorQuery: 'AI chips',
@@ -1187,7 +1367,7 @@ describe('LLM conclusion integration', () => {
       llmConclusion: llmText,
     };
     const report = buildSectorReport(data);
-    expect(report).toContain(llmText);
+    expect(report).not.toContain(llmText);
     expect(report).toContain('### 📊 Company Quick Reference');
   });
 });
@@ -1395,6 +1575,66 @@ describe('buildWatchlistDailyReport', () => {
     expect(report).toContain('## 1. Apple Inc. (AAPL)');
     expect(report).toContain('## 2. NVIDIA (NVDA)');
     expect(report).toContain('### 🏢 Business Overview');
+  });
+
+  it('embeds stock reports with the same reported statement revenue semantics', () => {
+    const report = buildWatchlistDailyReport({
+      generatedAt: '2025-01-02T00:00:00Z',
+      watchlistName: 'Core Watchlist',
+      items: [
+        {
+          symbol: 'EXM',
+          companyName: 'Example Semiconductor',
+          stock: {
+            ...minimalStock(),
+            symbol: 'EXM',
+            companyOverview: {
+              name: 'Example Semiconductor',
+              marketCapitalization: '300000000000',
+            },
+            incomeStatement: {
+              annualReports: [
+                {
+                  fiscalDateEnding: '2026-03-31',
+                  totalRevenue: '4920000000',
+                  grossProfit: '4799000000',
+                  operatingIncome: '900000000',
+                },
+              ],
+            },
+          },
+          action: 'Watch',
+          reason: 'Wait for a better setup.',
+        },
+      ],
+    });
+
+    expect(report).toContain('- Revenue (latest annual): $4.92B');
+    expect(report).toContain('| Revenue (latest annual) | $4.92B |');
+    expect(report).not.toContain('| Revenue (TTM) | N/A |');
+  });
+
+  it('uses scorecard wording that does not imply missing profitability inputs were present', () => {
+    const report = buildWatchlistDailyReport({
+      generatedAt: '2025-01-02T00:00:00Z',
+      watchlistName: 'Core Watchlist',
+      items: [
+        {
+          symbol: 'ROE',
+          companyName: 'ROE Only Inc.',
+          stock: {
+            ...minimalStock(),
+            symbol: 'ROE',
+            companyOverview: { name: 'ROE Only Inc.' },
+            basicFinancials: { metric: { roeTTM: 0.232 } },
+          },
+          action: 'Watch',
+          reason: 'Insufficient verified core data.',
+        },
+      ],
+    });
+
+    expect(report).toContain('Profitability: 23.2 (avg of available gross margin, operating margin, and ROE inputs)');
   });
 
   it('treats explicit watch actions as hold-for-owners and watch-for-non-owners', () => {

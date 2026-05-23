@@ -14,6 +14,14 @@ export function getTtlMinutesForKey(key: string): number {
 
 export function deriveAsOf(label: string, data: any): string | null {
   if (!data || typeof data !== 'object') return null;
+  if (/sec companyfacts/i.test(label) || data.facts) {
+    const factDates = Object.values(data.facts || {})
+      .map((fact: any) => fact?.end)
+      .filter(Boolean)
+      .map(String)
+      .sort((a, b) => b.localeCompare(a));
+    if (factDates.length > 0) return factDates[0];
+  }
   const dateFields = [
     data.latestTradingDay,
     data.lastUpdated,

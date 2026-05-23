@@ -36,4 +36,23 @@ describe('dataTrust', () => {
 
     vi.useRealTimers();
   });
+
+  it('derives SEC companyfacts as-of dates from fact period ends, not fetch time', () => {
+    const entry = createTrustEntry({
+      key: 'secFinancialFacts',
+      label: 'SEC companyfacts',
+      provider: 'SEC companyfacts',
+      fetchedAt: '2026-05-23T11:23:16.679Z',
+      data: {
+        fetchedAt: '2026-05-23T11:23:16.679Z',
+        facts: {
+          revenue: { value: 4920000000, end: '2026-03-31' },
+          assets: { value: 10703000000, end: '2026-03-31' },
+          cash: { value: 2751000000, end: '2025-12-31' },
+        },
+      },
+    });
+
+    expect(entry.asOf).toBe('2026-03-31');
+  });
 });

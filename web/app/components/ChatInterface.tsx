@@ -1357,7 +1357,7 @@ create index if not exists saved_reports_report_date_idx on public.saved_reports
                         </div>
                         <p className="mt-1 line-clamp-2 text-xs leading-5 text-slate-400">{buildSavedSummary(report)}</p>
                         <p className="mt-2 text-[11px] uppercase tracking-[0.16em] text-slate-500">
-                          {formatShortDate(report.report_date ?? report.created_at) || 'Saved report'}
+                          {formatShortDate(getDateBucket(report.report_date ?? report.created_at, report.storage_path ?? report.filename)) || 'Saved report'}
                         </p>
                       </button>
                       <div className="flex shrink-0 items-center gap-2">
