@@ -204,7 +204,7 @@ export function computeDcfValuation(args: {
   const wacc = riskFreeRate !== null && effectiveBeta !== null ? riskFreeRate + effectiveBeta * equityRiskPremium : null;
   const terminalGrowth = 0.025;
 
-  const assumptions = {
+  const assumptions: DcfValuationResult['assumptions'] = {
     baseFCF: base.baseFCF,
     fcfBasis: base.basis,
     fcfBasisLabel: base.basisLabel,
