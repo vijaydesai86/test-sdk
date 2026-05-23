@@ -51,7 +51,7 @@ export const DEFAULT_PORTFOLIO_PROFILE: PortfolioProfile = {
   strategyNotes: 'Focus on high-quality businesses, maintain valuation discipline, and prefer waiting over forcing a trade.',
 };
 export const DEFAULT_WATCHLIST_SEED: SeedItem[] = [
-  { symbol: 'TSMC', companyName: 'Taiwan Semiconductor Manufacturing Company' },
+  { symbol: 'TSM', companyName: 'Taiwan Semiconductor Manufacturing Company' },
   {
     symbol: 'NVDA',
     companyName: 'NVIDIA',

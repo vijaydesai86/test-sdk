@@ -15,7 +15,7 @@ Report-style requests are guarded server-side: if the model answers a stock, com
 | **Stock report** | `Generate a stock report for NVDA` | Full deep-dive: price, financials, earnings, insider activity, analyst ratings, technicals (RSI, MACD, Bollinger, Stochastic), dividend analysis, DCF valuation, moat analysis, investment thesis |
 | **Comparison report** | `Compare NVDA, AMD, INTC` · `Tesla vs Rivian` | Explicit user-given stock comparisons with verified market data, financials, valuation, technicals, and side-by-side decision guidance |
 | **Research report** | `Deep research on semiconductors` · `Best dividend stocks` | Comprehensive deep research for sectors, themes, industries, baskets, and open-ended topics. Fetches verified core market data first, then adds ecosystem/dependency synthesis when budget allows |
-| **Watchlist daily** | `Generate daily report for my watchlist` | One combined report covering every company in the saved watchlist |
+| **Watchlist daily** | `Generate daily report for my watchlist` | One combined report covering every company in the saved watchlist. Saved ticker symbols are normalized and trusted during the report so provider search hiccups do not reject valid watchlist entries. |
 
 **Transparent decision engine:**
 

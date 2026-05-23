@@ -52,8 +52,8 @@ describe('watchlistStore', () => {
     const watchlist = await store.getDefaultWatchlist();
 
     expect(watchlist.items.length).toBe(15);
-    expect(watchlist.items[0].symbol).toBe('NVDA');
-    expect(watchlist.items[14].symbol).toBe('META');
+    expect(watchlist.items[0].symbol).toBe('TSM');
+    expect(watchlist.items[14].symbol).toBe('MSFT');
   });
 
   it('adds and updates watchlist item position metadata in filesystem mode', async () => {

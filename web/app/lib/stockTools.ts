@@ -1519,6 +1519,17 @@ export const resolveSymbolFromQuery = async (stockService: StockDataService, que
     const scored = candidates
       .map((item, i) => ({ item, score: scoreSearchMatch(cleanedQuery, item, i) }))
       .sort((a, b) => b.score - a.score);
+    const exactTicker = isLikelyTicker
+      ? scored.find((row) => normalizeTickerCandidate(row.item?.symbol) === cleanedQuery.toUpperCase())
+      : undefined;
+    if (exactTicker) {
+      return {
+        ok: true,
+        symbol: cleanedQuery.toUpperCase(),
+        exactProviderMatch: true,
+        candidates: scored.slice(0, 5).map((row) => row.item),
+      };
+    }
     const top = scored[0];
     const second = scored[1];
     // Two results are considered share-class variants of the same company
@@ -2532,6 +2543,7 @@ export async function executeTool(
         const skipPerCompanyLLM = Boolean(args.skipLLM);
         const coreOnly = Boolean(args.coreOnly);
         const forceCriticalData = Boolean(args.forceCriticalData);
+        const trustedTickerInput = Boolean(args.trustedTicker);
 
         // Resolve to a live provider-confirmed ticker before fetching financials.
         // Search comes before LLM for company names so a model cannot map a live
@@ -2539,15 +2551,19 @@ export async function executeTool(
         let symbol: string | undefined;
         let apiResolved: Awaited<ReturnType<typeof resolveSymbolFromQuery>> | undefined;
         const directTicker = normalizeTickerCandidate(symbolQuery);
-        if (hasExchangePrefix(symbolQuery)) {
+        if (trustedTickerInput && directTicker) {
+          symbol = directTicker;
+        } else if (hasExchangePrefix(symbolQuery)) {
           if (directTicker && await validateResolvedTicker(stockService, directTicker)) {
             symbol = directTicker;
           }
         } else {
           apiResolved = await resolveSymbolFromQuery(stockService, symbolQuery);
           const apiTicker = normalizeTickerCandidate((apiResolved as any)?.symbol);
-          if (apiResolved.ok && apiTicker && await validateResolvedTicker(stockService, apiTicker)) {
-            symbol = apiTicker;
+          if (apiResolved.ok && apiTicker) {
+            if ((apiResolved as any).exactProviderMatch || await validateResolvedTicker(stockService, apiTicker)) {
+              symbol = apiTicker;
+            }
           }
           if (!symbol && directTicker && await validateResolvedTicker(stockService, directTicker)) {
             symbol = directTicker;
@@ -3359,7 +3375,7 @@ export async function executeTool(
           async (item) => {
             const result = await executeTool(
               'generate_stock_report',
-              { symbol: item.symbol, range, skipSave: true, includeRawData: true, skipLLM: true, coreOnly, forceCriticalData: true },
+              { symbol: item.symbol, range, skipSave: true, includeRawData: true, skipLLM: true, coreOnly, forceCriticalData: true, trustedTicker: true },
               stockService,
               options
             );
@@ -3403,13 +3419,13 @@ export async function executeTool(
             async (item) => {
               const result = await executeTool(
                 'generate_stock_report',
-              { symbol: item.symbol, range, skipSave: true, includeRawData: true, skipLLM: true, coreOnly, forceCriticalData: true },
-              stockService,
-              options
-            );
-            return { item, result };
-          },
-          () => !isDeadlineNear(deadlineAt)
+                { symbol: item.symbol, range, skipSave: true, includeRawData: true, skipLLM: true, coreOnly, forceCriticalData: true, trustedTicker: true },
+                stockService,
+                options
+              );
+              return { item, result };
+            },
+            () => !isDeadlineNear(deadlineAt)
           );
           const retryFailures: string[] = [];
           for (const entry of retryResults) {

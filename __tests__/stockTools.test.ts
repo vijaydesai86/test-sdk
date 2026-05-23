@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { promises as fsp } from 'fs';
 import path from 'path';
 import axios from 'axios';
-import { executeTool } from '../web/app/lib/stockTools';
+import { executeTool, resolveSymbolFromQuery } from '../web/app/lib/stockTools';
 import type { StockDataService } from '../web/app/lib/stockDataService';
 
 vi.mock('axios');
@@ -182,11 +182,63 @@ describe('executeTool routing', () => {
   });
 });
 
+describe('resolveSymbolFromQuery', () => {
+  it('accepts an exact provider-search ticker match without requiring price validation first', async () => {
+    const service = stubService();
+    (service.searchStock as ReturnType<typeof vi.fn>).mockResolvedValue({
+      results: [
+        { symbol: 'MSFT', name: 'MICROSOFT CORP', region: 'United States', currency: 'USD', type: 'Equity' },
+        { symbol: 'MSFT34', name: 'MICROSOFT CORP BDR', region: 'Brazil', currency: 'BRL', type: 'Equity' },
+      ],
+    });
+    (service.getStockPrice as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('Transient provider failure'));
+
+    const result = await resolveSymbolFromQuery(service, 'MSFT');
+
+    expect(result.ok).toBe(true);
+    expect((result as any).symbol).toBe('MSFT');
+    expect(service.getStockPrice).not.toHaveBeenCalled();
+  });
+});
+
 // ─── generate_stock_report ────────────────────────────────────────────────────
 
 describe('generate_stock_report via executeTool', () => {
   let service: StockDataService;
   beforeEach(() => { service = stubService(); });
+
+  it('does not revalidate exact provider-search ticker matches before building the report', async () => {
+    (service.searchStock as ReturnType<typeof vi.fn>).mockResolvedValue({
+      results: [
+        { symbol: 'MSFT', name: 'MICROSOFT CORP', region: 'United States', currency: 'USD', type: 'Equity' },
+      ],
+    });
+
+    const result = await executeTool(
+      'generate_stock_report',
+      { symbol: 'MSFT', range: '1y', skipSave: true, skipLLM: true },
+      service
+    );
+
+    expect(result.success).toBe(true);
+    expect(service.getStockPrice).toHaveBeenCalledTimes(1);
+    expect(service.getStockPrice).toHaveBeenCalledWith('MSFT');
+  });
+
+  it('trusts caller-validated ticker inputs without search or preflight validation', async () => {
+    (service.searchStock as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('Search provider unavailable'));
+
+    const result = await executeTool(
+      'generate_stock_report',
+      { symbol: 'MSFT', range: '1y', skipSave: true, skipLLM: true, trustedTicker: true },
+      service
+    );
+
+    expect(result.success).toBe(true);
+    expect(service.searchStock).not.toHaveBeenCalled();
+    expect(service.getStockPrice).toHaveBeenCalledTimes(1);
+    expect(service.getStockPrice).toHaveBeenCalledWith('MSFT');
+  });
 
   it('produces a report with price/EPS chart sections when data is available', async () => {
     (service.getPriceHistory as ReturnType<typeof vi.fn>).mockResolvedValue({
@@ -904,6 +956,8 @@ describe('generate_watchlist_daily_report via executeTool', () => {
   });
 
   it('builds one combined report for all watchlist companies', async () => {
+    (service.searchStock as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('Search provider unavailable'));
+
     const result = await executeTool('generate_watchlist_daily_report', { range: '1y', skipSave: true }, service);
 
     expect(result.success).toBe(true);
@@ -914,5 +968,6 @@ describe('generate_watchlist_daily_report via executeTool', () => {
     expect(result.data?.content).toContain('## 2. AMD (AMD)');
     expect(service.getStockPrice).toHaveBeenCalledWith('NVDA');
     expect(service.getStockPrice).toHaveBeenCalledWith('AMD');
+    expect(service.searchStock).not.toHaveBeenCalled();
   });
 });

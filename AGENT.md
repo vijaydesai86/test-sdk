@@ -14,7 +14,7 @@ These rules apply before implementation details:
 
 3. **Use a holistic approach.** Do not make a narrow local fix without checking the impact on the product modes, shared report pipeline, provider fallbacks, Vercel runtime behavior, local behavior, persistence, docs, and tests.
 
-4. **Verify before claiming done.** Run every practical relevant check before saying work is complete: targeted tests, broader test suites when available, typecheck, lint, production build, and install/build checks for dependency or deployment changes. If a check cannot run, state exactly why.
+4. **Verify before claiming done.** Run every practical relevant check before saying work is complete: typecheck, lint, production build, and install/build checks for dependency or deployment changes. Do not run `vitest`/`npm test` by default in this repo; only run Vitest when the user explicitly asks for it, and otherwise state that Vitest was skipped by repo instruction. If a check cannot run, state exactly why.
 
 5. **Add tests for behavior changes.** New features, bug fixes, routing changes, provider fallback changes, data-quality guards, report-generation changes, and timeout behavior require focused tests where the repo has a practical test path.
 
@@ -211,7 +211,7 @@ OPENFIGI_API_KEY        →  OpenFigiService (ticker mapping/search specialist)
 - Disk cache at `CACHE_DIR` (inside `REPORTS_DIR`) with `STOCK_CACHE_TTL_MS` TTL (default 7 days) prevents redundant API calls across report runs.
 - Vercel report generation must spend time in priority order: critical decision inputs first, high-value enrichment second, optional context third, LLM narration/refinement only when enough time remains to render and save the report.
 - Local report generation should not use Vercel deadline truncation; it should try to collect the full configured data set while still respecting provider throttles/cooldowns.
-- Single-stock and watchlist ticker inputs must be resolved through live provider search/validation before fetching market data. Display symbols or informal names (for example company names stored in a watchlist) must not be assumed to be official tickers.
+- Free-form single-stock ticker/name inputs must be resolved through live provider search/validation before fetching market data. Saved watchlist symbols are normalized by `watchlistStore.ts` and then treated as caller-trusted ticker inputs during watchlist daily reports, so transient provider search or preflight price-validation failures do not reject valid saved tickers.
 
 ### Standalone services (not part of StockDataService interface)
 
@@ -372,7 +372,7 @@ Before merging any change, verify:
 - [ ] Does this use LLMs only for orchestration/reasoning/synthesis, not factual market data?
 - [ ] Does this avoid duplicating report/data logic that should be shared?
 - [ ] Were focused tests added for new or changed behavior where practical?
-- [ ] Were all practical relevant checks run (targeted tests, suites, typecheck, lint, build, install/build when needed)?
+- [ ] Were all practical relevant non-Vitest checks run (typecheck, lint, build, install/build when needed), with Vitest skipped unless explicitly requested by the user?
 - [ ] Does this keep README.md, AGENT.md, and CHANGELOG.md aligned with the current code?
 - [ ] Does CHANGELOG.md have an entry for this change?
 
