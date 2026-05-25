@@ -134,7 +134,7 @@ _Note: SEC EDGAR filings (`get_sec_filings`), SEC XBRL company facts (`get_sec_c
 | `DEEP_RESEARCH_DEPTH` | `1` | Optional post-core-data ecosystem/refinement passes for research reports. Core market data is fetched before any pass runs. Range: 1–3. |
 | `DEEP_RESEARCH_MAX_MS` | `240000` on Vercel, `600000` local | Runtime budget for deep research (ms). Vercel is clamped under the 300 s function limit; local can run longer for completeness. |
 | `DATA_FETCH_CONCURRENCY` | `3` | Parallel ticker fetches per report round. Range: 1–4. |
-| `VERCEL_EXTENDED_DATA_MAX_COMPANIES` | `3` | On Vercel, reports larger than this prioritize core decision inputs and cached optional data so free-tier providers do not consume the whole 300 s function window. Local runs still attempt extended data. |
+| `VERCEL_EXTENDED_DATA_MAX_COMPANIES` | `3` | On Vercel, reports larger than this preserve the configured company/watchlist universe but prioritize core decision inputs and cached optional data so free-tier providers do not consume the whole 300 s function window. Improve/update passes fill missing fields in later saved versions. Local runs still attempt extended data. |
 | `REPORTS_DIR` | `reports` (local) / `/tmp/reports` (Vercel) | Where generated report files are stored. |
 | `STOCK_CACHE_TTL_MS` | `604800000` (7 days) | How long fetched data is cached on disk. |
 | `REPORT_IMPROVE_DEFAULT_PASSES` | `3` | Default number of browser-coordinated improve passes when the user clicks Improve report. |

@@ -36,6 +36,7 @@ interface SavedReportMeta {
   report_date?: string | null;
   report_kind?: string | null;
   storage_path?: string | null;
+  downloadUrl?: string;
 }
 
 interface ImproveCoverageStats {
@@ -284,6 +285,18 @@ function buildSavedSummary(item: Pick<SavedReportMeta, 'summary' | 'report_kind'
   if (item.summary?.trim()) return item.summary.trim();
   if (item.report_kind?.trim()) return `${humanizeSlug(item.report_kind)} report`;
   return `Saved markdown report for ${humanizeSlug(item.filename)}.`;
+}
+
+function artifactFromSavedReport(report: SavedReportMeta): ReportItem {
+  return {
+    filename: report.filename,
+    downloadUrl: report.downloadUrl ?? `/api/saved-reports/${report.id}`,
+    title: report.title ?? report.filename,
+    summary: report.summary ?? undefined,
+    reportDate: report.report_date ?? report.created_at,
+    reportKind: report.report_kind ?? undefined,
+    storagePath: report.storage_path ?? undefined,
+  };
 }
 
 function reportImproveId(item: Pick<ReportItem, 'downloadUrl' | 'storagePath' | 'filename'>) {
@@ -736,14 +749,30 @@ export default function ChatInterface() {
     });
   };
 
+  const upsertArtifactReportMeta = (report: SavedReportMeta) => {
+    const artifact = artifactFromSavedReport(report);
+    const artifactKey = artifact.downloadUrl ?? artifact.storagePath ?? artifact.filename;
+    setSavedReports((prev) => {
+      const withoutDuplicate = prev.filter((item) => (
+        (item.downloadUrl ?? item.storagePath ?? item.filename) !== artifactKey
+      ));
+      return [artifact, ...withoutDuplicate];
+    });
+  };
+
   const handleSupabaseReportImprove = async (report: SavedReportMeta, maxPasses = 3) => {
     const existing = improveProgress[report.id];
     if (existing?.status === 'running' || existing?.status === 'waiting') return;
     setError(null);
     let currentReportId = report.id;
     let latestReport: SavedReportMeta | null = null;
+    const sourceUrls = new Set([
+      `/api/saved-reports/${report.id}`,
+      report.downloadUrl,
+    ].filter(Boolean));
 
     for (let pass = 1; pass <= maxPasses; pass += 1) {
+      sourceUrls.add(`/api/saved-reports/${currentReportId}`);
       setImproveProgress((prev) => ({
         ...prev,
         [report.id]: {
@@ -766,6 +795,7 @@ export default function ChatInterface() {
         if (payload.latestReport) {
           latestReport = payload.latestReport;
           upsertSavedReportMeta(payload.latestReport);
+          upsertArtifactReportMeta(payload.latestReport);
           currentReportId = payload.latestReport.id;
         }
 
@@ -789,7 +819,7 @@ export default function ChatInterface() {
           },
         }));
 
-        if (latestReport && reportUrl === `/api/saved-reports/${report.id}`) {
+        if (latestReport && reportUrl && sourceUrls.has(reportUrl)) {
           await handleSupabaseReportClick(latestReport);
         }
         if (payload.status !== 'continue') break;
@@ -832,6 +862,7 @@ export default function ChatInterface() {
       report_date: item.reportDate || null,
       report_kind: item.reportKind || null,
       storage_path: item.storagePath || null,
+      downloadUrl: item.downloadUrl,
     };
     await handleSupabaseReportImprove(report, maxPasses);
   };

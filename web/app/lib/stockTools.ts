@@ -154,15 +154,6 @@ function pushDeadlineNote(notes: string[], deadlineAt?: number): boolean {
   return true;
 }
 
-function budgetedCompanyLimit(requestedCount: number, deadlineAt?: number): number {
-  if (!deadlineAt || !process.env.VERCEL) return requestedCount;
-  const remaining = remainingMs(deadlineAt);
-  if (remaining > 210000) return Math.min(requestedCount, 8);
-  if (remaining > 150000) return Math.min(requestedCount, 8);
-  if (remaining > 100000) return Math.min(requestedCount, 6);
-  return Math.min(requestedCount, 3);
-}
-
 async function mapWithConcurrency<T, R>(
   items: T[],
   concurrency: number,
@@ -3410,9 +3401,7 @@ export async function executeTool(
               companyNews,
               secFinancialFacts,
             };
-          },
-          () => !isDeadlineNear(deadlineAt),
-          Math.min(2, universe.length)
+          }
         );
 
         // Phase 2: Build items from API data
@@ -3663,6 +3652,15 @@ export async function executeTool(
           watchlist.items,
           DATA_FETCH_CONCURRENCY,
           async (item) => {
+            if (isDeadlineNear(deadlineAt)) {
+              return {
+                item,
+                result: {
+                  success: false,
+                  error: 'Runtime budget reached before this item could be refreshed.',
+                },
+              };
+            }
             const result = await executeTool(
               'generate_stock_report',
               { symbol: item.symbol, range, skipSave: true, includeRawData: true, skipLLM: true, coreOnly, forceCriticalData: true, trustedTicker: true },
@@ -3670,9 +3668,7 @@ export async function executeTool(
               options
             );
             return { item, result };
-          },
-          () => !isDeadlineNear(deadlineAt),
-          1
+          }
         );
 
         const successfulItems: Array<{ symbol: string; companyName: string; stock: any }> = [];
@@ -3714,6 +3710,15 @@ export async function executeTool(
             retryItems,
             1, // Sequential retries to avoid triggering rate limits again
             async (item) => {
+              if (isDeadlineNear(deadlineAt)) {
+                return {
+                  item,
+                  result: {
+                    success: false,
+                    error: 'Runtime budget reached before this retry could run.',
+                  },
+                };
+              }
               const result = await executeTool(
                 'generate_stock_report',
                 { symbol: item.symbol, range, skipSave: true, includeRawData: true, skipLLM: true, coreOnly, forceCriticalData: true, trustedTicker: true },
@@ -3721,8 +3726,7 @@ export async function executeTool(
                 options
               );
               return { item, result };
-            },
-            () => !isDeadlineNear(deadlineAt)
+            }
           );
           const retryFailures: string[] = [];
           for (const entry of retryResults) {
@@ -3927,10 +3931,7 @@ export async function executeTool(
           }
         };
         const requestedFinalCount = Math.min(NUM_COMPANIES, Math.max(3, Number(args.count) || NUM_COMPANIES));
-        const finalCount = budgetedCompanyLimit(requestedFinalCount, deadlineAt);
-        if (finalCount < requestedFinalCount) {
-          timeNotes.push(`Vercel budget prioritized ${finalCount} companies from the requested ${requestedFinalCount} so the report could be saved before timeout.`);
-        }
+        const finalCount = requestedFinalCount;
         // Fetch roughly 2x candidates only when there is enough time to refine them.
         const initialCount = hasReportWorkBudget(deadlineAt, 'optional', requestedFinalCount)
           ? Math.min(NUM_COMPANIES * 2, finalCount * 2)
@@ -4357,9 +4358,7 @@ export async function executeTool(
               companyNews,
               secFinancialFacts,
             };
-          },
-          () => !timeBudgetExceeded(),
-          Math.min(2, universe.length)
+          }
         );
 
         const items: any[] = [];
