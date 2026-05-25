@@ -5,6 +5,7 @@ import {
   buildImproveToolRequest,
   coverageStats,
   decideImproveStatus,
+  loadSavedReportForImproveByStoragePath,
   loadSavedReportForImprove,
   parseImproveConfig,
   savedReportMetaFromToolData,
@@ -21,6 +22,7 @@ type ImproveBody = {
   maxPasses?: unknown;
   passNumber?: unknown;
   target?: unknown;
+  storagePath?: unknown;
 };
 
 function parsePassNumber(value: unknown): number {
@@ -46,7 +48,10 @@ export async function POST(
     target: body.target,
   });
   const passNumber = parsePassNumber(body.passNumber);
-  const report = await loadSavedReportForImprove(id);
+  const report = await loadSavedReportForImprove(id)
+    || (typeof body.storagePath === 'string'
+      ? await loadSavedReportForImproveByStoragePath(body.storagePath)
+      : null);
   if (!report) {
     return NextResponse.json({ error: 'Report not found or cannot be loaded for improvement.' }, { status: 404 });
   }

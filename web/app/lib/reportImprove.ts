@@ -148,6 +148,50 @@ export async function loadSavedReportForImprove(id: string): Promise<SavedReport
   };
 }
 
+export async function loadSavedReportForImproveByStoragePath(storagePath: string): Promise<SavedReportForImprove | null> {
+  const filesystemId = encodeReportStorageId(storagePath);
+  const filesystemReport = await loadSavedReportForImprove(filesystemId);
+  if (filesystemReport) return filesystemReport;
+
+  const supabase = getSupabaseClient();
+  if (!supabase) return null;
+
+  let query: any = await supabase
+    .from('saved_reports')
+    .select('id, filename, title, summary, content, storage_path, report_kind, report_date, created_at, run_metadata')
+    .eq('storage_path', storagePath)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (query.error && isSchemaMismatch(query.error.message)) {
+    query = await supabase
+      .from('saved_reports')
+      .select('id, filename, title, summary, content, storage_path, report_kind, report_date, created_at')
+      .eq('storage_path', storagePath)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+  }
+
+  if (query.error || !query.data) return null;
+  const row = query.data as any;
+  const content = String(row.content || '');
+  const metadata = row.run_metadata || extractReportMetadata(content);
+  return {
+    id: row.id,
+    filename: row.filename,
+    title: row.title,
+    summary: row.summary,
+    content,
+    storagePath: row.storage_path,
+    reportKind: normalizeReportKind(metadata?.kind || row.report_kind),
+    reportDate: row.report_date,
+    createdAt: row.created_at,
+    metadata,
+  };
+}
+
 export function coverageStats(metadata?: ReportRunMetadata | null): CoverageStats | null {
   if (!metadata?.coverage) return null;
   const entries = Object.values(metadata.coverage).flatMap((item) => Object.values(item));

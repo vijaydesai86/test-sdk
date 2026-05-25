@@ -286,6 +286,15 @@ function buildSavedSummary(item: Pick<SavedReportMeta, 'summary' | 'report_kind'
   return `Saved markdown report for ${humanizeSlug(item.filename)}.`;
 }
 
+function reportImproveId(item: Pick<ReportItem, 'downloadUrl' | 'storagePath' | 'filename'>) {
+  const savedMatch = item.downloadUrl?.match(/\/api\/saved-reports\/([^/?#]+)/);
+  if (savedMatch?.[1]) return savedMatch[1];
+  const reportMatch = item.downloadUrl?.match(/\/api\/reports\/(.+)$/);
+  const storagePath = item.storagePath || (reportMatch?.[1] ? decodeURIComponent(reportMatch[1]) : '');
+  if (!storagePath) return null;
+  return `fs_${btoa(storagePath).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')}`;
+}
+
 function formatImproveCoverage(stats?: ImproveCoverageStats | null) {
   if (!stats) return '';
   const coverage = stats.coveragePct === null ? 'coverage unavailable' : `${stats.coveragePct}% coverage`;
@@ -749,7 +758,7 @@ export default function ChatInterface() {
         const res = await fetch(`/api/saved-reports/${currentReportId}/improve`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ maxPasses, passNumber: pass, target: 'critical' }),
+          body: JSON.stringify({ maxPasses, passNumber: pass, target: 'critical', storagePath: report.storage_path }),
         });
         const payload = (await res.json()) as ImproveResponse;
         if (!res.ok || payload.error) throw new Error(payload.error || 'Improve pass failed');
@@ -806,6 +815,25 @@ export default function ChatInterface() {
     }
 
     fetchSupabaseReports();
+  };
+
+  const handleArtifactImprove = async (item: ReportItem, maxPasses = 3) => {
+    const id = reportImproveId(item);
+    if (!id) {
+      setError('This artifact cannot be improved because it has no saved report id.');
+      return;
+    }
+    const report: SavedReportMeta = {
+      id,
+      filename: item.filename,
+      title: item.title || item.filename,
+      summary: item.summary || null,
+      created_at: new Date().toISOString(),
+      report_date: item.reportDate || null,
+      report_kind: item.reportKind || null,
+      storage_path: item.storagePath || null,
+    };
+    await handleSupabaseReportImprove(report, maxPasses);
   };
 
   const handleWatchlistAdd = async (e: React.FormEvent) => {
@@ -1326,7 +1354,11 @@ export default function ChatInterface() {
                   </div>
                 </div>
                 <div className="space-y-3">
-                  {group.items.map((item) => (
+                  {group.items.map((item) => {
+                    const improveId = reportImproveId(item);
+                    const progress = improveId ? improveProgress[improveId] : undefined;
+                    const improveBusy = progress?.status === 'running' || progress?.status === 'waiting';
+                    return (
                     <div
                       key={item.downloadUrl ?? item.filename}
                       className="rounded-[24px] border border-white/10 bg-white/7 p-4 shadow-[0_16px_35px_-30px_rgba(15,23,42,0.9)]"
@@ -1348,6 +1380,24 @@ export default function ChatInterface() {
                           <p className="mt-1 line-clamp-2 text-xs leading-5 text-slate-400">{buildReportSummary(item)}</p>
                         </button>
                         <div className="flex shrink-0 items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => void handleArtifactImprove(item)}
+                            disabled={!improveId || improveBusy}
+                            title="Improve report"
+                            className="rounded-full border border-white/10 bg-slate-950/45 p-2 text-slate-300 transition hover:border-emerald-300/35 hover:text-emerald-100 disabled:cursor-not-allowed disabled:opacity-45"
+                          >
+                            <Icon className="h-4 w-4">
+                              <path d="M12 3v4" />
+                              <path d="M12 17v4" />
+                              <path d="M3 12h4" />
+                              <path d="M17 12h4" />
+                              <path d="m6.3 6.3 2.8 2.8" />
+                              <path d="m14.9 14.9 2.8 2.8" />
+                              <path d="m17.7 6.3-2.8 2.8" />
+                              <path d="m9.1 14.9-2.8 2.8" />
+                            </Icon>
+                          </button>
                           <button
                             type="button"
                             onClick={() => handleReportDownload(item)}
@@ -1373,8 +1423,18 @@ export default function ChatInterface() {
                           </button>
                         </div>
                       </div>
+                      {progress && (
+                        <div className="mt-3 rounded-2xl border border-emerald-300/15 bg-emerald-300/8 px-3 py-2 text-xs leading-5 text-emerald-50">
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="font-medium">{progress.status === 'running' ? 'Improving' : humanizeSlug(progress.status)}</span>
+                            <span className="text-emerald-100/70">Pass {progress.pass}/{progress.maxPasses}</span>
+                          </div>
+                          <p className="mt-1 text-emerald-100/75">{progress.message}</p>
+                        </div>
+                      )}
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </section>
             ))
