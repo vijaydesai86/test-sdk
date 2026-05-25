@@ -15,6 +15,11 @@ export interface ReportCoverageEntry {
   asOf?: string | null;
 }
 
+export interface ReportCheckpointEntry extends ReportCoverageEntry {
+  data?: any;
+  fetchedAt?: string;
+}
+
 export interface ReportMissingDataEntry {
   symbol: string;
   key: string;
@@ -37,6 +42,7 @@ export interface ReportRunMetadata {
     storagePath?: string | null;
   };
   coverage: Record<string, Record<string, ReportCoverageEntry>>;
+  checkpoint?: Record<string, Record<string, ReportCheckpointEntry>>;
   missingData: ReportMissingDataEntry[];
   notes?: string[];
 }
@@ -68,12 +74,12 @@ export interface PreviousReportMatch {
 const METADATA_PREFIX = 'stock-report-run-metadata:';
 const METADATA_RE = /<!--\s*stock-report-run-metadata:([\s\S]*?)-->/;
 
-function hasMeaningfulValue(value: any): boolean {
+export function hasMeaningfulReportValue(value: any): boolean {
   if (value === null || value === undefined) return false;
   if (typeof value === 'string') return value.trim() !== '' && value.trim().toUpperCase() !== 'N/A';
   if (typeof value === 'number') return Number.isFinite(value);
-  if (Array.isArray(value)) return value.some((item) => hasMeaningfulValue(item));
-  if (typeof value === 'object') return Object.values(value).some((item) => hasMeaningfulValue(item));
+  if (Array.isArray(value)) return value.some((item) => hasMeaningfulReportValue(item));
+  if (typeof value === 'object') return Object.values(value).some((item) => hasMeaningfulReportValue(item));
   return true;
 }
 
@@ -158,16 +164,23 @@ export function buildReportRunMetadata(args: {
   notes?: string[];
 }): ReportRunMetadata {
   const coverage: ReportRunMetadata['coverage'] = {};
+  const checkpoint: NonNullable<ReportRunMetadata['checkpoint']> = {};
   const missingData: ReportMissingDataEntry[] = [];
   for (const item of args.coverage) {
     const symbol = normalizeSymbol(item.symbol || 'REPORT') || 'REPORT';
-    const status: ReportCoverageStatus = hasMeaningfulValue(item.data) ? 'available' : 'missing';
+    const status: ReportCoverageStatus = hasMeaningfulReportValue(item.data) ? 'available' : 'missing';
     coverage[symbol] = coverage[symbol] || {};
     coverage[symbol][item.key] = {
       label: item.label,
       status,
       provider: item.provider,
       asOf: item.asOf ?? null,
+    };
+    checkpoint[symbol] = checkpoint[symbol] || {};
+    checkpoint[symbol][item.key] = {
+      ...coverage[symbol][item.key],
+      fetchedAt: args.generatedAt,
+      data: status === 'available' ? item.data : undefined,
     };
     if (status === 'missing') {
       missingData.push({
@@ -196,9 +209,80 @@ export function buildReportRunMetadata(args: {
         }
       : undefined,
     coverage,
+    checkpoint,
     missingData,
     notes: args.notes,
   };
+}
+
+function isPlainObject(value: any): value is Record<string, any> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function mergeMissingReportValues(current: any, previous: any): { data: any; changed: boolean } {
+  if (!hasMeaningfulReportValue(current) && hasMeaningfulReportValue(previous)) {
+    return { data: previous, changed: true };
+  }
+  if (!hasMeaningfulReportValue(previous)) {
+    return { data: current, changed: false };
+  }
+  if (!isPlainObject(current) || !isPlainObject(previous)) {
+    return { data: current, changed: false };
+  }
+
+  let changed = false;
+  const merged: Record<string, any> = { ...current };
+  for (const [key, previousValue] of Object.entries(previous)) {
+    const currentValue = current[key];
+    const next = mergeMissingReportValues(currentValue, previousValue);
+    if (next.changed) {
+      merged[key] = next.data;
+      changed = true;
+    }
+  }
+  return { data: changed ? merged : current, changed };
+}
+
+export interface ReportFieldMergeResult<T = any> {
+  data: T;
+  carriedForward: boolean;
+  prior?: ReportCheckpointEntry;
+}
+
+export function getPreviousCheckpointField(
+  previous: PreviousReportMatch | null | undefined,
+  symbol: string,
+  key: string
+): ReportCheckpointEntry | null {
+  const normalizedSymbol = normalizeSymbol(symbol || 'REPORT') || 'REPORT';
+  return previous?.metadata?.checkpoint?.[normalizedSymbol]?.[key] || null;
+}
+
+export function mergeWithPreviousReportField<T = any>(args: {
+  previous: PreviousReportMatch | null | undefined;
+  symbol: string;
+  key: string;
+  label: string;
+  data: T;
+  notes?: string[];
+}): ReportFieldMergeResult<T> {
+  const prior = getPreviousCheckpointField(args.previous, args.symbol, args.key);
+  if (!prior || prior.status !== 'available' || !hasMeaningfulReportValue(prior.data)) {
+    return { data: args.data, carriedForward: false, prior: prior || undefined };
+  }
+
+  const merged = mergeMissingReportValues(args.data, prior.data);
+  if (!merged.changed) {
+    return { data: args.data, carriedForward: false, prior };
+  }
+
+  const symbol = normalizeSymbol(args.symbol || 'REPORT') || 'REPORT';
+  const timestamp = prior.asOf || prior.fetchedAt || args.previous?.createdAt || args.previous?.reportDate || 'the prior report';
+  const note = hasMeaningfulReportValue(args.data)
+    ? `${symbol}: ${args.label} had missing fields in this update; filled only those gaps from the prior verified checkpoint (${timestamp}).`
+    : `${symbol}: ${args.label} was unavailable in this update; carried forward the prior verified checkpoint (${timestamp}).`;
+  if (args.notes && !args.notes.includes(note)) args.notes.push(note);
+  return { data: merged.data as T, carriedForward: true, prior };
 }
 
 function scoreCandidate(candidate: PreviousReportMatch, kind: ReportKind, query?: string, symbols: string[] = []) {
@@ -334,7 +418,7 @@ export function buildUpdateNotes(previous: PreviousReportMatch | null, kind: Rep
     return [`Update mode requested for ${kind}; no prior matching report was found, so this run generated a fresh report using the normal verified-data path.`];
   }
   const notes = [
-    `Update mode requested for ${kind}; started from prior report "${previous.title || previous.filename || previous.id || 'matched report'}" and reused fresh cached provider data before fetching gaps.`,
+    `Update mode requested for ${kind}; started from prior report "${previous.title || previous.filename || previous.id || 'matched report'}" and will use fresh/cached provider data first, then carry forward prior verified checkpoint fields only where this update cannot replace them.`,
   ];
   const missing = previous.metadata?.missingData || [];
   if (missing.length) {

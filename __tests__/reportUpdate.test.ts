@@ -6,6 +6,7 @@ import {
   appendReportMetadata,
   buildReportRunMetadata,
   extractReportMetadata,
+  mergeWithPreviousReportField,
   stripReportMetadata,
 } from '../web/app/lib/reportUpdate';
 
@@ -37,8 +38,110 @@ describe('reportUpdate metadata', () => {
     expect(extractReportMetadata(withMetadata)).toMatchObject({
       kind: 'stock',
       symbols: ['ARM'],
+      checkpoint: {
+        ARM: {
+          price: {
+            status: 'available',
+            data: { price: 100 },
+          },
+          cashFlow: {
+            status: 'missing',
+          },
+        },
+      },
       missingData: [{ symbol: 'ARM', key: 'cashFlow', label: 'Cash flow', priority: 'high' }],
     });
+  });
+
+  it('carries forward a prior verified field when an update cannot replace it', () => {
+    const metadata = buildReportRunMetadata({
+      kind: 'stock',
+      query: 'ARM',
+      symbols: ['ARM'],
+      range: '5y',
+      generatedAt: '2026-05-23T12:00:00.000Z',
+      coverage: [
+        {
+          symbol: 'ARM',
+          key: 'cashFlow',
+          label: 'Cash flow',
+          data: { annualReports: [{ fiscalDateEnding: '2025-03-31', operatingCashflow: '1000' }] },
+          priority: 'high',
+        },
+      ],
+    });
+    const notes: string[] = [];
+
+    const result = mergeWithPreviousReportField({
+      previous: { content: '', metadata, score: 100 },
+      symbol: 'ARM',
+      key: 'cashFlow',
+      label: 'Cash flow',
+      data: undefined,
+      notes,
+    });
+
+    expect(result.carriedForward).toBe(true);
+    expect(result.data).toEqual({ annualReports: [{ fiscalDateEnding: '2025-03-31', operatingCashflow: '1000' }] });
+    expect(notes[0]).toContain('ARM: Cash flow was unavailable in this update; carried forward');
+  });
+
+  it('fills only missing nested fields from the prior checkpoint', () => {
+    const metadata = buildReportRunMetadata({
+      kind: 'stock',
+      query: 'ARM',
+      symbols: ['ARM'],
+      generatedAt: '2026-05-23T12:00:00.000Z',
+      coverage: [
+        {
+          symbol: 'ARM',
+          key: 'basicFinancials',
+          label: 'Basic financials',
+          data: { metric: { peBasicExclExtraTTM: 44, grossMarginTTM: 0.95 } },
+          priority: 'critical',
+        },
+      ],
+    });
+    const notes: string[] = [];
+
+    const result = mergeWithPreviousReportField({
+      previous: { content: '', metadata, score: 100 },
+      symbol: 'ARM',
+      key: 'basicFinancials',
+      label: 'Basic financials',
+      data: { metric: { peBasicExclExtraTTM: 40 } },
+      notes,
+    });
+
+    expect(result.carriedForward).toBe(true);
+    expect(result.data).toEqual({ metric: { peBasicExclExtraTTM: 40, grossMarginTTM: 0.95 } });
+    expect(notes[0]).toContain('had missing fields in this update');
+  });
+
+  it('keeps fresh update data when providers return a meaningful replacement', () => {
+    const metadata = buildReportRunMetadata({
+      kind: 'stock',
+      query: 'ARM',
+      symbols: ['ARM'],
+      generatedAt: '2026-05-23T12:00:00.000Z',
+      coverage: [
+        { symbol: 'ARM', key: 'price', label: 'Price', data: { price: 100 }, priority: 'critical' },
+      ],
+    });
+    const notes: string[] = [];
+
+    const result = mergeWithPreviousReportField({
+      previous: { content: '', metadata, score: 100 },
+      symbol: 'ARM',
+      key: 'price',
+      label: 'Price',
+      data: { price: 101 },
+      notes,
+    });
+
+    expect(result.carriedForward).toBe(false);
+    expect(result.data).toEqual({ price: 101 });
+    expect(notes).toEqual([]);
   });
 
   it('finds the best prior filesystem report for an update request', async () => {

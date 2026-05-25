@@ -23,6 +23,7 @@ import {
   buildReportRunMetadata,
   buildUpdateNotes,
   findPreviousReportForUpdate,
+  mergeWithPreviousReportField,
   type CoverageInput,
   type PreviousReportMatch,
   type ReportKind,
@@ -229,6 +230,77 @@ function coverageEntry(
     priority,
     provider: providerForCoverage(data),
   };
+}
+
+function applyUpdateCheckpoint<T>(args: {
+  previous: PreviousReportMatch | null;
+  symbol: string;
+  key: string;
+  label: string;
+  data: T;
+  notes: string[];
+}): T {
+  return mergeWithPreviousReportField<T>(args).data;
+}
+
+function applyStockDataUpdateCheckpoint(args: {
+  stock: any;
+  previous: PreviousReportMatch | null;
+  symbol: string;
+  range: string;
+  notes: string[];
+}) {
+  const merged = {
+    symbol: args.symbol.toUpperCase(),
+    generatedAt: new Date().toISOString(),
+    ...(args.stock || {}),
+  };
+  const fields: Array<{ prop: string; key: string; label: string }> = [
+    { prop: 'price', key: 'price', label: 'Price' },
+    { prop: 'priceHistory', key: `priceHistory:${args.range}`, label: 'Price history' },
+    { prop: 'companyOverview', key: 'overview', label: 'Company overview' },
+    { prop: 'basicFinancials', key: 'basicFinancials', label: 'Basic financials' },
+    { prop: 'earningsHistory', key: 'earningsHistory', label: 'Earnings history' },
+    { prop: 'incomeStatement', key: 'incomeStatement', label: 'Income statement' },
+    { prop: 'balanceSheet', key: 'balanceSheet', label: 'Balance sheet' },
+    { prop: 'cashFlow', key: 'cashFlow', label: 'Cash flow' },
+    { prop: 'analystRatings', key: 'analystRatings', label: 'Analyst ratings' },
+    { prop: 'analystRecommendations', key: 'analystRecommendations', label: 'Analyst recommendations' },
+    { prop: 'insiderTrading', key: 'insiderTrading', label: 'Insider trading' },
+    { prop: 'priceTargets', key: 'priceTargets', label: 'Price targets' },
+    { prop: 'peers', key: 'peers', label: 'Peers' },
+    { prop: 'newsSentiment', key: 'newsSentiment', label: 'News sentiment' },
+    { prop: 'companyNews', key: 'companyNews', label: 'Company news' },
+  ];
+  for (const field of fields) {
+    merged[field.prop] = applyUpdateCheckpoint({
+      previous: args.previous,
+      symbol: args.symbol,
+      key: field.key,
+      label: field.label,
+      data: merged[field.prop],
+      notes: args.notes,
+    });
+  }
+  return merged;
+}
+
+function buildStockDataFromPreviousCheckpoint(args: {
+  previous: PreviousReportMatch | null;
+  symbol: string;
+  range: string;
+  notes: string[];
+}) {
+  const stock = applyStockDataUpdateCheckpoint({
+    stock: { symbol: args.symbol.toUpperCase(), generatedAt: new Date().toISOString() },
+    previous: args.previous,
+    symbol: args.symbol,
+    range: args.range,
+    notes: args.notes,
+  });
+  return hasReportValue(stock.price) || hasReportValue(stock.companyOverview) || hasReportValue(stock.basicFinancials)
+    ? stock
+    : null;
 }
 
 const RATE_LIMIT_PROVIDERS = [
@@ -2817,11 +2889,14 @@ export async function executeTool(
           );
 
         const allowCritical = forceCriticalData || hasReportWorkBudget(deadlineAt, 'critical', 1);
-        const price = await safeFetch('Price', 'price', () => stockService.getStockPrice(symbol), allowCritical, forceCriticalData, 'critical');
+        const currentPrice = await safeFetch('Price', 'price', () => stockService.getStockPrice(symbol), allowCritical, forceCriticalData, 'critical');
         const rawCompanyOverview = await safeFetch('Company overview', 'overview', () => stockService.getCompanyOverview(symbol), allowCritical, forceCriticalData, 'critical');
-        const basicFinancials = await safeFetch('Basic financials', 'basicFinancials', () => stockService.getBasicFinancials(symbol), allowCritical, forceCriticalData, 'critical');
-        const priceHistory = await safeFetch('Price history', `priceHistory:${range}`, () => stockService.getPriceHistory(symbol, range), allowCritical, forceCriticalData, 'critical');
-        const { overview: companyOverview, notes: overviewNotes } = sanitizeMarketScaledOverview(rawCompanyOverview, price, priceHistory);
+        const currentBasicFinancials = await safeFetch('Basic financials', 'basicFinancials', () => stockService.getBasicFinancials(symbol), allowCritical, forceCriticalData, 'critical');
+        const currentPriceHistory = await safeFetch('Price history', `priceHistory:${range}`, () => stockService.getPriceHistory(symbol, range), allowCritical, forceCriticalData, 'critical');
+        const price = applyUpdateCheckpoint({ previous: updateContext.previous, symbol, key: 'price', label: 'Price', data: currentPrice, notes });
+        const priceHistory = applyUpdateCheckpoint({ previous: updateContext.previous, symbol, key: `priceHistory:${range}`, label: 'Price history', data: currentPriceHistory, notes });
+        const { overview: sanitizedCompanyOverview, notes: overviewNotes } = sanitizeMarketScaledOverview(rawCompanyOverview, price, priceHistory);
+        const companyOverview = applyUpdateCheckpoint({ previous: updateContext.previous, symbol, key: 'overview', label: 'Company overview', data: sanitizedCompanyOverview, notes });
         notes.push(...overviewNotes);
         const earningsHistory = await safeFetch('Earnings history', 'earningsHistory', () => stockService.getEarningsHistory(symbol), !coreOnly && hasReportWorkBudget(deadlineAt, 'high', 1), false, 'high');
         const incomeStatement = await safeFetch('Income statement', 'incomeStatement', () => stockService.getIncomeStatement(symbol), !coreOnly && hasReportWorkBudget(deadlineAt, 'high', 1), false, 'high');
@@ -2841,7 +2916,7 @@ export async function executeTool(
         const peers = await safeFetch('Peers', 'peers', () => stockService.getPeers(symbol), !coreOnly && hasReportWorkBudget(deadlineAt, 'optional', 1), false, 'optional');
         const newsSentiment = await safeFetch('News sentiment', 'newsSentiment', () => stockService.getNewsSentiment(symbol), !coreOnly && hasReportWorkBudget(deadlineAt, 'optional', 1), false, 'optional');
         const companyNews = await safeFetch('Company news', 'companyNews', () => stockService.getCompanyNews(symbol, 14), !coreOnly && hasReportWorkBudget(deadlineAt, 'optional', 1), false, 'optional');
-        const shouldUseSecFallback = shouldFetchSecFinancialFallback({ basicFinancials, incomeStatement, balanceSheet, cashFlow });
+        const shouldUseSecFallback = shouldFetchSecFinancialFallback({ basicFinancials: currentBasicFinancials, incomeStatement, balanceSheet, cashFlow });
         const secFinancialFacts = shouldUseSecFallback
           ? await safeFetch(
               'SEC companyfacts',
@@ -2858,15 +2933,27 @@ export async function executeTool(
         // Build basic financials from the overview. These are direct provider fields
         // or simple arithmetic on provider fields, not synthetic statement rows.
         const overviewFinancials = companyOverview ? buildBasicFinancialsFallback(companyOverview) : undefined;
-        const finalBasicFinancials = fillMissingFields(fillMissingFields(basicFinancials, overviewFinancials), secFallbacks.basicFinancials);
+        const currentFinalBasicFinancials = fillMissingFields(fillMissingFields(currentBasicFinancials, overviewFinancials), secFallbacks.basicFinancials);
 
         const hasIncomeData = hasReports(incomeStatement);
         const hasBalanceData = hasReports(balanceSheet);
-        const finalIncomeStatement = hasIncomeData ? incomeStatement : secFallbacks.incomeStatement;
-        const finalBalanceSheet = hasBalanceData ? balanceSheet : secFallbacks.balanceSheet;
-        const finalCashFlow = hasReports(cashFlow) ? cashFlow : secFallbacks.cashFlow;
+        const currentFinalIncomeStatement = hasIncomeData ? incomeStatement : secFallbacks.incomeStatement;
+        const currentFinalBalanceSheet = hasBalanceData ? balanceSheet : secFallbacks.balanceSheet;
+        const currentFinalCashFlow = hasReports(cashFlow) ? cashFlow : secFallbacks.cashFlow;
         const hasEarningsData = earningsHistory?.quarterlyEarnings?.length > 0;
-        const finalEarningsHistory = hasEarningsData ? earningsHistory : undefined;
+        const currentFinalEarningsHistory = hasEarningsData ? earningsHistory : undefined;
+        const finalBasicFinancials = applyUpdateCheckpoint({ previous: updateContext.previous, symbol, key: 'basicFinancials', label: 'Basic financials', data: currentFinalBasicFinancials, notes });
+        const finalIncomeStatement = applyUpdateCheckpoint({ previous: updateContext.previous, symbol, key: 'incomeStatement', label: 'Income statement', data: currentFinalIncomeStatement, notes });
+        const finalBalanceSheet = applyUpdateCheckpoint({ previous: updateContext.previous, symbol, key: 'balanceSheet', label: 'Balance sheet', data: currentFinalBalanceSheet, notes });
+        const finalCashFlow = applyUpdateCheckpoint({ previous: updateContext.previous, symbol, key: 'cashFlow', label: 'Cash flow', data: currentFinalCashFlow, notes });
+        const finalEarningsHistory = applyUpdateCheckpoint({ previous: updateContext.previous, symbol, key: 'earningsHistory', label: 'Earnings history', data: currentFinalEarningsHistory, notes });
+        const finalAnalystRatings = applyUpdateCheckpoint({ previous: updateContext.previous, symbol, key: 'analystRatings', label: 'Analyst ratings', data: analystRatings, notes });
+        const finalAnalystRecommendations = applyUpdateCheckpoint({ previous: updateContext.previous, symbol, key: 'analystRecommendations', label: 'Analyst recommendations', data: analystRecommendations, notes });
+        const finalInsiderTrading = applyUpdateCheckpoint({ previous: updateContext.previous, symbol, key: 'insiderTrading', label: 'Insider trading', data: insiderTrading, notes });
+        const finalPriceTargets = applyUpdateCheckpoint({ previous: updateContext.previous, symbol, key: 'priceTargets', label: 'Price targets', data: priceTargets, notes });
+        const finalPeers = applyUpdateCheckpoint({ previous: updateContext.previous, symbol, key: 'peers', label: 'Peers', data: peers, notes });
+        const finalNewsSentiment = applyUpdateCheckpoint({ previous: updateContext.previous, symbol, key: 'newsSentiment', label: 'News sentiment', data: newsSentiment, notes });
+        const finalCompanyNews = applyUpdateCheckpoint({ previous: updateContext.previous, symbol, key: 'companyNews', label: 'Company news', data: companyNews, notes });
 
         if (!hasIncomeData && !finalIncomeStatement) {
           notes.push('Income statement unavailable from providers and SEC companyfacts; no synthetic fallback was used.');
@@ -2916,11 +3003,11 @@ export async function executeTool(
           incomeStatement: finalIncomeStatement,
           balanceSheet: finalBalanceSheet,
           cashFlow: finalCashFlow,
-          analystRatings,
-          priceTargets,
-          insiderTrading,
-          newsSentiment,
-          companyNews,
+          analystRatings: finalAnalystRatings,
+          priceTargets: finalPriceTargets,
+          insiderTrading: finalInsiderTrading,
+          newsSentiment: finalNewsSentiment,
+          companyNews: finalCompanyNews,
           trust: trustSummary,
           position: watchlistItem,
           portfolioProfile,
@@ -2941,11 +3028,11 @@ export async function executeTool(
               finalIncomeStatement,
               finalBalanceSheet,
               finalCashFlow,
-              analystRatings,
-              priceTargets,
+              finalAnalystRatings,
+              finalPriceTargets,
               priceHistory,
-              newsSentiment,
-              companyNews,
+              finalNewsSentiment,
+              finalCompanyNews,
               moatAnalysis,
               decisionSnapshot
             );
@@ -2967,13 +3054,13 @@ export async function executeTool(
           incomeStatement: finalIncomeStatement,
           balanceSheet: finalBalanceSheet,
           cashFlow: finalCashFlow,
-          analystRatings,
-          analystRecommendations,
-          insiderTrading,
-          priceTargets,
-          peers,
-          newsSentiment,
-          companyNews,
+          analystRatings: finalAnalystRatings,
+          analystRecommendations: finalAnalystRecommendations,
+          insiderTrading: finalInsiderTrading,
+          priceTargets: finalPriceTargets,
+          peers: finalPeers,
+          newsSentiment: finalNewsSentiment,
+          companyNews: finalCompanyNews,
           moatAnalysis,
           llmConclusion,
           dataTrust: trustSummary,
@@ -3013,13 +3100,13 @@ export async function executeTool(
             coverageEntry(symbol, 'incomeStatement', 'Income statement', finalIncomeStatement, 'high'),
             coverageEntry(symbol, 'balanceSheet', 'Balance sheet', finalBalanceSheet, 'high'),
             coverageEntry(symbol, 'cashFlow', 'Cash flow', finalCashFlow, 'high'),
-            coverageEntry(symbol, 'analystRatings', 'Analyst ratings', analystRatings, 'high'),
-            coverageEntry(symbol, 'analystRecommendations', 'Analyst recommendations', analystRecommendations, 'optional'),
-            coverageEntry(symbol, 'insiderTrading', 'Insider trading', insiderTrading, 'optional'),
-            coverageEntry(symbol, 'priceTargets', 'Price targets', priceTargets, 'high'),
-            coverageEntry(symbol, 'peers', 'Peers', peers, 'optional'),
-            coverageEntry(symbol, 'newsSentiment', 'News sentiment', newsSentiment, 'optional'),
-            coverageEntry(symbol, 'companyNews', 'Company news', companyNews, 'optional'),
+            coverageEntry(symbol, 'analystRatings', 'Analyst ratings', finalAnalystRatings, 'high'),
+            coverageEntry(symbol, 'analystRecommendations', 'Analyst recommendations', finalAnalystRecommendations, 'optional'),
+            coverageEntry(symbol, 'insiderTrading', 'Insider trading', finalInsiderTrading, 'optional'),
+            coverageEntry(symbol, 'priceTargets', 'Price targets', finalPriceTargets, 'high'),
+            coverageEntry(symbol, 'peers', 'Peers', finalPeers, 'optional'),
+            coverageEntry(symbol, 'newsSentiment', 'News sentiment', finalNewsSentiment, 'optional'),
+            coverageEntry(symbol, 'companyNews', 'Company news', finalCompanyNews, 'optional'),
             coverageEntry(symbol, 'secFinancialFacts', 'SEC companyfacts', secFinancialFacts, 'high'),
           ],
         });
@@ -3046,13 +3133,13 @@ export async function executeTool(
                 incomeStatement: finalIncomeStatement,
                 balanceSheet: finalBalanceSheet,
                 cashFlow: finalCashFlow,
-                analystRatings,
-                analystRecommendations,
-                insiderTrading,
-                priceTargets,
-                peers,
-                newsSentiment,
-                companyNews,
+                analystRatings: finalAnalystRatings,
+                analystRecommendations: finalAnalystRecommendations,
+                insiderTrading: finalInsiderTrading,
+                priceTargets: finalPriceTargets,
+                peers: finalPeers,
+                newsSentiment: finalNewsSentiment,
+                companyNews: finalCompanyNews,
                 moatAnalysis,
                 llmConclusion,
                 dataTrust: trustSummary,
@@ -3329,46 +3416,59 @@ export async function executeTool(
         const items: any[] = [];
         for (const item of rawItems) {
           const { symbol } = item;
-          const { overview, notes: overviewNotes } = sanitizeMarketScaledOverview(item.overview, item.price, item.priceHistory);
+          const price = applyUpdateCheckpoint({ previous: updateContext.previous, symbol, key: 'price', label: 'Price', data: item.price, notes });
+          const priceHistory = applyUpdateCheckpoint({ previous: updateContext.previous, symbol, key: `priceHistory:${range}`, label: 'Price history', data: item.priceHistory, notes });
+          const { overview: sanitizedOverview, notes: overviewNotes } = sanitizeMarketScaledOverview(item.overview, price, priceHistory);
+          const overview = applyUpdateCheckpoint({ previous: updateContext.previous, symbol, key: 'overview', label: 'Company overview', data: sanitizedOverview, notes });
           notes.push(...overviewNotes.map((note) => `${symbol}: ${note}`));
-          const secFallbacks = buildSecFinancialFallbacks(symbol, item.secFinancialFacts, item.price);
+          const secFallbacks = buildSecFinancialFallbacks(symbol, item.secFinancialFacts, price);
           const overviewFinancials = overview ? buildBasicFinancialsFallback(overview) : undefined;
-          const basicFinancials = fillMissingFields(fillMissingFields(item.basicFinancials, overviewFinancials), secFallbacks.basicFinancials);
-          const incomeStatement = hasStatementReports(item.incomeStatement) ? item.incomeStatement : secFallbacks.incomeStatement;
-          const balanceSheet = hasStatementReports(item.balanceSheet) ? item.balanceSheet : secFallbacks.balanceSheet;
-          const cashFlow = hasStatementReports(item.cashFlow) ? item.cashFlow : secFallbacks.cashFlow;
+          const currentBasicFinancials = fillMissingFields(fillMissingFields(item.basicFinancials, overviewFinancials), secFallbacks.basicFinancials);
+          const currentIncomeStatement = hasStatementReports(item.incomeStatement) ? item.incomeStatement : secFallbacks.incomeStatement;
+          const currentBalanceSheet = hasStatementReports(item.balanceSheet) ? item.balanceSheet : secFallbacks.balanceSheet;
+          const currentCashFlow = hasStatementReports(item.cashFlow) ? item.cashFlow : secFallbacks.cashFlow;
+          const basicFinancials = applyUpdateCheckpoint({ previous: updateContext.previous, symbol, key: 'basicFinancials', label: 'Basic financials', data: currentBasicFinancials, notes });
+          const incomeStatement = applyUpdateCheckpoint({ previous: updateContext.previous, symbol, key: 'incomeStatement', label: 'Income statement', data: currentIncomeStatement, notes });
+          const balanceSheet = applyUpdateCheckpoint({ previous: updateContext.previous, symbol, key: 'balanceSheet', label: 'Balance sheet', data: currentBalanceSheet, notes });
+          const cashFlow = applyUpdateCheckpoint({ previous: updateContext.previous, symbol, key: 'cashFlow', label: 'Cash flow', data: currentCashFlow, notes });
+          const analystRatings = applyUpdateCheckpoint({ previous: updateContext.previous, symbol, key: 'analystRatings', label: 'Analyst ratings', data: item.analystRatings, notes });
+          const insiderTrading = applyUpdateCheckpoint({ previous: updateContext.previous, symbol, key: 'insiderTrading', label: 'Insider trading', data: item.insiderTrading, notes });
+          const priceTargets = applyUpdateCheckpoint({ previous: updateContext.previous, symbol, key: 'priceTargets', label: 'Price targets', data: item.priceTargets, notes });
+          const peers = applyUpdateCheckpoint({ previous: updateContext.previous, symbol, key: 'peers', label: 'Peers', data: item.peers, notes });
+          const newsSentiment = applyUpdateCheckpoint({ previous: updateContext.previous, symbol, key: 'newsSentiment', label: 'News sentiment', data: item.newsSentiment, notes });
+          const companyNews = applyUpdateCheckpoint({ previous: updateContext.previous, symbol, key: 'companyNews', label: 'Company news', data: item.companyNews, notes });
           const watchlistItem = watchlist?.items.find((entry) => entry.symbol === symbol.toUpperCase());
           const previousDecision = await getLatestDecision(symbol).catch(() => null);
           const trustSummary = buildTrustSummaryFromCache(item.cache, [
-            { key: 'price', label: 'Price', data: item.price },
-            { key: 'overview', label: 'Company overview', data: item.overview },
-            { key: 'basicFinancials', label: 'Basic financials', data: item.basicFinancials },
-            { key: `priceHistory:${range}`, label: 'Price history', data: item.priceHistory },
-            { key: 'incomeStatement', label: 'Income statement', data: item.incomeStatement },
-            { key: 'balanceSheet', label: 'Balance sheet', data: item.balanceSheet },
-            { key: 'cashFlow', label: 'Cash flow', data: item.cashFlow },
-            { key: 'analystRatings', label: 'Analyst ratings', data: item.analystRatings },
-            { key: 'insiderTrading', label: 'Insider trading', data: item.insiderTrading },
-            { key: 'priceTargets', label: 'Price targets', data: item.priceTargets },
-            { key: 'peers', label: 'Peers', data: item.peers },
-            { key: 'newsSentiment', label: 'News sentiment', data: item.newsSentiment },
-            { key: 'companyNews', label: 'Company news', data: item.companyNews },
+            { key: 'price', label: 'Price', data: price },
+            { key: 'overview', label: 'Company overview', data: overview },
+            { key: 'basicFinancials', label: 'Basic financials', data: basicFinancials },
+            { key: `priceHistory:${range}`, label: 'Price history', data: priceHistory },
+            { key: 'incomeStatement', label: 'Income statement', data: incomeStatement },
+            { key: 'balanceSheet', label: 'Balance sheet', data: balanceSheet },
+            { key: 'cashFlow', label: 'Cash flow', data: cashFlow },
+            { key: 'analystRatings', label: 'Analyst ratings', data: analystRatings },
+            { key: 'insiderTrading', label: 'Insider trading', data: insiderTrading },
+            { key: 'priceTargets', label: 'Price targets', data: priceTargets },
+            { key: 'peers', label: 'Peers', data: peers },
+            { key: 'newsSentiment', label: 'News sentiment', data: newsSentiment },
+            { key: 'companyNews', label: 'Company news', data: companyNews },
             { key: 'secFinancialFacts', label: 'SEC companyfacts', data: item.secFinancialFacts },
           ]);
           const decisionSnapshot = buildDecisionSnapshot({
             symbol,
-            price: item.price,
-            priceHistory: item.priceHistory,
+            price,
+            priceHistory,
             companyOverview: overview,
             basicFinancials,
             incomeStatement,
             balanceSheet,
             cashFlow,
-            analystRatings: item.analystRatings,
-            priceTargets: item.priceTargets,
-            insiderTrading: item.insiderTrading,
-            newsSentiment: item.newsSentiment,
-            companyNews: item.companyNews,
+            analystRatings,
+            priceTargets,
+            insiderTrading,
+            newsSentiment,
+            companyNews,
             trust: trustSummary,
             position: watchlistItem,
             portfolioProfile,
@@ -3376,19 +3476,19 @@ export async function executeTool(
           });
           items.push({
             symbol,
-            price: item.price,
+            price,
             overview,
             basicFinancials,
-            priceHistory: item.priceHistory,
+            priceHistory,
             incomeStatement,
             balanceSheet,
             cashFlow,
-            analystRatings: item.analystRatings,
-            insiderTrading: item.insiderTrading,
-            priceTargets: item.priceTargets,
-            peers: item.peers,
-            newsSentiment: item.newsSentiment,
-            companyNews: item.companyNews,
+            analystRatings,
+            insiderTrading,
+            priceTargets,
+            peers,
+            newsSentiment,
+            companyNews,
             dataTrust: trustSummary,
             decisionSnapshot,
           });
@@ -3580,10 +3680,17 @@ export async function executeTool(
           attemptedSymbols.add(entry.item.symbol);
           const rawData = entry.result.data?.rawData;
           if (entry.result.success && rawData) {
+            const stock = applyStockDataUpdateCheckpoint({
+              stock: rawData,
+              previous: updateContext.previous,
+              symbol: entry.result.data?.symbol || entry.item.symbol,
+              range,
+              notes: updateContext.notes,
+            });
             successfulItems.push({
               symbol: entry.result.data?.symbol || entry.item.symbol,
               companyName: entry.item.companyName,
-              stock: rawData,
+              stock,
             });
           } else {
             failures.set(entry.item.symbol, entry.result.error || entry.result.message || 'Unavailable');
@@ -3618,10 +3725,17 @@ export async function executeTool(
           for (const entry of retryResults) {
             const rawData = entry.result.data?.rawData;
             if (entry.result.success && rawData) {
+              const stock = applyStockDataUpdateCheckpoint({
+                stock: rawData,
+                previous: updateContext.previous,
+                symbol: entry.result.data?.symbol || entry.item.symbol,
+                range,
+                notes: updateContext.notes,
+              });
               successfulItems.push({
                 symbol: entry.result.data?.symbol || entry.item.symbol,
                 companyName: entry.item.companyName,
-                stock: rawData,
+                stock,
               });
               failures.delete(entry.item.symbol);
             } else {
@@ -3633,6 +3747,23 @@ export async function executeTool(
           if (retryFailures.length > 0) {
             console.warn(`[watchlist] ${retryFailures.length} items still failed after retry: ${retryFailures.join('; ')}`);
           }
+        }
+
+        for (const item of watchlist.items) {
+          if (!failures.has(item.symbol) || successfulItems.some((entry) => entry.symbol === item.symbol)) continue;
+          const carriedStock = buildStockDataFromPreviousCheckpoint({
+            previous: updateContext.previous,
+            symbol: item.symbol,
+            range,
+            notes: updateContext.notes,
+          });
+          if (!carriedStock) continue;
+          successfulItems.push({
+            symbol: item.symbol,
+            companyName: item.companyName,
+            stock: carriedStock,
+          });
+          failures.delete(item.symbol);
         }
 
         if (successfulItems.length === 0) {
@@ -3821,20 +3952,80 @@ export async function executeTool(
           const comparisonUniverse = Array.isArray(comparisonResult.data?.universe)
             ? (comparisonResult.data.universe as string[])
             : explicitCompanies;
+          const updateContext = await prepareReportUpdateContext(args, {
+            kind: 'research',
+            query: String(args.updateQuery || sector),
+            symbols: comparisonUniverse,
+          });
+          const comparisonItems = Array.isArray(comparisonResult.data?.items)
+            ? comparisonResult.data.items.map((item: any) => {
+                const symbol = item.symbol;
+                return {
+                  ...item,
+                  price: applyUpdateCheckpoint({ previous: updateContext.previous, symbol, key: 'price', label: 'Price', data: item.price, notes: updateContext.notes }),
+                  overview: applyUpdateCheckpoint({ previous: updateContext.previous, symbol, key: 'overview', label: 'Company overview', data: item.overview, notes: updateContext.notes }),
+                  basicFinancials: applyUpdateCheckpoint({ previous: updateContext.previous, symbol, key: 'basicFinancials', label: 'Basic financials', data: item.basicFinancials, notes: updateContext.notes }),
+                  priceHistory: applyUpdateCheckpoint({ previous: updateContext.previous, symbol, key: `priceHistory:${range}`, label: 'Price history', data: item.priceHistory, notes: updateContext.notes }),
+                  incomeStatement: applyUpdateCheckpoint({ previous: updateContext.previous, symbol, key: 'incomeStatement', label: 'Income statement', data: item.incomeStatement, notes: updateContext.notes }),
+                  balanceSheet: applyUpdateCheckpoint({ previous: updateContext.previous, symbol, key: 'balanceSheet', label: 'Balance sheet', data: item.balanceSheet, notes: updateContext.notes }),
+                  cashFlow: applyUpdateCheckpoint({ previous: updateContext.previous, symbol, key: 'cashFlow', label: 'Cash flow', data: item.cashFlow, notes: updateContext.notes }),
+                  analystRatings: applyUpdateCheckpoint({ previous: updateContext.previous, symbol, key: 'analystRatings', label: 'Analyst ratings', data: item.analystRatings, notes: updateContext.notes }),
+                  insiderTrading: applyUpdateCheckpoint({ previous: updateContext.previous, symbol, key: 'insiderTrading', label: 'Insider trading', data: item.insiderTrading, notes: updateContext.notes }),
+                  priceTargets: applyUpdateCheckpoint({ previous: updateContext.previous, symbol, key: 'priceTargets', label: 'Price targets', data: item.priceTargets, notes: updateContext.notes }),
+                  peers: applyUpdateCheckpoint({ previous: updateContext.previous, symbol, key: 'peers', label: 'Peers', data: item.peers, notes: updateContext.notes }),
+                  newsSentiment: applyUpdateCheckpoint({ previous: updateContext.previous, symbol, key: 'newsSentiment', label: 'News sentiment', data: item.newsSentiment, notes: updateContext.notes }),
+                  companyNews: applyUpdateCheckpoint({ previous: updateContext.previous, symbol, key: 'companyNews', label: 'Company news', data: item.companyNews, notes: updateContext.notes }),
+                };
+              })
+            : undefined;
+          const baseContent = comparisonItems
+            ? buildComparisonReport({
+                generatedAt,
+                range,
+                universe: comparisonUniverse,
+                items: comparisonItems,
+                notes: updateContext.notes,
+              })
+            : String(comparisonResult.data.content);
           const content = buildDeepComparisonReport({
             query: sector,
             symbols: comparisonUniverse,
             generatedAt,
-            baseContent: String(comparisonResult.data.content),
-            items: Array.isArray(comparisonResult.data?.items) ? comparisonResult.data.items : undefined,
+            baseContent,
+            items: comparisonItems,
           });
           const summary = typeof comparisonResult.data?.summary === 'string'
             ? comparisonResult.data.summary
             : 'Deep comparison report built from the latest multi-company research set.';
           const safeTitle = sector.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+          const runMetadata = buildReportRunMetadata({
+            kind: 'research',
+            query: String(args.updateQuery || sector),
+            symbols: comparisonUniverse,
+            range,
+            generatedAt,
+            updatedFrom: updateContext.previous,
+            notes: updateContext.notes,
+            coverage: (comparisonItems || []).flatMap((item: any) => [
+              coverageEntry(item.symbol, 'price', 'Price', item.price, 'critical'),
+              coverageEntry(item.symbol, 'overview', 'Company overview', item.overview, 'critical'),
+              coverageEntry(item.symbol, 'basicFinancials', 'Basic financials', item.basicFinancials, 'critical'),
+              coverageEntry(item.symbol, `priceHistory:${range}`, 'Price history', item.priceHistory, 'critical'),
+              coverageEntry(item.symbol, 'incomeStatement', 'Income statement', item.incomeStatement, 'high'),
+              coverageEntry(item.symbol, 'balanceSheet', 'Balance sheet', item.balanceSheet, 'high'),
+              coverageEntry(item.symbol, 'cashFlow', 'Cash flow', item.cashFlow, 'high'),
+              coverageEntry(item.symbol, 'analystRatings', 'Analyst ratings', item.analystRatings, 'high'),
+              coverageEntry(item.symbol, 'insiderTrading', 'Insider trading', item.insiderTrading, 'optional'),
+              coverageEntry(item.symbol, 'priceTargets', 'Price targets', item.priceTargets, 'high'),
+              coverageEntry(item.symbol, 'peers', 'Peers', item.peers, 'optional'),
+              coverageEntry(item.symbol, 'newsSentiment', 'News sentiment', item.newsSentiment, 'optional'),
+              coverageEntry(item.symbol, 'companyNews', 'Company news', item.companyNews, 'optional'),
+            ]),
+          });
           const saved = await saveReport(content, `${safeTitle}-research-report`, undefined, {
             reportKind: 'research',
             summary,
+            runMetadata,
           });
           return {
             success: true,
@@ -3849,7 +4040,7 @@ export async function executeTool(
         if (companyProbe.ok && companyProbe.symbol) {
           const stockResult = await executeTool(
             'generate_stock_report',
-            { symbol: sector, range: args.range || "5y", skipSave: true },
+            { symbol: sector, range: args.range || "5y", skipSave: true, includeRawData: true },
             stockService,
             options
           );
@@ -3859,11 +4050,34 @@ export async function executeTool(
               : stockResult;
           }
           const generatedAt = new Date().toISOString();
+          const updateContext = await prepareReportUpdateContext(args, {
+            kind: 'research',
+            query: String(args.updateQuery || sector),
+            symbols: [String(stockResult.data.symbol)],
+          });
+          const rawStockData = stockResult.data?.rawData
+            ? applyStockDataUpdateCheckpoint({
+                stock: stockResult.data.rawData,
+                previous: updateContext.previous,
+                symbol: String(stockResult.data.symbol),
+                range: args.range || "5y",
+                notes: updateContext.notes,
+              })
+            : undefined;
+          const baseContent = rawStockData
+            ? buildStockReport(rawStockData)
+            : String(stockResult.data.content);
+          const baseContentWithNotes = updateContext.notes.length
+            ? baseContent.replace(
+                '## 📊 Snapshot',
+                `## ⚠️ Data Gaps\n${updateContext.notes.map((item) => `- ${item}`).join('\n')}\n\n## 📊 Snapshot`
+              )
+            : baseContent;
           const content = buildDeepStockReport({
             query: sector,
             symbol: String(stockResult.data.symbol),
             generatedAt,
-            baseContent: String(stockResult.data.content),
+            baseContent: baseContentWithNotes,
           });
           const summary = typeof stockResult.data?.decisionSnapshot?.summary === 'string'
             ? stockResult.data.decisionSnapshot.summary
@@ -3871,9 +4085,36 @@ export async function executeTool(
               ? stockResult.data.summary
               : 'Deep company report built from the latest single-stock research set.';
           const safeTitle = sector.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+          const runMetadata = buildReportRunMetadata({
+            kind: 'research',
+            query: String(args.updateQuery || sector),
+            symbols: [String(stockResult.data.symbol)],
+            range: args.range || "5y",
+            generatedAt,
+            updatedFrom: updateContext.previous,
+            notes: updateContext.notes,
+            coverage: rawStockData ? [
+              coverageEntry(rawStockData.symbol, 'price', 'Price', rawStockData.price, 'critical'),
+              coverageEntry(rawStockData.symbol, 'overview', 'Company overview', rawStockData.companyOverview, 'critical'),
+              coverageEntry(rawStockData.symbol, 'basicFinancials', 'Basic financials', rawStockData.basicFinancials, 'critical'),
+              coverageEntry(rawStockData.symbol, `priceHistory:${args.range || "5y"}`, 'Price history', rawStockData.priceHistory, 'critical'),
+              coverageEntry(rawStockData.symbol, 'earningsHistory', 'Earnings history', rawStockData.earningsHistory, 'high'),
+              coverageEntry(rawStockData.symbol, 'incomeStatement', 'Income statement', rawStockData.incomeStatement, 'high'),
+              coverageEntry(rawStockData.symbol, 'balanceSheet', 'Balance sheet', rawStockData.balanceSheet, 'high'),
+              coverageEntry(rawStockData.symbol, 'cashFlow', 'Cash flow', rawStockData.cashFlow, 'high'),
+              coverageEntry(rawStockData.symbol, 'analystRatings', 'Analyst ratings', rawStockData.analystRatings, 'high'),
+              coverageEntry(rawStockData.symbol, 'analystRecommendations', 'Analyst recommendations', rawStockData.analystRecommendations, 'optional'),
+              coverageEntry(rawStockData.symbol, 'insiderTrading', 'Insider trading', rawStockData.insiderTrading, 'optional'),
+              coverageEntry(rawStockData.symbol, 'priceTargets', 'Price targets', rawStockData.priceTargets, 'high'),
+              coverageEntry(rawStockData.symbol, 'peers', 'Peers', rawStockData.peers, 'optional'),
+              coverageEntry(rawStockData.symbol, 'newsSentiment', 'News sentiment', rawStockData.newsSentiment, 'optional'),
+              coverageEntry(rawStockData.symbol, 'companyNews', 'Company news', rawStockData.companyNews, 'optional'),
+            ] : [],
+          });
           const saved = await saveReport(content, `${safeTitle}-research-report`, undefined, {
             reportKind: 'research',
             summary,
+            runMetadata,
           });
           return {
             success: true,
@@ -4121,46 +4362,59 @@ export async function executeTool(
         const items: any[] = [];
         for (const item of rawItems) {
           const { symbol } = item;
-          const { overview, notes: overviewNotes } = sanitizeMarketScaledOverview(item.overview, item.price, item.priceHistory);
+          const price = applyUpdateCheckpoint({ previous: updateContext.previous, symbol, key: 'price', label: 'Price', data: item.price, notes });
+          const priceHistory = applyUpdateCheckpoint({ previous: updateContext.previous, symbol, key: `priceHistory:${range}`, label: 'Price history', data: item.priceHistory, notes });
+          const { overview: sanitizedOverview, notes: overviewNotes } = sanitizeMarketScaledOverview(item.overview, price, priceHistory);
+          const overview = applyUpdateCheckpoint({ previous: updateContext.previous, symbol, key: 'overview', label: 'Company overview', data: sanitizedOverview, notes });
           notes.push(...overviewNotes.map((note) => `${symbol}: ${note}`));
-          const secFallbacks = buildSecFinancialFallbacks(symbol, item.secFinancialFacts, item.price);
+          const secFallbacks = buildSecFinancialFallbacks(symbol, item.secFinancialFacts, price);
           const overviewFinancials = overview ? buildBasicFinancialsFallbackDeep(overview) : undefined;
-          const basicFinancials = fillMissingFields(fillMissingFields(item.basicFinancials, overviewFinancials), secFallbacks.basicFinancials);
-          const incomeStatement = hasStatementReports(item.incomeStatement) ? item.incomeStatement : secFallbacks.incomeStatement;
-          const balanceSheet = hasStatementReports(item.balanceSheet) ? item.balanceSheet : secFallbacks.balanceSheet;
-          const cashFlow = hasStatementReports(item.cashFlow) ? item.cashFlow : secFallbacks.cashFlow;
+          const currentBasicFinancials = fillMissingFields(fillMissingFields(item.basicFinancials, overviewFinancials), secFallbacks.basicFinancials);
+          const currentIncomeStatement = hasStatementReports(item.incomeStatement) ? item.incomeStatement : secFallbacks.incomeStatement;
+          const currentBalanceSheet = hasStatementReports(item.balanceSheet) ? item.balanceSheet : secFallbacks.balanceSheet;
+          const currentCashFlow = hasStatementReports(item.cashFlow) ? item.cashFlow : secFallbacks.cashFlow;
+          const basicFinancials = applyUpdateCheckpoint({ previous: updateContext.previous, symbol, key: 'basicFinancials', label: 'Basic financials', data: currentBasicFinancials, notes });
+          const incomeStatement = applyUpdateCheckpoint({ previous: updateContext.previous, symbol, key: 'incomeStatement', label: 'Income statement', data: currentIncomeStatement, notes });
+          const balanceSheet = applyUpdateCheckpoint({ previous: updateContext.previous, symbol, key: 'balanceSheet', label: 'Balance sheet', data: currentBalanceSheet, notes });
+          const cashFlow = applyUpdateCheckpoint({ previous: updateContext.previous, symbol, key: 'cashFlow', label: 'Cash flow', data: currentCashFlow, notes });
+          const analystRatings = applyUpdateCheckpoint({ previous: updateContext.previous, symbol, key: 'analystRatings', label: 'Analyst ratings', data: item.analystRatings, notes });
+          const insiderTrading = applyUpdateCheckpoint({ previous: updateContext.previous, symbol, key: 'insiderTrading', label: 'Insider trading', data: item.insiderTrading, notes });
+          const priceTargets = applyUpdateCheckpoint({ previous: updateContext.previous, symbol, key: 'priceTargets', label: 'Price targets', data: item.priceTargets, notes });
+          const peers = applyUpdateCheckpoint({ previous: updateContext.previous, symbol, key: 'peers', label: 'Peers', data: item.peers, notes });
+          const newsSentiment = applyUpdateCheckpoint({ previous: updateContext.previous, symbol, key: 'newsSentiment', label: 'News sentiment', data: item.newsSentiment, notes });
+          const companyNews = applyUpdateCheckpoint({ previous: updateContext.previous, symbol, key: 'companyNews', label: 'Company news', data: item.companyNews, notes });
           const watchlistItem = watchlist?.items.find((entry) => entry.symbol === symbol.toUpperCase());
           const previousDecision = await getLatestDecision(symbol).catch(() => null);
           const trustSummary = buildTrustSummaryFromCache(item.cache, [
-            { key: 'price', label: 'Price', data: item.price },
-            { key: 'overview', label: 'Company overview', data: item.overview },
-            { key: 'basicFinancials', label: 'Basic financials', data: item.basicFinancials },
-            { key: `priceHistory:${range}`, label: 'Price history', data: item.priceHistory },
-            { key: 'incomeStatement', label: 'Income statement', data: item.incomeStatement },
-            { key: 'balanceSheet', label: 'Balance sheet', data: item.balanceSheet },
-            { key: 'cashFlow', label: 'Cash flow', data: item.cashFlow },
-            { key: 'analystRatings', label: 'Analyst ratings', data: item.analystRatings },
-            { key: 'insiderTrading', label: 'Insider trading', data: item.insiderTrading },
-            { key: 'priceTargets', label: 'Price targets', data: item.priceTargets },
-            { key: 'peers', label: 'Peers', data: item.peers },
-            { key: 'newsSentiment', label: 'News sentiment', data: item.newsSentiment },
-            { key: 'companyNews', label: 'Company news', data: item.companyNews },
+            { key: 'price', label: 'Price', data: price },
+            { key: 'overview', label: 'Company overview', data: overview },
+            { key: 'basicFinancials', label: 'Basic financials', data: basicFinancials },
+            { key: `priceHistory:${range}`, label: 'Price history', data: priceHistory },
+            { key: 'incomeStatement', label: 'Income statement', data: incomeStatement },
+            { key: 'balanceSheet', label: 'Balance sheet', data: balanceSheet },
+            { key: 'cashFlow', label: 'Cash flow', data: cashFlow },
+            { key: 'analystRatings', label: 'Analyst ratings', data: analystRatings },
+            { key: 'insiderTrading', label: 'Insider trading', data: insiderTrading },
+            { key: 'priceTargets', label: 'Price targets', data: priceTargets },
+            { key: 'peers', label: 'Peers', data: peers },
+            { key: 'newsSentiment', label: 'News sentiment', data: newsSentiment },
+            { key: 'companyNews', label: 'Company news', data: companyNews },
             { key: 'secFinancialFacts', label: 'SEC companyfacts', data: item.secFinancialFacts },
           ]);
           const decisionSnapshot = buildDecisionSnapshot({
             symbol,
-            price: item.price,
-            priceHistory: item.priceHistory,
+            price,
+            priceHistory,
             companyOverview: overview,
             basicFinancials,
             incomeStatement,
             balanceSheet,
             cashFlow,
-            analystRatings: item.analystRatings,
-            priceTargets: item.priceTargets,
-            insiderTrading: item.insiderTrading,
-            newsSentiment: item.newsSentiment,
-            companyNews: item.companyNews,
+            analystRatings,
+            priceTargets,
+            insiderTrading,
+            newsSentiment,
+            companyNews,
             trust: trustSummary,
             position: watchlistItem,
             portfolioProfile,
@@ -4168,19 +4422,19 @@ export async function executeTool(
           });
           items.push({
             symbol,
-            price: item.price,
+            price,
             overview,
             basicFinancials,
-            priceHistory: item.priceHistory,
+            priceHistory,
             incomeStatement,
             balanceSheet,
             cashFlow,
-            analystRatings: item.analystRatings,
-            insiderTrading: item.insiderTrading,
-            priceTargets: item.priceTargets,
-            peers: item.peers,
-            newsSentiment: item.newsSentiment,
-            companyNews: item.companyNews,
+            analystRatings,
+            insiderTrading,
+            priceTargets,
+            peers,
+            newsSentiment,
+            companyNews,
             dataTrust: trustSummary,
             decisionSnapshot,
           });

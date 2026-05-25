@@ -8,7 +8,7 @@ Type a question in plain English and the assistant calls the right data tools, f
 
 Report-style requests are guarded server-side: if the model answers a stock, comparison, theme, or watchlist report request in plain chat without creating an artifact, the server runs the matching report tool instead. This keeps free-form prompts such as `Should I buy Arm?`, `Compare Nvidia, AMD, and Intel`, and `AI infrastructure stocks` on the verified report path.
 
-Reports are also resumable through explicit update prompts. If a prompt includes `update` and names a prior report target, such as `update ARM stock report`, `update comparison report of Nvidia and Arm`, `update research report of AI ecosystem`, or `update watchlist report`, the backend uses the same four report tools in update mode. It locates the latest matching saved report, reuses fresh cached provider data, and spends the next pass on missing or stale verified inputs. If no prior report is found, it falls back to a fresh report and states that in the data-gap notes.
+Reports are also resumable through explicit update prompts. If a prompt includes `update` and names a prior report target, such as `update ARM stock report`, `update comparison report of Nvidia and Arm`, `update research report of AI ecosystem`, or `update watchlist report`, the backend uses the same four report tools in update mode. It locates the latest matching saved report, tries fresh and cached provider data first, then carries forward prior verified checkpoint fields only where this pass cannot replace them. Carried-forward fields are called out in the report notes; if no prior report is found, it falls back to a fresh report and states that in the data-gap notes.
 
 **Four report types:**
 
