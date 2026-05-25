@@ -4,7 +4,9 @@ import { createStockService } from '@/app/lib/stockDataService';
 import {
   buildImproveToolRequest,
   coverageStats,
+  deleteSavedReportForImprove,
   decideImproveStatus,
+  isImproveTargetComplete,
   loadSavedReportForImproveByStoragePath,
   loadSavedReportForImprove,
   parseImproveConfig,
@@ -22,6 +24,7 @@ const VERCEL_REQUEST_DEADLINE_MS = Math.max(60000, VERCEL_FUNCTION_TIMEOUT_MS - 
 type ImproveBody = {
   maxPasses?: unknown;
   passNumber?: unknown;
+  replaceReportId?: unknown;
   target?: unknown;
   storagePath?: unknown;
 };
@@ -58,6 +61,20 @@ export async function POST(
   }
 
   const beforeCoverage = coverageStats(report.metadata);
+  if (isImproveTargetComplete(beforeCoverage, config.target)) {
+    return NextResponse.json({
+      success: true,
+      status: 'complete',
+      reason: config.target === 'all' ? 'all_complete' : 'critical_complete',
+      latestReport: null,
+      beforeCoverage,
+      afterCoverage: beforeCoverage,
+      passesDone: Math.max(0, passNumber - 1),
+      maxPasses: config.maxPasses,
+      nextRunAfterMs: 0,
+    });
+  }
+
   let toolRequest;
   try {
     toolRequest = buildImproveToolRequest(report);
@@ -89,6 +106,9 @@ export async function POST(
   const afterMetadata = latestSavedReport?.metadata || result.data?.runMetadata || null;
   const afterCoverage = coverageStats(afterMetadata);
   if (!sameReportUniverse(report.metadata, afterMetadata)) {
+    if (latestReport?.id) {
+      await deleteSavedReportForImprove(latestReport.id).catch(() => false);
+    }
     return NextResponse.json(
       {
         error: 'Improve pass changed the saved report universe and was stopped.',
@@ -109,6 +129,11 @@ export async function POST(
     passesDone: passNumber,
     config,
   });
+  const replaceReportId = typeof body.replaceReportId === 'string' ? body.replaceReportId : '';
+  const deletedReportId = replaceReportId
+    && replaceReportId !== latestReport?.id
+    ? (await deleteSavedReportForImprove(replaceReportId).catch(() => false) ? replaceReportId : null)
+    : null;
 
   return NextResponse.json({
     success: true,
@@ -119,6 +144,7 @@ export async function POST(
     afterCoverage,
     passesDone: passNumber,
     maxPasses: config.maxPasses,
+    deletedReportId,
     nextRunAfterMs: decision.nextRunAfterMs,
   });
 }

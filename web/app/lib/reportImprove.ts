@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { decodeReportStorageId, encodeReportStorageId, readReportFile } from './reportFileStore';
+import { decodeReportStorageId, deleteReportFile, encodeReportStorageId, readReportFile } from './reportFileStore';
 import { getSupabaseClient } from './supabaseClient';
 import {
   extractReportMetadata,
@@ -237,6 +237,12 @@ export function hasUsefulCoverageImprovement(before: CoverageStats | null, after
   return after.available > before.available;
 }
 
+export function isImproveTargetComplete(stats: CoverageStats | null, target: ImproveTarget): boolean {
+  if (!stats) return false;
+  if (target === 'all') return stats.missing === 0;
+  return stats.criticalMissing === 0;
+}
+
 export function decideImproveStatus(args: {
   before: CoverageStats | null;
   after: CoverageStats | null;
@@ -245,19 +251,31 @@ export function decideImproveStatus(args: {
 }): { status: 'complete' | 'continue' | 'stopped'; reason: string; nextRunAfterMs: number } {
   const after = args.after;
   if (!after) return { status: 'stopped', reason: 'missing_checkpoint', nextRunAfterMs: 0 };
-  if (args.config.target === 'critical' && after.criticalMissing === 0) {
-    return { status: 'complete', reason: 'critical_complete', nextRunAfterMs: 0 };
-  }
-  if (args.config.target === 'all' && after.missing === 0) {
-    return { status: 'complete', reason: 'all_complete', nextRunAfterMs: 0 };
+  if (isImproveTargetComplete(after, args.config.target)) {
+    return {
+      status: 'complete',
+      reason: args.config.target === 'all' ? 'all_complete' : 'critical_complete',
+      nextRunAfterMs: 0,
+    };
   }
   if (args.passesDone >= args.config.maxPasses) {
     return { status: 'stopped', reason: 'max_passes_reached', nextRunAfterMs: 0 };
   }
   if (!hasUsefulCoverageImprovement(args.before, after)) {
-    return { status: 'stopped', reason: 'no_coverage_improvement', nextRunAfterMs: 0 };
+    return { status: 'continue', reason: 'coverage_flat_with_remaining_gaps', nextRunAfterMs: args.config.minWaitMs };
   }
   return { status: 'continue', reason: 'coverage_improved_with_remaining_gaps', nextRunAfterMs: args.config.minWaitMs };
+}
+
+export async function deleteSavedReportForImprove(id: string): Promise<boolean> {
+  const filesystemPath = decodeReportStorageId(id);
+  if (filesystemPath) return deleteReportFile(filesystemPath);
+
+  if (!id || !/^[0-9a-f-]{36}$/i.test(id)) return false;
+  const supabase = getSupabaseClient();
+  if (!supabase) return false;
+  const { error } = await supabase.from('saved_reports').delete().eq('id', id);
+  return !error;
 }
 
 export function buildImproveToolRequest(report: SavedReportForImprove): ImproveToolRequest {
@@ -320,6 +338,7 @@ export function savedReportMetaFromToolData(data: any) {
     storage_path: storagePath,
     report_kind: data.reportKind || null,
     report_date: data.reportDate || null,
+    run_metadata: data.runMetadata || null,
     created_at: new Date().toISOString(),
     downloadUrl: supabaseId ? `/api/saved-reports/${supabaseId}` : `/api/saved-reports/${id}`,
   };

@@ -30,6 +30,7 @@ export interface ReportMissingDataEntry {
 export interface ReportRunMetadata {
   version: 1;
   kind: ReportKind;
+  reportVariant?: 'original' | 'updated';
   query?: string;
   symbols: string[];
   range?: string;
@@ -40,6 +41,10 @@ export interface ReportRunMetadata {
     filename?: string | null;
     createdAt?: string | null;
     storagePath?: string | null;
+  };
+  lineage?: {
+    originalStoragePath?: string | null;
+    updatedFromStoragePath?: string | null;
   };
   coverage: Record<string, Record<string, ReportCoverageEntry>>;
   checkpoint?: Record<string, Record<string, ReportCheckpointEntry>>;
@@ -200,9 +205,15 @@ export function buildReportRunMetadata(args: {
     }
   }
 
+  const priorLineage = args.updatedFrom?.metadata?.lineage;
+  const originalStoragePath = args.updatedFrom
+    ? priorLineage?.originalStoragePath || args.updatedFrom.storagePath || null
+    : undefined;
+
   return {
     version: 1,
     kind: args.kind,
+    reportVariant: args.updatedFrom ? 'updated' : 'original',
     query: args.query,
     symbols: Array.from(new Set(args.symbols.map(normalizeSymbol).filter(Boolean))),
     range: args.range,
@@ -214,6 +225,12 @@ export function buildReportRunMetadata(args: {
           filename: args.updatedFrom.filename,
           createdAt: args.updatedFrom.createdAt,
           storagePath: args.updatedFrom.storagePath,
+        }
+      : undefined,
+    lineage: args.updatedFrom
+      ? {
+          originalStoragePath,
+          updatedFromStoragePath: args.updatedFrom.storagePath || null,
         }
       : undefined,
     coverage,

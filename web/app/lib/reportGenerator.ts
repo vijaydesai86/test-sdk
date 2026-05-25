@@ -3041,6 +3041,7 @@ export async function saveReport(
     title: derivedTitle,
     summary: derivedSummary,
     reportKind: metadata.reportKind,
+    runMetadata: metadata.runMetadata,
   };
 }
 

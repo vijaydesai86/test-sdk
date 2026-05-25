@@ -135,7 +135,7 @@ describe('reportImprove', () => {
     )).toBe(false);
   });
 
-  it('continues only when coverage improved and useful gaps remain', () => {
+  it('continues through configured passes while useful gaps remain', () => {
     const config = { maxPasses: 3, target: 'critical' as const, minWaitMs: 60000 };
 
     expect(decideImproveStatus({
@@ -150,6 +150,13 @@ describe('reportImprove', () => {
       after: { total: 4, available: 3, missing: 1, criticalMissing: 1, coveragePct: 75 },
       passesDone: 2,
       config,
-    })).toMatchObject({ status: 'stopped', reason: 'no_coverage_improvement' });
+    })).toMatchObject({ status: 'continue', reason: 'coverage_flat_with_remaining_gaps' });
+
+    expect(decideImproveStatus({
+      before: { total: 4, available: 3, missing: 1, criticalMissing: 1, coveragePct: 75 },
+      after: { total: 4, available: 3, missing: 1, criticalMissing: 1, coveragePct: 75 },
+      passesDone: 3,
+      config,
+    })).toMatchObject({ status: 'stopped', reason: 'max_passes_reached' });
   });
 });

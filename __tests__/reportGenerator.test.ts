@@ -15,6 +15,7 @@ import {
   type MoatAnalysis,
 } from '../web/app/lib/reportGenerator';
 import { computeDcfValuation } from '../web/app/lib/dcfValuation';
+import { buildReportRunMetadata } from '../web/app/lib/reportUpdate';
 import { promises as fs } from 'fs';
 import path from 'path';
 import os from 'os';
@@ -1125,6 +1126,26 @@ describe('saveReport', () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'reports-'));
     const saved = await saveReport('body', 'no-supabase', tempDir);
     expect(saved.supabaseId).toBeUndefined();
+  });
+
+  it('returns run metadata and writes the filesystem sidecar', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'reports-'));
+    const runMetadata = buildReportRunMetadata({
+      kind: 'stock',
+      query: 'ARM',
+      symbols: ['ARM'],
+      generatedAt: '2026-05-25T10:00:00.000Z',
+      coverage: [],
+    });
+
+    const saved = await saveReport('body', 'arm-stock-report', tempDir, {
+      reportKind: 'stock',
+      runMetadata,
+    });
+
+    const sidecar = JSON.parse(await fs.readFile(`${saved.filePath}.metadata.json`, 'utf8'));
+    expect(saved.runMetadata?.reportVariant).toBe('original');
+    expect(sidecar).toMatchObject({ kind: 'stock', reportVariant: 'original', symbols: ['ARM'] });
   });
 });
 

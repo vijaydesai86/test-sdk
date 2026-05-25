@@ -13,7 +13,13 @@ export interface FilesystemSavedReport {
   report_kind: string | null;
   report_date: string | null;
   created_at: string;
+  run_metadata?: ReportMetadataFile;
 }
+
+type ReportMetadataFile = Record<string, unknown> & {
+  version: 1;
+  kind: string;
+};
 
 export function encodeReportStorageId(storagePath: string): string {
   return `fs_${Buffer.from(storagePath, 'utf8').toString('base64url')}`;
@@ -64,9 +70,23 @@ export async function deleteReportFile(storagePath: string): Promise<boolean> {
   if (!filePath) return false;
   try {
     await fs.unlink(filePath);
+    await fs.unlink(`${filePath}.metadata.json`).catch(() => {});
     return true;
   } catch {
     return false;
+  }
+}
+
+async function readReportMetadataFile(filePath: string): Promise<ReportMetadataFile | null> {
+  try {
+    const raw = await fs.readFile(`${filePath}.metadata.json`, 'utf8');
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== 'object') return null;
+    const candidate = parsed as Record<string, unknown>;
+    if (candidate.version !== 1 || typeof candidate.kind !== 'string') return null;
+    return candidate as ReportMetadataFile;
+  } catch {
+    return null;
   }
 }
 
@@ -114,9 +134,10 @@ export async function listFilesystemReports(): Promise<FilesystemSavedReport[]> 
     const filePath = getReportFilePath(storagePath);
     if (!filePath) return null;
     try {
-      const [content, stat] = await Promise.all([
+      const [content, stat, runMetadata] = await Promise.all([
         fs.readFile(filePath, 'utf8'),
         fs.stat(filePath),
+        readReportMetadataFile(filePath),
       ]);
       const filename = path.basename(filePath);
       const dateFromPath = storagePath.split('/')[0];
@@ -128,9 +149,10 @@ export async function listFilesystemReports(): Promise<FilesystemSavedReport[]> 
         title: meta.title,
         summary: meta.summary,
         storage_path: storagePath,
-        report_kind: null,
+        report_kind: runMetadata?.kind || null,
         report_date: reportDate,
         created_at: stat.mtime.toISOString(),
+        run_metadata: runMetadata || undefined,
       };
       return report;
     } catch {

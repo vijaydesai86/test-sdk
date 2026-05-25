@@ -4,6 +4,7 @@ import { encodeReportStorageId, listFilesystemReports } from '../../lib/reportFi
 import { saveReport } from '../../lib/reportGenerator';
 
 const DETAILED_COLUMNS = 'id, filename, title, summary, storage_path, report_kind, report_date, created_at';
+const DETAILED_COLUMNS_WITH_RUN_METADATA = `${DETAILED_COLUMNS}, run_metadata`;
 const BASIC_COLUMNS = 'id, filename, title, created_at';
 
 interface DetailedSavedReportRow {
@@ -15,6 +16,7 @@ interface DetailedSavedReportRow {
   report_kind: string | null;
   report_date: string | null;
   created_at: string;
+  run_metadata?: unknown;
 }
 
 interface BasicSavedReportRow {
@@ -23,6 +25,11 @@ interface BasicSavedReportRow {
   title: string | null;
   created_at: string;
 }
+
+type SavedReportsQueryResult = {
+  error: { message: string } | null;
+  data: unknown[] | null;
+};
 
 function isSchemaMismatch(message: string) {
   return (
@@ -45,6 +52,7 @@ function normalizeLegacyReport(row: BasicSavedReportRow): DetailedSavedReportRow
     storage_path: null,
     report_kind: null,
     report_date: null,
+    run_metadata: null,
   };
 }
 
@@ -59,11 +67,19 @@ export async function GET() {
     return NextResponse.json({ reports: await listFilesystemReports(), storage: 'filesystem' });
   }
 
-  const detailedQuery = await supabase
+  let detailedQuery = await supabase
     .from('saved_reports')
-    .select(DETAILED_COLUMNS)
+    .select(DETAILED_COLUMNS_WITH_RUN_METADATA)
     .order('report_date', { ascending: false, nullsFirst: false })
-    .order('created_at', { ascending: false });
+    .order('created_at', { ascending: false }) as SavedReportsQueryResult;
+
+  if (detailedQuery.error && isSchemaMismatch(detailedQuery.error.message)) {
+    detailedQuery = await supabase
+      .from('saved_reports')
+      .select(DETAILED_COLUMNS)
+      .order('report_date', { ascending: false, nullsFirst: false })
+      .order('created_at', { ascending: false }) as SavedReportsQueryResult;
+  }
 
   if (detailedQuery.error && isSchemaMismatch(detailedQuery.error.message)) {
     const legacyQuery = await supabase
@@ -152,6 +168,7 @@ export async function POST(request: NextRequest) {
           storage_path: saved.storagePath,
           report_kind: saved.reportKind || null,
           report_date: saved.reportDate,
+          run_metadata: saved.runMetadata || null,
           created_at: new Date().toISOString(),
         },
         storage: 'filesystem',

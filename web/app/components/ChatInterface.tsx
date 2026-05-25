@@ -25,6 +25,18 @@ interface ReportItem {
   reportDate?: string;
   reportKind?: string;
   storagePath?: string;
+  runMetadata?: ReportRunMetadataSummary | null;
+}
+
+interface ReportRunMetadataSummary {
+  reportVariant?: 'original' | 'updated';
+  updatedFrom?: {
+    storagePath?: string | null;
+  };
+  lineage?: {
+    originalStoragePath?: string | null;
+    updatedFromStoragePath?: string | null;
+  };
 }
 
 interface SavedReportMeta {
@@ -37,6 +49,7 @@ interface SavedReportMeta {
   report_kind?: string | null;
   storage_path?: string | null;
   downloadUrl?: string;
+  run_metadata?: ReportRunMetadataSummary | null;
 }
 
 interface ImproveCoverageStats {
@@ -64,6 +77,7 @@ interface ImproveResponse {
   passesDone?: number;
   maxPasses?: number;
   nextRunAfterMs?: number;
+  deletedReportId?: string | null;
   error?: string;
 }
 
@@ -287,6 +301,40 @@ function buildSavedSummary(item: Pick<SavedReportMeta, 'summary' | 'report_kind'
   return `Saved markdown report for ${humanizeSlug(item.filename)}.`;
 }
 
+function reportVariantLabel(item: { runMetadata?: ReportRunMetadataSummary | null; run_metadata?: ReportRunMetadataSummary | null }) {
+  const metadata = item.runMetadata ?? item.run_metadata ?? null;
+  if (metadata?.reportVariant === 'updated' || metadata?.updatedFrom) return 'Updated';
+  return 'Original';
+}
+
+function reportLineageKey(report: Pick<SavedReportMeta, 'id' | 'storage_path' | 'run_metadata'>) {
+  return report.run_metadata?.lineage?.originalStoragePath
+    || report.run_metadata?.updatedFrom?.storagePath
+    || report.storage_path
+    || report.id;
+}
+
+function collapseSavedReportVersions(reports: SavedReportMeta[]) {
+  const originals: SavedReportMeta[] = [];
+  const latestUpdatedByLineage = new Map<string, SavedReportMeta>();
+
+  for (const report of reports) {
+    if (reportVariantLabel(report) === 'Updated') {
+      const key = reportLineageKey(report);
+      const existing = latestUpdatedByLineage.get(key);
+      if (!existing || String(report.created_at || '').localeCompare(String(existing.created_at || '')) > 0) {
+        latestUpdatedByLineage.set(key, report);
+      }
+    } else {
+      originals.push(report);
+    }
+  }
+
+  const visibleIds = new Set(originals.map((report) => report.id));
+  const updated = Array.from(latestUpdatedByLineage.values()).filter((report) => !visibleIds.has(report.id));
+  return [...originals, ...updated].sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')));
+}
+
 function artifactFromSavedReport(report: SavedReportMeta): ReportItem {
   return {
     filename: report.filename,
@@ -296,6 +344,7 @@ function artifactFromSavedReport(report: SavedReportMeta): ReportItem {
     reportDate: report.report_date ?? report.created_at,
     reportKind: report.report_kind ?? undefined,
     storagePath: report.storage_path ?? undefined,
+    runMetadata: report.run_metadata ?? null,
   };
 }
 
@@ -321,6 +370,7 @@ function improveReasonLabel(reason?: string) {
   if (reason === 'no_coverage_improvement') return 'Stopped because coverage did not improve.';
   if (reason === 'missing_checkpoint') return 'Stopped because checkpoint metadata is unavailable.';
   if (reason === 'coverage_improved_with_remaining_gaps') return 'Coverage improved; checking whether another pass is useful.';
+  if (reason === 'coverage_flat_with_remaining_gaps') return 'Coverage did not improve; continuing because more configured passes remain.';
   return 'Improve pass finished.';
 }
 
@@ -545,6 +595,7 @@ export default function ChatInterface() {
         reportDate?: string;
         reportKind?: string;
         storagePath?: string;
+        runMetadata?: ReportRunMetadataSummary | null;
       } | null;
       const reports = data.reports as Array<{
         filename?: string;
@@ -555,6 +606,7 @@ export default function ChatInterface() {
         reportDate?: string;
         reportKind?: string;
         storagePath?: string;
+        runMetadata?: ReportRunMetadataSummary | null;
       }> | null;
       const allReports = reports?.length
         ? reports
@@ -575,6 +627,7 @@ export default function ChatInterface() {
                   reportDate: r.reportDate,
                   reportKind: r.reportKind,
                   storagePath: r.storagePath,
+                  runMetadata: r.runMetadata ?? null,
                 },
               ];
             }
@@ -582,6 +635,31 @@ export default function ChatInterface() {
           return updated;
         });
         fetchSupabaseReports();
+        const generatedReports = allReports
+          .filter((r) => r.filename && (r.downloadUrl || r.storagePath))
+          .map((r): SavedReportMeta => {
+            const storageId = r.storagePath
+              ? `fs_${btoa(r.storagePath).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')}`
+              : '';
+            const savedMatch = r.downloadUrl?.match(/\/api\/saved-reports\/([^/?#]+)/);
+            return {
+              id: savedMatch?.[1] || storageId || r.filename || 'report',
+              filename: r.filename || 'report.md',
+              title: r.title || r.filename || 'Report',
+              summary: r.summary || null,
+              created_at: new Date().toISOString(),
+              report_date: r.reportDate || null,
+              report_kind: r.reportKind || null,
+              storage_path: r.storagePath || null,
+              downloadUrl: r.downloadUrl,
+              run_metadata: r.runMetadata ?? null,
+            };
+          });
+        for (const generatedReport of generatedReports) {
+          if (generatedReport.id) {
+            setTimeout(() => void handleSupabaseReportImprove(generatedReport), 0);
+          }
+        }
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Unknown error';
@@ -612,17 +690,44 @@ export default function ChatInterface() {
     )
   ).filter((link) => !deletedReports.has(link));
 
-  const reportItems: ReportItem[] = [
+  const rawReportItems: ReportItem[] = [
     ...savedReports,
     ...reportLinks
-      .map((link) => ({ filename: link.split('/').pop() ?? link, downloadUrl: link, storagePath: link }))
+      .map((link) => {
+        const storagePath = link.match(/\/api\/reports\/(.+)$/)?.[1];
+        return {
+          filename: link.split('/').pop() ?? link,
+          downloadUrl: link,
+          storagePath: storagePath ? decodeURIComponent(storagePath) : link,
+        };
+      })
       .filter((r) => !savedReports.find((s) => s.filename === r.filename)),
+  ];
+  const displaySupabaseReports = collapseSavedReportVersions(supabaseReports);
+  const reportItems = [
+    ...rawReportItems.filter((item) => reportVariantLabel(item) === 'Original'),
+    ...collapseSavedReportVersions(
+      rawReportItems
+        .filter((item) => reportVariantLabel(item) === 'Updated')
+        .map((item, index): SavedReportMeta => ({
+          id: reportImproveId(item) || `${item.filename}-${index}`,
+          filename: item.filename,
+          title: item.title || item.filename,
+          summary: item.summary || null,
+          created_at: item.reportDate || new Date().toISOString(),
+          report_date: item.reportDate || null,
+          report_kind: item.reportKind || null,
+          storage_path: item.storagePath || null,
+          downloadUrl: item.downloadUrl,
+          run_metadata: item.runMetadata ?? null,
+        }))
+    ).map(artifactFromSavedReport),
   ];
 
   const artifactGroups = groupByDate(reportItems, (item) =>
     getDateBucket(item.reportDate, item.storagePath ?? item.downloadUrl ?? item.filename)
   );
-  const savedReportGroups = groupByDate(supabaseReports, (item) =>
+  const savedReportGroups = groupByDate(displaySupabaseReports, (item) =>
     getDateBucket(item.report_date ?? item.created_at, item.storage_path ?? item.filename)
   );
 
@@ -766,6 +871,7 @@ export default function ChatInterface() {
     setError(null);
     let currentReportId = report.id;
     let latestReport: SavedReportMeta | null = null;
+    let replaceReportId: string | null = reportVariantLabel(report) === 'Updated' ? report.id : null;
     let serverMaxPasses: number | null = null;
     const sourceUrls = new Set([
       `/api/saved-reports/${report.id}`,
@@ -790,7 +896,7 @@ export default function ChatInterface() {
         const res = await fetch(`/api/saved-reports/${currentReportId}/improve`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ passNumber: pass, storagePath: report.storage_path }),
+          body: JSON.stringify({ passNumber: pass, storagePath: report.storage_path, replaceReportId }),
         });
         const payload = (await res.json()) as ImproveResponse;
         if (!res.ok || payload.error) throw new Error(payload.error || 'Improve pass failed');
@@ -803,6 +909,12 @@ export default function ChatInterface() {
           upsertSavedReportMeta(payload.latestReport);
           upsertArtifactReportMeta(payload.latestReport);
           currentReportId = payload.latestReport.id;
+          replaceReportId = payload.latestReport.id;
+        }
+        if (payload.deletedReportId) {
+          setSupabaseReports((prev) => prev.filter((item) => item.id !== payload.deletedReportId));
+          setSavedReports((prev) => prev.filter((item) => reportImproveId(item) !== payload.deletedReportId));
+          sourceUrls.delete(`/api/saved-reports/${payload.deletedReportId}`);
         }
 
         const message = [
@@ -975,7 +1087,7 @@ export default function ChatInterface() {
   const workspaceTabs: Array<{ id: WorkspaceTab; label: string; count: number }> = [
     { id: 'watchlist', label: 'Watchlist', count: watchlist?.items.length ?? 0 },
     { id: 'artifacts', label: 'Artifacts', count: reportItems.length },
-    { id: 'saved', label: 'Saved', count: supabaseReports.length },
+    { id: 'saved', label: 'Saved', count: displaySupabaseReports.length },
   ];
 
   const panelTabClass = (tab: WorkspaceTab) =>
@@ -1414,6 +1526,9 @@ export default function ChatInterface() {
                                 {humanizeSlug(item.reportKind)}
                               </span>
                             )}
+                            <span className="rounded-full border border-white/12 bg-white/8 px-2 py-0.5 text-[10px] uppercase tracking-[0.16em] text-slate-200">
+                              {reportVariantLabel(item)}
+                            </span>
                           </div>
                           <p className="mt-1 line-clamp-2 text-xs leading-5 text-slate-400">{buildReportSummary(item)}</p>
                         </button>
@@ -1510,7 +1625,7 @@ export default function ChatInterface() {
           </div>
           <div className="mt-4 rounded-2xl border border-white/10 bg-slate-950/35 p-3">
             <p className="text-[11px] uppercase tracking-[0.2em] text-slate-400">Saved Count</p>
-            <p className="mt-2 text-2xl font-semibold text-white">{supabaseReports.length}</p>
+            <p className="mt-2 text-2xl font-semibold text-white">{displaySupabaseReports.length}</p>
             <p className="mt-1 text-xs text-slate-400">Reports available across sessions</p>
           </div>
         </div>
@@ -1536,16 +1651,18 @@ export default function ChatInterface() {
   storage_path text,
   report_kind  text,
   report_date  date,
+  run_metadata jsonb,
   created_at   timestamptz not null default now()
 );
 create index if not exists saved_reports_created_at_idx on public.saved_reports (created_at desc);
-create index if not exists saved_reports_report_date_idx on public.saved_reports (report_date desc, created_at desc);`}
+create index if not exists saved_reports_report_date_idx on public.saved_reports (report_date desc, created_at desc);
+create index if not exists saved_reports_run_metadata_kind_idx on public.saved_reports ((run_metadata->>'kind'));`}
               </pre>
               <button
                 type="button"
                 onClick={() => {
                   void navigator.clipboard.writeText(
-                    `create table if not exists public.saved_reports (\n  id           uuid primary key default gen_random_uuid(),\n  filename     text not null,\n  title        text,\n  summary      text,\n  content      text not null,\n  storage_path text,\n  report_kind  text,\n  report_date  date,\n  created_at   timestamptz not null default now()\n);\ncreate index if not exists saved_reports_created_at_idx on public.saved_reports (created_at desc);\ncreate index if not exists saved_reports_report_date_idx on public.saved_reports (report_date desc, created_at desc);`
+                    `create table if not exists public.saved_reports (\n  id           uuid primary key default gen_random_uuid(),\n  filename     text not null,\n  title        text,\n  summary      text,\n  content      text not null,\n  storage_path text,\n  report_kind  text,\n  report_date  date,\n  run_metadata jsonb,\n  created_at   timestamptz not null default now()\n);\ncreate index if not exists saved_reports_created_at_idx on public.saved_reports (created_at desc);\ncreate index if not exists saved_reports_report_date_idx on public.saved_reports (report_date desc, created_at desc);\ncreate index if not exists saved_reports_run_metadata_kind_idx on public.saved_reports ((run_metadata->>'kind'));`
                   );
                 }}
                 className="mt-3 rounded-full border border-amber-200/20 bg-amber-100/10 px-3 py-1.5 text-xs font-medium text-amber-50 transition hover:bg-amber-100/20"
@@ -1591,6 +1708,9 @@ create index if not exists saved_reports_report_date_idx on public.saved_reports
                               {humanizeSlug(report.report_kind)}
                             </span>
                           )}
+                          <span className="rounded-full border border-white/12 bg-white/8 px-2 py-0.5 text-[10px] uppercase tracking-[0.16em] text-slate-200">
+                            {reportVariantLabel(report)}
+                          </span>
                         </div>
                         <p className="mt-1 line-clamp-2 text-xs leading-5 text-slate-400">{buildSavedSummary(report)}</p>
                         <p className="mt-2 text-[11px] uppercase tracking-[0.16em] text-slate-500">

@@ -85,6 +85,7 @@ type ReportArtifact = {
   reportDate?: string;
   reportKind?: string;
   storagePath?: string;
+  runMetadata?: unknown;
 };
 
 type LLMFailureAttempt = {
@@ -331,6 +332,7 @@ function toReportArtifact(toolResult: any): ReportArtifact | null {
     reportDate: data.reportDate as string | undefined,
     reportKind: data.reportKind as string | undefined,
     storagePath: data.storagePath as string | undefined,
+    runMetadata: data.runMetadata,
   };
 }
 

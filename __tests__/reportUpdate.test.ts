@@ -144,6 +144,36 @@ describe('reportUpdate metadata', () => {
     expect(notes).toEqual([]);
   });
 
+  it('marks original and updated report metadata with lineage', () => {
+    const original = buildReportRunMetadata({
+      kind: 'research',
+      query: 'AI infrastructure',
+      symbols: ['NVDA', 'AMD'],
+      generatedAt: '2026-05-23T12:00:00.000Z',
+      coverage: [],
+    });
+    const updated = buildReportRunMetadata({
+      kind: 'research',
+      query: 'AI infrastructure',
+      symbols: ['NVDA', 'AMD'],
+      generatedAt: '2026-05-23T12:05:00.000Z',
+      updatedFrom: {
+        content: '',
+        storagePath: '2026-05-23/ai-infrastructure-research-report.md',
+        metadata: original,
+        score: 100,
+      },
+      coverage: [],
+    });
+
+    expect(original.reportVariant).toBe('original');
+    expect(updated.reportVariant).toBe('updated');
+    expect(updated.lineage).toMatchObject({
+      originalStoragePath: '2026-05-23/ai-infrastructure-research-report.md',
+      updatedFromStoragePath: '2026-05-23/ai-infrastructure-research-report.md',
+    });
+  });
+
   it('finds the best prior filesystem report for an update request', async () => {
     const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'report-update-'));
     process.env.REPORTS_DIR = tmpDir;
