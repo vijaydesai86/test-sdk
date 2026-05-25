@@ -64,6 +64,27 @@ function normalizeReportKind(value: unknown): ReportKind | null {
   return null;
 }
 
+function normalizeReportSymbol(value: unknown): string {
+  return String(value || '').replace(/[^A-Z0-9.]/gi, '').toUpperCase();
+}
+
+export function metadataSymbols(metadata?: Pick<ReportRunMetadata, 'symbols'> | null): string[] {
+  return Array.from(new Set((metadata?.symbols || []).map(normalizeReportSymbol).filter(Boolean)));
+}
+
+export function sameReportUniverse(
+  before?: Pick<ReportRunMetadata, 'symbols'> | null,
+  after?: Pick<ReportRunMetadata, 'symbols'> | null
+): boolean {
+  const beforeSymbols = metadataSymbols(before);
+  const afterSymbols = metadataSymbols(after);
+  if (beforeSymbols.length === 0) return true;
+  if (afterSymbols.length === 0) return false;
+  if (beforeSymbols.length !== afterSymbols.length) return false;
+  const afterSet = new Set(afterSymbols);
+  return beforeSymbols.every((symbol) => afterSet.has(symbol));
+}
+
 export function parseImproveConfig(input: {
   requestedPasses?: unknown;
   target?: unknown;
@@ -247,10 +268,11 @@ export function buildImproveToolRequest(report: SavedReportForImprove): ImproveT
   }
   const query = metadata?.query || report.title || report.filename.replace(/\.md$/i, '');
   const range = metadata?.range;
-  const symbols = Array.from(new Set((metadata?.symbols || []).filter(Boolean)));
+  const symbols = metadataSymbols(metadata);
   const baseArgs = {
     updateMode: true,
     updateQuery: query,
+    lockedSymbols: symbols,
   };
 
   if (kind === 'stock') {
@@ -271,12 +293,14 @@ export function buildImproveToolRequest(report: SavedReportForImprove): ImproveT
   }
 
   if (kind === 'research') {
+    if (symbols.length === 0) throw new Error('Research report is missing universe metadata.');
     return {
       toolName: 'generate_research_report',
       args: { ...baseArgs, sector: query || symbols.join(', '), range: range || '1y', count: symbols.length || undefined },
     };
   }
 
+  if (symbols.length === 0) throw new Error('Watchlist report is missing universe metadata.');
   return {
     toolName: 'generate_watchlist_daily_report',
     args: { ...baseArgs, range: range || '1y' },

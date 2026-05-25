@@ -3545,22 +3545,34 @@ export function buildSectorReport(data: SectorReportData): string {
  * comparison report; the extra depth comes from the pre-report analysis phase.
  */
 export function buildDeepSectorReport(data: DeepSectorReportData): string {
+  const manualUniverse = data.selectedBy === 'manual';
   const initialCount = data.initialCandidates?.length ?? 0;
   const refinedCount = data.universe.length;
 
-  const candidateLine = initialCount > 0
+  const candidateLine = manualUniverse
+    ? `**Preserved universe (${refinedCount} companies):** ${data.universe.join(', ')}`
+    : initialCount > 0
     ? `**Initial candidates screened:** ${data.initialCandidates!.join(', ')}`
     : '';
-  const refinedLine = initialCount > refinedCount
+  const refinedLine = manualUniverse
+    ? ''
+    : initialCount > refinedCount
     ? `**Refined to ${refinedCount} companies:** ${data.universe.join(', ')}`
     : `**Final universe (${refinedCount} companies):** ${data.universe.join(', ')}`;
 
-  const methodologySteps = [
-    `1. **Candidate Identification** — AI identified ${initialCount > 0 ? `${initialCount} initial` : 'a set of'} companies in the **"${data.sectorQuery}"** space`,
-    `2. **Ecosystem Analysis** — Supply chain, customer, market, and news dependencies were mapped across all candidates`,
-    `3. **Refinement** — The list was refined to ${refinedCount} companies best suited for deep financial comparison`,
-    `4. **Comparison** — Full financial comparison built for the refined universe`,
-  ].join('\n');
+  const methodologySteps = manualUniverse
+    ? [
+        `1. **Universe Preservation** — The saved report universe for **"${data.sectorQuery}"** was kept unchanged`,
+        `2. **Data Refresh** — Fresh and cached provider data were requested for the preserved companies`,
+        `3. **Checkpoint Fill** — Prior verified fields were carried forward only where this pass could not replace them`,
+        `4. **Comparison** — Financial comparison was rebuilt for the preserved universe`,
+      ].join('\n')
+    : [
+        `1. **Candidate Identification** — AI identified ${initialCount > 0 ? `${initialCount} initial` : 'a set of'} companies in the **"${data.sectorQuery}"** space`,
+        `2. **Ecosystem Analysis** — Supply chain, customer, market, and news dependencies were mapped across all candidates`,
+        `3. **Refinement** — The list was refined to ${refinedCount} companies best suited for deep financial comparison`,
+        `4. **Comparison** — Full financial comparison built for the refined universe`,
+      ].join('\n');
 
   const header = [
     `# Research Report: ${data.sectorQuery}`,

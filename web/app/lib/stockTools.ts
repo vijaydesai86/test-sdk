@@ -202,6 +202,15 @@ async function prepareReportUpdateContext(args: Record<string, any>, input: {
   return { previous, notes: buildUpdateNotes(previous, input.kind) };
 }
 
+function getLockedSymbols(args: Record<string, any>): string[] {
+  if (!args.updateMode || !Array.isArray(args.lockedSymbols)) return [];
+  return Array.from(new Set(
+    args.lockedSymbols
+      .map((item: unknown) => normalizeTickerCandidate(item))
+      .filter(Boolean) as string[]
+  ));
+}
+
 function providerForCoverage(value: any, fallback = DEFAULT_SOURCE): string | undefined {
   return value && typeof value === 'object' && '__source' in value ? String(value.__source) : fallback;
 }
@@ -2715,7 +2724,11 @@ export async function executeTool(
         };
       }
       case 'generate_stock_report': {
-        const symbolQuery = args.symbol || '';
+        const lockedSymbols = getLockedSymbols(args);
+        if (lockedSymbols.length > 1) {
+          return { success: false, error: 'Stock report update received more than one locked symbol.' };
+        }
+        const symbolQuery = lockedSymbols[0] || args.symbol || '';
         const deadlineAt = options?.deadlineAt;
         // When called from watchlist/comparison with a known ticker, skip per-company
         // LLM calls (ticker resolution, moat, conclusion) to avoid redundant API/LLM
@@ -2723,7 +2736,7 @@ export async function executeTool(
         const skipPerCompanyLLM = Boolean(args.skipLLM);
         const coreOnly = Boolean(args.coreOnly);
         const forceCriticalData = Boolean(args.forceCriticalData);
-        const trustedTickerInput = Boolean(args.trustedTicker);
+        const trustedTickerInput = Boolean(args.trustedTicker) || lockedSymbols.length === 1;
 
         // Resolve to a live provider-confirmed ticker before fetching financials.
         // Search comes before LLM for company names so a model cannot map a live
@@ -3185,11 +3198,14 @@ export async function executeTool(
       case 'generate_comparison_report': {
         const range = args.range || '1y';
         const deadlineAt = options?.deadlineAt;
+        const lockedSymbols = getLockedSymbols(args);
         const rawCompanies = args.companies ?? args.symbols;
         const companiesInput = Array.isArray(rawCompanies)
           ? rawCompanies
           : parseExplicitComparisonCompanies(String(rawCompanies || ''));
-        const companies = companiesInput.map((item: string) => item.trim()).filter(Boolean);
+        const companies = lockedSymbols.length > 0
+          ? lockedSymbols
+          : companiesInput.map((item: string) => item.trim()).filter(Boolean);
         if (companies.length < 2 || companies.length > NUM_COMPANIES) {
           return { success: false, error: `Provide between 2 and ${NUM_COMPANIES} company names or tickers.` };
         }
@@ -3198,10 +3214,10 @@ export async function executeTool(
         // LLM is the primary resolver — no API search is needed for well-known names.
         const resolvedMap = new Map<string, string>(); // query → official ticker
         for (const query of companies) {
-          const directTicker = hasExchangePrefix(query) ? normalizeTickerCandidate(query) : undefined;
+          const directTicker = lockedSymbols.length > 0 ? normalizeTickerCandidate(query) : hasExchangePrefix(query) ? normalizeTickerCandidate(query) : undefined;
           if (directTicker) resolvedMap.set(query, directTicker);
         }
-        if (options?.llmFill && hasReportLLMBudget(deadlineAt)) {
+        if (lockedSymbols.length === 0 && options?.llmFill && hasReportLLMBudget(deadlineAt)) {
           const prompt = buildTickerResolutionPrompt(companies);
           try {
             const raw = await withReportTaskTimeout(options.llmFill(prompt), 'llm', deadlineAt);
@@ -3252,7 +3268,7 @@ export async function executeTool(
         const portfolioProfile = watchlist?.profile;
         const fetchExtendedData = shouldFetchExtendedReportData(universe.length);
         if (!fetchExtendedData) {
-          notes.push('Large-report Vercel mode: prioritized core decision inputs and cached optional sections to stay within free-tier limits.');
+          notes.push('Vercel budget prioritized: large-report mode used core decision inputs and cached optional sections to stay within free-tier limits.');
         }
         let rateLimitHit = false;
         const isRateLimit = (message: string) => isRateLimitError(message);
@@ -3637,29 +3653,46 @@ export async function executeTool(
       case 'generate_watchlist_daily_report': {
         const range = args.range || '1y';
         const deadlineAt = options?.deadlineAt;
+        const lockedSymbols = getLockedSymbols(args);
         const watchlist = await getDefaultWatchlist();
-        if (!watchlist.items.length) {
+        const watchlistItems = lockedSymbols.length > 0
+          ? lockedSymbols.map((symbol) => {
+              const existing = watchlist.items.find((item) => item.symbol.toUpperCase() === symbol);
+              return existing || {
+                id: symbol,
+                symbol,
+                companyName: symbol,
+                displayOrder: 0,
+                createdAt: new Date().toISOString(),
+              };
+            })
+          : watchlist.items;
+        if (!watchlistItems.length) {
           return { success: false, error: 'The watchlist is empty. Add companies before requesting a daily report.' };
         }
         const updateContext = await prepareReportUpdateContext(args, {
           kind: 'watchlist-daily',
           query: String(args.updateQuery || watchlist.name),
-          symbols: watchlist.items.map((item) => item.symbol),
+          symbols: watchlistItems.map((item) => item.symbol),
         });
-        const coreOnly = !shouldFetchExtendedReportData(watchlist.items.length);
+        const coreOnly = !shouldFetchExtendedReportData(watchlistItems.length);
 
+        let deadlineSalvageStarted = false;
         const companyResults = await mapWithConcurrency(
-          watchlist.items,
+          watchlistItems,
           DATA_FETCH_CONCURRENCY,
           async (item) => {
             if (isDeadlineNear(deadlineAt)) {
-              return {
-                item,
-                result: {
-                  success: false,
-                  error: 'Runtime budget reached before this item could be refreshed.',
-                },
-              };
+              if (deadlineSalvageStarted) {
+                return {
+                  item,
+                  result: {
+                    success: false,
+                    error: 'Runtime budget reached before this item could be refreshed.',
+                  },
+                };
+              }
+              deadlineSalvageStarted = true;
             }
             const result = await executeTool(
               'generate_stock_report',
@@ -3695,7 +3728,7 @@ export async function executeTool(
             failures.set(entry.item.symbol, entry.result.error || entry.result.message || 'Unavailable');
           }
         }
-        for (const item of watchlist.items) {
+        for (const item of watchlistItems) {
           if (!attemptedSymbols.has(item.symbol)) {
             failures.set(item.symbol, 'Runtime budget skipped before this item could be fetched');
           }
@@ -3705,7 +3738,7 @@ export async function executeTool(
         // throttles/cooldowns already decide when another upstream call is allowed.
         if (failures.size > 0 && successfulItems.length > 0 && !isDeadlineNear(deadlineAt, 45000)) {
           console.info(`[watchlist] Retrying ${failures.size} failed items sequentially: ${Array.from(failures.keys()).join(', ')}`);
-          const retryItems = watchlist.items.filter((item) => failures.has(item.symbol));
+          const retryItems = watchlistItems.filter((item) => failures.has(item.symbol));
           const retryResults = await mapWithConcurrency(
             retryItems,
             1, // Sequential retries to avoid triggering rate limits again
@@ -3756,7 +3789,7 @@ export async function executeTool(
           }
         }
 
-        for (const item of watchlist.items) {
+        for (const item of watchlistItems) {
           if (!failures.has(item.symbol) || successfulItems.some((entry) => entry.symbol === item.symbol)) continue;
           const carriedStock = buildStockDataFromPreviousCheckpoint({
             previous: updateContext.previous,
@@ -3851,7 +3884,7 @@ export async function executeTool(
         const reportData = {
           generatedAt: new Date().toISOString(),
           watchlistName: watchlist.name,
-          totalItems: watchlist.items.length,
+          totalItems: watchlistItems.length,
           skippedItems: Array.from(failures.entries()).map(([symbol, reason]) => ({ symbol, reason })),
           items: successfulItems.map((item) => ({
             symbol: item.symbol,
@@ -3859,7 +3892,7 @@ export async function executeTool(
             stock: item.stock,
           })),
         };
-        if (isDeadlineNear(deadlineAt) && failures.size === 0 && successfulItems.length < watchlist.items.length) {
+        if (isDeadlineNear(deadlineAt) && failures.size === 0 && successfulItems.length < watchlistItems.length) {
           reportData.skippedItems.push({ symbol: 'Runtime budget', reason: 'Vercel runtime budget reached; later watchlist items or optional enrichment may have been skipped.' });
         }
         const reportBody = buildWatchlistDailyReport(reportData);
@@ -3874,7 +3907,7 @@ export async function executeTool(
         const runMetadata = buildReportRunMetadata({
           kind: 'watchlist-daily',
           query: String(args.updateQuery || watchlist.name),
-          symbols: watchlist.items.map((item) => item.symbol),
+          symbols: watchlistItems.map((item) => item.symbol),
           range,
           generatedAt,
           updatedFrom: updateContext.previous,
@@ -3930,7 +3963,10 @@ export async function executeTool(
             timeNotes.push('Time budget reached; remaining research steps truncated to fit runtime limits.');
           }
         };
-        const requestedFinalCount = Math.min(NUM_COMPANIES, Math.max(3, Number(args.count) || NUM_COMPANIES));
+        const lockedSymbols = getLockedSymbols(args);
+        const requestedFinalCount = lockedSymbols.length > 0
+          ? lockedSymbols.length
+          : Math.min(NUM_COMPANIES, Math.max(3, Number(args.count) || NUM_COMPANIES));
         const finalCount = requestedFinalCount;
         // Fetch roughly 2x candidates only when there is enough time to refine them.
         const initialCount = hasReportWorkBudget(deadlineAt, 'optional', requestedFinalCount)
@@ -3939,7 +3975,7 @@ export async function executeTool(
         const range = args.range || '1y';
         const resolverSector = normalizeThematicResearchQuery(sector);
 
-        const explicitCompanies = parseExplicitComparisonCompanies(sector);
+        const explicitCompanies = lockedSymbols.length > 0 ? [] : parseExplicitComparisonCompanies(sector);
         if (explicitCompanies.length >= 2) {
           const comparisonResult = await executeTool(
             'generate_comparison_report',
@@ -4038,7 +4074,7 @@ export async function executeTool(
           };
         }
 
-        const companyProbe = !timeBudgetExceeded() && shouldTrySingleCompanyDeepResearch(sector)
+        const companyProbe = lockedSymbols.length === 0 && !timeBudgetExceeded() && shouldTrySingleCompanyDeepResearch(sector)
           ? await resolveSymbolFromQuery(stockService, sector)
           : { ok: false as const };
         if (companyProbe.ok && companyProbe.symbol) {
@@ -4128,15 +4164,20 @@ export async function executeTool(
         }
 
         // ── Phase 1: LLM identifies initial broad candidate list (with fallback) ──
-        const initialCandidates = await resolveSectorTickers(
-          resolverSector,
-          initialCount,
-          hasReportLLMBudget(deadlineAt) ? options?.llmFill : undefined,
-          stockService
-        );
+        const initialCandidates = lockedSymbols.length > 0
+          ? lockedSymbols
+          : await resolveSectorTickers(
+              resolverSector,
+              initialCount,
+              hasReportLLMBudget(deadlineAt) ? options?.llmFill : undefined,
+              stockService
+            );
 
-        if (initialCandidates.length === 0) {
-          const reason = `Could not identify verified listed companies for "${sector}" using the configured resolver and market-data providers.`;
+        const minimumFreshUniverse = lockedSymbols.length > 0 ? 1 : Math.min(finalCount, 3);
+        if (initialCandidates.length < minimumFreshUniverse) {
+          const reason = initialCandidates.length === 0
+            ? `Could not identify verified listed companies for "${sector}" using the configured resolver and market-data providers.`
+            : `Only ${initialCandidates.length} verified candidate${initialCandidates.length === 1 ? '' : 's'} could be identified for "${sector}", below the minimum ${minimumFreshUniverse} needed for a reliable broad research universe.`;
           const content = buildUnavailableResearchContent(sector, reason);
           const safeTitle = sector.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'research';
           const saved = await saveReport(content, `${safeTitle}-research-report`, undefined, {
@@ -4152,7 +4193,7 @@ export async function executeTool(
 
         // Vercel/local priority: lock a saveable universe and fetch market data
         // before any optional ecosystem/refinement LLM work.
-        const universe = initialCandidates.slice(0, finalCount);
+        const universe = lockedSymbols.length > 0 ? lockedSymbols : initialCandidates.slice(0, finalCount);
         const updateContext = await prepareReportUpdateContext(args, {
           kind: 'research',
           query: String(args.updateQuery || sector),
@@ -4165,9 +4206,12 @@ export async function executeTool(
 
         // ── Phase 2: Fetch full comparison data for the locked universe ──────────
         const notes: string[] = [
-          `Universe refined through research analysis (${DEEP_RESEARCH_DEPTH} pass${DEEP_RESEARCH_DEPTH > 1 ? 'es' : ''}) for: "${sector}"`,
-          `Initial candidates: ${initialCandidates.join(', ')}`,
-          `Refined universe: ${universe.join(', ')}`,
+          lockedSymbols.length > 0
+            ? `Universe preserved from prior report metadata for: "${sector}"`
+            : `Universe refined through research analysis (${DEEP_RESEARCH_DEPTH} pass${DEEP_RESEARCH_DEPTH > 1 ? 'es' : ''}) for: "${sector}"`,
+          ...(lockedSymbols.length > 0
+            ? [`Preserved universe: ${universe.join(', ')}`]
+            : [`Initial candidates: ${initialCandidates.join(', ')}`, `Refined universe: ${universe.join(', ')}`]),
           ...updateContext.notes,
           ...timeNotes,
         ];
@@ -4179,7 +4223,7 @@ export async function executeTool(
         const portfolioProfile = watchlist?.profile;
         const fetchExtendedData = shouldFetchExtendedReportData(universe.length);
         if (!fetchExtendedData) {
-          notes.push('Large-report Vercel mode: prioritized core decision inputs and cached optional sections to stay within free-tier limits.');
+          notes.push('Vercel budget prioritized: large-report mode used core decision inputs and cached optional sections to stay within free-tier limits.');
         }
         const minimumCoreSymbols = new Set(universe.slice(0, Math.min(2, universe.length)));
         let rateLimitHit = false;
@@ -4613,14 +4657,14 @@ export async function executeTool(
         });
         const content = buildDeepSectorReport({
           sectorQuery: sector,
-          selectedBy: 'llm',
+          selectedBy: lockedSymbols.length > 0 ? 'manual' : 'llm',
           generatedAt,
           range,
           universe,
           items,
           notes,
           sources: sourceMap,
-          initialCandidates,
+          initialCandidates: lockedSymbols.length > 0 ? undefined : initialCandidates,
           dependencyAnalysis,
           ecosystemDiagram,
           refinementNotes,

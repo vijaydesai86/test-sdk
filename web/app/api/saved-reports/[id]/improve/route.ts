@@ -8,6 +8,7 @@ import {
   loadSavedReportForImproveByStoragePath,
   loadSavedReportForImprove,
   parseImproveConfig,
+  sameReportUniverse,
   savedReportMetaFromToolData,
 } from '@/app/lib/reportImprove';
 
@@ -85,7 +86,23 @@ export async function POST(
 
   const latestReport = savedReportMetaFromToolData(result.data);
   const latestSavedReport = latestReport?.id ? await loadSavedReportForImprove(latestReport.id) : null;
-  const afterCoverage = coverageStats(latestSavedReport?.metadata || result.data?.runMetadata || null);
+  const afterMetadata = latestSavedReport?.metadata || result.data?.runMetadata || null;
+  const afterCoverage = coverageStats(afterMetadata);
+  if (!sameReportUniverse(report.metadata, afterMetadata)) {
+    return NextResponse.json(
+      {
+        error: 'Improve pass changed the saved report universe and was stopped.',
+        status: 'failed',
+        reason: 'universe_changed',
+        latestReport,
+        beforeCoverage,
+        afterCoverage,
+        passesDone: passNumber,
+        maxPasses: config.maxPasses,
+      },
+      { status: 409 }
+    );
+  }
   const decision = decideImproveStatus({
     before: beforeCoverage,
     after: afterCoverage,

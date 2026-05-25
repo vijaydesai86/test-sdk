@@ -252,6 +252,28 @@ describe('generate_stock_report via executeTool', () => {
     expect(service.getStockPrice).toHaveBeenCalledWith('MSFT');
   });
 
+  it('stock update uses the locked saved-report symbol instead of resolving the prompt text', async () => {
+    (service.searchStock as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('Search provider unavailable'));
+
+    const result = await executeTool(
+      'generate_stock_report',
+      {
+        symbol: 'wrong prompt text',
+        range: '1y',
+        skipSave: true,
+        skipLLM: true,
+        updateMode: true,
+        lockedSymbols: ['MSFT'],
+      },
+      service
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.data?.runMetadata.symbols).toEqual(['MSFT']);
+    expect(service.searchStock).not.toHaveBeenCalled();
+    expect(service.getStockPrice).toHaveBeenCalledWith('MSFT');
+  });
+
   it('produces a report with price/EPS chart sections when data is available', async () => {
     (service.getPriceHistory as ReturnType<typeof vi.fn>).mockResolvedValue({
       prices: [
@@ -408,6 +430,48 @@ describe('generate_research_report via executeTool', () => {
     expect(service.getStockPrice).toHaveBeenCalledWith('AMD');
   });
 
+  it('research update preserves locked saved-report universe and skips rediscovery', async () => {
+    const llmFill = vi.fn().mockResolvedValue('["FIP","AIIA"]');
+
+    const result = await executeTool(
+      'generate_research_report',
+      {
+        sector: 'AI infrastructure',
+        updateMode: true,
+        updateQuery: 'AI infrastructure',
+        lockedSymbols: ['NVDA', 'AMD'],
+        count: 15,
+      },
+      service,
+      { llmFill }
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.data?.content).toContain('Preserved universe');
+    expect(result.data?.content).toContain('NVDA');
+    expect(result.data?.content).toContain('AMD');
+    expect(service.searchStock).not.toHaveBeenCalled();
+    expect(service.getStockPrice).toHaveBeenCalledWith('NVDA');
+    expect(service.getStockPrice).toHaveBeenCalledWith('AMD');
+    expect(service.getStockPrice).not.toHaveBeenCalledWith('FIP');
+    expect(service.getStockPrice).not.toHaveBeenCalledWith('AIIA');
+  });
+
+  it('does not build broad fresh research from a tiny resolver universe', async () => {
+    (service.searchStock as ReturnType<typeof vi.fn>).mockResolvedValue({
+      results: [
+        { symbol: 'FIP', name: 'Ftai Infrastructure Inc', type: 'Equity', region: 'United States' },
+        { symbol: 'AIIA', name: 'AIIA', type: 'Equity', region: 'United States' },
+      ],
+    });
+
+    const result = await executeTool('generate_research_report', { sector: 'AI infrastructure', count: 15 }, service);
+
+    expect(result.success).toBe(true);
+    expect(result.data?.content).toContain('below the minimum 3');
+    expect(service.getStockPrice).not.toHaveBeenCalled();
+  });
+
   it('report content includes sector query', async () => {
     const llmFill = vi.fn().mockResolvedValue('["NVDA","AMD"]');
     const result = await executeTool('generate_research_report', { sector: 'AI chips', count: 2 }, service, { llmFill });
@@ -474,6 +538,30 @@ describe('generate_comparison_report via executeTool', () => {
     expect(result.success).toBe(true);
     expect(service.getStockPrice).toHaveBeenCalledWith('AAPL');
     expect(service.getStockPrice).toHaveBeenCalledWith('MSFT');
+  });
+
+  it('comparison update uses locked saved-report symbols instead of resolving new company args', async () => {
+    (service.searchStock as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('Search provider unavailable'));
+
+    const result = await executeTool(
+      'generate_comparison_report',
+      {
+        companies: ['FIP', 'AIIA'],
+        range: '1y',
+        skipSave: true,
+        updateMode: true,
+        lockedSymbols: ['NVDA', 'AMD'],
+      },
+      service
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.data?.runMetadata.symbols).toEqual(['NVDA', 'AMD']);
+    expect(service.searchStock).not.toHaveBeenCalled();
+    expect(service.getStockPrice).toHaveBeenCalledWith('NVDA');
+    expect(service.getStockPrice).toHaveBeenCalledWith('AMD');
+    expect(service.getStockPrice).not.toHaveBeenCalledWith('FIP');
+    expect(service.getStockPrice).not.toHaveBeenCalledWith('AIIA');
   });
 
   it('parses natural comparison strings with to and between separators', async () => {
@@ -1020,5 +1108,29 @@ describe('generate_watchlist_daily_report via executeTool', () => {
     expect(service.getStockPrice).toHaveBeenCalledWith('NVDA');
     expect(service.getStockPrice).toHaveBeenCalledWith('AMD');
     expect(service.searchStock).not.toHaveBeenCalled();
+  });
+
+  it('watchlist update uses locked saved-report symbols instead of the current default watchlist', async () => {
+    (service.searchStock as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('Search provider unavailable'));
+
+    const result = await executeTool(
+      'generate_watchlist_daily_report',
+      {
+        range: '1y',
+        skipSave: true,
+        updateMode: true,
+        updateQuery: 'Prior Watchlist Daily',
+        lockedSymbols: ['MSFT'],
+      },
+      service
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.data?.runMetadata.symbols).toEqual(['MSFT']);
+    expect(result.data?.content).toContain('## 1. MSFT (MSFT)');
+    expect(service.searchStock).not.toHaveBeenCalled();
+    expect(service.getStockPrice).toHaveBeenCalledWith('MSFT');
+    expect(service.getStockPrice).not.toHaveBeenCalledWith('NVDA');
+    expect(service.getStockPrice).not.toHaveBeenCalledWith('AMD');
   });
 });

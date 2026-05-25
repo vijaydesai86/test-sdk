@@ -3,6 +3,7 @@ import {
   buildImproveToolRequest,
   coverageStats,
   decideImproveStatus,
+  sameReportUniverse,
   parseImproveConfig,
   type SavedReportForImprove,
 } from '../web/app/lib/reportImprove';
@@ -82,6 +83,43 @@ describe('reportImprove', () => {
         range: '1y',
       },
     });
+  });
+
+  it('locks research improve passes to the saved report universe', () => {
+    const metadata = buildReportRunMetadata({
+      kind: 'research',
+      query: 'AI infrastructure',
+      symbols: ['NVDA', 'AMD', 'MSFT'],
+      range: '1y',
+      generatedAt: '2026-05-25T10:00:00.000Z',
+      coverage: [],
+    });
+
+    expect(buildImproveToolRequest(report('research', metadata))).toMatchObject({
+      toolName: 'generate_research_report',
+      args: {
+        updateMode: true,
+        updateQuery: 'AI infrastructure',
+        sector: 'AI infrastructure',
+        count: 3,
+        lockedSymbols: ['NVDA', 'AMD', 'MSFT'],
+      },
+    });
+  });
+
+  it('detects report universe changes after improve', () => {
+    expect(sameReportUniverse(
+      { symbols: ['NVDA', 'AMD', 'MSFT'] },
+      { symbols: ['MSFT', 'NVDA', 'AMD'] }
+    )).toBe(true);
+    expect(sameReportUniverse(
+      { symbols: ['NVDA', 'AMD', 'MSFT'] },
+      { symbols: ['FIP', 'AIIA'] }
+    )).toBe(false);
+    expect(sameReportUniverse(
+      { symbols: ['NVDA', 'AMD', 'MSFT'] },
+      { symbols: [] }
+    )).toBe(false);
   });
 
   it('continues only when coverage improved and useful gaps remain', () => {
