@@ -131,15 +131,15 @@ _Note: SEC EDGAR filings (`get_sec_filings`), SEC XBRL company facts (`get_sec_c
 | Variable | Default | Description |
 |---|---|---|
 | `NUM_COMPANIES` | `10` | Companies in comparison and research reports. Range: 2–15. |
-| `DEEP_RESEARCH_DEPTH` | `1` | Optional post-core-data ecosystem/refinement passes for research reports. Core market data is fetched before any pass runs. Range: 1–3. |
+| `DEEP_RESEARCH_DEPTH` | `1` | Optional post-core-data ecosystem/refinement passes for research reports. Core market data is fetched before any pass runs. Range: 1–10. |
 | `DEEP_RESEARCH_MAX_MS` | `240000` on Vercel, `600000` local | Runtime budget for deep research (ms). Vercel is clamped under the 300 s function limit; local can run longer for completeness. |
 | `DATA_FETCH_CONCURRENCY` | `3` | Parallel ticker fetches per report round. Range: 1–4. |
 | `VERCEL_EXTENDED_DATA_MAX_COMPANIES` | `3` | On Vercel, reports larger than this preserve the configured company/watchlist universe but prioritize core decision inputs and cached optional data so free-tier providers do not consume the whole 300 s function window. Improve/update passes fill missing fields in later saved versions. Local runs still attempt extended data. |
 | `REPORTS_DIR` | `reports` (local) / `/tmp/reports` (Vercel) | Where generated report files are stored. |
 | `STOCK_CACHE_TTL_MS` | `604800000` (7 days) | How long fetched data is cached on disk. |
-| `REPORT_IMPROVE_DEFAULT_PASSES` | `3` | Default number of browser-coordinated improve passes when the user clicks Improve report. |
-| `REPORT_IMPROVE_MAX_PASSES` | `5` | Hard backend cap for improve passes. User/UI values are clamped to this limit. |
-| `REPORT_IMPROVE_TARGET` | `critical` | Improve stop target. `critical` stops when critical tracked fields are complete; `all` waits for all tracked fields. |
+| `REPORT_IMPROVE_DEFAULT_PASSES` | `3` | Backend default number of browser-coordinated improve passes when the user clicks Improve report. |
+| `REPORT_IMPROVE_MAX_PASSES` | `5` | Backend cap for improve passes. Improve button clicks use this server-side value rather than a browser hardcode. |
+| `REPORT_IMPROVE_TARGET` | `critical` | Backend improve stop target. `critical` stops when critical tracked fields are complete; `all` waits for all tracked fields. |
 | `REPORT_IMPROVE_MIN_WAIT_MS` | `60000` | Minimum wait between browser-coordinated improve passes when another pass is useful. |
 | `SEC_COMPANY_FACTS_CACHE_TTL_MS` | `43200000` (12 hours) | In-memory TTL for SEC ticker mapping and companyfacts responses. |
 | `TREASURY_RATES_CACHE_TTL_MS` | `43200000` (12 hours) | In-memory TTL for official Treasury yield curve responses. |

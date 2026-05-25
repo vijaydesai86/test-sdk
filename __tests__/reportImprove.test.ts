@@ -42,6 +42,19 @@ describe('reportImprove', () => {
     }).maxPasses).toBe(1);
   });
 
+  it('uses backend env defaults when the UI omits improve pass count', () => {
+    expect(parseImproveConfig({
+      env: { REPORT_IMPROVE_DEFAULT_PASSES: '7', REPORT_IMPROVE_MAX_PASSES: '10' },
+    }).maxPasses).toBe(7);
+    expect(parseImproveConfig({
+      requestedPasses: 10,
+      env: { REPORT_IMPROVE_DEFAULT_PASSES: '7', REPORT_IMPROVE_MAX_PASSES: '10' },
+    }).maxPasses).toBe(10);
+    expect(parseImproveConfig({
+      env: { REPORT_IMPROVE_TARGET: 'all' },
+    }).target).toBe('all');
+  });
+
   it('computes critical coverage from report metadata', () => {
     const metadata = buildReportRunMetadata({
       kind: 'stock',

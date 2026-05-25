@@ -51,7 +51,7 @@ interface ImproveProgress {
   status: 'running' | 'waiting' | 'complete' | 'stopped' | 'failed';
   message: string;
   pass: number;
-  maxPasses: number;
+  maxPasses?: number;
   coverage?: ImproveCoverageStats | null;
 }
 
@@ -760,26 +760,29 @@ export default function ChatInterface() {
     });
   };
 
-  const handleSupabaseReportImprove = async (report: SavedReportMeta, maxPasses = 3) => {
+  const handleSupabaseReportImprove = async (report: SavedReportMeta) => {
     const existing = improveProgress[report.id];
     if (existing?.status === 'running' || existing?.status === 'waiting') return;
     setError(null);
     let currentReportId = report.id;
     let latestReport: SavedReportMeta | null = null;
+    let serverMaxPasses: number | null = null;
     const sourceUrls = new Set([
       `/api/saved-reports/${report.id}`,
       report.downloadUrl,
     ].filter(Boolean));
 
-    for (let pass = 1; pass <= maxPasses; pass += 1) {
+    for (let pass = 1; serverMaxPasses === null || pass <= serverMaxPasses; pass += 1) {
       sourceUrls.add(`/api/saved-reports/${currentReportId}`);
       setImproveProgress((prev) => ({
         ...prev,
         [report.id]: {
           status: 'running',
-          message: `Running improve pass ${pass} of ${maxPasses}.`,
+          message: serverMaxPasses
+            ? `Running improve pass ${pass} of ${serverMaxPasses}.`
+            : `Running improve pass ${pass}.`,
           pass,
-          maxPasses,
+          maxPasses: serverMaxPasses ?? undefined,
         },
       }));
 
@@ -787,10 +790,13 @@ export default function ChatInterface() {
         const res = await fetch(`/api/saved-reports/${currentReportId}/improve`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ maxPasses, passNumber: pass, target: 'critical', storagePath: report.storage_path }),
+          body: JSON.stringify({ passNumber: pass, storagePath: report.storage_path }),
         });
         const payload = (await res.json()) as ImproveResponse;
         if (!res.ok || payload.error) throw new Error(payload.error || 'Improve pass failed');
+        if (typeof payload.maxPasses === 'number' && Number.isFinite(payload.maxPasses) && payload.maxPasses >= 1) {
+          serverMaxPasses = Math.trunc(payload.maxPasses);
+        }
 
         if (payload.latestReport) {
           latestReport = payload.latestReport;
@@ -814,7 +820,7 @@ export default function ChatInterface() {
             status: nextStatus,
             message,
             pass,
-            maxPasses,
+            maxPasses: serverMaxPasses ?? undefined,
             coverage: payload.afterCoverage,
           },
         }));
@@ -823,6 +829,7 @@ export default function ChatInterface() {
           await handleSupabaseReportClick(latestReport);
         }
         if (payload.status !== 'continue') break;
+        if (serverMaxPasses === null) throw new Error('Improve response did not include backend pass configuration.');
 
         const waitMs = Math.max(0, Number(payload.nextRunAfterMs || 0));
         if (waitMs > 0) {
@@ -836,7 +843,7 @@ export default function ChatInterface() {
             status: 'failed',
             message,
             pass,
-            maxPasses,
+            maxPasses: serverMaxPasses ?? undefined,
           },
         }));
         setError(message);
@@ -847,7 +854,7 @@ export default function ChatInterface() {
     fetchSupabaseReports();
   };
 
-  const handleArtifactImprove = async (item: ReportItem, maxPasses = 3) => {
+  const handleArtifactImprove = async (item: ReportItem) => {
     const id = reportImproveId(item);
     if (!id) {
       setError('This artifact cannot be improved because it has no saved report id.');
@@ -864,7 +871,7 @@ export default function ChatInterface() {
       storage_path: item.storagePath || null,
       downloadUrl: item.downloadUrl,
     };
-    await handleSupabaseReportImprove(report, maxPasses);
+    await handleSupabaseReportImprove(report);
   };
 
   const handleWatchlistAdd = async (e: React.FormEvent) => {
@@ -1458,7 +1465,9 @@ export default function ChatInterface() {
                         <div className="mt-3 rounded-2xl border border-emerald-300/15 bg-emerald-300/8 px-3 py-2 text-xs leading-5 text-emerald-50">
                           <div className="flex items-center justify-between gap-3">
                             <span className="font-medium">{progress.status === 'running' ? 'Improving' : humanizeSlug(progress.status)}</span>
-                            <span className="text-emerald-100/70">Pass {progress.pass}/{progress.maxPasses}</span>
+                            <span className="text-emerald-100/70">
+                              {progress.maxPasses ? `Pass ${progress.pass}/${progress.maxPasses}` : `Pass ${progress.pass}`}
+                            </span>
                           </div>
                           <p className="mt-1 text-emerald-100/75">{progress.message}</p>
                         </div>
@@ -1636,7 +1645,9 @@ create index if not exists saved_reports_report_date_idx on public.saved_reports
                       <div className="mt-3 rounded-2xl border border-emerald-300/15 bg-emerald-300/8 px-3 py-2 text-xs leading-5 text-emerald-50">
                         <div className="flex items-center justify-between gap-3">
                           <span className="font-medium">{progress.status === 'running' ? 'Improving' : humanizeSlug(progress.status)}</span>
-                          <span className="text-emerald-100/70">Pass {progress.pass}/{progress.maxPasses}</span>
+                          <span className="text-emerald-100/70">
+                            {progress.maxPasses ? `Pass ${progress.pass}/${progress.maxPasses}` : `Pass ${progress.pass}`}
+                          </span>
                         </div>
                         <p className="mt-1 text-emerald-100/75">{progress.message}</p>
                       </div>

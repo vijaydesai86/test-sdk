@@ -325,7 +325,7 @@ See `web/.env.example` for annotated defaults. All variables prefixed with `STOC
 
 **Scaling:**
 - `NUM_COMPANIES` — companies per sector/comparison report (2–15, default 10)
-- `DEEP_RESEARCH_DEPTH` — optional post-core-data ecosystem/refinement passes for research reports (1–3, default 1)
+- `DEEP_RESEARCH_DEPTH` — optional post-core-data ecosystem/refinement passes for research reports (1–10, default 1)
 - `DEEP_RESEARCH_MAX_MS` — deep-research runtime budget in ms (default 240000)
 - `DATA_FETCH_CONCURRENCY` — parallel ticker fetches (1–4, default 3)
 - `VERCEL_EXTENDED_DATA_MAX_COMPANIES` — on Vercel, large reports prioritize core decision inputs and cached optional sections

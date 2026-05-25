@@ -62,7 +62,7 @@ function parseBoundedEnvInt(name: string, fallback: number, min: number, max: nu
 const NUM_COMPANIES = parseBoundedEnvInt('NUM_COMPANIES', 10, 2, 15);
 // Optional post-core-data ecosystem/refinement passes in research reports.
 // Core market data is always fetched before any pass is allowed to run.
-const DEEP_RESEARCH_DEPTH = parseBoundedEnvInt('DEEP_RESEARCH_DEPTH', 1, 1, 3);
+const DEEP_RESEARCH_DEPTH = parseBoundedEnvInt('DEEP_RESEARCH_DEPTH', 1, 1, 10);
 // Keep enough headroom under Vercel's overall runtime limit for rendering and persistence work.
 const DEFAULT_DEEP_RESEARCH_MAX_MS = process.env.VERCEL ? 240000 : 600000;
 const MAX_DEEP_RESEARCH_MAX_MS = process.env.VERCEL ? 270000 : 900000;
