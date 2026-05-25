@@ -100,6 +100,14 @@ function inferKindFromText(text: string): ReportKind | null {
   return null;
 }
 
+function normalizeReportKindForMatch(value: unknown): ReportKind | null {
+  if (value === 'stock' || value === 'comparison' || value === 'research' || value === 'watchlist-daily') {
+    return value;
+  }
+  if (typeof value !== 'string') return null;
+  return inferKindFromText(value);
+}
+
 export function appendReportMetadata(content: string, metadata?: ReportRunMetadata): string {
   if (!metadata) return content;
   const contentWithoutOldMetadata = content.replace(METADATA_RE, '').trimEnd();
@@ -292,13 +300,15 @@ function scoreCandidate(candidate: PreviousReportMatch, kind: ReportKind, query?
     candidate.summary,
     candidate.metadata?.query,
     candidate.metadata?.symbols?.join(' '),
+    candidate.content.slice(0, 2000),
   ].filter(Boolean).join(' '));
-  const metadataKind = candidate.metadata?.kind;
-  const rowKind = candidate.reportKind as ReportKind | null | undefined;
+  const metadataKind = normalizeReportKindForMatch(candidate.metadata?.kind);
+  const rowKind = normalizeReportKindForMatch(candidate.reportKind);
+  const textKind = inferKindFromText(text);
   let score = 0;
   if (metadataKind === kind) score += 80;
   else if (rowKind === kind) score += 65;
-  else if (!metadataKind && !rowKind && inferKindFromText(text) === kind) score += 25;
+  else if (textKind === kind) score += 25;
   else return 0;
 
   const wantedSymbols = symbols.map(normalizeSymbol).filter(Boolean);

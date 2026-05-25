@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { promises as fsp } from 'fs';
 import path from 'path';
 import axios from 'axios';
-import { executeTool, resolveSymbolFromQuery } from '../web/app/lib/stockTools';
+import { executeTool, parsePositionRationaleEntry, resolveSymbolFromQuery } from '../web/app/lib/stockTools';
 import type { StockDataService } from '../web/app/lib/stockDataService';
 
 vi.mock('axios');
@@ -198,6 +198,18 @@ describe('resolveSymbolFromQuery', () => {
     expect(result.ok).toBe(true);
     expect((result as any).symbol).toBe('MSFT');
     expect(service.getStockPrice).not.toHaveBeenCalled();
+  });
+});
+
+describe('parsePositionRationaleEntry', () => {
+  it('rejects weak LLM rationales that would degrade structured report summaries', () => {
+    expect(parsePositionRationaleEntry({ rationale: 'Taiwan Semiconductor Manufacturing Company' })).toBeNull();
+    expect(parsePositionRationaleEntry({ rationale: 'Looks good.' })).toBeNull();
+  });
+
+  it('accepts evidence-backed action rationales', () => {
+    const rationale = 'Buy — quality 91/100 with 58% operating margin and 36% ROE, while valuation 60/100 keeps the setup investable.';
+    expect(parsePositionRationaleEntry({ rationale })).toBe(rationale);
   });
 });
 

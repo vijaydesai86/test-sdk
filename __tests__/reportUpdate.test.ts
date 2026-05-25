@@ -179,4 +179,25 @@ describe('reportUpdate metadata', () => {
       { symbol: 'ARM', key: 'incomeStatement', label: 'Income statement', priority: 'high' },
     ]);
   });
+
+  it('matches a prior watchlist report from visible report text when metadata is sparse', async () => {
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'report-update-watchlist-'));
+    process.env.REPORTS_DIR = tmpDir;
+    vi.resetModules();
+    const { saveReport } = await import('../web/app/lib/reportGenerator');
+    const { findPreviousReportForUpdate } = await import('../web/app/lib/reportUpdate');
+
+    await saveReport(
+      '# Watchlist Daily Report: Core Watchlist\n\nGenerated: 2026-05-23T12:00:00.000Z\n\n**Companies covered:** 15',
+      'core-watchlist-daily-report'
+    );
+
+    const match = await findPreviousReportForUpdate({
+      kind: 'watchlist-daily',
+      query: 'Update daily watchlist report',
+      symbols: ['NVDA', 'ARM', 'TSM'],
+    });
+
+    expect(match?.filename).toContain('core-watchlist-daily-report');
+  });
 });

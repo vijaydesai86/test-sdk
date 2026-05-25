@@ -1,0 +1,104 @@
+import { describe, expect, it } from 'vitest';
+import {
+  buildImproveToolRequest,
+  coverageStats,
+  decideImproveStatus,
+  parseImproveConfig,
+  type SavedReportForImprove,
+} from '../web/app/lib/reportImprove';
+import { buildReportRunMetadata } from '../web/app/lib/reportUpdate';
+
+function report(kind: SavedReportForImprove['reportKind'], metadata = buildReportRunMetadata({
+  kind: kind || 'stock',
+  query: 'ARM',
+  symbols: ['ARM'],
+  generatedAt: '2026-05-25T10:00:00.000Z',
+  coverage: [],
+})): SavedReportForImprove {
+  return {
+    id: 'report-id',
+    filename: 'report.md',
+    title: 'Report',
+    summary: null,
+    content: '# Report',
+    storagePath: '2026-05-25/report.md',
+    reportKind: kind,
+    reportDate: '2026-05-25',
+    createdAt: '2026-05-25T10:00:00.000Z',
+    metadata,
+  };
+}
+
+describe('reportImprove', () => {
+  it('clamps improve pass configuration to safe bounds', () => {
+    expect(parseImproveConfig({
+      requestedPasses: 99,
+      env: { REPORT_IMPROVE_MAX_PASSES: '5' },
+    }).maxPasses).toBe(5);
+    expect(parseImproveConfig({
+      requestedPasses: 0,
+      env: { REPORT_IMPROVE_DEFAULT_PASSES: '3', REPORT_IMPROVE_MAX_PASSES: '5' },
+    }).maxPasses).toBe(1);
+  });
+
+  it('computes critical coverage from report metadata', () => {
+    const metadata = buildReportRunMetadata({
+      kind: 'stock',
+      query: 'ARM',
+      symbols: ['ARM'],
+      generatedAt: '2026-05-25T10:00:00.000Z',
+      coverage: [
+        { symbol: 'ARM', key: 'price', label: 'Price', data: { price: 100 }, priority: 'critical' },
+        { symbol: 'ARM', key: 'cashFlow', label: 'Cash flow', data: undefined, priority: 'high' },
+        { symbol: 'ARM', key: 'overview', label: 'Company overview', data: undefined, priority: 'critical' },
+      ],
+    });
+
+    expect(coverageStats(metadata)).toEqual({
+      total: 3,
+      available: 1,
+      missing: 2,
+      criticalMissing: 1,
+      coveragePct: 33,
+    });
+  });
+
+  it('maps saved report metadata to the correct existing report tool', () => {
+    const comparisonMetadata = buildReportRunMetadata({
+      kind: 'comparison',
+      query: 'Nvidia and Arm',
+      symbols: ['NVDA', 'ARM'],
+      range: '1y',
+      generatedAt: '2026-05-25T10:00:00.000Z',
+      coverage: [],
+    });
+
+    expect(buildImproveToolRequest(report('comparison', comparisonMetadata))).toMatchObject({
+      toolName: 'generate_comparison_report',
+      args: {
+        updateMode: true,
+        updateQuery: 'Nvidia and Arm',
+        companies: ['NVDA', 'ARM'],
+        range: '1y',
+      },
+    });
+  });
+
+  it('continues only when coverage improved and useful gaps remain', () => {
+    const config = { maxPasses: 3, target: 'critical' as const, minWaitMs: 60000 };
+
+    expect(decideImproveStatus({
+      before: { total: 4, available: 2, missing: 2, criticalMissing: 1, coveragePct: 50 },
+      after: { total: 4, available: 3, missing: 1, criticalMissing: 1, coveragePct: 75 },
+      passesDone: 1,
+      config,
+    })).toMatchObject({ status: 'continue', nextRunAfterMs: 60000 });
+
+    expect(decideImproveStatus({
+      before: { total: 4, available: 3, missing: 1, criticalMissing: 1, coveragePct: 75 },
+      after: { total: 4, available: 3, missing: 1, criticalMissing: 1, coveragePct: 75 },
+      passesDone: 2,
+      config,
+    })).toMatchObject({ status: 'stopped', reason: 'no_coverage_improvement' });
+  });
+});

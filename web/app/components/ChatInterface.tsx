@@ -38,6 +38,34 @@ interface SavedReportMeta {
   storage_path?: string | null;
 }
 
+interface ImproveCoverageStats {
+  total: number;
+  available: number;
+  missing: number;
+  criticalMissing: number;
+  coveragePct: number | null;
+}
+
+interface ImproveProgress {
+  status: 'running' | 'waiting' | 'complete' | 'stopped' | 'failed';
+  message: string;
+  pass: number;
+  maxPasses: number;
+  coverage?: ImproveCoverageStats | null;
+}
+
+interface ImproveResponse {
+  success?: boolean;
+  status?: 'complete' | 'continue' | 'stopped' | 'failed';
+  reason?: string;
+  latestReport?: (SavedReportMeta & { downloadUrl?: string }) | null;
+  afterCoverage?: ImproveCoverageStats | null;
+  passesDone?: number;
+  maxPasses?: number;
+  nextRunAfterMs?: number;
+  error?: string;
+}
+
 interface WatchlistItemMeta {
   id: string;
   symbol: string;
@@ -258,6 +286,22 @@ function buildSavedSummary(item: Pick<SavedReportMeta, 'summary' | 'report_kind'
   return `Saved markdown report for ${humanizeSlug(item.filename)}.`;
 }
 
+function formatImproveCoverage(stats?: ImproveCoverageStats | null) {
+  if (!stats) return '';
+  const coverage = stats.coveragePct === null ? 'coverage unavailable' : `${stats.coveragePct}% coverage`;
+  return `${coverage}, ${stats.criticalMissing} critical missing`;
+}
+
+function improveReasonLabel(reason?: string) {
+  if (reason === 'critical_complete') return 'Critical data complete.';
+  if (reason === 'all_complete') return 'All tracked fields complete.';
+  if (reason === 'max_passes_reached') return 'Stopped at pass limit.';
+  if (reason === 'no_coverage_improvement') return 'Stopped because coverage did not improve.';
+  if (reason === 'missing_checkpoint') return 'Stopped because checkpoint metadata is unavailable.';
+  if (reason === 'coverage_improved_with_remaining_gaps') return 'Coverage improved; checking whether another pass is useful.';
+  return 'Improve pass finished.';
+}
+
 function groupByDate<T>(items: T[], getBucket: (item: T) => string) {
   const groups = new Map<string, T[]>();
   for (const item of items) {
@@ -345,6 +389,7 @@ export default function ChatInterface() {
   const [supabaseReports, setSupabaseReports] = useState<SavedReportMeta[]>([]);
   const [supabaseReportsLoading, setSupabaseReportsLoading] = useState(false);
   const [supabaseSetupRequired, setSupabaseSetupRequired] = useState(false);
+  const [improveProgress, setImproveProgress] = useState<Record<string, ImproveProgress>>({});
   const [watchlist, setWatchlist] = useState<WatchlistMeta | null>(null);
   const [watchlistLoading, setWatchlistLoading] = useState(false);
   const [watchlistBusy, setWatchlistBusy] = useState(false);
@@ -673,6 +718,94 @@ export default function ChatInterface() {
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to delete report');
     }
+  };
+
+  const upsertSavedReportMeta = (report: SavedReportMeta) => {
+    setSupabaseReports((prev) => {
+      const withoutDuplicate = prev.filter((item) => item.id !== report.id);
+      return [report, ...withoutDuplicate];
+    });
+  };
+
+  const handleSupabaseReportImprove = async (report: SavedReportMeta, maxPasses = 3) => {
+    const existing = improveProgress[report.id];
+    if (existing?.status === 'running' || existing?.status === 'waiting') return;
+    setError(null);
+    let currentReportId = report.id;
+    let latestReport: SavedReportMeta | null = null;
+
+    for (let pass = 1; pass <= maxPasses; pass += 1) {
+      setImproveProgress((prev) => ({
+        ...prev,
+        [report.id]: {
+          status: 'running',
+          message: `Running improve pass ${pass} of ${maxPasses}.`,
+          pass,
+          maxPasses,
+        },
+      }));
+
+      try {
+        const res = await fetch(`/api/saved-reports/${currentReportId}/improve`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ maxPasses, passNumber: pass, target: 'critical' }),
+        });
+        const payload = (await res.json()) as ImproveResponse;
+        if (!res.ok || payload.error) throw new Error(payload.error || 'Improve pass failed');
+
+        if (payload.latestReport) {
+          latestReport = payload.latestReport;
+          upsertSavedReportMeta(payload.latestReport);
+          currentReportId = payload.latestReport.id;
+        }
+
+        const message = [
+          improveReasonLabel(payload.reason),
+          formatImproveCoverage(payload.afterCoverage),
+        ].filter(Boolean).join(' ');
+        const nextStatus: ImproveProgress['status'] =
+          payload.status === 'complete' ? 'complete' :
+          payload.status === 'continue' ? 'waiting' :
+          payload.status === 'failed' ? 'failed' :
+          'stopped';
+        setImproveProgress((prev) => ({
+          ...prev,
+          [report.id]: {
+            status: nextStatus,
+            message,
+            pass,
+            maxPasses,
+            coverage: payload.afterCoverage,
+          },
+        }));
+
+        if (latestReport && reportUrl === `/api/saved-reports/${report.id}`) {
+          await handleSupabaseReportClick(latestReport);
+        }
+        if (payload.status !== 'continue') break;
+
+        const waitMs = Math.max(0, Number(payload.nextRunAfterMs || 0));
+        if (waitMs > 0) {
+          await new Promise((resolve) => setTimeout(resolve, waitMs));
+        }
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : 'Improve pass failed';
+        setImproveProgress((prev) => ({
+          ...prev,
+          [report.id]: {
+            status: 'failed',
+            message,
+            pass,
+            maxPasses,
+          },
+        }));
+        setError(message);
+        break;
+      }
+    }
+
+    fetchSupabaseReports();
   };
 
   const handleWatchlistAdd = async (e: React.FormEvent) => {
@@ -1336,6 +1469,10 @@ create index if not exists saved_reports_report_date_idx on public.saved_reports
               </div>
               <div className="space-y-3">
                 {group.items.map((report) => (
+                  (() => {
+                    const progress = improveProgress[report.id];
+                    const improveBusy = progress?.status === 'running' || progress?.status === 'waiting';
+                    return (
                   <div
                     key={report.id}
                     className="rounded-[24px] border border-white/10 bg-white/7 p-4 shadow-[0_16px_35px_-30px_rgba(15,23,42,0.9)]"
@@ -1363,6 +1500,24 @@ create index if not exists saved_reports_report_date_idx on public.saved_reports
                       <div className="flex shrink-0 items-center gap-2">
                         <button
                           type="button"
+                          onClick={() => void handleSupabaseReportImprove(report)}
+                          disabled={improveBusy}
+                          title="Improve report"
+                          className="rounded-full border border-white/10 bg-slate-950/45 p-2 text-slate-300 transition hover:border-emerald-300/35 hover:text-emerald-100 disabled:cursor-not-allowed disabled:opacity-45"
+                        >
+                          <Icon className="h-4 w-4">
+                            <path d="M12 3v4" />
+                            <path d="M12 17v4" />
+                            <path d="M3 12h4" />
+                            <path d="M17 12h4" />
+                            <path d="m6.3 6.3 2.8 2.8" />
+                            <path d="m14.9 14.9 2.8 2.8" />
+                            <path d="m17.7 6.3-2.8 2.8" />
+                            <path d="m9.1 14.9-2.8 2.8" />
+                          </Icon>
+                        </button>
+                        <button
+                          type="button"
                           onClick={() => void handleSupabaseReportDownload(report)}
                           title="Download"
                           className="rounded-full border border-white/10 bg-slate-950/45 p-2 text-slate-300 transition hover:border-sky-300/35 hover:text-sky-100"
@@ -1386,7 +1541,18 @@ create index if not exists saved_reports_report_date_idx on public.saved_reports
                         </button>
                       </div>
                     </div>
+                    {progress && (
+                      <div className="mt-3 rounded-2xl border border-emerald-300/15 bg-emerald-300/8 px-3 py-2 text-xs leading-5 text-emerald-50">
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="font-medium">{progress.status === 'running' ? 'Improving' : humanizeSlug(progress.status)}</span>
+                          <span className="text-emerald-100/70">Pass {progress.pass}/{progress.maxPasses}</span>
+                        </div>
+                        <p className="mt-1 text-emerald-100/75">{progress.message}</p>
+                      </div>
+                    )}
                   </div>
+                    );
+                  })()
                 ))}
               </div>
             </section>

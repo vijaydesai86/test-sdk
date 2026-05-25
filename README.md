@@ -10,6 +10,8 @@ Report-style requests are guarded server-side: if the model answers a stock, com
 
 Reports are also resumable through explicit update prompts. If a prompt includes `update` and names a prior report target, such as `update ARM stock report`, `update comparison report of Nvidia and Arm`, `update research report of AI ecosystem`, or `update watchlist report`, the backend uses the same four report tools in update mode. It locates the latest matching saved report, tries fresh and cached provider data first, then carries forward prior verified checkpoint fields only where this pass cannot replace them. Carried-forward fields are called out in the report notes; if no prior report is found, it falls back to a fresh report and states that in the data-gap notes.
 
+Saved reports can also be improved without writing an update prompt. The Saved Reports view exposes an Improve action that reads the saved report id, infers the correct report type from metadata/checkpoints, runs a bounded update pass through the same four report tools, saves a new report version, and repeats only while coverage improves and the pass limit allows it. Original reports are never overwritten.
+
 **Four report types:**
 
 | Mode | How to ask | What you get |
@@ -135,6 +137,10 @@ _Note: SEC EDGAR filings (`get_sec_filings`), SEC XBRL company facts (`get_sec_c
 | `VERCEL_EXTENDED_DATA_MAX_COMPANIES` | `3` | On Vercel, reports larger than this prioritize core decision inputs and cached optional data so free-tier providers do not consume the whole 300 s function window. Local runs still attempt extended data. |
 | `REPORTS_DIR` | `reports` (local) / `/tmp/reports` (Vercel) | Where generated report files are stored. |
 | `STOCK_CACHE_TTL_MS` | `604800000` (7 days) | How long fetched data is cached on disk. |
+| `REPORT_IMPROVE_DEFAULT_PASSES` | `3` | Default number of browser-coordinated improve passes when the user clicks Improve report. |
+| `REPORT_IMPROVE_MAX_PASSES` | `5` | Hard backend cap for improve passes. User/UI values are clamped to this limit. |
+| `REPORT_IMPROVE_TARGET` | `critical` | Improve stop target. `critical` stops when critical tracked fields are complete; `all` waits for all tracked fields. |
+| `REPORT_IMPROVE_MIN_WAIT_MS` | `60000` | Minimum wait between browser-coordinated improve passes when another pass is useful. |
 | `SEC_COMPANY_FACTS_CACHE_TTL_MS` | `43200000` (12 hours) | In-memory TTL for SEC ticker mapping and companyfacts responses. |
 | `TREASURY_RATES_CACHE_TTL_MS` | `43200000` (12 hours) | In-memory TTL for official Treasury yield curve responses. |
 | `BEA_CACHE_TTL_MS` | `43200000` (12 hours) | In-memory TTL for BEA NIPA macro responses. |

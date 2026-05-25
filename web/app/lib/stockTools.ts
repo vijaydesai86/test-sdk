@@ -1017,10 +1017,13 @@ function buildBatchPositionRationalePrompt(
  * Parses one entry from an LLM batch position rationale response.
  * Returns the rationale string, or null when the entry is missing or invalid.
  */
-function parsePositionRationaleEntry(entry: any): string | null {
+export function parsePositionRationaleEntry(entry: any): string | null {
   if (!entry || typeof entry.rationale !== 'string') return null;
   const text = entry.rationale.trim();
-  return text.length >= 10 ? text : null;
+  const hasNumericEvidence = /(?:\d+(?:\.\d+)?\s*(?:\/100|%|x\b)|\$\s*\d|\bscore\b.{0,20}\d)/i.test(text);
+  const hasAction = /\b(?:buy|hold|watch|sell|add|initiate|trim|exit)\b/i.test(text);
+  const hasResearchSignal = /\b(?:quality|profitability|growth|valuation|momentum|analyst|insider|margin|roe|roa|target|p\/e|cash|score|confidence)\b/i.test(text);
+  return text.length >= 40 && hasNumericEvidence && hasAction && hasResearchSignal ? text : null;
 }
 
 /**
