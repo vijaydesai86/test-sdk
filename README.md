@@ -134,9 +134,12 @@ _Note: SEC EDGAR filings (`get_sec_filings`), SEC XBRL company facts (`get_sec_c
 |---|---|---|
 | `NUM_COMPANIES` | `10` | Companies in comparison and research reports. Range: 2–15. |
 | `RESEARCH_CANDIDATE_POOL_MULTIPLIER` | `3` | Research candidate pool size before scoring, as a multiple of `NUM_COMPANIES`. Range: 1–5 and bounded by runtime/provider limits. |
-| `RESEARCH_UNIVERSE_MIN_THEME_SCORE` | `60` | Core theme-fit gate for fresh research universe selection. Candidates below this can enter only as adjacent exposure if the adjacent gate allows it. |
-| `RESEARCH_UNIVERSE_ADJACENT_THEME_SCORE` | `50` | Adjacent theme-fit gate. Weak/rejected candidates are not forced into the universe just to fill configured slots. |
-| `RESEARCH_UNIVERSE_ALLOW_ADJACENT` | `true` | Set to `false` to require only core theme-fit candidates in fresh research universes. |
+| `RESEARCH_THEME_FACET_COUNT` | `6` | Maximum generic theme role buckets generated before candidate discovery. Range: 1–10. |
+| `RESEARCH_FACET_CANDIDATES` | `8` | Maximum candidate symbols requested per generated role bucket. Range: 2–15. |
+| `RESEARCH_UNIVERSE_MIN_THEME_SCORE` | `70` | Core theme-fit gate for fresh research universe selection. |
+| `RESEARCH_UNIVERSE_STRONG_ADJACENT_THEME_SCORE` | `55` | Strong-adjacent theme-fit gate. Weak-adjacent/rejected candidates are not forced into the universe just to fill configured slots. |
+| `RESEARCH_UNIVERSE_ALLOW_STRONG_ADJACENT` | `true` | Set to `false` to require only core theme-fit candidates in fresh research universes. |
+| `RESEARCH_UNIVERSE_MAX_ROLE_SHARE` | `0.35` | Soft maximum share for one theme-derived role before selection prioritizes other qualified roles. |
 | `DEEP_RESEARCH_DEPTH` | `1` | Optional post-core-data ecosystem/refinement passes for research reports. Core market data is fetched before any pass runs. Range: 1–10. |
 | `DEEP_RESEARCH_MAX_MS` | `240000` on Vercel, `600000` local | Runtime budget for deep research (ms). Vercel is clamped under the 300 s function limit; local can run longer for completeness. |
 | `RESEARCH_ALLOCATION_MIN_SCORE` | `60` | Minimum report score for a research allocation scenario candidate. Range: 0–100. This controls selective allocation only; it does not remove companies from the report universe. |
@@ -191,8 +194,10 @@ ALPHA_VANTAGE_API_KEY=your_av_key
 FINNHUB_API_KEY=your_finnhub_key
 NUM_COMPANIES=15
 RESEARCH_CANDIDATE_POOL_MULTIPLIER=3
-RESEARCH_UNIVERSE_MIN_THEME_SCORE=60
-RESEARCH_UNIVERSE_ADJACENT_THEME_SCORE=50
+RESEARCH_THEME_FACET_COUNT=6
+RESEARCH_FACET_CANDIDATES=8
+RESEARCH_UNIVERSE_MIN_THEME_SCORE=70
+RESEARCH_UNIVERSE_STRONG_ADJACENT_THEME_SCORE=55
 DEEP_RESEARCH_DEPTH=1
 RESEARCH_ALLOCATION_MIN_SCORE=60
 RESEARCH_ALLOCATION_MIN_THEME_SCORE=50

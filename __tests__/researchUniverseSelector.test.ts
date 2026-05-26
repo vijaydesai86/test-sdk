@@ -117,7 +117,7 @@ describe('research universe selection', () => {
         candidates: [
           { symbol: 'GPUA', themeScore: 94, fit: 'core', subtheme: 'Compute accelerators' },
           { symbol: 'MEMR', themeScore: 88, fit: 'core', subtheme: 'Memory and storage' },
-          { symbol: 'PAYX', themeScore: 30, fit: 'weak', subtheme: 'Payments' },
+          { symbol: 'PAYX', themeScore: 30, fit: 'weak_adjacent', subtheme: 'Payments' },
         ],
       }),
     });
@@ -155,6 +155,75 @@ describe('research universe selection', () => {
 
     expect(selection.selectedSymbols).toEqual(['GPUA']);
     expect(selection.notes.join('\n')).toContain('Only 1 of 3 configured slots cleared the theme-fit gate');
+  });
+
+  it('selects strong-adjacent companies only after fit gates and still excludes weak-adjacent names', async () => {
+    const selection = await selectResearchUniverse({
+      query: 'AI infrastructure',
+      finalCount: 3,
+      candidates: [
+        candidate('CORE', 'AI infrastructure accelerator chips and systems', { sourceFacets: ['compute accelerators'] }),
+        candidate('CLOU', 'Cloud data center platform for AI workloads', { sourceFacets: ['cloud data center operators'] }),
+        candidate('GENR', 'Generic enterprise workflow software', {
+          sourceFacets: ['software applications'],
+          overview: {
+            name: 'GENR Corp',
+            sector: 'Technology',
+            industry: 'Application Software',
+            description: 'Generic enterprise workflow software',
+            marketCapitalization: 500_000_000_000,
+            forwardPE: 14,
+          },
+        }),
+      ],
+      llmFill: async () => JSON.stringify({
+        candidates: [
+          { symbol: 'CORE', themeScore: 96, fit: 'core', subtheme: 'Compute accelerators' },
+          { symbol: 'CLOU', themeScore: 76, fit: 'strong_adjacent', subtheme: 'Cloud data center operators' },
+          { symbol: 'GENR', themeScore: 48, fit: 'weak_adjacent', subtheme: 'Generic software' },
+        ],
+      }),
+    });
+
+    expect(selection.selectedSymbols).toEqual(expect.arrayContaining(['CORE', 'CLOU']));
+    expect(selection.selectedSymbols).not.toContain('GENR');
+    expect(selection.fitCounts.strong_adjacent).toBe(1);
+    expect(selection.fitCounts.weak_adjacent).toBe(1);
+  });
+
+  it('uses role concentration controls without hardcoding any production sectors', async () => {
+    const selection = await selectResearchUniverse({
+      query: 'industrial automation',
+      finalCount: 4,
+      maxRoleShare: 0.5,
+      candidates: [
+        candidate('AONE', 'industrial automation robotics controller', { sourceFacets: ['robotics controllers'] }),
+        candidate('ATWO', 'industrial automation robotics controller', { sourceFacets: ['robotics controllers'] }),
+        candidate('ATHR', 'industrial automation robotics controller', { sourceFacets: ['robotics controllers'] }),
+        candidate('AFOR', 'industrial automation robotics controller', { sourceFacets: ['robotics controllers'] }),
+        candidate('SENS', 'industrial automation sensors and machine vision', { sourceFacets: ['sensors and vision'] }),
+        candidate('SOFT', 'industrial automation software platform', { sourceFacets: ['automation software'] }),
+      ],
+      llmFill: async () => JSON.stringify({
+        candidates: [
+          { symbol: 'AONE', themeScore: 96, fit: 'core', subtheme: 'Robotics controllers' },
+          { symbol: 'ATWO', themeScore: 95, fit: 'core', subtheme: 'Robotics controllers' },
+          { symbol: 'ATHR', themeScore: 94, fit: 'core', subtheme: 'Robotics controllers' },
+          { symbol: 'AFOR', themeScore: 93, fit: 'core', subtheme: 'Robotics controllers' },
+          { symbol: 'SENS', themeScore: 88, fit: 'core', subtheme: 'Sensors and vision' },
+          { symbol: 'SOFT', themeScore: 84, fit: 'core', subtheme: 'Automation software' },
+        ],
+      }),
+    });
+
+    const selectedRoles = selection.candidates
+      .filter((row) => row.selected)
+      .map((row) => row.subtheme);
+    const roboticsCount = selectedRoles.filter((role) => role === 'Robotics controllers').length;
+
+    expect(selection.selectedSymbols).toHaveLength(4);
+    expect(roboticsCount).toBeLessThanOrEqual(2);
+    expect(selectedRoles).toEqual(expect.arrayContaining(['Sensors and vision', 'Automation software']));
   });
 
   it('builds a dependency map and summary from selected role groups without needing an LLM ecosystem pass', async () => {

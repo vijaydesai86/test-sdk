@@ -3574,7 +3574,6 @@ function buildResearchUniverseSelectionSection(selection?: ResearchUniverseSelec
     selectedRows,
     ['left', 'left', 'left', 'right', 'right', 'right', 'right', 'left']
   );
-  const weights = selection.weights;
   const modeLine = manualUniverse
     ? 'The saved report universe was preserved. Diagnostics below describe the locked companies; update passes do not silently replace the selected universe.'
     : 'The final universe was selected from verified candidates before the deeper financial comparison ran.';
@@ -3585,9 +3584,9 @@ function buildResearchUniverseSelectionSection(selection?: ResearchUniverseSelec
     manualUniverse ? '## 🧭 Locked Universe Diagnostics' : '## 🧭 Universe Selection Summary',
     modeLine,
     `Configured slots: ${selection.requestedCount}. Verified candidates scored: ${selection.candidateCount}. Selected ${selection.selectedSymbols.length}: ${selection.selectedSymbols.join(', ') || 'none'}.`,
-    `Fit mix: core ${selection.fitCounts.core}, adjacent ${selection.fitCounts.adjacent}, weak ${selection.fitCounts.weak}, rejected ${selection.fitCounts.reject}. Theme gates: core >= ${selection.minThemeScore.toFixed(0)}, adjacent >= ${selection.adjacentThemeScore.toFixed(0)}.`,
+    `Fit mix: core ${selection.fitCounts.core}, strong adjacent ${selection.fitCounts.strong_adjacent}, weak adjacent ${selection.fitCounts.weak_adjacent}, rejected ${selection.fitCounts.reject}. Theme gates: core >= ${selection.minThemeScore.toFixed(0)}, strong adjacent >= ${selection.strongAdjacentThemeScore.toFixed(0)}.`,
     `Role coverage: ${roleSummary}`,
-    `Weights: theme ${(weights.themeRelevance * 100).toFixed(0)}%, investment/data ${(weights.investmentReadiness * 100).toFixed(0)}%, provider confidence ${(weights.dataConfidence * 100).toFixed(0)}%, liquidity/scale ${(weights.liquidityScale * 100).toFixed(0)}%, representative coverage ${(weights.representativeCoverage * 100).toFixed(0)}%.`,
+    'Scoring: theme purity and fit tier are gates first; source role support, provider data readiness, liquidity/scale, preliminary financial sanity, and role coverage then rank the qualified candidates. Weak or unsupported names are not forced in to fill slots.',
   ];
 
   if (debugMode) {
@@ -3651,7 +3650,7 @@ function buildResearchAllocationSection(
     const universeScore = selector?.totalScore ?? null;
     const themeScore = selector?.themeScore ?? null;
     const dataScore = selector?.dataConfidenceScore ?? null;
-    const themeFitEligible = !selector || selector.themeFit === 'core' || selector.themeFit === 'adjacent';
+    const themeFitEligible = !selector || selector.themeFit === 'core' || selector.themeFit === 'strong_adjacent';
     const allocationScore = reportScore === null
       ? null
       : (

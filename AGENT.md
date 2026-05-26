@@ -190,7 +190,7 @@ User message
 6. `saveReport()` persists to Supabase or filesystem.
 7. Report artifact is returned to the chat UI.
 
-Deep-sector research resolves a broad live provider-confirmed candidate pool, scores it with a data-backed methodology, applies generic theme-fit gates before selection, locks the saveable company list, fetches critical market data (price, overview, basic financials, price history) before optional ecosystem/dependency LLM enrichment, and never lets later model passes change the locked universe. Universe scoring must remain generic: no production ticker/sector hardcoding, and it must balance theme relevance, investability/data quality, liquidity/scale, preliminary financial factors, and representative coverage. Representative coverage can diversify only among qualified theme-fit candidates; weak or unsupported candidates must not be forced into the universe just to fill configured slots. Research reports must always include a dependency/role map; when the LLM enrichment pass is skipped, render the deterministic provider-profile role map instead of omitting the section.
+Deep-sector research resolves a broad live provider-confirmed candidate pool through generic theme role buckets, scores it with a data-backed methodology, applies generic theme-fit gates before selection, locks the saveable company list, fetches critical market data (price, overview, basic financials, price history) before optional ecosystem/dependency LLM enrichment, and never lets later model passes change the locked universe. Universe scoring must remain generic: no production ticker/sector hardcoding, and it must balance theme relevance/purity, source role support, investability/data quality, liquidity/scale, preliminary financial sanity, and representative coverage. Representative coverage can diversify only among qualified theme-fit candidates; weak-adjacent or unsupported candidates must not be forced into the universe just to fill configured slots. Research reports must always include a dependency/role map; when the LLM enrichment pass is skipped, render the deterministic provider-profile role map instead of omitting the section.
 
 ---
 
@@ -328,9 +328,12 @@ See `web/.env.example` for annotated defaults. All variables prefixed with `STOC
 **Scaling:**
 - `NUM_COMPANIES` — companies per sector/comparison report (2–15, default 10)
 - `RESEARCH_CANDIDATE_POOL_MULTIPLIER` — fresh research candidate pool multiplier before scoring (1–5, default 3)
-- `RESEARCH_UNIVERSE_MIN_THEME_SCORE` — core theme-fit gate for research universe selection (0–100, default 60)
-- `RESEARCH_UNIVERSE_ADJACENT_THEME_SCORE` — adjacent theme-fit gate (0–core gate, default 50)
-- `RESEARCH_UNIVERSE_ALLOW_ADJACENT` — whether adjacent candidates can fill slots after core candidates (default true)
+- `RESEARCH_THEME_FACET_COUNT` — maximum generic theme role buckets generated for candidate discovery (1–10, default 6)
+- `RESEARCH_FACET_CANDIDATES` — candidate symbols requested per role bucket (2–15, default 8)
+- `RESEARCH_UNIVERSE_MIN_THEME_SCORE` — core theme-fit gate for research universe selection (0–100, default 70)
+- `RESEARCH_UNIVERSE_STRONG_ADJACENT_THEME_SCORE` — strong-adjacent theme-fit gate (0–core gate, default 55)
+- `RESEARCH_UNIVERSE_ALLOW_STRONG_ADJACENT` — whether strong-adjacent candidates can fill slots after core candidates (default true)
+- `RESEARCH_UNIVERSE_MAX_ROLE_SHARE` — soft role concentration cap during universe selection (default 0.35)
 - `DEEP_RESEARCH_DEPTH` — optional post-core-data ecosystem/refinement passes for research reports (1–10, default 1)
 - `DEEP_RESEARCH_MAX_MS` — deep-research runtime budget in ms (default 240000)
 - `RESEARCH_ALLOCATION_MIN_SCORE` — minimum report score for research allocation scenario eligibility (0–100, default 60)
