@@ -9,7 +9,6 @@ import {
 } from './reportFileStore';
 import { getSupabaseClient } from './supabaseClient';
 import {
-  appendReportMetadata,
   extractReportMetadata,
   readReportMetadataSidecar,
   stripReportMetadata,
@@ -357,7 +356,7 @@ function serializedSourceReport(report: SavedReportForImprove) {
   };
 }
 
-const IMPROVE_HISTORY_SECTION_RE = /\n\n## Improve History\n[\s\S]*?(?=\n\n<!--\s*stock-report-run-metadata:|$)/;
+const IMPROVE_HISTORY_SECTION_RE = /\n\n## Improve History\n[\s\S]*$/;
 
 function formatCoverageForHistory(stats: CoverageStats | null | undefined): string {
   if (!stats) return 'N/A';
@@ -368,7 +367,7 @@ function formatCoverageForHistory(stats: CoverageStats | null | undefined): stri
 function withImproveHistoryContent(content: string, metadata: ReportRunMetadata): string {
   const visible = stripReportMetadata(content).replace(IMPROVE_HISTORY_SECTION_RE, '').trimEnd();
   if (process.env.DEBUG !== 'true' || !metadata.improveHistory?.length) {
-    return appendReportMetadata(visible, metadata);
+    return visible;
   }
 
   const rows = metadata.improveHistory.map((entry) => [
@@ -385,7 +384,7 @@ function withImproveHistoryContent(content: string, metadata: ReportRunMetadata)
     '|---:|---|---|---|---|',
     ...rows.map((row) => `| ${row.join(' | ')} |`),
   ].join('\n');
-  return appendReportMetadata(`${visible}\n\n${table}`, metadata);
+  return `${visible}\n\n${table}`;
 }
 
 export async function appendImproveHistoryToSavedReport(

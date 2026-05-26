@@ -69,6 +69,15 @@ function parseBoundedEnvInt(name: string, fallback: number, min: number, max: nu
 // Number of companies to include in comparison and research reports.
 // Clamp to a free-tier-safe ceiling so a bad env value cannot fan out into dozens of API calls.
 const NUM_COMPANIES = parseBoundedEnvInt('NUM_COMPANIES', 10, 2, 15);
+const RESEARCH_CANDIDATE_POOL_MULTIPLIER = parseBoundedEnvInt('RESEARCH_CANDIDATE_POOL_MULTIPLIER', 3, 1, 5);
+const RESEARCH_UNIVERSE_MIN_THEME_SCORE = parseBoundedEnvInt('RESEARCH_UNIVERSE_MIN_THEME_SCORE', 60, 0, 100);
+const RESEARCH_UNIVERSE_ADJACENT_THEME_SCORE = parseBoundedEnvInt(
+  'RESEARCH_UNIVERSE_ADJACENT_THEME_SCORE',
+  Math.max(45, RESEARCH_UNIVERSE_MIN_THEME_SCORE - 10),
+  0,
+  RESEARCH_UNIVERSE_MIN_THEME_SCORE
+);
+const RESEARCH_UNIVERSE_ALLOW_ADJACENT = process.env.RESEARCH_UNIVERSE_ALLOW_ADJACENT !== 'false';
 // Optional post-core-data ecosystem/refinement passes in research reports.
 // Core market data is always fetched before any pass is allowed to run.
 const DEEP_RESEARCH_DEPTH = parseBoundedEnvInt('DEEP_RESEARCH_DEPTH', 1, 1, 10);
@@ -598,7 +607,8 @@ async function resolveSectorTickers(
     // Attempt 2: LLM retry with a shorter, more direct prompt
     try {
       const retryPrompt =
-        `List exactly ${count} US-listed stock ticker symbols for the top companies in the "${sector}" sector. ` +
+        `List exactly ${count} NYSE/NASDAQ/US ADR ticker symbols for direct, material public-company exposures to "${sector}". ` +
+        `Prefer liquid analyzable leaders across the theme's major roles; avoid tangential companies, shell companies, OTC names, and delisted tickers. ` +
         `Return ONLY a JSON array of ticker strings, nothing else. Example: ["AAPL","MSFT"]`;
       const raw = await llmFill(retryPrompt);
       console.info(`[resolveSectorTickers] LLM attempt 2 raw response (${raw?.length ?? 0} chars):`, raw?.substring(0, 200));
@@ -613,7 +623,8 @@ async function resolveSectorTickers(
     // Attempt 3: LLM with a plain-text company name prompt, then resolve each to ticker
     try {
       const namePrompt =
-        `Name the top ${count} publicly traded US companies in the "${sector}" industry. ` +
+        `Name ${count} publicly traded companies with direct, material exposure to "${sector}", using NYSE/NASDAQ/US ADR tickers where available. ` +
+        `Balance major roles within the theme and avoid tangential broad-company picks. ` +
         `Return ONLY a JSON array of their stock ticker symbols. Example: ["AAPL","MSFT","GOOGL"]`;
       const raw = await llmFill(namePrompt);
       console.info(`[resolveSectorTickers] LLM attempt 3 raw response (${raw?.length ?? 0} chars):`, raw?.substring(0, 200));
@@ -704,11 +715,14 @@ function buildTickerResolutionPrompt(queries: string[]): string {
  */
 function buildSectorCompaniesPrompt(sector: string, count: number): string {
   return (
-    `You are a financial analyst. Identify the top ${count} publicly-traded US companies that are leading players in the "${sector}" sector or investment theme.\n\n` +
+    `You are a financial analyst. Build a broad candidate pool of ${count} publicly traded companies that are leading, directly exposed players in the "${sector}" sector or investment theme.\n\n` +
     `RULES:\n` +
-    `- Return ONLY official US stock exchange ticker symbols (NYSE/NASDAQ)\n` +
-    `- Select companies that are pure-play or significantly exposed to "${sector}"\n` +
-    `- Prefer large-cap, highly liquid stocks — avoid micro-caps and OTC stocks. Return ticker symbols ONLY (no prices, revenues, or financial metrics — those come from live APIs)\n\n` +
+    `- Return ONLY official NYSE/NASDAQ/US ADR ticker symbols when available\n` +
+    `- Select companies that are pure-play, direct suppliers, direct operators, or otherwise significantly exposed to "${sector}"\n` +
+    `- Cover the main economic roles inside the theme instead of filling the list with one narrow role\n` +
+    `- Avoid broad or tangential companies unless the theme exposure is direct and material\n` +
+    `- Prefer large-cap, liquid, analyzable stocks and avoid micro-caps, shell companies, OTC stocks, and stale/delisted tickers\n` +
+    `- Return ticker symbols ONLY; no prices, revenues, or financial metrics because those come from live APIs\n\n` +
     `Respond ONLY with a valid JSON array of exactly ${count} ticker symbols (no markdown, no explanation):\n` +
     `["TICK1", "TICK2", "TICK3"]`
   );
@@ -4118,10 +4132,13 @@ export async function executeTool(
           ? lockedSymbols.length
           : Math.min(NUM_COMPANIES, Math.max(3, Number(args.count) || NUM_COMPANIES));
         const finalCount = requestedFinalCount;
-        // Fetch roughly 2x candidates only when there is enough time to refine them.
-        const initialCount = hasReportWorkBudget(deadlineAt, 'optional', requestedFinalCount)
-          ? Math.min(NUM_COMPANIES * 2, finalCount * 2)
-          : finalCount;
+        // Build a broader candidate pool before scoring. The multiplier is env-driven,
+        // bounded for provider quotas, and applies only to fresh research universes.
+        const initialCount = lockedSymbols.length > 0
+          ? lockedSymbols.length
+          : hasReportWorkBudget(deadlineAt, 'optional', requestedFinalCount)
+            ? Math.min(60, Math.max(finalCount, finalCount * RESEARCH_CANDIDATE_POOL_MULTIPLIER))
+            : finalCount;
         const range = args.range || '1y';
         const resolverSector = normalizeThematicResearchQuery(sector);
 
@@ -4407,15 +4424,33 @@ export async function executeTool(
           candidates: selectionCandidateData,
           finalCount,
           llmFill: hasReportLLMBudget(deadlineAt) ? options?.llmFill : undefined,
+          minThemeScore: RESEARCH_UNIVERSE_MIN_THEME_SCORE,
+          adjacentThemeScore: RESEARCH_UNIVERSE_ADJACENT_THEME_SCORE,
+          allowAdjacent: RESEARCH_UNIVERSE_ALLOW_ADJACENT,
         });
+        if (lockedSymbols.length === 0 && universeSelection.selectedSymbols.length === 0) {
+          const reason = [
+            `No verified candidate cleared the configured theme-fit gate for "${sector}". The report was not forced with weak or unsupported companies.`,
+            'Runtime budget or provider-data limits prevented a qualified market-data-backed universe from being completed in this pass.',
+          ].filter(Boolean).join(' ');
+          const content = buildUnavailableResearchContent(sector, reason);
+          const safeTitle = sector.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'research';
+          const saved = await saveReport(content, `${safeTitle}-research-report`, undefined, {
+            reportKind: 'research',
+            summary: reason,
+          });
+          return {
+            success: true,
+            data: { content, ...saved, downloadUrl: buildReportDownloadUrl(saved) },
+            message: `Saved unavailable-data research report for "${sector}" to ${saved.filePath}`,
+          };
+        }
 
         // Vercel/local priority: lock a saveable universe and fetch market data
         // before any optional ecosystem/refinement LLM work.
         const universe = lockedSymbols.length > 0
           ? lockedSymbols
-          : universeSelection.selectedSymbols.length > 0
-            ? universeSelection.selectedSymbols
-            : normalizedInitialCandidates.slice(0, finalCount);
+          : universeSelection.selectedSymbols;
         const updateContext = await prepareReportUpdateContext(args, {
           kind: 'research',
           query: String(args.updateQuery || sector),
@@ -4433,7 +4468,11 @@ export async function executeTool(
             : `Universe refined through research analysis (${DEEP_RESEARCH_DEPTH} pass${DEEP_RESEARCH_DEPTH > 1 ? 'es' : ''}) for: "${sector}"`,
           ...(lockedSymbols.length > 0
             ? [`Preserved universe: ${universe.join(', ')}`]
-            : [`Initial candidates: ${normalizedInitialCandidates.join(', ')}`, `Scored universe: ${universe.join(', ')}`]),
+            : [
+                `Candidate pool target: ${initialCount} (${RESEARCH_CANDIDATE_POOL_MULTIPLIER}x configured company count, bounded by runtime/provider limits).`,
+                `Initial candidates: ${normalizedInitialCandidates.join(', ')}`,
+                `Scored universe: ${universe.join(', ')}`,
+              ]),
           ...universeSelection.notes,
           ...selectionNotes,
           ...updateContext.notes,

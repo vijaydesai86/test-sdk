@@ -3554,12 +3554,14 @@ function buildResearchUniverseSelectionSection(selection?: ResearchUniverseSelec
   if (!selection || selection.candidates.length === 0) return '';
   const debugMode = process.env.DEBUG === 'true';
   const order = new Map(selection.selectedSymbols.map((symbol, index) => [symbol, index]));
-  const selectedRows = selection.candidates
+  const selectedCandidates = selection.candidates
     .filter((candidate) => candidate.selected)
-    .sort((a, b) => (order.get(a.symbol) ?? 999) - (order.get(b.symbol) ?? 999))
+    .sort((a, b) => (order.get(a.symbol) ?? 999) - (order.get(b.symbol) ?? 999));
+  const selectedRows = selectedCandidates
     .map((candidate) => [
       tableCell(`${candidate.companyName} (${candidate.symbol})`),
       tableCell(candidate.subtheme),
+      tableCell(candidate.themeFit),
       formatScore(candidate.themeScore),
       formatScore(candidate.investmentReadinessScore),
       formatScore(candidate.dataConfidenceScore),
@@ -3568,28 +3570,34 @@ function buildResearchUniverseSelectionSection(selection?: ResearchUniverseSelec
     ]);
 
   const selectedTable = buildTable(
-    ['Company', 'Role', 'Theme', 'Invest/Data', 'Data', 'Total', 'Why'],
+    ['Company', 'Role', 'Fit', 'Theme', 'Invest/Data', 'Data', 'Total', 'Why'],
     selectedRows,
-    ['left', 'left', 'right', 'right', 'right', 'right', 'left']
+    ['left', 'left', 'left', 'right', 'right', 'right', 'right', 'left']
   );
   const weights = selection.weights;
   const modeLine = manualUniverse
-    ? 'The saved report universe was preserved. Scores below explain data quality, theme fit, and role coverage for the locked companies.'
+    ? 'The saved report universe was preserved. Diagnostics below describe the locked companies; update passes do not silently replace the selected universe.'
     : 'The final universe was selected from verified candidates before the deeper financial comparison ran.';
+  const roleSummary = selection.subthemes.length
+    ? selection.subthemes.map((role) => `${role.name}: ${role.symbols.join(', ')}`).join('; ')
+    : 'No selected role groups available.';
   const lines = [
-    '## 🧭 Universe Selection',
+    manualUniverse ? '## 🧭 Locked Universe Diagnostics' : '## 🧭 Universe Selection Summary',
     modeLine,
-    `Configured slots: ${selection.requestedCount}. Verified candidates scored: ${selection.candidateCount}. Selected: ${selection.selectedSymbols.join(', ')}.`,
+    `Configured slots: ${selection.requestedCount}. Verified candidates scored: ${selection.candidateCount}. Selected ${selection.selectedSymbols.length}: ${selection.selectedSymbols.join(', ') || 'none'}.`,
+    `Fit mix: core ${selection.fitCounts.core}, adjacent ${selection.fitCounts.adjacent}, weak ${selection.fitCounts.weak}, rejected ${selection.fitCounts.reject}. Theme gates: core >= ${selection.minThemeScore.toFixed(0)}, adjacent >= ${selection.adjacentThemeScore.toFixed(0)}.`,
+    `Role coverage: ${roleSummary}`,
     `Weights: theme ${(weights.themeRelevance * 100).toFixed(0)}%, investment/data ${(weights.investmentReadiness * 100).toFixed(0)}%, provider confidence ${(weights.dataConfidence * 100).toFixed(0)}%, liquidity/scale ${(weights.liquidityScale * 100).toFixed(0)}%, representative coverage ${(weights.representativeCoverage * 100).toFixed(0)}%.`,
-    selectedTable,
   ];
 
   if (debugMode) {
+    lines.push('### Selected Candidate Diagnostics', selectedTable);
     const excludedRows = selection.candidates
       .filter((candidate) => !candidate.selected)
       .map((candidate) => [
         tableCell(`${candidate.companyName} (${candidate.symbol})`),
         tableCell(candidate.subtheme),
+        tableCell(candidate.themeFit),
         formatScore(candidate.themeScore),
         formatScore(candidate.dataConfidenceScore),
         formatScore(candidate.totalScore),
@@ -3599,9 +3607,9 @@ function buildResearchUniverseSelectionSection(selection?: ResearchUniverseSelec
       lines.push(
         '### Excluded Candidates',
         buildTable(
-          ['Company', 'Role', 'Theme', 'Data', 'Total', 'Reason'],
+          ['Company', 'Role', 'Fit', 'Theme', 'Data', 'Total', 'Reason'],
           excludedRows,
-          ['left', 'left', 'right', 'right', 'right', 'left']
+          ['left', 'left', 'left', 'right', 'right', 'right', 'left']
         )
       );
     }
@@ -3643,6 +3651,7 @@ function buildResearchAllocationSection(
     const universeScore = selector?.totalScore ?? null;
     const themeScore = selector?.themeScore ?? null;
     const dataScore = selector?.dataConfidenceScore ?? null;
+    const themeFitEligible = !selector || selector.themeFit === 'core' || selector.themeFit === 'adjacent';
     const allocationScore = reportScore === null
       ? null
       : (
@@ -3653,12 +3662,14 @@ function buildResearchAllocationSection(
         ) * (guidance.forNonOwners === 'Buy' ? 1 : 0.65);
     const reasons: string[] = [];
     if (reportScore === null) reasons.push('missing report score');
+    if (!themeFitEligible) reasons.push(`theme fit is ${selector?.themeFit}`);
     if (reportScore !== null && reportScore < minReportScore) reasons.push(`report score below ${minReportScore}`);
     if (themeScore !== null && themeScore < minThemeScore) reasons.push(`theme score below ${minThemeScore}`);
     if (dataScore !== null && dataScore < minDataScore) reasons.push(`data confidence below ${minDataScore}`);
     if (guidance.forNonOwners === 'Avoid') reasons.push('fresh-entry guidance is avoid');
     const eligible = allocationScore !== null
       && reportScore !== null
+      && themeFitEligible
       && reportScore >= minReportScore
       && (themeScore === null || themeScore >= minThemeScore)
       && (dataScore === null || dataScore >= minDataScore)
@@ -3725,6 +3736,7 @@ function stripResearchNoiseFromComparisonBody(body: string): string {
     '## ⚠️ Data Gaps',
     '## 🧑‍💼 Ownership & Positioning',
     '## 🧾 Insider Activity Summary',
+    '## 🏦 Balance Sheet & Cash',
     '## 🧩 Data Coverage (Chart Inputs)',
     '## 🧭 Indicative Allocation (Not Investment Advice)',
   ].reduce((current, heading) => stripMarkdownSection(current, heading), body);

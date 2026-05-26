@@ -37,7 +37,7 @@ const FILL_MODEL = process.env.FILL_MODEL || 'openai/gpt-4.1-mini';
 // AI Studio keys come with free-tier quotas automatically allocated.
 const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions';
 const GEMINI_MODEL = getConfiguredGeminiModel();
-const GEMINI_FALLBACK_MODELS = getGeminiFallbackModels();
+const GEMINI_FALLBACK_MODELS = getGeminiFallbackModels(GEMINI_MODEL);
 const AUTO_DOWNGRADE_GPT5 = process.env.AUTO_DOWNGRADE_GPT5 !== 'false';
 const DEFAULT_FALLBACK_MODELS = SAFE_GITHUB_MODELS.map((model) => model.value);
 // Allow enough rounds for multi-stock research. With parallel batching, each round
@@ -95,6 +95,15 @@ type LLMFailureAttempt = {
   reason: string;
   message: string;
 };
+
+function normalizeGeminiReasoningEffort(value: unknown, fallback: 'low' | 'medium' | 'high' = 'low') {
+  const normalized = String(value || '').toLowerCase().trim();
+  if (normalized === 'low' || normalized === 'medium' || normalized === 'high') return normalized;
+  return fallback;
+}
+
+const GEMINI_CHAT_REASONING_EFFORT = normalizeGeminiReasoningEffort(process.env.GEMINI_CHAT_REASONING_EFFORT, 'low');
+const GEMINI_FILL_REASONING_EFFORT = normalizeGeminiReasoningEffort(process.env.GEMINI_FILL_REASONING_EFFORT, 'low');
 
 function summarizeErrorMessage(error: any): string {
   return String(error?.message || error || 'Unknown error').replace(/\s+/g, ' ').slice(0, 240);
@@ -601,18 +610,22 @@ async function callGitHubModelsAPI(
  * The request/response format is identical to the GitHub Models / OpenAI API, so
  * the same message building, tool definitions, and response parsing all work unchanged.
  * Auth uses GEMINI_TOKEN (Bearer) — key obtained at https://aistudio.google.com/api-keys
- * Model names use Gemini format, e.g. 'gemini-2.0-flash' (set via GEMINI_MODEL env var).
+ * Model names use Gemini format, e.g. 'gemini-2.5-flash' (set via GEMINI_MODEL env var).
  */
 async function callGeminiAPI(
   messages: ChatMessage[],
   geminiToken: string,
   model: string,
   tools: ReturnType<typeof getToolDefinitionsByName>,
-  timeoutMs = LLM_REQUEST_TIMEOUT_MS
+  timeoutMs = LLM_REQUEST_TIMEOUT_MS,
+  reasoningEffort = GEMINI_CHAT_REASONING_EFFORT
 ): Promise<any> {
   const body: Record<string, unknown> = { model, messages: sanitizeMessagesForGemini(messages) };
   if (tools && tools.length > 0) {
     body.tools = tools;
+  }
+  if (reasoningEffort) {
+    body.reasoning_effort = reasoningEffort;
   }
   let response: Response;
   try {
@@ -777,7 +790,7 @@ async function callLLMForDataFill(
       const timeoutMs = Math.max(1000, Math.min(LLM_FILL_REQUEST_TIMEOUT_MS, fillDeadlineAt - Date.now()));
       const result = candidate.provider === 'github'
         ? await callGitHubModelsAPI(fillMessages, githubToken as string, candidate.model, [], timeoutMs)
-        : await callGeminiAPI(fillMessages, geminiToken as string, candidate.model, [], timeoutMs);
+        : await callGeminiAPI(fillMessages, geminiToken as string, candidate.model, [], timeoutMs, GEMINI_FILL_REASONING_EFFORT);
       const content = extractContent(result);
       if (content && content !== '{}') return content;
       console.info(`[callLLMForDataFill] ${candidate.provider}/${candidate.model} returned empty, trying next`);
@@ -963,7 +976,7 @@ export async function POST(request: NextRequest) {
           err.statusCode = 503;
           throw err;
         }
-        return callGeminiAPI(messages, geminiToken, modelId, tools, LLM_REQUEST_TIMEOUT_MS);
+        return callGeminiAPI(messages, geminiToken, modelId, tools, LLM_REQUEST_TIMEOUT_MS, GEMINI_CHAT_REASONING_EFFORT);
       }
 
       if (!githubToken) {

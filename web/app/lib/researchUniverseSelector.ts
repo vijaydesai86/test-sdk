@@ -16,10 +16,13 @@ export interface ResearchUniverseWeights {
   representativeCoverage: number;
 }
 
+export type ResearchThemeFit = 'core' | 'adjacent' | 'weak' | 'reject';
+
 export interface ResearchCandidateScore {
   symbol: string;
   companyName: string;
   subtheme: string;
+  themeFit: ResearchThemeFit;
   selected: boolean;
   totalScore: number;
   themeScore: number;
@@ -37,9 +40,14 @@ export interface ResearchUniverseSelection {
   requestedCount: number;
   candidateCount: number;
   selectedSymbols: string[];
+  qualifiedSymbols: string[];
+  rejectedSymbols: string[];
   weights: ResearchUniverseWeights;
   candidates: ResearchCandidateScore[];
   subthemes: Array<{ name: string; symbols: string[] }>;
+  fitCounts: Record<ResearchThemeFit, number>;
+  minThemeScore: number;
+  adjacentThemeScore: number;
   notes: string[];
 }
 
@@ -79,6 +87,27 @@ function normalizePercent(value: unknown): number | null {
 
 function clamp(value: number, min = 0, max = 100): number {
   return Math.min(max, Math.max(min, value));
+}
+
+function normalizeThemeFit(value: unknown): ResearchThemeFit | null {
+  const normalized = String(value || '').toLowerCase().replace(/[^a-z]/g, '');
+  if (normalized === 'core') return 'core';
+  if (normalized === 'adjacent') return 'adjacent';
+  if (normalized === 'weak') return 'weak';
+  if (normalized === 'reject' || normalized === 'rejected') return 'reject';
+  return null;
+}
+
+function inferThemeFit(themeScore: number, llmFit: ResearchThemeFit | null, minThemeScore: number, adjacentThemeScore: number): ResearchThemeFit {
+  if (llmFit) {
+    if (llmFit === 'core' && themeScore < adjacentThemeScore) return 'weak';
+    if (llmFit === 'adjacent' && themeScore < adjacentThemeScore) return 'weak';
+    return llmFit;
+  }
+  if (themeScore >= minThemeScore) return 'core';
+  if (themeScore >= adjacentThemeScore) return 'adjacent';
+  if (themeScore >= Math.max(25, adjacentThemeScore - 20)) return 'weak';
+  return 'reject';
 }
 
 function hasValue(value: any): boolean {
@@ -139,7 +168,7 @@ function scoreThemeRelevance(query: string, candidate: ResearchCandidateData, ll
   const matched = queryTokens.filter((token) => profileTokens.has(token)).length;
   const lexicalScore = clamp((matched / queryTokens.length) * 100);
   if (llm !== null) return clamp((llm * 0.75) + (lexicalScore * 0.15) + (resolverRankScore * 0.10));
-  return Math.max(lexicalScore, resolverRankScore * 0.45);
+  return Math.max(lexicalScore, resolverRankScore * 0.60);
 }
 
 function scoreDataConfidence(candidate: ResearchCandidateData): number {
@@ -214,9 +243,10 @@ function computePriceChange(prices: PricePoint[] = []): number | null {
 
 function reasonForCandidate(candidate: ResearchCandidateData, score: Omit<ResearchCandidateScore, 'selected' | 'reasons'>): string[] {
   const reasons: string[] = [];
-  if (score.themeScore >= 70) reasons.push('strong theme fit');
-  else if (score.themeScore >= 45) reasons.push('moderate theme fit');
-  else reasons.push('weak theme fit');
+  if (score.themeFit === 'core') reasons.push('core theme fit');
+  else if (score.themeFit === 'adjacent') reasons.push('adjacent theme fit');
+  else if (score.themeFit === 'weak') reasons.push('weak theme fit');
+  else reasons.push('rejected theme fit');
   if (score.dataConfidenceScore >= 70) reasons.push('good provider coverage');
   else if (score.dataConfidenceScore < 35) reasons.push('limited provider coverage');
   if (score.factorScore >= 70) reasons.push('strong preliminary financial factors');
@@ -230,7 +260,7 @@ async function classifyThemeWithLLM(args: {
   query: string;
   candidates: ResearchCandidateData[];
   llmFill?: LLMFiller;
-}): Promise<Record<string, { themeScore?: number; subtheme?: string; rationale?: string }>> {
+}): Promise<Record<string, { themeScore?: number; themeFit?: ResearchThemeFit; subtheme?: string; rationale?: string }>> {
   if (!args.llmFill || args.candidates.length === 0) return {};
   const payload = args.candidates.map((candidate) => ({
     symbol: candidate.symbol,
@@ -240,9 +270,15 @@ async function classifyThemeWithLLM(args: {
     description: String(candidate.overview?.description || '').slice(0, 500),
   }));
   const prompt = [
-    `Score each public company for relevance to the investment theme "${args.query}".`,
-    'Use only the supplied company profile text. Do not add financial facts or unsupported claims.',
-    'Return valid JSON only: {"candidates":[{"symbol":"TICKER","themeScore":0-100,"subtheme":"generic role","rationale":"short reason"}]}',
+    `Classify each public company against the investment theme "${args.query}".`,
+    'Use only the supplied company profile text. Do not add financial facts, supplier/customer claims, or unsupported claims.',
+    'Fit definitions:',
+    '- core: the company directly sells, enables, operates, or supplies a main activity in the user theme.',
+    '- adjacent: the company has a real but secondary exposure to the theme.',
+    '- weak: the company is broad, generic, or only loosely exposed.',
+    '- reject: the supplied profile does not support meaningful exposure to the theme.',
+    'Prefer rejecting broad companies unless the profile clearly connects them to the theme.',
+    'Return valid JSON only: {"candidates":[{"symbol":"TICKER","themeScore":0-100,"fit":"core|adjacent|weak|reject","subtheme":"generic role","rationale":"short reason"}]}',
     JSON.stringify(payload),
   ].join('\n\n');
   try {
@@ -250,12 +286,13 @@ async function classifyThemeWithLLM(args: {
     const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
     const parsed = JSON.parse(cleaned);
     const rows = Array.isArray(parsed?.candidates) ? parsed.candidates : [];
-    const result: Record<string, { themeScore?: number; subtheme?: string; rationale?: string }> = {};
+    const result: Record<string, { themeScore?: number; themeFit?: ResearchThemeFit; subtheme?: string; rationale?: string }> = {};
     for (const row of rows) {
       const symbol = normalizeSymbol(row?.symbol);
       if (!symbol) continue;
       result[symbol] = {
         themeScore: toNumber(row?.themeScore) ?? undefined,
+        themeFit: normalizeThemeFit(row?.fit) ?? undefined,
         subtheme: typeof row?.subtheme === 'string' ? row.subtheme : undefined,
         rationale: typeof row?.rationale === 'string' ? row.rationale : undefined,
       };
@@ -272,8 +309,14 @@ export async function selectResearchUniverse(args: {
   finalCount: number;
   llmFill?: LLMFiller;
   weights?: Partial<ResearchUniverseWeights>;
+  minThemeScore?: number;
+  adjacentThemeScore?: number;
+  allowAdjacent?: boolean;
 }): Promise<ResearchUniverseSelection> {
   const weights = { ...DEFAULT_WEIGHTS, ...(args.weights || {}) };
+  const minThemeScore = clamp(args.minThemeScore ?? 60);
+  const adjacentThemeScore = clamp(args.adjacentThemeScore ?? Math.max(45, minThemeScore - 10), 0, minThemeScore);
+  const allowAdjacent = args.allowAdjacent !== false;
   const unique = new Map<string, ResearchCandidateData>();
   for (const candidate of args.candidates) {
     const symbol = normalizeSymbol(candidate.symbol);
@@ -293,6 +336,7 @@ export async function selectResearchUniverse(args: {
       ? 100
       : clamp(100 - ((index / (candidates.length - 1)) * 40));
     const themeScore = scoreThemeRelevance(args.query, candidate, llm.themeScore ?? null, resolverRankScore);
+    const themeFit = inferThemeFit(themeScore, llm.themeFit ?? null, minThemeScore, adjacentThemeScore);
     const dataConfidenceScore = scoreDataConfidence(candidate);
     const liquidityScaleScore = scoreLiquidityScale(candidate);
     const factorScore = scoreFinancialFactors(candidate);
@@ -308,6 +352,7 @@ export async function selectResearchUniverse(args: {
       symbol: candidate.symbol,
       companyName: candidate.overview?.name || candidate.symbol,
       subtheme,
+      themeFit,
       totalScore,
       themeScore,
       investmentReadinessScore,
@@ -323,9 +368,14 @@ export async function selectResearchUniverse(args: {
   });
 
   const pool = [...baseScores].sort((a, b) => b.totalScore - a.totalScore);
+  const qualifiedPool = pool.filter((candidate) => {
+    if (candidate.themeFit === 'core') return candidate.themeScore >= minThemeScore;
+    if (candidate.themeFit === 'adjacent') return allowAdjacent && candidate.themeScore >= adjacentThemeScore;
+    return false;
+  });
   const selected: ResearchCandidateScore[] = [];
   const selectedSubthemes = new Set<string>();
-  const remaining = new Map(pool.map((candidate) => [candidate.symbol, candidate]));
+  const remaining = new Map(qualifiedPool.map((candidate) => [candidate.symbol, candidate]));
   while (selected.length < args.finalCount && remaining.size > 0) {
     let best: ResearchCandidateScore | null = null;
     let bestAdjusted = -Infinity;
@@ -348,11 +398,17 @@ export async function selectResearchUniverse(args: {
 
   for (const candidate of pool) {
     if (candidate.selected) continue;
-    candidate.exclusionReason = candidate.themeScore < 35
-      ? 'Excluded: weaker theme relevance than selected candidates.'
-      : candidate.dataConfidenceScore < 35
-        ? 'Excluded: weaker provider coverage than selected candidates.'
-        : 'Excluded: lower combined score or redundant subtheme coverage.';
+    candidate.exclusionReason = candidate.themeFit === 'reject'
+      ? 'Excluded: supplied profile does not support meaningful theme exposure.'
+      : candidate.themeFit === 'weak'
+        ? 'Excluded: weak or generic theme exposure.'
+        : candidate.themeFit === 'adjacent' && !allowAdjacent
+          ? 'Excluded: adjacent exposure disabled by configuration.'
+          : candidate.themeScore < adjacentThemeScore
+            ? 'Excluded: below configured theme-fit gate.'
+            : candidate.dataConfidenceScore < 35
+              ? 'Excluded: weaker provider coverage than selected candidates.'
+              : 'Excluded: lower combined score or redundant qualified role coverage.';
   }
 
   const subthemeMap = new Map<string, string[]>();
@@ -360,16 +416,39 @@ export async function selectResearchUniverse(args: {
     subthemeMap.set(candidate.subtheme, [...(subthemeMap.get(candidate.subtheme) || []), candidate.symbol]);
   }
 
+  const fitCounts = pool.reduce<Record<ResearchThemeFit, number>>((counts, candidate) => {
+    counts[candidate.themeFit] += 1;
+    return counts;
+  }, { core: 0, adjacent: 0, weak: 0, reject: 0 });
+  const qualifiedSymbols = qualifiedPool.map((candidate) => candidate.symbol);
+  const rejectedSymbols = pool
+    .filter((candidate) => !qualifiedSymbols.includes(candidate.symbol))
+    .map((candidate) => candidate.symbol);
+  const shortfallNote = selected.length < args.finalCount
+    ? [
+        `Only ${selected.length} of ${args.finalCount} configured slots cleared the theme-fit gate; weak or unsupported candidates were not forced into the universe.`,
+        'Quality gates, runtime budget, and provider-data limits favor a qualified partial universe over filling every configured slot.',
+      ]
+    : [];
+
   return {
     query: args.query,
     requestedCount: args.finalCount,
     candidateCount: candidates.length,
     selectedSymbols: selected.map((candidate) => candidate.symbol),
+    qualifiedSymbols,
+    rejectedSymbols,
     weights,
     candidates: pool,
     subthemes: Array.from(subthemeMap.entries()).map(([name, symbols]) => ({ name, symbols })),
+    fitCounts,
+    minThemeScore,
+    adjacentThemeScore,
     notes: [
       `Universe selection scored ${candidates.length} verified candidates for ${args.finalCount} configured slots.`,
+      `Theme-fit gates: core >= ${minThemeScore.toFixed(0)}, adjacent >= ${adjacentThemeScore.toFixed(0)}${allowAdjacent ? '' : ' (adjacent disabled)'}.`,
+      `Candidate fit mix: core ${fitCounts.core}, adjacent ${fitCounts.adjacent}, weak ${fitCounts.weak}, rejected ${fitCounts.reject}.`,
+      ...shortfallNote,
       `Selection weights: theme ${(weights.themeRelevance * 100).toFixed(0)}%, investment/data readiness ${(weights.investmentReadiness * 100).toFixed(0)}%, data confidence ${(weights.dataConfidence * 100).toFixed(0)}%, liquidity/scale ${(weights.liquidityScale * 100).toFixed(0)}%, representative coverage ${(weights.representativeCoverage * 100).toFixed(0)}%.`,
     ],
   };

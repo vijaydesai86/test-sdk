@@ -17,26 +17,28 @@ let inFlightGitHubModelsPromise: Promise<LLMModelOption[]> | null = null;
 export const SAFE_GITHUB_MODELS: LLMModelOption[] = [
   { value: 'openai/gpt-4.1', label: 'OpenAI GPT-4.1', rateLimitTier: 'high' },
   { value: 'openai/gpt-4.1-mini', label: 'OpenAI GPT-4.1 Mini', rateLimitTier: 'low' },
-  { value: 'google/gemini-3-flash', label: 'Gemini 3 Flash', rateLimitTier: 'low' },
 ];
 
 export const SAFE_GEMINI_MODELS: LLMModelOption[] = [
-  { value: 'gemini-2.5-flash-lite', label: 'Gemini 2.5 Flash Lite', rateLimitTier: 'free-tier' },
   { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash', rateLimitTier: 'free-tier' },
-  { value: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash', rateLimitTier: 'free-tier' },
-  { value: 'gemini-2.0-flash-lite', label: 'Gemini 2.0 Flash Lite', rateLimitTier: 'free-tier' },
-  { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro', rateLimitTier: 'paid-tier' },
+  { value: 'gemini-2.5-flash-lite', label: 'Gemini 2.5 Flash Lite', rateLimitTier: 'free-tier' },
 ];
 
 const GEMINI_LABELS: Record<string, string> = {
   'gemini-2.5-pro': 'Gemini 2.5 Pro',
   'gemini-2.5-flash': 'Gemini 2.5 Flash',
   'gemini-2.5-flash-lite': 'Gemini 2.5 Flash Lite',
-  'gemini-2.0-flash': 'Gemini 2.0 Flash',
-  'gemini-2.0-flash-lite': 'Gemini 2.0 Flash Lite',
 };
 
-const GEMINI_MODEL_IDS = new Set(SAFE_GEMINI_MODELS.map((model) => model.value));
+const OPTIONAL_GEMINI_PRO_MODEL = 'gemini-2.5-pro';
+const GEMINI_MODEL_IDS = new Set([
+  ...SAFE_GEMINI_MODELS.map((model) => model.value),
+  OPTIONAL_GEMINI_PRO_MODEL,
+]);
+
+function isGeminiProEnabled(requestedModel?: string | null): boolean {
+  return requestedModel === OPTIONAL_GEMINI_PRO_MODEL || process.env.GEMINI_ENABLE_PRO_FALLBACK === 'true';
+}
 
 export function normalizeGeminiModel(model?: string | null): string {
   if (model && GEMINI_MODEL_IDS.has(model)) return model;
@@ -56,11 +58,19 @@ export function getGeminiFallbackModels(requestedModel?: string | null): string[
     .split(',')
     .map((item) => item.trim())
     .filter(Boolean);
-  return Array.from(new Set([
-    normalizeGeminiModel(requestedModel),
-    ...fromEnv.map((model) => normalizeGeminiModel(model)),
+  const requested = normalizeGeminiModel(requestedModel);
+  const normalizedEnvModels = fromEnv
+    .map((model) => normalizeGeminiModel(model))
+    .filter((model) => model !== OPTIONAL_GEMINI_PRO_MODEL || isGeminiProEnabled(requestedModel));
+  const models = Array.from(new Set([
+    requested,
+    ...normalizedEnvModels,
     ...SAFE_GEMINI_MODELS.map((model) => model.value),
   ]));
+  if (isGeminiProEnabled(requestedModel)) {
+    models.push(OPTIONAL_GEMINI_PRO_MODEL);
+  }
+  return Array.from(new Set(models));
 }
 
 export function buildGeminiModelOptions(): LLMModelOption[] {

@@ -95,6 +95,68 @@ describe('research universe selection', () => {
     expect(selection.subthemes.map((role) => role.name)).toEqual(expect.arrayContaining(['Compute accelerators', 'Memory and storage']));
   });
 
+  it('does not let data quality or coverage pull weak theme-fit candidates into the universe', async () => {
+    const selection = await selectResearchUniverse({
+      query: 'AI infrastructure',
+      finalCount: 3,
+      candidates: [
+        candidate('GPUA', 'AI infrastructure accelerator chips for data center training'),
+        candidate('MEMR', 'AI infrastructure high bandwidth memory systems'),
+        candidate('PAYX', 'Digital payment processing and merchant checkout software', {
+          overview: {
+            name: 'PAYX Corp',
+            sector: 'Financial Services',
+            industry: 'Payments',
+            description: 'Digital payment processing and merchant checkout software',
+            marketCapitalization: 400_000_000_000,
+            forwardPE: 12,
+          },
+        }),
+      ],
+      llmFill: async () => JSON.stringify({
+        candidates: [
+          { symbol: 'GPUA', themeScore: 94, fit: 'core', subtheme: 'Compute accelerators' },
+          { symbol: 'MEMR', themeScore: 88, fit: 'core', subtheme: 'Memory and storage' },
+          { symbol: 'PAYX', themeScore: 30, fit: 'weak', subtheme: 'Payments' },
+        ],
+      }),
+    });
+
+    expect(selection.selectedSymbols).toEqual(expect.arrayContaining(['GPUA', 'MEMR']));
+    expect(selection.selectedSymbols).not.toContain('PAYX');
+    expect(selection.selectedSymbols).toHaveLength(2);
+    expect(selection.rejectedSymbols).toContain('PAYX');
+  });
+
+  it('returns fewer than the configured slots instead of forcing rejected candidates', async () => {
+    const selection = await selectResearchUniverse({
+      query: 'AI infrastructure',
+      finalCount: 3,
+      candidates: [
+        candidate('GPUA', 'AI infrastructure accelerator chips for data center training'),
+        candidate('SHOP', 'Consumer retail stores and merchandise logistics', {
+          overview: {
+            name: 'SHOP Corp',
+            sector: 'Consumer Defensive',
+            industry: 'Retail',
+            description: 'Consumer retail stores and merchandise logistics',
+            marketCapitalization: 80_000_000_000,
+            forwardPE: 18,
+          },
+        }),
+      ],
+      llmFill: async () => JSON.stringify({
+        candidates: [
+          { symbol: 'GPUA', themeScore: 92, fit: 'core', subtheme: 'Compute accelerators' },
+          { symbol: 'SHOP', themeScore: 12, fit: 'reject', subtheme: 'Retail' },
+        ],
+      }),
+    });
+
+    expect(selection.selectedSymbols).toEqual(['GPUA']);
+    expect(selection.notes.join('\n')).toContain('Only 1 of 3 configured slots cleared the theme-fit gate');
+  });
+
   it('builds a dependency map and summary from selected role groups without needing an LLM ecosystem pass', async () => {
     const selection = await selectResearchUniverse({
       query: 'AI infrastructure',
@@ -183,6 +245,7 @@ describe('research report rendering', () => {
     expect(content).toContain('## 🕸️ Research Ecosystem & Dependencies');
     expect(content).toContain('## 🧭 Research Allocation Scenario (Not Investment Advice)');
     expect(content).not.toContain('## 🧭 Indicative Allocation (Not Investment Advice)');
+    expect(content).not.toContain('## 🏦 Balance Sheet & Cash');
     expect(content).toContain('## ⚠️ Data Quality Summary');
   });
 });

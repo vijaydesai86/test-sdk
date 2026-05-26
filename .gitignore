@@ -45,4 +45,5 @@ temp/
 *.tmp
 
 # Generated reports and cache (runtime artifacts)
-reports/
+/reports/
+/web/reports/

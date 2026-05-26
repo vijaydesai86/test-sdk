@@ -393,6 +393,10 @@ function groupByDate<T>(items: T[], getBucket: (item: T) => string) {
 }
 
 function MarkdownContent({ content }: { content: string }) {
+  const visibleContent = content
+    .replace(/<!--\s*stock-report-run-metadata:[\s\S]*?-->/g, '')
+    .trimEnd();
+
   return (
     <div className="prose prose-sm max-w-none break-words text-inherit">
       <ReactMarkdown
@@ -430,7 +434,7 @@ function MarkdownContent({ content }: { content: string }) {
           },
         }}
       >
-        {content}
+        {visibleContent}
       </ReactMarkdown>
     </div>
   );

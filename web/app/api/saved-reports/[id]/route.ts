@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseClient } from '../../../lib/supabaseClient';
 import { decodeReportStorageId, deleteReportFile, readReportFile } from '../../../lib/reportFileStore';
+import { stripReportMetadata } from '../../../lib/reportUpdate';
 
 /**
  * GET /api/saved-reports/[id]
@@ -18,7 +19,7 @@ export async function GET(
     if (!report) {
       return NextResponse.json({ error: 'Report not found' }, { status: 404 });
     }
-    return new NextResponse(report.content, {
+    return new NextResponse(stripReportMetadata(report.content), {
       status: 200,
       headers: {
         'Content-Type': 'text/markdown; charset=utf-8',
@@ -47,7 +48,7 @@ export async function GET(
   }
 
   const filename = data.filename as string;
-  const content = data.content as string;
+  const content = stripReportMetadata(data.content as string);
 
   return new NextResponse(content, {
     status: 200,

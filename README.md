@@ -87,6 +87,8 @@ The system **automatically uses all configured providers in sequence** — GitHu
 | `COPILOT_MODEL` | No | Preferred first GitHub Models ID. Default: `openai/gpt-4.1`. After that the server fans out across the full live GitHub catalog automatically. |
 | `GEMINI_MODEL` | No | Preferred first Gemini model ID. Default: `gemini-2.5-flash`. Invalid values are ignored and reset to the safe Gemini ladder automatically. |
 | `COPILOT_FALLBACK_MODELS` | No | Optional comma-separated GitHub model IDs to try near the front of the automatic fallback ladder. |
+| `GEMINI_FALLBACK_MODELS` | No | Optional comma-separated Gemini IDs. Safe defaults are `gemini-2.5-flash` and `gemini-2.5-flash-lite`; `gemini-2.5-pro` is only added when explicitly requested or `GEMINI_ENABLE_PRO_FALLBACK=true`. |
+| `GEMINI_CHAT_REASONING_EFFORT` / `GEMINI_FILL_REASONING_EFFORT` | No | OpenAI-compatible Gemini reasoning effort for chat/report-routing and targeted fill calls. Default: `low`. Allowed: `low`, `medium`, `high`. |
 | `FILL_MODEL` | No | Lighter model used for ticker resolution. Default: `openai/gpt-4.1-mini`. |
 | `AUTO_DOWNGRADE_GPT5` | No | Set to `false` to disable automatic gpt-5 → gpt-4.1 downgrade. Default: `true`. |
 
@@ -131,6 +133,10 @@ _Note: SEC EDGAR filings (`get_sec_filings`), SEC XBRL company facts (`get_sec_c
 | Variable | Default | Description |
 |---|---|---|
 | `NUM_COMPANIES` | `10` | Companies in comparison and research reports. Range: 2–15. |
+| `RESEARCH_CANDIDATE_POOL_MULTIPLIER` | `3` | Research candidate pool size before scoring, as a multiple of `NUM_COMPANIES`. Range: 1–5 and bounded by runtime/provider limits. |
+| `RESEARCH_UNIVERSE_MIN_THEME_SCORE` | `60` | Core theme-fit gate for fresh research universe selection. Candidates below this can enter only as adjacent exposure if the adjacent gate allows it. |
+| `RESEARCH_UNIVERSE_ADJACENT_THEME_SCORE` | `50` | Adjacent theme-fit gate. Weak/rejected candidates are not forced into the universe just to fill configured slots. |
+| `RESEARCH_UNIVERSE_ALLOW_ADJACENT` | `true` | Set to `false` to require only core theme-fit candidates in fresh research universes. |
 | `DEEP_RESEARCH_DEPTH` | `1` | Optional post-core-data ecosystem/refinement passes for research reports. Core market data is fetched before any pass runs. Range: 1–10. |
 | `DEEP_RESEARCH_MAX_MS` | `240000` on Vercel, `600000` local | Runtime budget for deep research (ms). Vercel is clamped under the 300 s function limit; local can run longer for completeness. |
 | `RESEARCH_ALLOCATION_MIN_SCORE` | `60` | Minimum report score for a research allocation scenario candidate. Range: 0–100. This controls selective allocation only; it does not remove companies from the report universe. |
@@ -184,6 +190,9 @@ GEMINI_TOKEN=your_gemini_key
 ALPHA_VANTAGE_API_KEY=your_av_key
 FINNHUB_API_KEY=your_finnhub_key
 NUM_COMPANIES=15
+RESEARCH_CANDIDATE_POOL_MULTIPLIER=3
+RESEARCH_UNIVERSE_MIN_THEME_SCORE=60
+RESEARCH_UNIVERSE_ADJACENT_THEME_SCORE=50
 DEEP_RESEARCH_DEPTH=1
 RESEARCH_ALLOCATION_MIN_SCORE=60
 RESEARCH_ALLOCATION_MIN_THEME_SCORE=50

@@ -190,7 +190,7 @@ User message
 6. `saveReport()` persists to Supabase or filesystem.
 7. Report artifact is returned to the chat UI.
 
-Deep-sector research resolves a live provider-confirmed candidate set, scores the final universe with a data-backed methodology, locks the saveable company list, fetches critical market data (price, overview, basic financials, price history) before optional ecosystem/dependency LLM enrichment, and never lets later model passes change the locked universe. Universe scoring must remain generic: no production ticker/sector hardcoding, and it must balance theme relevance, investability/data quality, liquidity/scale, preliminary financial factors, and representative coverage. Research reports must always include a dependency/role map; when the LLM enrichment pass is skipped, render the deterministic provider-profile role map instead of omitting the section.
+Deep-sector research resolves a broad live provider-confirmed candidate pool, scores it with a data-backed methodology, applies generic theme-fit gates before selection, locks the saveable company list, fetches critical market data (price, overview, basic financials, price history) before optional ecosystem/dependency LLM enrichment, and never lets later model passes change the locked universe. Universe scoring must remain generic: no production ticker/sector hardcoding, and it must balance theme relevance, investability/data quality, liquidity/scale, preliminary financial factors, and representative coverage. Representative coverage can diversify only among qualified theme-fit candidates; weak or unsupported candidates must not be forced into the universe just to fill configured slots. Research reports must always include a dependency/role map; when the LLM enrichment pass is skipped, render the deterministic provider-profile role map instead of omitting the section.
 
 ---
 
@@ -278,7 +278,8 @@ Both tokens set      →  GitHub Models first → Gemini fallback
 - Endpoint: `https://generativelanguage.googleapis.com/v1beta/openai/chat/completions`
 - Auth: `GEMINI_TOKEN` — must come from [aistudio.google.com/api-keys](https://aistudio.google.com/api-keys), NOT Google Cloud Console
 - Default model: `gemini-2.5-flash` (override with `GEMINI_MODEL`)
-- Internal fallback chain: gemini-2.5-flash → gemini-2.5-flash-lite → gemini-2.0-flash
+- Internal fallback chain: gemini-2.5-flash → gemini-2.5-flash-lite; `gemini-2.5-pro` joins only when explicitly requested or `GEMINI_ENABLE_PRO_FALLBACK=true`
+- Gemini OpenAI-compatible calls may set `reasoning_effort` from `GEMINI_CHAT_REASONING_EFFORT` / `GEMINI_FILL_REASONING_EFFORT` (`low`, `medium`, `high`; default `low`)
 - Gemini requests must never send `content: null`; the route normalizes Gemini-bound messages to string content before calling the OpenAI-compatible endpoint
 
 ### Model cooldown
@@ -320,11 +321,16 @@ See `web/.env.example` for annotated defaults. All variables prefixed with `STOC
 
 **LLM model overrides:**
 - `COPILOT_MODEL`, `COPILOT_FALLBACK_MODEL`, `COPILOT_FALLBACK_MODELS`
-- `FILL_MODEL`, `GEMINI_MODEL`
+- `FILL_MODEL`, `GEMINI_MODEL`, `GEMINI_FALLBACK_MODELS`, `GEMINI_ENABLE_PRO_FALLBACK`
+- `GEMINI_CHAT_REASONING_EFFORT`, `GEMINI_FILL_REASONING_EFFORT`
 - `AUTO_DOWNGRADE_GPT5` (default `true`)
 
 **Scaling:**
 - `NUM_COMPANIES` — companies per sector/comparison report (2–15, default 10)
+- `RESEARCH_CANDIDATE_POOL_MULTIPLIER` — fresh research candidate pool multiplier before scoring (1–5, default 3)
+- `RESEARCH_UNIVERSE_MIN_THEME_SCORE` — core theme-fit gate for research universe selection (0–100, default 60)
+- `RESEARCH_UNIVERSE_ADJACENT_THEME_SCORE` — adjacent theme-fit gate (0–core gate, default 50)
+- `RESEARCH_UNIVERSE_ALLOW_ADJACENT` — whether adjacent candidates can fill slots after core candidates (default true)
 - `DEEP_RESEARCH_DEPTH` — optional post-core-data ecosystem/refinement passes for research reports (1–10, default 1)
 - `DEEP_RESEARCH_MAX_MS` — deep-research runtime budget in ms (default 240000)
 - `RESEARCH_ALLOCATION_MIN_SCORE` — minimum report score for research allocation scenario eligibility (0–100, default 60)
