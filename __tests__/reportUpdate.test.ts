@@ -174,6 +174,42 @@ describe('reportUpdate metadata', () => {
     });
   });
 
+  it('carries improve history forward through updated report metadata', () => {
+    const original = buildReportRunMetadata({
+      kind: 'stock',
+      query: 'ARM',
+      symbols: ['ARM'],
+      generatedAt: '2026-05-23T12:00:00.000Z',
+      coverage: [],
+    });
+    original.improveHistory = [{
+      passNumber: 1,
+      accepted: true,
+      reason: 'candidate_improved_critical',
+      generatedAt: '2026-05-23T12:01:00.000Z',
+      target: 'critical',
+      maxPasses: 5,
+      beforeCoverage: { total: 2, available: 1, missing: 1, criticalMissing: 1, coveragePct: 50 },
+      afterCoverage: { total: 2, available: 2, missing: 0, criticalMissing: 0, coveragePct: 100 },
+    }];
+
+    const updated = buildReportRunMetadata({
+      kind: 'stock',
+      query: 'ARM',
+      symbols: ['ARM'],
+      generatedAt: '2026-05-23T12:05:00.000Z',
+      updatedFrom: {
+        content: '',
+        storagePath: '2026-05-23/arm-stock-report.md',
+        metadata: original,
+        score: 100,
+      },
+      coverage: [],
+    });
+
+    expect(updated.improveHistory).toEqual(original.improveHistory);
+  });
+
   it('finds the best prior filesystem report for an update request', async () => {
     const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'report-update-'));
     process.env.REPORTS_DIR = tmpDir;

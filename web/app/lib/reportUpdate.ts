@@ -27,6 +27,41 @@ export interface ReportMissingDataEntry {
   priority: 'critical' | 'high' | 'optional';
 }
 
+export interface ReportImproveHistoryEntry {
+  passNumber: number;
+  accepted: boolean;
+  reason: string;
+  generatedAt: string;
+  target: 'critical' | 'all';
+  maxPasses: number;
+  baseline?: {
+    id?: string;
+    title?: string | null;
+    filename?: string | null;
+    storagePath?: string | null;
+  };
+  candidate?: {
+    id?: string;
+    title?: string | null;
+    filename?: string | null;
+    storagePath?: string | null;
+  };
+  beforeCoverage?: {
+    total: number;
+    available: number;
+    missing: number;
+    criticalMissing: number;
+    coveragePct: number | null;
+  } | null;
+  afterCoverage?: {
+    total: number;
+    available: number;
+    missing: number;
+    criticalMissing: number;
+    coveragePct: number | null;
+  } | null;
+}
+
 export interface ReportRunMetadata {
   version: 1;
   kind: ReportKind;
@@ -50,6 +85,7 @@ export interface ReportRunMetadata {
   checkpoint?: Record<string, Record<string, ReportCheckpointEntry>>;
   missingData: ReportMissingDataEntry[];
   notes?: string[];
+  improveHistory?: ReportImproveHistoryEntry[];
 }
 
 export interface CoverageInput {
@@ -237,6 +273,9 @@ export function buildReportRunMetadata(args: {
     checkpoint,
     missingData,
     notes: args.notes,
+    improveHistory: args.updatedFrom?.metadata?.improveHistory?.length
+      ? args.updatedFrom.metadata.improveHistory
+      : undefined,
   };
 }
 

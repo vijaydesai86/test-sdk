@@ -10,7 +10,7 @@ Report-style requests are guarded server-side: if the model answers a stock, com
 
 Reports are also resumable through explicit update prompts. If a prompt includes `update` and names a prior report target, such as `update ARM stock report`, `update comparison report of Nvidia and Arm`, `update research report of AI ecosystem`, or `update watchlist report`, the backend uses the same four report tools in update mode. It locates the latest matching saved report, tries fresh and cached provider data first, then carries forward prior verified checkpoint fields only where this pass cannot replace them. Carried-forward fields are called out in the report notes; if no prior report is found, it falls back to a fresh report and states that in the data-gap notes.
 
-Generated and saved reports can also be improved without writing an update prompt. The browser starts the configured improve passes for a newly generated report and the Saved Reports view exposes the same Improve action for existing reports. Improve reads the saved report id, infers the correct report type from metadata/checkpoints, locks the report universe from saved metadata, runs bounded update passes through the same four report tools, and stops when the configured target is complete or the pass limit is reached. If a pass would change the saved universe, it is stopped instead of replacing the report with a different company set. Original reports are never overwritten; updated versions are marked separately, and only the latest updated version is kept visible for a given original.
+Generated and saved reports can also be improved without writing an update prompt. The browser starts the configured improve passes for a newly generated report and the Saved Reports view exposes the same Improve action for existing reports. Improve reads the selected saved report id, uses that exact report metadata/checkpoint as the update baseline, locks the report universe from saved metadata, runs bounded update passes through the same four report tools, and stops when the configured target is complete or the pass limit is reached. Candidate updates are promoted only when tracked coverage is strictly better and never when critical or overall coverage regresses; discarded candidates are deleted. Original reports are never overwritten; updated versions are marked separately, and only the latest accepted updated version is kept visible for a given original.
 
 **Four report types:**
 
@@ -139,7 +139,7 @@ _Note: SEC EDGAR filings (`get_sec_filings`), SEC XBRL company facts (`get_sec_c
 | `STOCK_CACHE_TTL_MS` | `604800000` (7 days) | How long fetched data is cached on disk. |
 | `REPORT_IMPROVE_DEFAULT_PASSES` | `3` | Backend default number of browser-coordinated improve passes after report generation or when the user clicks Improve report. |
 | `REPORT_IMPROVE_MAX_PASSES` | `5` | Backend cap for improve passes. Generated-report and Improve button runs use this server-side value rather than a browser hardcode. |
-| `REPORT_IMPROVE_TARGET` | `critical` | Backend improve stop target. `critical` stops when critical tracked fields are complete; `all` waits for all tracked fields. |
+| `REPORT_IMPROVE_TARGET` | `critical` | Backend improve stop target. `critical` stops when critical tracked fields are complete; `all` waits for all tracked fields. Critical coverage is field-level: price, company identity, market cap, sector/industry, revenue, revenue growth, EPS growth, gross margin, operating margin, ROE/ROA, forward P/E, and price history. Analyst views, PEG, cash-flow detail, statements, insiders, peers, and news are high/optional rather than critical. |
 | `REPORT_IMPROVE_MIN_WAIT_MS` | `60000` | Minimum wait between browser-coordinated improve passes while tracked gaps remain. |
 | `SEC_COMPANY_FACTS_CACHE_TTL_MS` | `43200000` (12 hours) | In-memory TTL for SEC ticker mapping and companyfacts responses. |
 | `TREASURY_RATES_CACHE_TTL_MS` | `43200000` (12 hours) | In-memory TTL for official Treasury yield curve responses. |
@@ -160,7 +160,7 @@ _Note: SEC EDGAR filings (`get_sec_filings`), SEC XBRL company facts (`get_sec_c
 | `MARKETAUX_MIN_INTERVAL_MS` | `1500` | Min ms between Marketaux news requests. |
 | `OPENFIGI_MIN_INTERVAL_MS` | `3000` | Min ms between OpenFIGI mapping requests. |
 | `GITHUB_MODELS_CACHE_TTL_MS` | `900000` (15 min) | Cache TTL for the live GitHub Models catalog so every chat request does not re-fetch the catalog. |
-| `DEBUG` | `false` | Set to `true` to show data-source and data-coverage sections in reports. |
+| `DEBUG` | `false` | Set to `true` to show data-source, data-coverage, and accepted improve-history diagnostic sections in reports. |
 | `HEALTH_CHECK_SYMBOL` | — | Optional ticker for a live price check in the `/api/health` response. |
 
 ---

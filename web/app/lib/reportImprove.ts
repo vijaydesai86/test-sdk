@@ -1,9 +1,20 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { decodeReportStorageId, deleteReportFile, encodeReportStorageId, readReportFile } from './reportFileStore';
+import { promises as fs } from 'fs';
+import {
+  decodeReportStorageId,
+  deleteReportFile,
+  encodeReportStorageId,
+  getReportFilePath,
+  readReportFile,
+} from './reportFileStore';
 import { getSupabaseClient } from './supabaseClient';
 import {
+  appendReportMetadata,
   extractReportMetadata,
   readReportMetadataSidecar,
+  stripReportMetadata,
+  writeReportMetadataSidecar,
+  type ReportImproveHistoryEntry,
   type ReportKind,
   type ReportRunMetadata,
 } from './reportUpdate';
@@ -40,6 +51,19 @@ export interface CoverageStats {
 export interface ImproveToolRequest {
   toolName: 'generate_stock_report' | 'generate_comparison_report' | 'generate_research_report' | 'generate_watchlist_daily_report';
   args: Record<string, any>;
+}
+
+export interface ImproveCandidateDecision {
+  accepted: boolean;
+  reason: 'missing_candidate_checkpoint'
+    | 'candidate_improved_critical'
+    | 'candidate_improved_missing'
+    | 'candidate_improved_available'
+    | 'candidate_regressed_critical'
+    | 'candidate_regressed_missing'
+    | 'candidate_regressed_available'
+    | 'candidate_regressed_coverage'
+    | 'candidate_flat';
 }
 
 const DEFAULT_IMPROVE_PASSES = 3;
@@ -237,6 +261,37 @@ export function hasUsefulCoverageImprovement(before: CoverageStats | null, after
   return after.available > before.available;
 }
 
+export function compareImproveCandidate(before: CoverageStats | null, after: CoverageStats | null): ImproveCandidateDecision {
+  if (!after) return { accepted: false, reason: 'missing_candidate_checkpoint' };
+  if (!before) {
+    return after.available > 0
+      ? { accepted: true, reason: 'candidate_improved_available' }
+      : { accepted: false, reason: 'candidate_flat' };
+  }
+  if (after.criticalMissing > before.criticalMissing) {
+    return { accepted: false, reason: 'candidate_regressed_critical' };
+  }
+  if (after.missing > before.missing) {
+    return { accepted: false, reason: 'candidate_regressed_missing' };
+  }
+  if (after.available < before.available) {
+    return { accepted: false, reason: 'candidate_regressed_available' };
+  }
+  if (after.coveragePct !== null && before.coveragePct !== null && after.coveragePct < before.coveragePct) {
+    return { accepted: false, reason: 'candidate_regressed_coverage' };
+  }
+  if (after.criticalMissing < before.criticalMissing) {
+    return { accepted: true, reason: 'candidate_improved_critical' };
+  }
+  if (after.missing < before.missing) {
+    return { accepted: true, reason: 'candidate_improved_missing' };
+  }
+  if (after.available > before.available) {
+    return { accepted: true, reason: 'candidate_improved_available' };
+  }
+  return { accepted: false, reason: 'candidate_flat' };
+}
+
 export function isImproveTargetComplete(stats: CoverageStats | null, target: ImproveTarget): boolean {
   if (!stats) return false;
   if (target === 'all') return stats.missing === 0;
@@ -274,8 +329,104 @@ export async function deleteSavedReportForImprove(id: string): Promise<boolean> 
   if (!id || !/^[0-9a-f-]{36}$/i.test(id)) return false;
   const supabase = getSupabaseClient();
   if (!supabase) return false;
+  const existing: any = await supabase
+    .from('saved_reports')
+    .select('storage_path')
+    .eq('id', id)
+    .maybeSingle();
+  const storagePath = typeof existing.data?.storage_path === 'string' ? existing.data.storage_path : null;
   const { error } = await supabase.from('saved_reports').delete().eq('id', id);
+  if (!error && storagePath) {
+    await deleteReportFile(storagePath).catch(() => false);
+  }
   return !error;
+}
+
+function serializedSourceReport(report: SavedReportForImprove) {
+  return {
+    id: report.id,
+    filename: report.filename,
+    title: report.title,
+    summary: report.summary,
+    content: '',
+    storagePath: report.storagePath,
+    reportKind: report.reportKind,
+    reportDate: report.reportDate,
+    createdAt: report.createdAt,
+    metadata: report.metadata,
+  };
+}
+
+const IMPROVE_HISTORY_SECTION_RE = /\n\n## Improve History\n[\s\S]*?(?=\n\n<!--\s*stock-report-run-metadata:|$)/;
+
+function formatCoverageForHistory(stats: CoverageStats | null | undefined): string {
+  if (!stats) return 'N/A';
+  const pct = stats.coveragePct === null ? 'N/A' : `${stats.coveragePct}%`;
+  return `${pct}, ${stats.criticalMissing} critical missing, ${stats.missing} missing`;
+}
+
+function withImproveHistoryContent(content: string, metadata: ReportRunMetadata): string {
+  const visible = stripReportMetadata(content).replace(IMPROVE_HISTORY_SECTION_RE, '').trimEnd();
+  if (process.env.DEBUG !== 'true' || !metadata.improveHistory?.length) {
+    return appendReportMetadata(visible, metadata);
+  }
+
+  const rows = metadata.improveHistory.map((entry) => [
+    String(entry.passNumber),
+    entry.accepted ? 'Accepted' : 'Discarded',
+    entry.reason,
+    formatCoverageForHistory(entry.beforeCoverage),
+    formatCoverageForHistory(entry.afterCoverage),
+  ]);
+  const table = [
+    '## Improve History',
+    '',
+    '| Pass | Result | Reason | Before | Candidate |',
+    '|---:|---|---|---|---|',
+    ...rows.map((row) => `| ${row.join(' | ')} |`),
+  ].join('\n');
+  return appendReportMetadata(`${visible}\n\n${table}`, metadata);
+}
+
+export async function appendImproveHistoryToSavedReport(
+  id: string,
+  entry: ReportImproveHistoryEntry
+): Promise<SavedReportForImprove | null> {
+  const report = await loadSavedReportForImprove(id);
+  if (!report?.metadata) return report;
+  const metadata: ReportRunMetadata = {
+    ...report.metadata,
+    improveHistory: [...(report.metadata.improveHistory || []), entry],
+  };
+  const content = withImproveHistoryContent(report.content, metadata);
+  const filesystemPath = decodeReportStorageId(id) || report.storagePath || null;
+
+  if (filesystemPath) {
+    const filePath = getReportFilePath(filesystemPath);
+    if (filePath) {
+      await fs.writeFile(filePath, content, 'utf8').catch(() => undefined);
+      await writeReportMetadataSidecar(filesystemPath, metadata).catch(() => undefined);
+    }
+  }
+
+  if (id && /^[0-9a-f-]{36}$/i.test(id)) {
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      let update: any = await supabase
+        .from('saved_reports')
+        .update({ content, run_metadata: metadata })
+        .eq('id', id);
+      if (update.error && isSchemaMismatch(update.error.message)) {
+        update = await supabase.from('saved_reports').update({ content }).eq('id', id);
+      }
+    }
+  }
+
+  return {
+    ...report,
+    content,
+    metadata,
+  };
 }
 
 export function buildImproveToolRequest(report: SavedReportForImprove): ImproveToolRequest {
@@ -291,6 +442,7 @@ export function buildImproveToolRequest(report: SavedReportForImprove): ImproveT
     updateMode: true,
     updateQuery: query,
     lockedSymbols: symbols,
+    updateSourceReport: serializedSourceReport(report),
   };
 
   if (kind === 'stock') {

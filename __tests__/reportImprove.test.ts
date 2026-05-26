@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildImproveToolRequest,
+  compareImproveCandidate,
   coverageStats,
   decideImproveStatus,
   sameReportUniverse,
@@ -94,6 +95,11 @@ describe('reportImprove', () => {
         updateQuery: 'Nvidia and Arm',
         companies: ['NVDA', 'ARM'],
         range: '1y',
+        updateSourceReport: {
+          id: 'report-id',
+          storagePath: '2026-05-25/report.md',
+          metadata: comparisonMetadata,
+        },
       },
     });
   });
@@ -158,5 +164,30 @@ describe('reportImprove', () => {
       passesDone: 3,
       config,
     })).toMatchObject({ status: 'stopped', reason: 'max_passes_reached' });
+  });
+
+  it('accepts only monotonic improve candidates', () => {
+    const before = { total: 12, available: 8, missing: 4, criticalMissing: 2, coveragePct: 67 };
+
+    expect(compareImproveCandidate(before, {
+      total: 12,
+      available: 9,
+      missing: 3,
+      criticalMissing: 1,
+      coveragePct: 75,
+    })).toEqual({ accepted: true, reason: 'candidate_improved_critical' });
+
+    expect(compareImproveCandidate(before, {
+      total: 12,
+      available: 7,
+      missing: 5,
+      criticalMissing: 1,
+      coveragePct: 58,
+    })).toEqual({ accepted: false, reason: 'candidate_regressed_missing' });
+
+    expect(compareImproveCandidate(before, before)).toEqual({
+      accepted: false,
+      reason: 'candidate_flat',
+    });
   });
 });

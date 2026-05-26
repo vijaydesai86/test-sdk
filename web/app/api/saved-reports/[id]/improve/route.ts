@@ -2,7 +2,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import { executeTool } from '@/app/lib/stockTools';
 import { createStockService } from '@/app/lib/stockDataService';
 import {
+  appendImproveHistoryToSavedReport,
   buildImproveToolRequest,
+  compareImproveCandidate,
   coverageStats,
   deleteSavedReportForImprove,
   decideImproveStatus,
@@ -123,25 +125,68 @@ export async function POST(
       { status: 409 }
     );
   }
+  const candidateDecision = compareImproveCandidate(beforeCoverage, afterCoverage);
+  const bestCoverage = candidateDecision.accepted ? afterCoverage : beforeCoverage;
   const decision = decideImproveStatus({
     before: beforeCoverage,
-    after: afterCoverage,
+    after: bestCoverage,
     passesDone: passNumber,
     config,
   });
   const replaceReportId = typeof body.replaceReportId === 'string' ? body.replaceReportId : '';
-  const deletedReportId = replaceReportId
-    && replaceReportId !== latestReport?.id
-    ? (await deleteSavedReportForImprove(replaceReportId).catch(() => false) ? replaceReportId : null)
-    : null;
+  const improveHistoryEntry = {
+    passNumber,
+    accepted: candidateDecision.accepted,
+    reason: candidateDecision.reason,
+    generatedAt: new Date().toISOString(),
+    target: config.target,
+    maxPasses: config.maxPasses,
+    baseline: {
+      id: report.id,
+      title: report.title,
+      filename: report.filename,
+      storagePath: report.storagePath,
+    },
+    candidate: latestReport ? {
+      id: latestReport.id,
+      title: latestReport.title,
+      filename: latestReport.filename,
+      storagePath: latestReport.storage_path,
+    } : undefined,
+    beforeCoverage,
+    afterCoverage,
+  };
+
+  let acceptedReport = latestReport;
+  let deletedReportId: string | null = null;
+  let discardedReportId: string | null = null;
+  if (candidateDecision.accepted && latestReport?.id) {
+    const updatedReport = await appendImproveHistoryToSavedReport(latestReport.id, improveHistoryEntry).catch(() => null);
+    if (updatedReport?.metadata) {
+      acceptedReport = {
+        ...latestReport,
+        run_metadata: updatedReport.metadata,
+      };
+    }
+    deletedReportId = replaceReportId
+      && replaceReportId !== latestReport.id
+      ? (await deleteSavedReportForImprove(replaceReportId).catch(() => false) ? replaceReportId : null)
+      : null;
+  } else if (latestReport?.id) {
+    discardedReportId = latestReport.id;
+    await deleteSavedReportForImprove(latestReport.id).catch(() => false);
+  }
 
   return NextResponse.json({
     success: true,
     status: decision.status,
-    reason: decision.reason,
-    latestReport,
+    reason: candidateDecision.accepted ? decision.reason : candidateDecision.reason,
+    latestReport: candidateDecision.accepted ? acceptedReport : null,
+    discardedReportId,
     beforeCoverage,
-    afterCoverage,
+    afterCoverage: bestCoverage,
+    candidateCoverage: afterCoverage,
+    candidateDecision,
     passesDone: passNumber,
     maxPasses: config.maxPasses,
     deletedReportId,

@@ -69,7 +69,7 @@ General chat is supported for data-only questions (e.g. "what is NVDA's P/E?") b
 
 13. **Completed report prompts are not executable history.** Previous stock, comparison, research, or watchlist report requests may be retained as memory/context, but they must be marked as completed and must never be replayed as active user instructions. A normal chat turn may save only the report requested by the current prompt unless the current prompt explicitly asks for a multi-report workflow.
 
-13a. **Report updates are opt-in resume passes.** A prompt-based report update must be requested with the word `update` and must still use one of the four existing report tools with update metadata. Do not add an `update_report` tool. Update passes should locate the latest matching saved report, use fresh/cached provider data first, then carry forward prior verified checkpoint fields only when the current pass cannot replace them. Carried-forward fields must be visible in report notes, must never come from model memory, and must not silently overwrite fresher verified provider data. Clearly state when no prior matching report was found. Browser-coordinated Improve actions may bypass prompt wording by using the selected saved report id, but they must still route into the same four report tools, preserve the original report, mark updated outputs as updated, and keep only the latest updated version visible for a given original.
+13a. **Report updates are opt-in resume passes.** A prompt-based report update must be requested with the word `update` and must still use one of the four existing report tools with update metadata. Do not add an `update_report` tool. Update passes should locate the latest matching saved report, use fresh/cached provider data first, then carry forward prior verified checkpoint fields only when the current pass cannot replace them. Carried-forward fields must be visible in report notes, must never come from model memory, and must not silently overwrite fresher verified provider data. Clearly state when no prior matching report was found. Browser-coordinated Improve actions may bypass prompt wording by using the selected saved report id, but they must still route into the same four report tools, use that exact selected report as the baseline, preserve the original report, mark updated outputs as updated, promote only coverage-better candidates, discard worse or flat candidates, and keep only the latest accepted updated version visible for a given original.
 
 14. **Only three top-level markdown docs.** `README.md`, `AGENT.md`, and `CHANGELOG.md` are the only markdown documents committed to the repo root. Do not add stale or duplicate docs.
 
@@ -291,7 +291,7 @@ Rate-limited models are cooled down for `LLM_MODEL_COOLDOWN_MS` (default 2 minut
 
 ### Reports
 
-Generated reports are Markdown files (`{slug}-{date}.md`) written to `REPORTS_DIR` (`reports/` locally, `/tmp/reports/` on Vercel). When Supabase is configured, reports are also inserted into the `saved_reports` table with metadata (title, summary, report_kind, report_date, storage_path, run_metadata). `run_metadata` marks reports as original or updated and stores lineage so generated reports and later improve passes can display as original plus latest updated without inventing a new report type.
+Generated reports are Markdown files (`{slug}-{date}.md`) written to `REPORTS_DIR` (`reports/` locally, `/tmp/reports/` on Vercel). When Supabase is configured, reports are also inserted into the `saved_reports` table with metadata (title, summary, report_kind, report_date, storage_path, run_metadata). `run_metadata` marks reports as original or updated, stores lineage, keeps field-level coverage checkpoints, and records accepted improve history so generated reports and later improve passes can display as original plus latest updated without inventing a new report type.
 
 ### Watchlists
 
@@ -341,7 +341,7 @@ See `web/.env.example` for annotated defaults. All variables prefixed with `STOC
 - `LLM_MODEL_COOLDOWN_MS` (120000), `STOCK_PROVIDER_COOLDOWN_MS` (300000)
 
 **Debug:**
-- `DEBUG=true` — adds data-source and data-coverage diagnostic sections to reports
+- `DEBUG=true` — adds data-source, data-coverage, and accepted improve-history diagnostic sections to reports
 - `HEALTH_CHECK_SYMBOL` — enables live price check in `/api/health`
 
 ---

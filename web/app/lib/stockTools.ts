@@ -23,10 +23,12 @@ import {
   buildReportRunMetadata,
   buildUpdateNotes,
   findPreviousReportForUpdate,
+  hasMeaningfulReportValue,
   mergeWithPreviousReportField,
   type CoverageInput,
   type PreviousReportMatch,
   type ReportKind,
+  type ReportRunMetadata,
 } from './reportUpdate';
 
 /**
@@ -188,12 +190,68 @@ function buildReportDownloadUrl(saved: SavedReport): string {
   return `/api/reports/${saved.storagePath ?? saved.filename}`;
 }
 
+function isRecord(value: any): value is Record<string, any> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function normalizeReportKind(value: unknown): ReportKind | null {
+  if (value === 'stock' || value === 'comparison' || value === 'research' || value === 'watchlist-daily') {
+    return value;
+  }
+  return null;
+}
+
+function sameSymbolSet(left: string[], right: string[]) {
+  const normalizedLeft = Array.from(new Set(left.map((item) => normalizeTickerCandidate(item)).filter(Boolean) as string[]));
+  const normalizedRight = Array.from(new Set(right.map((item) => normalizeTickerCandidate(item)).filter(Boolean) as string[]));
+  if (normalizedLeft.length !== normalizedRight.length) return false;
+  const rightSet = new Set(normalizedRight);
+  return normalizedLeft.every((symbol) => rightSet.has(symbol));
+}
+
+function selectedPreviousReportForUpdate(args: Record<string, any>, input: {
+  kind: ReportKind;
+  symbols?: string[];
+}): PreviousReportMatch | null {
+  const source = args.updateSourceReport;
+  if (!isRecord(source)) return null;
+  const metadata = isRecord(source.metadata) ? source.metadata as ReportRunMetadata : null;
+  const sourceKind = normalizeReportKind(metadata?.kind || source.reportKind);
+  if (sourceKind !== input.kind) return null;
+
+  const sourceSymbols = Array.isArray(metadata?.symbols)
+    ? metadata.symbols.map((item) => String(item))
+    : [];
+  const requestedSymbols = input.symbols || [];
+  if (requestedSymbols.length > 0 && sourceSymbols.length > 0 && !sameSymbolSet(requestedSymbols, sourceSymbols)) {
+    return null;
+  }
+
+  return {
+    id: typeof source.id === 'string' ? source.id : undefined,
+    filename: typeof source.filename === 'string' ? source.filename : null,
+    title: typeof source.title === 'string' ? source.title : null,
+    summary: typeof source.summary === 'string' ? source.summary : null,
+    content: typeof source.content === 'string' ? source.content : '',
+    storagePath: typeof source.storagePath === 'string' ? source.storagePath : null,
+    reportKind: typeof source.reportKind === 'string' ? source.reportKind : sourceKind,
+    reportDate: typeof source.reportDate === 'string' ? source.reportDate : null,
+    createdAt: typeof source.createdAt === 'string' ? source.createdAt : null,
+    metadata,
+    score: 10000,
+  };
+}
+
 async function prepareReportUpdateContext(args: Record<string, any>, input: {
   kind: ReportKind;
   query?: string;
   symbols?: string[];
 }): Promise<{ previous: PreviousReportMatch | null; notes: string[] }> {
   if (!args.updateMode) return { previous: null, notes: [] };
+  const selectedPrevious = selectedPreviousReportForUpdate(args, input);
+  if (selectedPrevious) {
+    return { previous: selectedPrevious, notes: buildUpdateNotes(selectedPrevious, input.kind) };
+  }
   const previous = await findPreviousReportForUpdate({
     kind: input.kind,
     query: String(args.updateQuery || input.query || ''),
@@ -230,6 +288,88 @@ function coverageEntry(
     priority,
     provider: providerForCoverage(data),
   };
+}
+
+function firstMeaningfulValue(...values: any[]) {
+  return values.find((value) => hasMeaningfulReportValue(value));
+}
+
+function metricValue(basicFinancials: any, keys: string[]) {
+  const metric = isRecord(basicFinancials?.metric) ? basicFinancials.metric : {};
+  for (const key of keys) {
+    const value = firstMeaningfulValue(metric[key], basicFinancials?.[key]);
+    if (hasMeaningfulReportValue(value)) return value;
+  }
+  return undefined;
+}
+
+function coreDecisionCoverage(args: {
+  symbol: string;
+  price: any;
+  overview: any;
+  basicFinancials: any;
+  priceHistory: any;
+  range: string;
+}): CoverageInput[] {
+  const overview = args.overview || {};
+  const basicFinancials = args.basicFinancials || {};
+  return [
+    coverageEntry(args.symbol, 'price', 'Price', args.price, 'critical'),
+    coverageEntry(args.symbol, 'companyName', 'Company name', firstMeaningfulValue(
+      overview.name,
+      overview.Name,
+      overview.companyName,
+      overview.Symbol
+    ), 'critical'),
+    coverageEntry(args.symbol, 'marketCap', 'Market cap', firstMeaningfulValue(
+      overview.marketCapitalization,
+      overview.MarketCapitalization,
+      overview.marketCap,
+      overview.mktCap
+    ), 'critical'),
+    coverageEntry(args.symbol, 'sectorIndustry', 'Sector/industry', firstMeaningfulValue(
+      overview.sector,
+      overview.Sector,
+      overview.industry,
+      overview.Industry
+    ), 'critical'),
+    coverageEntry(args.symbol, 'revenue', 'Revenue', firstMeaningfulValue(
+      overview.revenueTTM,
+      overview.RevenueTTM,
+      overview.totalRevenue,
+      metricValue(basicFinancials, ['revenueTTM', 'revenueAnnual', 'totalRevenueTTM', 'totalRevenue'])
+    ), 'critical'),
+    coverageEntry(args.symbol, 'revenueGrowth', 'Revenue growth', firstMeaningfulValue(
+      metricValue(basicFinancials, ['revenueGrowthTTM', 'revenueGrowthTTMYoy', 'revenueGrowthAnnual', 'revenueGrowth5Y']),
+      overview.quarterlyRevenueGrowth
+    ), 'critical'),
+    coverageEntry(args.symbol, 'epsGrowth', 'EPS growth', firstMeaningfulValue(
+      metricValue(basicFinancials, ['epsGrowthTTM', 'epsGrowthTTMYoy', 'epsGrowthAnnual', 'epsGrowth5Y']),
+      overview.quarterlyEarningsGrowth
+    ), 'critical'),
+    coverageEntry(args.symbol, 'grossMargin', 'Gross margin', firstMeaningfulValue(
+      metricValue(basicFinancials, ['grossMarginTTM', 'grossProfitMarginTTM']),
+      overview.grossMarginTTM
+    ), 'critical'),
+    coverageEntry(args.symbol, 'operatingMargin', 'Operating margin', firstMeaningfulValue(
+      metricValue(basicFinancials, ['operatingMarginTTM', 'operatingProfitMarginTTM']),
+      overview.operatingMarginTTM,
+      overview.OperatingMarginTTM
+    ), 'critical'),
+    coverageEntry(args.symbol, 'roeOrRoa', 'ROE or ROA', firstMeaningfulValue(
+      metricValue(basicFinancials, ['roeTTM', 'roaTTM', 'returnOnEquityTTM', 'returnOnAssetsTTM']),
+      overview.returnOnEquityTTM,
+      overview.returnOnAssetsTTM
+    ), 'critical'),
+    coverageEntry(args.symbol, 'forwardPE', 'Forward P/E', firstMeaningfulValue(
+      overview.forwardPE,
+      overview.ForwardPE,
+      metricValue(basicFinancials, ['peNormalizedAnnual', 'forwardPE'])
+    ), 'critical'),
+    coverageEntry(args.symbol, `priceHistory:${args.range}`, 'Price history', args.priceHistory, 'critical'),
+    coverageEntry(args.symbol, 'overview', 'Company overview', args.overview, 'high'),
+    coverageEntry(args.symbol, 'basicFinancials', 'Basic financials', args.basicFinancials, 'high'),
+  ];
 }
 
 function applyUpdateCheckpoint<T>(args: {
@@ -3099,10 +3239,7 @@ export async function executeTool(
           updatedFrom: updateContext.previous,
           notes,
           coverage: [
-            coverageEntry(symbol, 'price', 'Price', price, 'critical'),
-            coverageEntry(symbol, 'overview', 'Company overview', companyOverview, 'critical'),
-            coverageEntry(symbol, 'basicFinancials', 'Basic financials', finalBasicFinancials, 'critical'),
-            coverageEntry(symbol, `priceHistory:${range}`, 'Price history', priceHistory, 'critical'),
+            ...coreDecisionCoverage({ symbol, price, overview: companyOverview, basicFinancials: finalBasicFinancials, priceHistory, range }),
             coverageEntry(symbol, 'earningsHistory', 'Earnings history', finalEarningsHistory, 'high'),
             coverageEntry(symbol, 'incomeStatement', 'Income statement', finalIncomeStatement, 'high'),
             coverageEntry(symbol, 'balanceSheet', 'Balance sheet', finalBalanceSheet, 'high'),
@@ -3607,10 +3744,14 @@ export async function executeTool(
           updatedFrom: updateContext.previous,
           notes,
           coverage: items.flatMap((item) => [
-            coverageEntry(item.symbol, 'price', 'Price', item.price, 'critical'),
-            coverageEntry(item.symbol, 'overview', 'Company overview', item.overview, 'critical'),
-            coverageEntry(item.symbol, 'basicFinancials', 'Basic financials', item.basicFinancials, 'critical'),
-            coverageEntry(item.symbol, `priceHistory:${range}`, 'Price history', item.priceHistory, 'critical'),
+            ...coreDecisionCoverage({
+              symbol: item.symbol,
+              price: item.price,
+              overview: item.overview,
+              basicFinancials: item.basicFinancials,
+              priceHistory: item.priceHistory,
+              range,
+            }),
             coverageEntry(item.symbol, 'incomeStatement', 'Income statement', item.incomeStatement, 'high'),
             coverageEntry(item.symbol, 'balanceSheet', 'Balance sheet', item.balanceSheet, 'high'),
             coverageEntry(item.symbol, 'cashFlow', 'Cash flow', item.cashFlow, 'high'),
@@ -3914,10 +4055,14 @@ export async function executeTool(
           notes: updateContext.notes,
           coverage: [
             ...successfulItems.flatMap((item) => [
-              coverageEntry(item.symbol, 'price', 'Price', item.stock.price, 'critical'),
-              coverageEntry(item.symbol, 'overview', 'Company overview', item.stock.companyOverview, 'critical'),
-              coverageEntry(item.symbol, 'basicFinancials', 'Basic financials', item.stock.basicFinancials, 'critical'),
-              coverageEntry(item.symbol, `priceHistory:${range}`, 'Price history', item.stock.priceHistory, 'critical'),
+              ...coreDecisionCoverage({
+                symbol: item.symbol,
+                price: item.stock.price,
+                overview: item.stock.companyOverview,
+                basicFinancials: item.stock.basicFinancials,
+                priceHistory: item.stock.priceHistory,
+                range,
+              }),
               coverageEntry(item.symbol, 'incomeStatement', 'Income statement', item.stock.incomeStatement, 'high'),
               coverageEntry(item.symbol, 'balanceSheet', 'Balance sheet', item.stock.balanceSheet, 'high'),
               coverageEntry(item.symbol, 'cashFlow', 'Cash flow', item.stock.cashFlow, 'high'),
@@ -4047,10 +4192,14 @@ export async function executeTool(
             updatedFrom: updateContext.previous,
             notes: updateContext.notes,
             coverage: (comparisonItems || []).flatMap((item: any) => [
-              coverageEntry(item.symbol, 'price', 'Price', item.price, 'critical'),
-              coverageEntry(item.symbol, 'overview', 'Company overview', item.overview, 'critical'),
-              coverageEntry(item.symbol, 'basicFinancials', 'Basic financials', item.basicFinancials, 'critical'),
-              coverageEntry(item.symbol, `priceHistory:${range}`, 'Price history', item.priceHistory, 'critical'),
+              ...coreDecisionCoverage({
+                symbol: item.symbol,
+                price: item.price,
+                overview: item.overview,
+                basicFinancials: item.basicFinancials,
+                priceHistory: item.priceHistory,
+                range,
+              }),
               coverageEntry(item.symbol, 'incomeStatement', 'Income statement', item.incomeStatement, 'high'),
               coverageEntry(item.symbol, 'balanceSheet', 'Balance sheet', item.balanceSheet, 'high'),
               coverageEntry(item.symbol, 'cashFlow', 'Cash flow', item.cashFlow, 'high'),
@@ -4134,10 +4283,14 @@ export async function executeTool(
             updatedFrom: updateContext.previous,
             notes: updateContext.notes,
             coverage: rawStockData ? [
-              coverageEntry(rawStockData.symbol, 'price', 'Price', rawStockData.price, 'critical'),
-              coverageEntry(rawStockData.symbol, 'overview', 'Company overview', rawStockData.companyOverview, 'critical'),
-              coverageEntry(rawStockData.symbol, 'basicFinancials', 'Basic financials', rawStockData.basicFinancials, 'critical'),
-              coverageEntry(rawStockData.symbol, `priceHistory:${args.range || "5y"}`, 'Price history', rawStockData.priceHistory, 'critical'),
+              ...coreDecisionCoverage({
+                symbol: rawStockData.symbol,
+                price: rawStockData.price,
+                overview: rawStockData.companyOverview,
+                basicFinancials: rawStockData.basicFinancials,
+                priceHistory: rawStockData.priceHistory,
+                range: args.range || "5y",
+              }),
               coverageEntry(rawStockData.symbol, 'earningsHistory', 'Earnings history', rawStockData.earningsHistory, 'high'),
               coverageEntry(rawStockData.symbol, 'incomeStatement', 'Income statement', rawStockData.incomeStatement, 'high'),
               coverageEntry(rawStockData.symbol, 'balanceSheet', 'Balance sheet', rawStockData.balanceSheet, 'high'),
@@ -4640,10 +4793,14 @@ export async function executeTool(
           updatedFrom: updateContext.previous,
           notes,
           coverage: items.flatMap((item) => [
-            coverageEntry(item.symbol, 'price', 'Price', item.price, 'critical'),
-            coverageEntry(item.symbol, 'overview', 'Company overview', item.overview, 'critical'),
-            coverageEntry(item.symbol, 'basicFinancials', 'Basic financials', item.basicFinancials, 'critical'),
-            coverageEntry(item.symbol, `priceHistory:${range}`, 'Price history', item.priceHistory, 'critical'),
+            ...coreDecisionCoverage({
+              symbol: item.symbol,
+              price: item.price,
+              overview: item.overview,
+              basicFinancials: item.basicFinancials,
+              priceHistory: item.priceHistory,
+              range,
+            }),
             coverageEntry(item.symbol, 'incomeStatement', 'Income statement', item.incomeStatement, 'high'),
             coverageEntry(item.symbol, 'balanceSheet', 'Balance sheet', item.balanceSheet, 'high'),
             coverageEntry(item.symbol, 'cashFlow', 'Cash flow', item.cashFlow, 'high'),

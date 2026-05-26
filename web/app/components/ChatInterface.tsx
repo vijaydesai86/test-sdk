@@ -78,6 +78,7 @@ interface ImproveResponse {
   maxPasses?: number;
   nextRunAfterMs?: number;
   deletedReportId?: string | null;
+  discardedReportId?: string | null;
   error?: string;
 }
 
@@ -915,6 +916,11 @@ export default function ChatInterface() {
           setSupabaseReports((prev) => prev.filter((item) => item.id !== payload.deletedReportId));
           setSavedReports((prev) => prev.filter((item) => reportImproveId(item) !== payload.deletedReportId));
           sourceUrls.delete(`/api/saved-reports/${payload.deletedReportId}`);
+        }
+        if (payload.discardedReportId) {
+          setSupabaseReports((prev) => prev.filter((item) => item.id !== payload.discardedReportId));
+          setSavedReports((prev) => prev.filter((item) => reportImproveId(item) !== payload.discardedReportId));
+          sourceUrls.delete(`/api/saved-reports/${payload.discardedReportId}`);
         }
 
         const message = [
