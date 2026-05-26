@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildResearchUniverseDependencySummary,
   buildResearchUniverseMermaid,
+  evaluateResearchUniverseReadiness,
   selectResearchUniverse,
   type ResearchCandidateData,
 } from '../web/app/lib/researchUniverseSelector';
@@ -622,5 +623,98 @@ describe('research report rendering', () => {
     expect(content).toContain('RETL');
     expect(content).toContain('Qualified research subset: GPUA, CLOU');
     expect(content).not.toContain('Fresh-entry buys: RETL');
+  });
+
+  it('does not allow broad resolver beneficiary evidence to qualify or lock a fresh universe', async () => {
+    const selection = await selectResearchUniverse({
+      query: 'AI infrastructure',
+      finalCount: 3,
+      candidates: [
+        candidate('MSFT', 'Broad technology and software company', {
+          sourceFacets: ['Broad resolver raw candidate'],
+          sourceEvidence: [{
+            role: 'Broad resolver raw candidate',
+            level: 'beneficiary',
+            rationale: 'Raw broad resolver result.',
+            confidence: 80,
+            source: 'broad-theme-resolver',
+          }],
+        }),
+        candidate('AMZN', 'Broad online retail and cloud services company', {
+          sourceFacets: ['Broad resolver raw candidate'],
+          sourceEvidence: [{
+            role: 'Broad resolver raw candidate',
+            level: 'beneficiary',
+            rationale: 'Raw broad resolver result.',
+            confidence: 80,
+            source: 'broad-theme-resolver',
+          }],
+        }),
+      ],
+    });
+
+    expect(selection.selectedSymbols).toEqual([]);
+    expect(selection.qualifiedSymbols).toEqual([]);
+
+    const readiness = evaluateResearchUniverseReadiness({
+      selection,
+      roles: [{ label: 'Broad theme resolver' }],
+      requiredDimensions: [{ label: 'compute accelerators' }, { label: 'cloud operators' }],
+      targetCount: 3,
+    });
+    expect(readiness.status).not.toBe('locked');
+    expect(readiness.repairActions.join(' ')).toContain('broad');
+  });
+
+  it('locks only when enough concrete role dimensions are covered by direct/enabler candidates', async () => {
+    const selection = await selectResearchUniverse({
+      query: 'AI infrastructure',
+      finalCount: 6,
+      candidates: [
+        candidate('GPUA', 'AI infrastructure accelerator chips for data center training', {
+          sourceEvidence: [{ role: 'Compute accelerators', level: 'direct', rationale: 'Accelerator chips.', confidence: 90 }],
+        }),
+        candidate('CLOU', 'Cloud data center operator for AI workloads', {
+          sourceEvidence: [{ role: 'Cloud/data-center operators', level: 'direct', rationale: 'Cloud AI data centers.', confidence: 90 }],
+        }),
+        candidate('FOUN', 'Semiconductor foundry manufacturing advanced nodes', {
+          sourceEvidence: [{ role: 'Foundry/manufacturing', level: 'enabler', rationale: 'Foundry capacity.', confidence: 90 }],
+        }),
+        candidate('TOOL', 'Semiconductor equipment and process control tools', {
+          sourceEvidence: [{ role: 'Semiconductor equipment', level: 'enabler', rationale: 'Chipmaking tools.', confidence: 90 }],
+        }),
+        candidate('MEMR', 'High bandwidth memory and AI storage systems', {
+          sourceEvidence: [{ role: 'Memory/storage', level: 'enabler', rationale: 'AI memory systems.', confidence: 90 }],
+        }),
+        candidate('NETW', 'Data center networking switches for AI clusters', {
+          sourceEvidence: [{ role: 'Networking/connectivity', level: 'enabler', rationale: 'AI networking.', confidence: 90 }],
+        }),
+      ],
+    });
+
+    const readiness = evaluateResearchUniverseReadiness({
+      selection,
+      roles: [
+        { label: 'Compute accelerators', dimensions: ['compute accelerators'] },
+        { label: 'Cloud/data-center operators', dimensions: ['cloud/data-center operators'] },
+        { label: 'Foundry/manufacturing', dimensions: ['foundry/manufacturing'] },
+        { label: 'Semiconductor equipment', dimensions: ['semiconductor equipment'] },
+        { label: 'Memory/storage', dimensions: ['memory/storage'] },
+        { label: 'Networking/connectivity', dimensions: ['networking/connectivity'] },
+      ],
+      requiredDimensions: [
+        { label: 'compute accelerators' },
+        { label: 'cloud/data-center operators' },
+        { label: 'foundry/manufacturing' },
+        { label: 'semiconductor equipment' },
+        { label: 'memory/storage' },
+        { label: 'networking/connectivity' },
+      ],
+      targetCount: 6,
+    });
+
+    expect(selection.selectedSymbols).toHaveLength(6);
+    expect(readiness.status).toBe('locked');
+    expect(readiness.coveredDimensions).toEqual(expect.arrayContaining(['compute accelerators', 'semiconductor equipment']));
   });
 });

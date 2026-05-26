@@ -134,10 +134,10 @@ _Note: SEC EDGAR filings (`get_sec_filings`), SEC XBRL company facts (`get_sec_c
 |---|---|---|
 | `NUM_COMPANIES` | `10` | Companies in comparison and research reports. Range: 2–15. |
 | `RESEARCH_CANDIDATE_POOL_MULTIPLIER` | `3` | Research candidate pool size before scoring, as a multiple of `NUM_COMPANIES`. Range: 1–5 and bounded by runtime/provider limits. |
-| `RESEARCH_THEME_FACET_COUNT` | `6` | Maximum generic theme role buckets generated before candidate discovery. Range: 1–10. |
+| `RESEARCH_THEME_FACET_COUNT` | `6` | Maximum generic theme role buckets generated before candidate discovery. Role buckets are concrete theme dimensions; broad/catch-all buckets are treated as raw discovery only. Range: 1–10. |
 | `RESEARCH_FACET_CANDIDATES` | `8` | Maximum company/ticker candidate ideas requested per generated role bucket. Ticker-null company names are provider-searched before they can enter the candidate pool. Range: 2–15. |
-| `RESEARCH_UNIVERSE_MIN_THEME_SCORE` | `70` | Core theme-evidence/fit gate for fresh research universe selection. |
-| `RESEARCH_UNIVERSE_STRONG_ADJACENT_THEME_SCORE` | `55` | Strong-adjacent theme-evidence/fit gate. Weak-adjacent, unrelated, or unsupported candidates are not forced into the universe just to fill configured slots. |
+| `RESEARCH_UNIVERSE_MIN_THEME_SCORE` | `70` | Core theme-evidence/fit gate for fresh research universe selection. Fresh universes must also clear readiness checks for concrete roles and direct/enabler evidence before a full report is published. |
+| `RESEARCH_UNIVERSE_STRONG_ADJACENT_THEME_SCORE` | `55` | Strong-adjacent theme-evidence/fit gate. Weak-adjacent, beneficiary-only, broad-resolver, unrelated, or unsupported candidates are not forced into the universe just to fill configured slots. |
 | `RESEARCH_UNIVERSE_ALLOW_STRONG_ADJACENT` | `true` | Set to `false` to require only core theme-fit candidates in fresh research universes. |
 | `RESEARCH_UNIVERSE_MAX_ROLE_SHARE` | `0.35` | Soft maximum share for one theme-derived role before selection prioritizes other qualified roles. |
 | `DEEP_RESEARCH_DEPTH` | `1` | Optional post-core-data ecosystem/refinement passes for research reports. Core market data is fetched before any pass runs. Range: 1–10. |

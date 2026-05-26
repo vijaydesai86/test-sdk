@@ -4,6 +4,7 @@ export interface ResearchCandidateData {
   symbol: string;
   sourceFacets?: string[];
   sourceEvidence?: ResearchSourceEvidence[];
+  companyNames?: string[];
   preservedThemeEvidence?: ResearchThemeEvidence;
   preservedThemeFit?: ResearchThemeFit;
   preservedThemeScore?: number;
@@ -25,6 +26,7 @@ export interface ResearchUniverseWeights {
 export type ResearchThemeFit = 'core' | 'strong_adjacent' | 'weak_adjacent' | 'reject';
 export type ResearchThemeEvidenceLevel = 'direct' | 'enabler' | 'beneficiary' | 'unrelated';
 export type ResearchSelectionMode = 'fresh_selection' | 'locked_diagnostics';
+export type ResearchUniverseStatus = 'discovering' | 'refining' | 'locked' | 'failed';
 
 export interface ResearchThemeEvidence {
   level: ResearchThemeEvidenceLevel;
@@ -39,6 +41,22 @@ export interface ResearchSourceEvidence {
   rationale: string;
   confidence: number;
   source?: string;
+}
+
+export interface ResearchRequiredDimension {
+  label: string;
+  required?: boolean;
+  searchQueries?: string[];
+  rationale?: string;
+}
+
+export interface ResearchUniverseRole {
+  label: string;
+  definition?: string;
+  required?: boolean;
+  query?: string;
+  dimensions?: string[];
+  searchQueries?: string[];
 }
 
 export interface ResearchCandidateScore {
@@ -80,6 +98,21 @@ export interface ResearchUniverseSelection {
   notes: string[];
 }
 
+export interface ResearchUniverseReadiness {
+  status: ResearchUniverseStatus;
+  selectedCount: number;
+  targetLockCount: number;
+  targetPartialCount: number;
+  roleCount: number;
+  minRoleCount: number;
+  directEnablerShare: number;
+  broadShare: number;
+  coveredDimensions: string[];
+  missingDimensions: string[];
+  repairActions: string[];
+  canBuildFullReport: boolean;
+}
+
 type LLMFiller = (prompt: string) => Promise<string>;
 type PricePoint = { date?: string; close?: string | number };
 
@@ -97,6 +130,8 @@ const STOP_WORDS = new Set([
   'listed', 'market', 'of', 'on', 'public', 'publicly', 'report', 'research',
   'sector', 'stock', 'stocks', 'the', 'theme', 'to', 'traded', 'with',
 ]);
+
+const BROAD_ROLE_RE = /\b(broad|generic|catch\s*all|misc|general|beneficiar(?:y|ies)|theme resolver|resolver raw|fallback)\b/i;
 
 function normalizeSymbol(value: unknown): string {
   return String(value || '').replace(/[^A-Z0-9.]/gi, '').toUpperCase();
@@ -127,6 +162,10 @@ function normalizeThemeFit(value: unknown): ResearchThemeFit | null {
   return null;
 }
 
+export function isBroadResearchRole(value: unknown): boolean {
+  return BROAD_ROLE_RE.test(String(value || ''));
+}
+
 function normalizeEvidenceLevel(value: unknown): ResearchThemeEvidenceLevel | null {
   const normalized = String(value || '').toLowerCase().replace(/[^a-z]/g, '');
   if (normalized === 'direct' || normalized === 'core') return 'direct';
@@ -139,7 +178,6 @@ function normalizeEvidenceLevel(value: unknown): ResearchThemeEvidenceLevel | nu
 function evidenceToFit(evidence: ResearchThemeEvidence, themeScore: number, minThemeScore: number, strongAdjacentThemeScore: number): ResearchThemeFit {
   if (evidence.level === 'direct' && themeScore >= minThemeScore) return 'core';
   if ((evidence.level === 'direct' || evidence.level === 'enabler') && themeScore >= strongAdjacentThemeScore) return 'strong_adjacent';
-  if (evidence.level === 'beneficiary' && themeScore >= strongAdjacentThemeScore) return 'strong_adjacent';
   if (evidence.level === 'unrelated') return 'reject';
   return 'weak_adjacent';
 }
@@ -260,7 +298,7 @@ function bestSourceEvidence(candidate: ResearchCandidateData): ResearchSourceEvi
       confidence: clamp(toNumber(item.confidence) ?? 0),
       source: item.source,
     }))
-    .filter((item) => item.role && item.level !== 'unrelated')
+    .filter((item) => item.role && item.level !== 'unrelated' && !isBroadResearchRole(item.role))
     .sort((a, b) => {
       const tierDelta = evidenceTierScore({
         level: b.level,
@@ -276,6 +314,112 @@ function bestSourceEvidence(candidate: ResearchCandidateData): ResearchSourceEvi
       return tierDelta || b.confidence - a.confidence;
     });
   return evidence[0] || null;
+}
+
+function hasDirectEnablerEvidence(score: Pick<ResearchCandidateScore, 'themeEvidence' | 'subtheme'>): boolean {
+  return (score.themeEvidence.level === 'direct' || score.themeEvidence.level === 'enabler')
+    && !isBroadResearchRole(score.themeEvidence.role)
+    && !isBroadResearchRole(score.subtheme);
+}
+
+function dimensionText(value: ResearchRequiredDimension | ResearchUniverseRole | string): string {
+  if (typeof value === 'string') return value;
+  return [
+    value.label,
+    'definition' in value ? value.definition : '',
+    'query' in value ? value.query : '',
+    Array.isArray(value.searchQueries) ? value.searchQueries.join(' ') : '',
+    'dimensions' in value && Array.isArray(value.dimensions) ? value.dimensions.join(' ') : '',
+  ].filter(Boolean).join(' ');
+}
+
+function overlapsDimension(roleText: string, dimension: ResearchRequiredDimension): boolean {
+  const roleTokens = new Set(tokenize(roleText));
+  const dimensionTokens = tokenize(dimensionText(dimension));
+  if (dimensionTokens.length === 0) return false;
+  const matches = dimensionTokens.filter((token) => roleTokens.has(token)).length;
+  return matches >= Math.min(2, dimensionTokens.length) || matches / dimensionTokens.length >= 0.45;
+}
+
+export function evaluateResearchUniverseReadiness(args: {
+  selection: ResearchUniverseSelection;
+  roles?: ResearchUniverseRole[];
+  requiredDimensions?: ResearchRequiredDimension[];
+  targetCount?: number;
+  minSelectedRatio?: number;
+  partialSelectedRatio?: number;
+  minDirectEnablerShare?: number;
+  maxBroadShare?: number;
+  minRoleCount?: number;
+}): ResearchUniverseReadiness {
+  const targetCount = Math.max(1, args.targetCount ?? args.selection.requestedCount);
+  const targetLockCount = Math.max(1, Math.ceil(targetCount * Math.min(1, Math.max(0.2, args.minSelectedRatio ?? 0.80))));
+  const targetPartialCount = Math.max(1, Math.ceil(targetCount * Math.min(1, Math.max(0.1, args.partialSelectedRatio ?? 0.45))));
+  const selected = args.selection.candidates.filter((candidate) => candidate.selected);
+  const directSelected = selected.filter(hasDirectEnablerEvidence);
+  const broadSelected = selected.filter((candidate) => isBroadResearchRole(candidate.subtheme) || isBroadResearchRole(candidate.themeEvidence.role));
+  const selectedCount = directSelected.length;
+  const selectedTotal = Math.max(1, selected.length);
+  const directEnablerShare = directSelected.length / selectedTotal;
+  const broadShare = broadSelected.length / selectedTotal;
+  const roleNames = Array.from(new Set(directSelected.map((candidate) => candidate.subtheme).filter((role) => role && !isBroadResearchRole(role))));
+  const roleCount = roleNames.length;
+  const configuredMinRoleCount = args.minRoleCount ?? Math.min(5, Math.max(2, Math.ceil(targetCount / 4)));
+  const minRoleCount = Math.min(configuredMinRoleCount, Math.max(1, targetLockCount));
+  const requiredDimensions = (args.requiredDimensions || [])
+    .map((dimension) => ({
+      ...dimension,
+      label: String(dimension.label || '').trim(),
+      required: dimension.required !== false,
+    }))
+    .filter((dimension) => dimension.label);
+  const roleInputs = [
+    ...(args.roles || []),
+    ...roleNames.map((label) => ({ label })),
+  ].filter((role) => role.label && !isBroadResearchRole(role.label));
+  const coveredDimensions = requiredDimensions
+    .filter((dimension) => roleInputs.some((role) => overlapsDimension(dimensionText(role), dimension)))
+    .map((dimension) => dimension.label);
+  const missingDimensions = requiredDimensions
+    .filter((dimension) => dimension.required !== false && !coveredDimensions.includes(dimension.label))
+    .map((dimension) => dimension.label);
+  const minDimensionCoverage = requiredDimensions.length
+    ? Math.min(requiredDimensions.length, Math.max(2, Math.ceil(requiredDimensions.length * 0.65)))
+    : 0;
+  const dimensionReady = requiredDimensions.length === 0 || coveredDimensions.length >= minDimensionCoverage;
+  const directShareReady = directEnablerShare >= Math.min(1, Math.max(0, args.minDirectEnablerShare ?? 0.75));
+  const broadShareReady = broadShare <= Math.min(1, Math.max(0, args.maxBroadShare ?? 0.05));
+  const roleReady = roleCount >= minRoleCount;
+  const countReady = selectedCount >= targetLockCount;
+  const repairActions: string[] = [];
+  if (!countReady) repairActions.push(`Continue candidate discovery until at least ${targetLockCount} direct/enabler companies clear the theme gate.`);
+  if (!roleReady) repairActions.push(`Classify candidates into at least ${minRoleCount} concrete theme roles; broad/catch-all roles cannot lock the universe.`);
+  if (!directShareReady) repairActions.push('Reclassify or reject beneficiary-only candidates before allocation or conclusion.');
+  if (!broadShareReady) repairActions.push('Quarantine broad resolver candidates until provider profiles support a concrete theme role.');
+  if (!dimensionReady && missingDimensions.length) repairActions.push(`Expand discovery for missing required dimensions: ${missingDimensions.join(', ')}.`);
+
+  const status: ResearchUniverseStatus = countReady && roleReady && directShareReady && broadShareReady && dimensionReady
+    ? 'locked'
+    : selected.length >= targetPartialCount || selectedCount >= targetPartialCount
+      ? 'refining'
+      : selected.length > 0
+        ? 'discovering'
+        : 'failed';
+
+  return {
+    status,
+    selectedCount,
+    targetLockCount,
+    targetPartialCount,
+    roleCount,
+    minRoleCount,
+    directEnablerShare,
+    broadShare,
+    coveredDimensions,
+    missingDimensions,
+    repairActions,
+    canBuildFullReport: status === 'locked',
+  };
 }
 
 function buildHeuristicEvidence(args: {
@@ -619,9 +763,12 @@ export async function selectResearchUniverse(args: {
   const pool = [...baseScores].sort((a, b) => b.totalScore - a.totalScore);
   const qualifiedPool = pool.filter((candidate) => {
     const source = candidates.find((item) => item.symbol === candidate.symbol);
-    if (mode === 'locked_diagnostics' && source?.preservedQualified === true) return true;
     if (mode === 'locked_diagnostics' && source?.preservedQualified === false) return false;
-    if (candidate.themeEvidence.level === 'unrelated') return false;
+    if (!hasDirectEnablerEvidence(candidate)) return false;
+    if (source?.sourceEvidence?.some((item) => isBroadResearchRole(item.role) && item.level !== 'unrelated')
+      && !source.sourceEvidence.some((item) => (item.level === 'direct' || item.level === 'enabler') && !isBroadResearchRole(item.role))) {
+      return false;
+    }
     if (candidate.themeFit === 'core') return candidate.themeScore >= minThemeScore;
     if (candidate.themeFit === 'strong_adjacent') return allowStrongAdjacent && candidate.themeScore >= strongAdjacentThemeScore;
     return false;

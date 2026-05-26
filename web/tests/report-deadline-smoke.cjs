@@ -267,9 +267,9 @@ async function testResearchDeadlineStillSaves() {
   await assertSavedReport(result, 'research');
   assert.equal(llmCalls, 0, 'tight budget should skip thematic LLM refinement');
   assert.match(result.data.content, /Vercel budget prioritized|Time budget reached|runtime budget/i);
-  assert.match(result.data.content, /NVDA|AMD/);
-  assert.match(result.data.content, /\(NVDA\)[^\n]*\$/);
-  assert.match(result.data.content, /\(AMD\)[^\n]*\$/);
+  assert.match(result.data.content, /Wait for verified inputs/);
+  assert.doesNotMatch(result.data.content, /\(NVDA\)[^\n]*\$/);
+  assert.doesNotMatch(result.data.content, /\(AMD\)[^\n]*\$/);
 }
 
 async function testResearchImmediateDeadlineStillSaves() {
@@ -289,9 +289,9 @@ async function testResearchImmediateDeadlineStillSaves() {
   await assertSavedReport(result, 'research');
   assert.equal(llmCalls, 0, 'immediate deadline should not spend time on LLM refinement');
   assert.match(result.data.content, /Vercel budget|Time budget reached|runtime budget/i);
-  assert.match(result.data.content, /NVDA|AMD/);
-  assert.match(result.data.content, /\(NVDA\)[^\n]*\$/);
-  assert.match(result.data.content, /\(AMD\)[^\n]*\$/);
+  assert.match(result.data.content, /Wait for verified inputs/);
+  assert.doesNotMatch(result.data.content, /\(NVDA\)[^\n]*\$/);
+  assert.doesNotMatch(result.data.content, /\(AMD\)[^\n]*\$/);
 }
 
 async function testResearchUsesOneOptionalEcosystemPassWhenBudgetAllows() {
@@ -303,8 +303,44 @@ async function testResearchUsesOneOptionalEcosystemPassWhenBudgetAllows() {
     {
       deadlineAt: Date.now() + 240000,
       async llmFill(prompt) {
-        if (prompt.includes('valid JSON array')) {
-          return JSON.stringify(['NVDA', 'AMD', 'AVGO', 'MSFT', 'AMZN', 'GOOGL']);
+        if (prompt.includes('Build a verified-candidate proposal')) {
+          return JSON.stringify({
+            requiredDimensions: [
+              { label: 'compute accelerators', required: true },
+              { label: 'cloud/data-center operators', required: true },
+              { label: 'custom silicon', required: true },
+              { label: 'memory/storage', required: true },
+            ],
+            roles: [
+              {
+                label: 'Compute accelerators',
+                dimensions: ['compute accelerators'],
+                query: 'AI accelerator chips',
+                candidates: [
+                  { companyName: 'NVIDIA', likelyTicker: 'NVDA', evidenceLevel: 'direct', confidence: 90, reason: 'AI accelerator chips' },
+                  { companyName: 'AMD', likelyTicker: 'AMD', evidenceLevel: 'direct', confidence: 85, reason: 'AI accelerator chips' },
+                ],
+              },
+              {
+                label: 'Cloud/data-center operators',
+                dimensions: ['cloud/data-center operators'],
+                query: 'AI cloud infrastructure',
+                candidates: [
+                  { companyName: 'Microsoft', likelyTicker: 'MSFT', evidenceLevel: 'enabler', confidence: 85, reason: 'AI cloud infrastructure' },
+                  { companyName: 'Amazon', likelyTicker: 'AMZN', evidenceLevel: 'enabler', confidence: 80, reason: 'AI cloud infrastructure' },
+                  { companyName: 'Alphabet', likelyTicker: 'GOOGL', evidenceLevel: 'enabler', confidence: 80, reason: 'AI cloud infrastructure' },
+                ],
+              },
+              {
+                label: 'Custom silicon',
+                dimensions: ['custom silicon'],
+                query: 'AI custom silicon',
+                candidates: [
+                  { companyName: 'Broadcom', likelyTicker: 'AVGO', evidenceLevel: 'enabler', confidence: 80, reason: 'custom silicon connectivity' },
+                ],
+              },
+            ],
+          });
         }
         if (prompt.includes('deep research ecosystem analysis')) {
           dependencyCalls += 1;

@@ -12,7 +12,7 @@
     "build": "next build --webpack",
     "start": "next start",
     "lint": "eslint",
-    "test": "node tests/report-deadline-smoke.cjs && node tests/report-intent-smoke.cjs && node tests/report-replay-guard-smoke.cjs"
+    "test": "node tests/report-deadline-smoke.cjs && node tests/report-intent-smoke.cjs && node tests/report-replay-guard-smoke.cjs && node tests/research-universe-selector-smoke.cjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.50.3",

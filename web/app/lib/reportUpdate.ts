@@ -87,8 +87,39 @@ export interface ReportRunMetadata {
   notes?: string[];
   improveHistory?: ReportImproveHistoryEntry[];
   researchUniverse?: {
+    status?: 'discovering' | 'refining' | 'locked' | 'failed';
     selectedSymbols: string[];
     qualifiedSymbols: string[];
+    requiredDimensions?: Array<{
+      label: string;
+      required?: boolean;
+      searchQueries?: string[];
+      rationale?: string;
+    }>;
+    coveredDimensions?: string[];
+    missingDimensions?: string[];
+    roles?: Array<{
+      label: string;
+      definition?: string;
+      required?: boolean;
+      query?: string;
+      dimensions?: string[];
+      searchQueries?: string[];
+    }>;
+    readiness?: {
+      status: 'discovering' | 'refining' | 'locked' | 'failed';
+      selectedCount: number;
+      targetLockCount: number;
+      targetPartialCount: number;
+      roleCount: number;
+      minRoleCount: number;
+      directEnablerShare: number;
+      broadShare: number;
+      coveredDimensions: string[];
+      missingDimensions: string[];
+      repairActions: string[];
+      canBuildFullReport: boolean;
+    };
     candidates: Array<{
       symbol: string;
       sourceFacets?: string[];

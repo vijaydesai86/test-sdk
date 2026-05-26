@@ -22,9 +22,14 @@ import { DEFAULT_REPORTS_DIR } from './reportFileStore';
 import {
   buildResearchUniverseDependencySummary,
   buildResearchUniverseMermaid,
+  evaluateResearchUniverseReadiness,
+  isBroadResearchRole,
   selectResearchUniverse,
   type ResearchCandidateData,
+  type ResearchRequiredDimension,
   type ResearchSourceEvidence,
+  type ResearchUniverseReadiness,
+  type ResearchUniverseRole,
   type ResearchUniverseSelection,
 } from './researchUniverseSelector';
 import {
@@ -696,11 +701,21 @@ interface ResearchThemeFacetPlan {
   label: string;
   query: string;
   role: string;
+  definition?: string;
+  required?: boolean;
+  dimensions?: string[];
+  searchQueries?: string[];
   candidates: Array<{
     symbol?: string;
     companyName?: string;
     evidence?: ResearchSourceEvidence;
   }>;
+}
+
+interface ResearchThemeCandidatePlan {
+  facets: ResearchThemeFacetPlan[];
+  requiredDimensions: ResearchRequiredDimension[];
+  notes: string[];
 }
 
 interface ResearchCandidateSeed {
@@ -739,24 +754,49 @@ function buildResearchThemeCandidatePrompt(theme: string, targetCount: number, m
   return [
     `Build a verified-candidate proposal for the public-equity investment theme "${theme}".`,
     'This is for a portfolio research universe. The purpose is representative investable exposure across the theme value chain, not a generic search list.',
+    'First infer the required economic dimensions that a credible portfolio research universe should cover for this exact theme. Dimensions must be specific to the theme and generic in method, not copied from any hardcoded ticker list.',
+    'Then create concrete investable role buckets mapped to those dimensions. Do not use catch-all roles like Broad theme resolver, Technology, Retail, Media, Financial Services, General beneficiary, or Miscellaneous.',
     'Output company names plus likely US-listed ticker/ADR candidates. Do not invent tickers. If unsure, include companyName with likelyTicker null so provider verification can search by name.',
     'Infer generic investable role buckets from the theme: upstream suppliers, direct producers/operators, critical tools/services, distribution or networking, platforms/operators, and physical infrastructure only when relevant.',
     'Main candidates must be theme providers or enablers. Exclude generic broad beneficiaries and weakly related companies from main candidates.',
     'For every role bucket, return 3-6 candidate ideas where possible. Include companyName, likelyTicker, listingHint, evidenceLevel direct|enabler, confidence 0-100, and a concrete product/service reason.',
     'No duplicate likelyTicker across role buckets; assign each company to its strongest role. Prefer the most liquid/common US listing or ADR. Prefer GOOGL over GOOG unless a reason says otherwise.',
     'Put questionable, stale, acquired, delisted, shell, OTC, unsupported, wrong-share-class, generic SaaS, consumer-app, retail, finance, or weakly related names in excluded, not candidates.',
+    'A universe is not useful unless it can cover multiple concrete roles. If a role or dimension is missing, return it in requiredDimensions anyway so the next pass can search it.',
     `Return up to ${maxFacets} role buckets and roughly ${targetCount} unique candidate ideas total; each role may have up to ${candidatesPerFacet} main candidates.`,
     'Return valid JSON only with this shape:',
-    '{"roles":[{"label":"theme role","required":true,"query":"search phrase","candidates":[{"companyName":"Company","likelyTicker":"TICKER | null","listingHint":"US|ADR","evidenceLevel":"direct|enabler","confidence":0-100,"reason":"concrete product/service evidence"}],"excluded":[{"companyName":"Company","likelyTicker":"TICKER | null","reason":"why excluded"}]}],"globalExclusions":["generic exclusion hint"]}',
+    '{"requiredDimensions":[{"label":"theme-specific dimension","required":true,"searchQueries":["query"],"rationale":"why this matters"}],"roles":[{"label":"theme role","definition":"what qualifies","required":true,"dimensions":["matching required dimension"],"query":"search phrase","searchQueries":["query"],"candidates":[{"companyName":"Company","likelyTicker":"TICKER | null","listingHint":"US|ADR","evidenceLevel":"direct|enabler","confidence":0-100,"reason":"concrete product/service evidence"}],"excluded":[{"companyName":"Company","likelyTicker":"TICKER | null","reason":"why excluded"}]}],"globalExclusions":["generic exclusion hint"]}',
   ].join('\n\n');
 }
 
-function parseResearchThemeCandidatePlan(raw: string, fallbackTheme: string): ResearchThemeFacetPlan[] {
+function parseStringArray(value: unknown, limit = 8): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => sanitizeResearchFacetLabel(item))
+    .filter(Boolean)
+    .slice(0, limit);
+}
+
+function parseResearchThemeCandidatePlan(raw: string, fallbackTheme: string): ResearchThemeCandidatePlan {
   try {
     let cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
     const objectMatch = cleaned.match(/\{[\s\S]*\}/);
     if (objectMatch) cleaned = objectMatch[0];
     const parsed = JSON.parse(cleaned);
+    const requiredDimensions: ResearchRequiredDimension[] = Array.isArray(parsed?.requiredDimensions)
+      ? parsed.requiredDimensions
+          .map((item: any) => {
+            const label = sanitizeResearchFacetLabel(item?.label || item?.name || item?.dimension);
+            if (!label || isBroadResearchRole(label)) return null;
+            return {
+              label,
+              required: item?.required !== false,
+              searchQueries: parseStringArray(item?.searchQueries || item?.queries, 5),
+              rationale: typeof item?.rationale === 'string' ? item.rationale.slice(0, 240) : undefined,
+            } as ResearchRequiredDimension;
+          })
+          .filter((item: ResearchRequiredDimension | null): item is ResearchRequiredDimension => Boolean(item))
+      : [];
     const rawFacets = Array.isArray(parsed?.roles)
       ? parsed.roles
       : Array.isArray(parsed?.facets)
@@ -769,6 +809,7 @@ function parseResearchThemeCandidatePlan(raw: string, fallbackTheme: string): Re
       const label = sanitizeResearchFacetLabel(facet?.label || facet?.role || facet?.query);
       const query = sanitizeResearchFacetLabel(facet?.query || label || fallbackTheme);
       const role = sanitizeResearchFacetLabel(facet?.role || label || query);
+      if (isBroadResearchRole(role || label || query)) continue;
       const candidates = Array.isArray(facet?.candidates)
         ? facet.candidates
             .map((item: unknown) => {
@@ -814,12 +855,16 @@ function parseResearchThemeCandidatePlan(raw: string, fallbackTheme: string): Re
         label: label || query || fallbackTheme,
         query: query || label || fallbackTheme,
         role: role || label || fallbackTheme,
+        definition: typeof facet?.definition === 'string' ? facet.definition.slice(0, 240) : undefined,
+        required: facet?.required !== false,
+        dimensions: parseStringArray(facet?.dimensions, 5),
+        searchQueries: parseStringArray(facet?.searchQueries || facet?.queries, 5),
         candidates,
       });
     }
-    return facets;
+    return { facets, requiredDimensions, notes: [] };
   } catch {
-    return [];
+    return { facets: [], requiredDimensions: [], notes: [] };
   }
 }
 
@@ -829,12 +874,33 @@ async function resolveResearchCandidateSeeds(args: {
   llmFill?: LLMFiller;
   stockService?: StockDataService;
   deadlineAt?: number;
-}): Promise<{ seeds: ResearchCandidateSeed[]; facets: ResearchThemeFacetPlan[]; notes: string[] }> {
+  previousUniverse?: any;
+}): Promise<{ seeds: ResearchCandidateSeed[]; facets: ResearchThemeFacetPlan[]; requiredDimensions: ResearchRequiredDimension[]; notes: string[] }> {
   const notes: string[] = [];
   const seedMap = new Map<string, Set<string>>();
   const evidenceMap = new Map<string, ResearchSourceEvidence[]>();
   const companyNameMap = new Map<string, Set<string>>();
+  const previousCandidates = Array.isArray(args.previousUniverse?.candidates) ? args.previousUniverse.candidates : [];
+  for (const item of previousCandidates) {
+    const symbol = normalizeTickerCandidate(item?.symbol);
+    if (!symbol) continue;
+    const facetsForSymbol = Array.isArray(item?.sourceFacets) && item.sourceFacets.length
+      ? item.sourceFacets.map((facet: unknown) => sanitizeResearchFacetLabel(facet)).filter(Boolean)
+      : ['Prior candidate'];
+    seedMap.set(symbol, new Set(facetsForSymbol));
+    evidenceMap.set(symbol, normalizeStoredResearchSourceEvidence(item?.sourceEvidence));
+  }
   let facets: ResearchThemeFacetPlan[] = [];
+  let requiredDimensions: ResearchRequiredDimension[] = Array.isArray(args.previousUniverse?.requiredDimensions)
+    ? args.previousUniverse.requiredDimensions
+        .map((item: any) => ({
+          label: sanitizeResearchFacetLabel(item?.label || item),
+          required: item?.required !== false,
+          searchQueries: parseStringArray(item?.searchQueries || item?.queries, 5),
+          rationale: typeof item?.rationale === 'string' ? item.rationale.slice(0, 240) : undefined,
+        }))
+        .filter((item: ResearchRequiredDimension) => item.label)
+    : [];
   let nameOnlyLookups = 0;
   const maxNameOnlyLookups = Math.max(3, Math.min(12, Math.ceil(args.targetCount / 4)));
 
@@ -847,7 +913,15 @@ async function resolveResearchCandidateSeeds(args: {
         RESEARCH_FACET_CANDIDATES
       );
       const raw = await args.llmFill(prompt);
-      facets = parseResearchThemeCandidatePlan(raw, args.theme).slice(0, RESEARCH_THEME_FACET_COUNT);
+      const parsedPlan = parseResearchThemeCandidatePlan(raw, args.theme);
+      facets = parsedPlan.facets.slice(0, RESEARCH_THEME_FACET_COUNT);
+      if (parsedPlan.requiredDimensions.length) {
+        const mergedDimensions = new Map(requiredDimensions.map((dimension) => [dimension.label.toLowerCase(), dimension]));
+        for (const dimension of parsedPlan.requiredDimensions) {
+          mergedDimensions.set(dimension.label.toLowerCase(), dimension);
+        }
+        requiredDimensions = Array.from(mergedDimensions.values());
+      }
       for (const facet of facets) {
         for (const item of facet.candidates.slice(0, RESEARCH_FACET_CANDIDATES)) {
           let symbol = item.symbol;
@@ -886,27 +960,25 @@ async function resolveResearchCandidateSeeds(args: {
 
   if (seedMap.size < Math.max(2, Math.ceil(args.targetCount / 3))) {
     const fallback = await resolveSectorTickers(args.theme, args.targetCount, args.llmFill, args.stockService);
-    const fallbackEvidenceLevel = facets.length ? 'beneficiary' : 'enabler';
-    const fallbackEvidenceConfidence = facets.length ? 45 : 58;
     for (const symbol of fallback) {
       const existing = seedMap.get(symbol) || new Set<string>();
-      existing.add('Broad theme resolver');
+      existing.add('Broad resolver raw candidate');
       seedMap.set(symbol, existing);
       evidenceMap.set(symbol, [
         ...(evidenceMap.get(symbol) || []),
         {
-          role: 'Broad theme resolver',
-          level: fallbackEvidenceLevel,
+          role: 'Broad resolver raw candidate',
+          level: 'beneficiary',
           rationale: facets.length
             ? 'Broad resolver candidate; requires provider/profile corroboration.'
-            : 'Provider-confirmed broad resolver candidate used because role-bucket LLM discovery was unavailable.',
-          confidence: fallbackEvidenceConfidence,
+            : 'Provider-confirmed broad resolver candidate held for later role classification; not enough for universe lock by itself.',
+          confidence: 35,
           source: 'broad-theme-resolver',
         },
       ]);
     }
     if (fallback.length) {
-      notes.push(`Broad resolver added ${fallback.length} fallback candidate${fallback.length === 1 ? '' : 's'}.`);
+      notes.push(`Broad resolver added ${fallback.length} raw candidate${fallback.length === 1 ? '' : 's'} for later role classification; broad-only evidence cannot lock the universe.`);
     }
   }
 
@@ -947,7 +1019,7 @@ async function resolveResearchCandidateSeeds(args: {
     companyNames: Array.from(companyNameMap.get(symbol) || []),
   })).slice(0, args.targetCount);
 
-  return { seeds, facets, notes };
+  return { seeds, facets, requiredDimensions, notes };
 }
 
 /**
@@ -1823,9 +1895,33 @@ function hasUsableOverview(overview: any): boolean {
     && hasReportValue(overview.description || overview.Description || overview.industry || overview.Industry || overview.sector || overview.Sector);
 }
 
+function nameTokensForValidation(value: unknown): string[] {
+  return Array.from(new Set(String(value || '')
+    .toLowerCase()
+    .replace(/\b(inc|incorporated|corp|corporation|company|co|ltd|limited|plc|holdings|holding|group|sa|nv|ag|se|class|adr|the)\b/g, ' ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter((token) => token.length > 2)));
+}
+
+function proposedNameMatchesProvider(proposedNames: string[] | undefined, overview: any): boolean {
+  if (!proposedNames?.length) return true;
+  const providerName = overview?.name || overview?.Name;
+  const providerTokens = new Set(nameTokensForValidation(providerName));
+  if (providerTokens.size === 0) return true;
+  return proposedNames.some((name) => {
+    const proposedTokens = nameTokensForValidation(name);
+    if (proposedTokens.length === 0) return true;
+    const matches = proposedTokens.filter((token) => providerTokens.has(token)).length;
+    return matches >= Math.min(2, proposedTokens.length) || matches / proposedTokens.length >= 0.5;
+  });
+}
+
 function researchCandidateValidationIssue(candidate: ResearchCandidateData): string | null {
   if (!hasPositivePrice(candidate.price)) return 'active quote unavailable';
   if (!hasUsableOverview(candidate.overview)) return 'company profile unavailable';
+  if (!proposedNameMatchesProvider(candidate.companyNames, candidate.overview)) return 'provider company name did not match proposed candidate';
   return null;
 }
 
@@ -4407,13 +4503,13 @@ export async function executeTool(
           }
         };
         const lockedSymbols = getLockedSymbols(args);
-        const requestedFinalCount = lockedSymbols.length > 0
+        let requestedFinalCount = lockedSymbols.length > 0
           ? lockedSymbols.length
           : Math.min(NUM_COMPANIES, Math.max(3, Number(args.count) || NUM_COMPANIES));
-        const finalCount = requestedFinalCount;
+        let finalCount = requestedFinalCount;
         // Build a broader candidate pool before scoring. The multiplier is env-driven,
         // bounded for provider quotas, and applies only to fresh research universes.
-        const initialCount = lockedSymbols.length > 0
+        let initialCount = lockedSymbols.length > 0
           ? lockedSymbols.length
           : hasReportWorkBudget(deadlineAt, 'optional', requestedFinalCount)
             ? Math.min(60, Math.max(finalCount, finalCount * RESEARCH_CANDIDATE_POOL_MULTIPLIER))
@@ -4622,6 +4718,18 @@ export async function executeTool(
           query: String(args.updateQuery || sector),
           symbols: lockedSymbols,
         });
+        const priorUniverseStatus = updateContext.previous?.metadata?.researchUniverse?.status;
+        const resumeUniverseDiscovery = args.updateMode
+          && priorUniverseStatus
+          && priorUniverseStatus !== 'locked';
+        if (resumeUniverseDiscovery) {
+          lockedSymbols.length = 0;
+          requestedFinalCount = Math.min(NUM_COMPANIES, Math.max(3, Number(args.count) || NUM_COMPANIES));
+          finalCount = requestedFinalCount;
+          initialCount = hasReportWorkBudget(deadlineAt, 'optional', requestedFinalCount)
+            ? Math.min(60, Math.max(finalCount, finalCount * RESEARCH_CANDIDATE_POOL_MULTIPLIER))
+            : finalCount;
+        }
 
         // ── Phase 1: Build a theme-bucketed candidate pool (with fallback) ──
         const candidateDiscovery = lockedSymbols.length > 0
@@ -4636,6 +4744,7 @@ export async function executeTool(
                 };
               }),
               facets: [] as ResearchThemeFacetPlan[],
+              requiredDimensions: (updateContext.previous?.metadata?.researchUniverse?.requiredDimensions || []) as ResearchRequiredDimension[],
               notes: [] as string[],
             }
           : await resolveResearchCandidateSeeds({
@@ -4644,6 +4753,7 @@ export async function executeTool(
               llmFill: hasReportLLMBudget(deadlineAt) ? options?.llmFill : undefined,
               stockService,
               deadlineAt,
+              previousUniverse: updateContext.previous?.metadata?.researchUniverse,
             });
         const candidateFacetMap = new Map(candidateDiscovery.seeds.map((seed) => [seed.symbol, seed.sourceFacets]));
         const candidateEvidenceMap = new Map<string, ResearchSourceEvidence[]>(
@@ -4727,6 +4837,7 @@ export async function executeTool(
               symbol,
               sourceFacets: candidateFacetMap.get(symbol) || [],
               sourceEvidence: candidateEvidenceMap.get(symbol) || [],
+              companyNames: candidateDiscovery.seeds.find((seed) => seed.symbol === symbol)?.companyNames || [],
               preservedThemeEvidence: priorCandidate?.themeEvidence,
               preservedThemeFit: priorCandidate?.themeFit,
               preservedThemeScore: priorCandidate?.themeScore,
@@ -4774,21 +4885,79 @@ export async function executeTool(
           allowStrongAdjacent: RESEARCH_UNIVERSE_ALLOW_STRONG_ADJACENT !== 'false',
           maxRoleShare: RESEARCH_UNIVERSE_MAX_ROLE_SHARE,
         });
-        if (lockedSymbols.length === 0 && universeSelection.selectedSymbols.length === 0) {
+        const universeRoles: ResearchUniverseRole[] = candidateDiscovery.facets.map((facet) => ({
+          label: facet.label,
+          definition: facet.definition,
+          required: facet.required,
+          query: facet.query,
+          dimensions: facet.dimensions,
+          searchQueries: facet.searchQueries,
+        }));
+        const universeReadiness: ResearchUniverseReadiness = evaluateResearchUniverseReadiness({
+          selection: universeSelection,
+          roles: universeRoles,
+          requiredDimensions: candidateDiscovery.requiredDimensions,
+          targetCount: finalCount,
+        });
+        if (lockedSymbols.length === 0 && !universeReadiness.canBuildFullReport) {
           const reason = [
-            `No verified candidate cleared the configured theme evidence/fit gate for "${sector}". The report was not forced with weak or unsupported companies.`,
-            'Runtime budget or provider-data limits prevented a qualified market-data-backed universe from being completed in this pass.',
+            `The research universe for "${sector}" is still ${universeReadiness.status}; this pass did not lock a full report universe.`,
+            `Qualified direct/enabler candidates: ${universeReadiness.selectedCount}/${universeReadiness.targetLockCount}.`,
+            `Concrete roles: ${universeReadiness.roleCount}/${universeReadiness.minRoleCount}.`,
+            universeReadiness.missingDimensions.length
+              ? `Missing dimensions: ${universeReadiness.missingDimensions.join(', ')}.`
+              : '',
+            'Runtime budget, provider data, or model availability may require additional improve passes before the universe can lock.',
+            'The next improve pass will continue candidate discovery/refinement instead of preserving a weak universe.',
           ].filter(Boolean).join(' ');
           const content = buildUnavailableResearchContent(sector, reason);
+          const generatedAt = new Date().toISOString();
+          const runMetadata = buildReportRunMetadata({
+            kind: 'research',
+            query: String(args.updateQuery || sector),
+            symbols: universeSelection.selectedSymbols,
+            range,
+            generatedAt,
+            updatedFrom: updateContext.previous,
+            notes: [
+              ...candidateDiscovery.notes,
+              ...universeSelection.notes,
+              ...selectionNotes,
+              ...invalidCandidateNotes,
+              ...updateContext.notes,
+              ...universeReadiness.repairActions,
+            ],
+            researchUniverse: {
+              status: universeReadiness.status,
+              selectedSymbols: universeSelection.selectedSymbols,
+              qualifiedSymbols: universeSelection.qualifiedSymbols,
+              requiredDimensions: candidateDiscovery.requiredDimensions,
+              coveredDimensions: universeReadiness.coveredDimensions,
+              missingDimensions: universeReadiness.missingDimensions,
+              roles: universeRoles,
+              readiness: universeReadiness,
+              candidates: universeSelection.candidates.map((candidate) => ({
+                symbol: candidate.symbol,
+                sourceFacets: candidateFacetMap.get(candidate.symbol) || [],
+                sourceEvidence: candidateEvidenceMap.get(candidate.symbol) || [],
+                themeEvidence: candidate.themeEvidence,
+                themeFit: candidate.themeFit,
+                themeScore: candidate.themeScore,
+                qualified: candidate.qualified,
+              })),
+            },
+            coverage: [],
+          });
           const safeTitle = sector.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'research';
           const saved = await saveReport(content, `${safeTitle}-research-report`, undefined, {
             reportKind: 'research',
             summary: reason,
+            runMetadata,
           });
           return {
             success: true,
             data: { content, ...saved, downloadUrl: buildReportDownloadUrl(saved) },
-            message: `Saved unavailable-data research report for "${sector}" to ${saved.filePath}`,
+            message: `Saved research universe-refinement checkpoint for "${sector}" to ${saved.filePath}`,
           };
         }
 
@@ -4818,6 +4987,16 @@ export async function executeTool(
                 `Scored universe: ${universe.join(', ')}`,
               ].filter(Boolean) as string[]),
           ...candidateDiscovery.notes,
+          lockedSymbols.length > 0
+            ? `Locked universe diagnostics status: ${universeReadiness.status}; qualified allocation subset ${universeReadiness.selectedCount}/${universe.length}.`
+            : `Universe readiness status: ${universeReadiness.status}; qualified direct/enabler candidates ${universeReadiness.selectedCount}/${universeReadiness.targetLockCount}, concrete roles ${universeReadiness.roleCount}/${universeReadiness.minRoleCount}.`,
+          ...(universeReadiness.coveredDimensions.length
+            ? [`Covered required dimensions: ${universeReadiness.coveredDimensions.join('; ')}.`]
+            : []),
+          ...(universeReadiness.missingDimensions.length
+            ? [`Missing required dimensions: ${universeReadiness.missingDimensions.join('; ')}.`]
+            : []),
+          ...universeReadiness.repairActions,
           ...universeSelection.notes,
           ...selectionNotes,
           ...invalidCandidateNotes,
@@ -5259,8 +5438,14 @@ export async function executeTool(
           updatedFrom: updateContext.previous,
           notes,
           researchUniverse: universeSelection ? {
+            status: lockedSymbols.length > 0 ? 'locked' : universeReadiness.status,
             selectedSymbols: universeSelection.selectedSymbols,
             qualifiedSymbols: universeSelection.qualifiedSymbols,
+            requiredDimensions: candidateDiscovery.requiredDimensions,
+            coveredDimensions: universeReadiness.coveredDimensions,
+            missingDimensions: universeReadiness.missingDimensions,
+            roles: universeRoles,
+            readiness: universeReadiness,
             candidates: universeSelection.candidates.map((candidate) => ({
               symbol: candidate.symbol,
               sourceFacets: candidateFacetMap.get(candidate.symbol) || [],
