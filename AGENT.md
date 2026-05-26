@@ -190,7 +190,7 @@ User message
 6. `saveReport()` persists to Supabase or filesystem.
 7. Report artifact is returned to the chat UI.
 
-Deep-sector research is fixed at one core-data-first refinement pass. It resolves a live provider-confirmed universe, locks the saveable company list, fetches critical market data (price, overview, basic financials, price history) before optional ecosystem/dependency LLM enrichment, and never spends model calls refining a universe before a data-backed report body is possible.
+Deep-sector research resolves a live provider-confirmed candidate set, scores the final universe with a data-backed methodology, locks the saveable company list, fetches critical market data (price, overview, basic financials, price history) before optional ecosystem/dependency LLM enrichment, and never lets later model passes change the locked universe. Universe scoring must remain generic: no production ticker/sector hardcoding, and it must balance theme relevance, investability/data quality, liquidity/scale, preliminary financial factors, and representative coverage. Research reports must always include a dependency/role map; when the LLM enrichment pass is skipped, render the deterministic provider-profile role map instead of omitting the section.
 
 ---
 
@@ -327,6 +327,9 @@ See `web/.env.example` for annotated defaults. All variables prefixed with `STOC
 - `NUM_COMPANIES` — companies per sector/comparison report (2–15, default 10)
 - `DEEP_RESEARCH_DEPTH` — optional post-core-data ecosystem/refinement passes for research reports (1–10, default 1)
 - `DEEP_RESEARCH_MAX_MS` — deep-research runtime budget in ms (default 240000)
+- `RESEARCH_ALLOCATION_MIN_SCORE` — minimum report score for research allocation scenario eligibility (0–100, default 60)
+- `RESEARCH_ALLOCATION_MIN_THEME_SCORE` — minimum theme-fit score for research allocation eligibility when available (0–100, default 50)
+- `RESEARCH_ALLOCATION_MIN_DATA_CONFIDENCE` — minimum provider-data confidence score for research allocation eligibility when available (0–100, default 50)
 - `DATA_FETCH_CONCURRENCY` — parallel ticker fetches (1–4, default 3)
 - `VERCEL_EXTENDED_DATA_MAX_COMPANIES` — on Vercel, large reports prioritize core decision inputs and cached optional sections
 - `VERCEL_REPORT_RETURN_BUFFER_MS` — minimum Vercel time reserved for report rendering/persistence before the hard timeout
@@ -357,6 +360,9 @@ ALPHA_VANTAGE_API_KEY=your_av_key
 FINNHUB_API_KEY=your_finnhub_key
 NUM_COMPANIES=15
 DEEP_RESEARCH_DEPTH=1
+RESEARCH_ALLOCATION_MIN_SCORE=60
+RESEARCH_ALLOCATION_MIN_THEME_SCORE=50
+RESEARCH_ALLOCATION_MIN_DATA_CONFIDENCE=50
 ```
 
 These give broader sector analysis and better free-tier resilience than the code defaults.

@@ -6,6 +6,7 @@ import { getConfiguredEnv } from './env';
 import { DEFAULT_REPORTS_DIR } from './reportFileStore';
 import { computeDcfValuation, deriveFreeCashFlow } from './dcfValuation';
 import { writeReportMetadataSidecar, type ReportRunMetadata } from './reportUpdate';
+import type { ResearchCandidateScore, ResearchUniverseSelection } from './researchUniverseSelector';
 
 type PricePoint = { date: string; close: string | number; high?: string | number; low?: string | number };
 type EarningsPoint = { fiscalQuarter: string; reportedEPS: string | number };
@@ -83,6 +84,8 @@ export interface SectorReportData extends ComparisonReportData {
 export interface DeepSectorReportData extends SectorReportData {
   /** The broad initial candidate list before refinement */
   initialCandidates?: string[];
+  /** Data-backed universe selection scores and role coverage metadata */
+  universeSelection?: ResearchUniverseSelection;
   /** LLM-generated narrative covering supply chain, customer, market and news dependencies */
   dependencyAnalysis?: string;
   /** Mermaid diagram source for the sector ecosystem map */
@@ -490,6 +493,13 @@ function formatNumber(value: unknown, decimals = 2): string {
   const num = toNumber(value);
   if (num === null) return 'N/A';
   return num.toFixed(decimals);
+}
+
+function parseBoundedEnvNumber(name: string, fallback: number, min: number, max: number): number {
+  const raw = getConfiguredEnv(name);
+  const parsed = raw ? Number(raw) : fallback;
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, parsed));
 }
 
 function trimTrailingZeros(value: string): string {
@@ -3532,6 +3542,194 @@ export function buildSectorReport(data: SectorReportData): string {
   return `${sectorHeader}\n\n${comparisonBody}\n\n${conclusion}`;
 }
 
+function tableCell(value: unknown): string {
+  return String(value ?? '').replace(/\|/g, '/').replace(/\s+/g, ' ').trim();
+}
+
+function formatScore(value: number | null | undefined): string {
+  return Number.isFinite(value) ? `${(value as number).toFixed(1)}` : 'N/A';
+}
+
+function buildResearchUniverseSelectionSection(selection?: ResearchUniverseSelection, manualUniverse = false): string {
+  if (!selection || selection.candidates.length === 0) return '';
+  const debugMode = process.env.DEBUG === 'true';
+  const order = new Map(selection.selectedSymbols.map((symbol, index) => [symbol, index]));
+  const selectedRows = selection.candidates
+    .filter((candidate) => candidate.selected)
+    .sort((a, b) => (order.get(a.symbol) ?? 999) - (order.get(b.symbol) ?? 999))
+    .map((candidate) => [
+      tableCell(`${candidate.companyName} (${candidate.symbol})`),
+      tableCell(candidate.subtheme),
+      formatScore(candidate.themeScore),
+      formatScore(candidate.investmentReadinessScore),
+      formatScore(candidate.dataConfidenceScore),
+      formatScore(candidate.totalScore),
+      tableCell(candidate.reasons.slice(0, 3).join('; ') || 'Selected by combined score'),
+    ]);
+
+  const selectedTable = buildTable(
+    ['Company', 'Role', 'Theme', 'Invest/Data', 'Data', 'Total', 'Why'],
+    selectedRows,
+    ['left', 'left', 'right', 'right', 'right', 'right', 'left']
+  );
+  const weights = selection.weights;
+  const modeLine = manualUniverse
+    ? 'The saved report universe was preserved. Scores below explain data quality, theme fit, and role coverage for the locked companies.'
+    : 'The final universe was selected from verified candidates before the deeper financial comparison ran.';
+  const lines = [
+    '## 🧭 Universe Selection',
+    modeLine,
+    `Configured slots: ${selection.requestedCount}. Verified candidates scored: ${selection.candidateCount}. Selected: ${selection.selectedSymbols.join(', ')}.`,
+    `Weights: theme ${(weights.themeRelevance * 100).toFixed(0)}%, investment/data ${(weights.investmentReadiness * 100).toFixed(0)}%, provider confidence ${(weights.dataConfidence * 100).toFixed(0)}%, liquidity/scale ${(weights.liquidityScale * 100).toFixed(0)}%, representative coverage ${(weights.representativeCoverage * 100).toFixed(0)}%.`,
+    selectedTable,
+  ];
+
+  if (debugMode) {
+    const excludedRows = selection.candidates
+      .filter((candidate) => !candidate.selected)
+      .map((candidate) => [
+        tableCell(`${candidate.companyName} (${candidate.symbol})`),
+        tableCell(candidate.subtheme),
+        formatScore(candidate.themeScore),
+        formatScore(candidate.dataConfidenceScore),
+        formatScore(candidate.totalScore),
+        tableCell(candidate.exclusionReason || 'Not selected'),
+      ]);
+    if (excludedRows.length) {
+      lines.push(
+        '### Excluded Candidates',
+        buildTable(
+          ['Company', 'Role', 'Theme', 'Data', 'Total', 'Reason'],
+          excludedRows,
+          ['left', 'left', 'right', 'right', 'right', 'left']
+        )
+      );
+    }
+  }
+
+  return lines.join('\n\n');
+}
+
+function buildResearchDataQualitySection(notes?: string[]): string {
+  if (!notes?.length) return '';
+  const debugMode = process.env.DEBUG === 'true';
+  if (debugMode) return '';
+  const visibleNotes = notes.slice(0, 10);
+  const hiddenCount = Math.max(0, notes.length - visibleNotes.length);
+  return [
+    '## ⚠️ Data Quality Summary',
+    ...visibleNotes.map((note) => `- ${note}`),
+    hiddenCount > 0 ? `- ${hiddenCount} additional data notes hidden. Set DEBUG=true to show the full diagnostic list.` : null,
+  ].filter(Boolean).join('\n');
+}
+
+function buildResearchAllocationSection(
+  scored: Array<{ item: ComparisonReportItem; score: number | null }>,
+  selection?: ResearchUniverseSelection,
+  generatedAt = ''
+): string {
+  const minReportScore = parseBoundedEnvNumber('RESEARCH_ALLOCATION_MIN_SCORE', 60, 0, 100);
+  const minThemeScore = parseBoundedEnvNumber('RESEARCH_ALLOCATION_MIN_THEME_SCORE', 50, 0, 100);
+  const minDataScore = parseBoundedEnvNumber('RESEARCH_ALLOCATION_MIN_DATA_CONFIDENCE', 50, 0, 100);
+  const selectionBySymbol = new Map<string, ResearchCandidateScore>(
+    (selection?.candidates || []).map((candidate) => [candidate.symbol, candidate])
+  );
+
+  const candidates = scored.map((row) => {
+    const selector = selectionBySymbol.get(row.item.symbol);
+    const stockData = asStockReportData(row.item, generatedAt);
+    const guidance = derivePositionGuidanceFromStock(stockData, row.score);
+    const reportScore = row.score;
+    const universeScore = selector?.totalScore ?? null;
+    const themeScore = selector?.themeScore ?? null;
+    const dataScore = selector?.dataConfidenceScore ?? null;
+    const allocationScore = reportScore === null
+      ? null
+      : (
+          (reportScore * 0.55) +
+          ((universeScore ?? reportScore) * 0.25) +
+          ((themeScore ?? reportScore) * 0.10) +
+          ((dataScore ?? reportScore) * 0.10)
+        ) * (guidance.forNonOwners === 'Buy' ? 1 : 0.65);
+    const reasons: string[] = [];
+    if (reportScore === null) reasons.push('missing report score');
+    if (reportScore !== null && reportScore < minReportScore) reasons.push(`report score below ${minReportScore}`);
+    if (themeScore !== null && themeScore < minThemeScore) reasons.push(`theme score below ${minThemeScore}`);
+    if (dataScore !== null && dataScore < minDataScore) reasons.push(`data confidence below ${minDataScore}`);
+    if (guidance.forNonOwners === 'Avoid') reasons.push('fresh-entry guidance is avoid');
+    const eligible = allocationScore !== null
+      && reportScore !== null
+      && reportScore >= minReportScore
+      && (themeScore === null || themeScore >= minThemeScore)
+      && (dataScore === null || dataScore >= minDataScore)
+      && guidance.forNonOwners !== 'Avoid';
+    return { row, selector, guidance, allocationScore, eligible, reasons };
+  });
+
+  const eligible = candidates
+    .filter((candidate) => candidate.eligible && candidate.allocationScore !== null && candidate.allocationScore > 0)
+    .sort((a, b) => (b.allocationScore || 0) - (a.allocationScore || 0));
+  const total = eligible.reduce((sum, candidate) => sum + (candidate.allocationScore || 0), 0);
+  const rows = eligible.map((candidate) => {
+    const item = candidate.row.item;
+    const weight = total > 0 ? ((candidate.allocationScore || 0) / total) * 100 : null;
+    const reasons = [
+      candidate.guidance.forNonOwners === 'Buy' ? 'fresh-entry buy' : 'watch-sized candidate',
+      candidate.selector ? `theme ${formatScore(candidate.selector.themeScore)}` : null,
+      candidate.selector ? `data ${formatScore(candidate.selector.dataConfidenceScore)}` : null,
+    ].filter(Boolean).join('; ');
+    return [
+      tableCell(`${item.overview?.name || item.symbol} (${item.symbol})`),
+      formatScore(candidate.row.score),
+      formatScore(candidate.allocationScore),
+      weight === null ? 'N/A' : `${weight.toFixed(1)}%`,
+      tableCell(reasons),
+    ];
+  });
+
+  const debugMode = process.env.DEBUG === 'true';
+  const lines = [
+    '## 🧭 Research Allocation Scenario (Not Investment Advice)',
+    `Selective scenario only. Companies must clear report score (${minReportScore}), theme fit (${minThemeScore}), and data confidence (${minDataScore}) gates when those selector scores are available; no cash or equal-weight remainder is forced.`,
+    rows.length
+      ? buildTable(['Company', 'Report', 'Allocation Score', 'Scenario Weight', 'Why Included'], rows, ['left', 'right', 'right', 'right', 'left'])
+      : '_No company cleared the configured allocation gates with the current verified data._',
+  ];
+
+  if (debugMode) {
+    const excludedRows = candidates
+      .filter((candidate) => !candidate.eligible)
+      .map((candidate) => [
+        tableCell(`${candidate.row.item.overview?.name || candidate.row.item.symbol} (${candidate.row.item.symbol})`),
+        formatScore(candidate.row.score),
+        candidate.selector ? formatScore(candidate.selector.themeScore) : 'N/A',
+        candidate.selector ? formatScore(candidate.selector.dataConfidenceScore) : 'N/A',
+        tableCell(candidate.reasons.join('; ') || 'did not clear allocation gates'),
+      ]);
+    if (excludedRows.length) {
+      lines.push(
+        '### Allocation Exclusions',
+        buildTable(['Company', 'Report', 'Theme', 'Data', 'Reason'], excludedRows, ['left', 'right', 'right', 'right', 'left'])
+      );
+    }
+  }
+
+  return lines.join('\n\n');
+}
+
+function stripResearchNoiseFromComparisonBody(body: string): string {
+  if (process.env.DEBUG === 'true') {
+    return stripMarkdownSection(body, '## 🧭 Indicative Allocation (Not Investment Advice)');
+  }
+  return [
+    '## ⚠️ Data Gaps',
+    '## 🧑‍💼 Ownership & Positioning',
+    '## 🧾 Insider Activity Summary',
+    '## 🧩 Data Coverage (Chart Inputs)',
+    '## 🧭 Indicative Allocation (Not Investment Advice)',
+  ].reduce((current, heading) => stripMarkdownSection(current, heading), body);
+}
+
 /**
  * Builds a comprehensive research report.
  *
@@ -3569,9 +3767,9 @@ export function buildDeepSectorReport(data: DeepSectorReportData): string {
         `4. **Comparison** — Financial comparison was rebuilt for the preserved universe`,
       ].join('\n')
     : [
-        `1. **Candidate Identification** — AI identified ${initialCount > 0 ? `${initialCount} initial` : 'a set of'} companies in the **"${data.sectorQuery}"** space`,
-        `2. **Ecosystem Analysis** — Supply chain, customer, market, and news dependencies were mapped across all candidates`,
-        `3. **Refinement** — The list was refined to ${refinedCount} companies best suited for deep financial comparison`,
+        `1. **Candidate Identification** — The resolver identified ${initialCount > 0 ? `${initialCount} verified initial` : 'a verified set of'} listed candidates for **"${data.sectorQuery}"**`,
+        `2. **Universe Scoring** — Candidates were scored for theme relevance, investability/data quality, liquidity/scale, financial factors, and representative coverage`,
+        `3. **Dependency Mapping** — Selected companies were grouped into role/exposure buckets before optional LLM ecosystem enrichment`,
         `4. **Comparison** — Full financial comparison built for the refined universe`,
       ].join('\n');
 
@@ -3584,6 +3782,9 @@ export function buildDeepSectorReport(data: DeepSectorReportData): string {
     refinedLine,
   ].filter(Boolean).join('\n\n');
 
+  const universeSelectionSection = buildResearchUniverseSelectionSection(data.universeSelection, manualUniverse);
+  const dataQualitySection = buildResearchDataQualitySection(data.notes);
+
   // ── Research Ecosystem & Dependencies ───────────────────────────────────
   // The dependencyAnalysis string is expected to use structured ### subsection
   // headers generated by the LLM prompt (Supply Chain, Customer Exposure, etc.).
@@ -3591,7 +3792,7 @@ export function buildDeepSectorReport(data: DeepSectorReportData): string {
   const dependencySection = data.dependencyAnalysis
     ? (
         `## 🕸️ Research Ecosystem & Dependencies\n\n` +
-        `> _AI-generated analysis of inter-company relationships, market drivers, and competitive dynamics._\n\n` +
+        `> _Role map and dependency analysis based on verified profile/provider data first; optional AI enrichment is used only when budget allows._\n\n` +
         data.dependencyAnalysis
       )
     : '';
@@ -3614,19 +3815,20 @@ export function buildDeepSectorReport(data: DeepSectorReportData): string {
 
   // Re-use comparison report body — strip the comparison header and generic
   // conclusion so they are not duplicated (research adds its own conclusion).
-  const comparisonBody = stripComparisonConclusion(
+  const comparisonBody = stripResearchNoiseFromComparisonBody(stripComparisonConclusion(
     buildComparisonReport(data)
       .replace(/^# Company Comparison Report\n\nGenerated:[^\n]*\n\nUniverse:[^\n]*\n\n/, '')
       .replace(/^# Company Comparison Report\n\nGenerated:[^\n]*\n\n/, '')
       .replace(/^# Company Comparison Report\n\n/, '')
       .trimStart()
-  );
-  const insiderSections = buildDeepInsiderSections(data.items);
+  ));
+  const insiderSections = process.env.DEBUG === 'true' ? buildDeepInsiderSections(data.items) : '';
 
   const scored = scoreComparisonItems(data.items, data.generatedAt);
+  const allocationSection = buildResearchAllocationSection(scored, data.universeSelection, data.generatedAt);
   const conclusion = buildComparisonConclusion(data.items, scored, 'research', data.sectorQuery, data.llmConclusion);
 
-  return [header, dependencySection, diagramSection, refinementSection, snapshotsSection, comparisonBody, insiderSections, conclusion]
+  return [header, universeSelectionSection, dependencySection, diagramSection, refinementSection, snapshotsSection, dataQualitySection, comparisonBody, allocationSection, insiderSections, conclusion]
     .filter(Boolean)
     .join('\n\n');
 }
@@ -3648,7 +3850,7 @@ function stripStockReportHeader(body: string): string {
 function stripMarkdownSection(body: string, heading: string): string {
   const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return body
-    .replace(new RegExp(`\n\n${escaped}\n[\\s\\S]*?(?=\n\n## [^\n]+|\n\n# [^\n]+|$)`), '')
+    .replace(new RegExp(`(?:^|\\n\\n)${escaped}\\n[\\s\\S]*?(?=\\n\\n## [^\\n]+|\\n\\n# [^\\n]+|$)`), '')
     .trim();
 }
 

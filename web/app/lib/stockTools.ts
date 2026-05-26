@@ -20,6 +20,13 @@ import { appendDecisionJournal, getLatestDecision, upsertCompanyThesis } from '.
 import type { DataTrustEntry, DecisionSnapshot } from './investmentTypes';
 import { DEFAULT_REPORTS_DIR } from './reportFileStore';
 import {
+  buildResearchUniverseDependencySummary,
+  buildResearchUniverseMermaid,
+  selectResearchUniverse,
+  type ResearchCandidateData,
+  type ResearchUniverseSelection,
+} from './researchUniverseSelector';
+import {
   buildReportRunMetadata,
   buildUpdateNotes,
   findPreviousReportForUpdate,
@@ -776,7 +783,7 @@ function buildDeepSectorDependencyPrompt(
           ? `  Prior rationale: ${previousPass.refinementNotes.slice(0, 400)}\n`
           : '') +
         `\nUsing the prior analysis above, produce a DEEPER and MORE PRECISE analysis. ` +
-        `Correct any gaps, refine the company selection, and expand the ecosystem diagram.\n`
+        `Correct any gaps in the dependency narrative and expand the ecosystem diagram without changing the locked company universe.\n`
       )
     : '';
 
@@ -788,7 +795,8 @@ function buildDeepSectorDependencyPrompt(
     `COMPANY DATA:\n${summaries}\n` +
     previousPassSection +
     `\nTASKS:\n` +
-    `1. ECOSYSTEM ANALYSIS: Write a structured analysis using EXACTLY these four ### markdown subsection headers (one paragraph each):\n` +
+    `1. ECOSYSTEM ANALYSIS: Write a structured analysis using EXACTLY these four ### markdown subsection headers (one paragraph each). ` +
+    `If the supplied data does not verify an exact supplier/customer relationship, describe it as role exposure rather than a confirmed relationship:\n` +
     `   ### 🔗 Supply Chain & Dependencies\n` +
     `   (key supplier/input relationships, who depends on whom, upstream/downstream links)\n` +
     `   ### 👥 Customer & Revenue Exposure\n` +
@@ -798,17 +806,14 @@ function buildDeepSectorDependencyPrompt(
     `   ### ⚔️ Competitive Dynamics & Sentiment\n` +
     `   (competitive moats, market-share battles, news sentiment themes across candidates)\n\n` +
     `2. ECOSYSTEM DIAGRAM: Create a concise Mermaid diagram (graph LR direction) showing the most important\n` +
-    `   supplier-company-customer relationships or competitive positioning. Keep it to at most 15 nodes.\n` +
+    `   role groups, dependency exposures, or verified relationships from the supplied data. Keep it to at most 15 nodes.\n` +
     `   Use plain node names without special characters.\n\n` +
-    `3. REFINEMENT: Select the best ${finalCount} companies from the candidates for deep financial analysis.\n` +
-    `   Criteria: sector relevance, financial strength, market leadership, and portfolio diversification.\n\n` +
-    `4. RATIONALE: For EVERY candidate, write exactly one line in this format — no extra text:\n` +
-    `   ✅ TICKER (Company Name) — reason this company was selected\n` +
-    `   ❌ TICKER (Company Name) — reason this company was excluded\n\n` +
-    `5. COMPANY SNAPSHOTS: For each company in the FINAL refined list only, provide a 1-2 sentence summary\n` +
+    `3. SELECTION RATIONALE: The company universe is already locked to ${finalCount} selected names. For EVERY candidate, write exactly one line in this format — no extra text:\n` +
+    `   ✅ TICKER (Company Name) — grounded role and investment relevance\n\n` +
+    `4. COMPANY SNAPSHOTS: For each selected company only, provide a 1-2 sentence summary\n` +
     `   of their role in the sector and key investment relevance. Use the company ticker as the key.\n\n` +
     `Respond ONLY with valid JSON (no markdown fences, no explanation outside the JSON):\n` +
-    `{"refinedList":["TICK1","TICK2"],"dependencyAnalysis":"### 🔗 Supply Chain & Dependencies\\n\\ntext...\\n\\n### 👥 Customer & Revenue Exposure\\n\\ntext...","ecosystemDiagram":"graph LR\\n  NodeA-->NodeB","refinementNotes":"✅ TICK1 (Name) — reason\\n❌ TICK2 (Name) — reason","companySnapshots":{"TICK1":"1-2 sentence snapshot...","TICK2":"1-2 sentence snapshot..."}}`
+    `{"dependencyAnalysis":"### 🔗 Supply Chain & Dependencies\\n\\ntext...\\n\\n### 👥 Customer & Revenue Exposure\\n\\ntext...","ecosystemDiagram":"graph LR\\n  NodeA-->NodeB","refinementNotes":"✅ TICK1 (Name) — reason\\n✅ TICK2 (Name) — reason","companySnapshots":{"TICK1":"1-2 sentence snapshot...","TICK2":"1-2 sentence snapshot..."}}`
   );
 }
 
@@ -4325,12 +4330,19 @@ export async function executeTool(
               hasReportLLMBudget(deadlineAt) ? options?.llmFill : undefined,
               stockService
             );
+        const normalizedInitialCandidates = Array.from(new Set(
+          initialCandidates
+            .map((symbol) => normalizeTickerCandidate(symbol))
+            .filter(Boolean) as string[]
+        ));
 
-        const minimumFreshUniverse = lockedSymbols.length > 0 ? 1 : Math.min(finalCount, 3);
-        if (initialCandidates.length < minimumFreshUniverse) {
-          const reason = initialCandidates.length === 0
+        const minimumFreshUniverse = lockedSymbols.length > 0
+          ? Math.min(lockedSymbols.length, 1)
+          : Math.min(finalCount, Math.max(1, Math.ceil(finalCount / 5)));
+        if (normalizedInitialCandidates.length < minimumFreshUniverse) {
+          const reason = normalizedInitialCandidates.length === 0
             ? `Could not identify verified listed companies for "${sector}" using the configured resolver and market-data providers.`
-            : `Only ${initialCandidates.length} verified candidate${initialCandidates.length === 1 ? '' : 's'} could be identified for "${sector}", below the minimum ${minimumFreshUniverse} needed for a reliable broad research universe.`;
+            : `Only ${normalizedInitialCandidates.length} verified candidate${normalizedInitialCandidates.length === 1 ? '' : 's'} could be identified for "${sector}", below the minimum ${minimumFreshUniverse} needed for a reliable broad research universe.`;
           const content = buildUnavailableResearchContent(sector, reason);
           const safeTitle = sector.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'research';
           const saved = await saveReport(content, `${safeTitle}-research-report`, undefined, {
@@ -4344,9 +4356,66 @@ export async function executeTool(
           };
         }
 
+        const selectionNotes: string[] = [];
+        let selectionRateLimitHit = false;
+        const fetchSelectionField = async <T>(
+          symbol: string,
+          cache: SymbolCache,
+          label: string,
+          key: string,
+          request: () => Promise<T>,
+          allowRequest = true,
+          priority: ReportWorkPriority = 'critical'
+        ) => {
+          const cachedValue = getCachedValue(cache, key);
+          if (cachedValue !== null) return cachedValue as T;
+          if (selectionRateLimitHit || !allowRequest || timeBudgetExceeded()) return undefined as T;
+          try {
+            const result = await withReportTaskTimeout(request(), priority, deadlineAt);
+            setCachedValue(cache, key, result);
+            return result;
+          } catch (error: any) {
+            const message = error?.message || 'Unavailable';
+            if (isRateLimitError(message)) {
+              selectionRateLimitHit = true;
+              selectionNotes.push(`${detectRateLimitProvider(message)} rate limit reached during universe selection; remaining candidate scoring used cached/available data.`);
+            } else if (!isSuppressedProviderError(message)) {
+              selectionNotes.push(`${symbol} ${label}: ${message}`);
+            }
+            return undefined as T;
+          }
+        };
+        const selectionCandidateData = await mapWithConcurrency<string, ResearchCandidateData>(
+          normalizedInitialCandidates,
+          DATA_FETCH_CONCURRENCY,
+          async (symbol) => {
+            const cache = await loadSymbolCache(symbol);
+            const candidateCount = normalizedInitialCandidates.length;
+            const allowSelectionRequests = lockedSymbols.length === 0;
+            const allowCore = allowSelectionRequests && hasReportWorkBudget(deadlineAt, 'critical', Math.max(candidateCount, finalCount));
+            const allowHigh = allowSelectionRequests && hasReportWorkBudget(deadlineAt, 'high', Math.max(candidateCount, finalCount));
+            const price = await fetchSelectionField(symbol, cache, 'Price', 'price', () => stockService.getStockPrice(symbol), allowCore, 'critical');
+            const overview = await fetchSelectionField(symbol, cache, 'Company overview', 'overview', () => stockService.getCompanyOverview(symbol), allowCore, 'critical');
+            const basicFinancials = await fetchSelectionField(symbol, cache, 'Basic financials', 'basicFinancials', () => stockService.getBasicFinancials(symbol), allowHigh, 'high');
+            const priceHistory = await fetchSelectionField(symbol, cache, 'Price history', `priceHistory:${range}`, () => stockService.getPriceHistory(symbol, range), allowHigh && candidateCount <= finalCount, 'high');
+            await saveSymbolCache(symbol, cache);
+            return { symbol, price, overview, basicFinancials, priceHistory };
+          }
+        );
+        const universeSelection: ResearchUniverseSelection | null = await selectResearchUniverse({
+          query: resolverSector,
+          candidates: selectionCandidateData,
+          finalCount,
+          llmFill: hasReportLLMBudget(deadlineAt) ? options?.llmFill : undefined,
+        });
+
         // Vercel/local priority: lock a saveable universe and fetch market data
         // before any optional ecosystem/refinement LLM work.
-        const universe = lockedSymbols.length > 0 ? lockedSymbols : initialCandidates.slice(0, finalCount);
+        const universe = lockedSymbols.length > 0
+          ? lockedSymbols
+          : universeSelection.selectedSymbols.length > 0
+            ? universeSelection.selectedSymbols
+            : normalizedInitialCandidates.slice(0, finalCount);
         const updateContext = await prepareReportUpdateContext(args, {
           kind: 'research',
           query: String(args.updateQuery || sector),
@@ -4364,7 +4433,9 @@ export async function executeTool(
             : `Universe refined through research analysis (${DEEP_RESEARCH_DEPTH} pass${DEEP_RESEARCH_DEPTH > 1 ? 'es' : ''}) for: "${sector}"`,
           ...(lockedSymbols.length > 0
             ? [`Preserved universe: ${universe.join(', ')}`]
-            : [`Initial candidates: ${initialCandidates.join(', ')}`, `Refined universe: ${universe.join(', ')}`]),
+            : [`Initial candidates: ${normalizedInitialCandidates.join(', ')}`, `Scored universe: ${universe.join(', ')}`]),
+          ...universeSelection.notes,
+          ...selectionNotes,
           ...updateContext.notes,
           ...timeNotes,
         ];
@@ -4378,7 +4449,10 @@ export async function executeTool(
         if (!fetchExtendedData) {
           notes.push('Vercel budget prioritized: large-report mode used core decision inputs and cached optional sections to stay within free-tier limits.');
         }
-        const minimumCoreSymbols = new Set(universe.slice(0, Math.min(2, universe.length)));
+        const minimumCoreSymbols = new Set([
+          ...universe.slice(0, Math.min(2, universe.length)),
+          ...normalizedInitialCandidates.filter((symbol) => universe.includes(symbol)).slice(0, Math.min(2, universe.length)),
+        ]);
         let rateLimitHit = false;
         const isRateLimit = (message: string) => isRateLimitError(message);
         const safeFetch = async <T>(
@@ -4693,6 +4767,13 @@ export async function executeTool(
           }
         }
 
+        if (!dependencyAnalysis) {
+          dependencyAnalysis = buildResearchUniverseDependencySummary(universeSelection);
+        }
+        if (!ecosystemDiagram) {
+          ecosystemDiagram = buildResearchUniverseMermaid(resolverSector, universeSelection);
+        }
+
         // LLM batch moat analysis for the refined research universe (single call)
         if (options?.llmFill && items.length > 0 && hasReportLLMBudget(deadlineAt)) {
           try {
@@ -4821,7 +4902,8 @@ export async function executeTool(
           items,
           notes,
           sources: sourceMap,
-          initialCandidates: lockedSymbols.length > 0 ? undefined : initialCandidates,
+          initialCandidates: lockedSymbols.length > 0 ? undefined : normalizedInitialCandidates,
+          universeSelection,
           dependencyAnalysis,
           ecosystemDiagram,
           refinementNotes,

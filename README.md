@@ -133,6 +133,9 @@ _Note: SEC EDGAR filings (`get_sec_filings`), SEC XBRL company facts (`get_sec_c
 | `NUM_COMPANIES` | `10` | Companies in comparison and research reports. Range: 2–15. |
 | `DEEP_RESEARCH_DEPTH` | `1` | Optional post-core-data ecosystem/refinement passes for research reports. Core market data is fetched before any pass runs. Range: 1–10. |
 | `DEEP_RESEARCH_MAX_MS` | `240000` on Vercel, `600000` local | Runtime budget for deep research (ms). Vercel is clamped under the 300 s function limit; local can run longer for completeness. |
+| `RESEARCH_ALLOCATION_MIN_SCORE` | `60` | Minimum report score for a research allocation scenario candidate. Range: 0–100. This controls selective allocation only; it does not remove companies from the report universe. |
+| `RESEARCH_ALLOCATION_MIN_THEME_SCORE` | `50` | Minimum universe-selection theme-fit score for research allocation eligibility when theme score is available. Range: 0–100. |
+| `RESEARCH_ALLOCATION_MIN_DATA_CONFIDENCE` | `50` | Minimum universe-selection provider-data confidence score for research allocation eligibility when data confidence is available. Range: 0–100. |
 | `DATA_FETCH_CONCURRENCY` | `3` | Parallel ticker fetches per report round. Range: 1–4. |
 | `VERCEL_EXTENDED_DATA_MAX_COMPANIES` | `3` | On Vercel, reports larger than this preserve the configured company/watchlist universe but prioritize core decision inputs and cached optional data so free-tier providers do not consume the whole 300 s function window. Improve/update passes fill missing fields in later saved versions. Local runs still attempt extended data. |
 | `REPORTS_DIR` | `reports` (local) / `/tmp/reports` (Vercel) | Where generated report files are stored. |
@@ -182,6 +185,9 @@ ALPHA_VANTAGE_API_KEY=your_av_key
 FINNHUB_API_KEY=your_finnhub_key
 NUM_COMPANIES=15
 DEEP_RESEARCH_DEPTH=1
+RESEARCH_ALLOCATION_MIN_SCORE=60
+RESEARCH_ALLOCATION_MIN_THEME_SCORE=50
+RESEARCH_ALLOCATION_MIN_DATA_CONFIDENCE=50
 ```
 
 ### Supabase setup (optional but recommended for Vercel)
