@@ -86,6 +86,30 @@ export interface ReportRunMetadata {
   missingData: ReportMissingDataEntry[];
   notes?: string[];
   improveHistory?: ReportImproveHistoryEntry[];
+  researchUniverse?: {
+    selectedSymbols: string[];
+    qualifiedSymbols: string[];
+    candidates: Array<{
+      symbol: string;
+      sourceFacets?: string[];
+      sourceEvidence?: Array<{
+        role: string;
+        level: string;
+        rationale: string;
+        confidence: number;
+        source?: string;
+      }>;
+      themeEvidence?: {
+        level: string;
+        role: string;
+        rationale: string;
+        confidence: number;
+      };
+      themeFit?: string;
+      themeScore?: number;
+      qualified?: boolean;
+    }>;
+  };
 }
 
 export interface CoverageInput {
@@ -211,6 +235,7 @@ export function buildReportRunMetadata(args: {
   coverage: CoverageInput[];
   updatedFrom?: PreviousReportMatch | null;
   notes?: string[];
+  researchUniverse?: ReportRunMetadata['researchUniverse'];
 }): ReportRunMetadata {
   const coverage: ReportRunMetadata['coverage'] = {};
   const checkpoint: NonNullable<ReportRunMetadata['checkpoint']> = {};
@@ -273,6 +298,7 @@ export function buildReportRunMetadata(args: {
     checkpoint,
     missingData,
     notes: args.notes,
+    researchUniverse: args.researchUniverse,
     improveHistory: args.updatedFrom?.metadata?.improveHistory?.length
       ? args.updatedFrom.metadata.improveHistory
       : undefined,

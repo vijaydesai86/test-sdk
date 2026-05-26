@@ -3,6 +3,11 @@
 export interface ResearchCandidateData {
   symbol: string;
   sourceFacets?: string[];
+  sourceEvidence?: ResearchSourceEvidence[];
+  preservedThemeEvidence?: ResearchThemeEvidence;
+  preservedThemeFit?: ResearchThemeFit;
+  preservedThemeScore?: number;
+  preservedQualified?: boolean;
   price?: any;
   overview?: any;
   basicFinancials?: any;
@@ -26,6 +31,14 @@ export interface ResearchThemeEvidence {
   role: string;
   rationale: string;
   confidence: number;
+}
+
+export interface ResearchSourceEvidence {
+  role: string;
+  level: ResearchThemeEvidenceLevel;
+  rationale: string;
+  confidence: number;
+  source?: string;
 }
 
 export interface ResearchCandidateScore {
@@ -185,6 +198,8 @@ function candidateProviderProfileText(candidate: ResearchCandidateData): string 
 function inferSubtheme(candidate: ResearchCandidateData, llmSubtheme?: string): string {
   const cleanLlm = String(llmSubtheme || '').replace(/[^a-z0-9 /&.-]/gi, ' ').replace(/\s+/g, ' ').trim();
   if (cleanLlm) return cleanLlm.slice(0, 60);
+  const evidenceRole = bestSourceEvidence(candidate)?.role;
+  if (evidenceRole) return evidenceRole.slice(0, 60);
   const overview = candidate.overview || {};
   const industry = String(overview.industry || overview.Industry || '').trim();
   if (industry) return industry.slice(0, 60);
@@ -197,11 +212,23 @@ function scoreThemeRelevance(query: string, candidate: ResearchCandidateData, ll
   const llm = llmScore === null || llmScore === undefined ? null : clamp(llmScore);
   const queryTokens = tokenize(query);
   const profileTokens = new Set(tokenize(candidateProviderProfileText(candidate)));
+  const sourceEvidence = bestSourceEvidence(candidate);
+  const sourceEvidenceScore = sourceEvidence
+    ? clamp((evidenceTierScore({
+        level: sourceEvidence.level,
+        role: sourceEvidence.role,
+        rationale: sourceEvidence.rationale,
+        confidence: sourceEvidence.confidence,
+      }) * 0.70) + (sourceEvidence.confidence * 0.30))
+    : null;
   if (queryTokens.length === 0) return llm ?? 0;
   const matched = queryTokens.filter((token) => profileTokens.has(token)).length;
   const lexicalScore = clamp((matched / queryTokens.length) * 100);
+  if (llm !== null && sourceEvidenceScore !== null) {
+    return clamp((llm * 0.45) + (sourceEvidenceScore * 0.40) + (lexicalScore * 0.10) + (resolverRankScore * 0.05));
+  }
   if (llm !== null) return clamp((llm * 0.76) + (lexicalScore * 0.14) + (resolverRankScore * 0.10));
-  return Math.max(lexicalScore, resolverRankScore * 0.60);
+  return Math.max(lexicalScore, resolverRankScore * 0.35, sourceEvidenceScore ?? 0);
 }
 
 function scoreSourceFacetSupport(candidate: ResearchCandidateData): number {
@@ -224,6 +251,33 @@ function evidenceTierScore(evidence: ResearchThemeEvidence): number {
   return 0;
 }
 
+function bestSourceEvidence(candidate: ResearchCandidateData): ResearchSourceEvidence | null {
+  const evidence = (candidate.sourceEvidence || [])
+    .map((item) => ({
+      role: String(item.role || '').trim(),
+      level: normalizeEvidenceLevel(item.level) || 'unrelated',
+      rationale: String(item.rationale || '').trim(),
+      confidence: clamp(toNumber(item.confidence) ?? 0),
+      source: item.source,
+    }))
+    .filter((item) => item.role && item.level !== 'unrelated')
+    .sort((a, b) => {
+      const tierDelta = evidenceTierScore({
+        level: b.level,
+        role: b.role,
+        rationale: b.rationale,
+        confidence: b.confidence,
+      }) - evidenceTierScore({
+        level: a.level,
+        role: a.role,
+        rationale: a.rationale,
+        confidence: a.confidence,
+      });
+      return tierDelta || b.confidence - a.confidence;
+    });
+  return evidence[0] || null;
+}
+
 function buildHeuristicEvidence(args: {
   query: string;
   candidate: ResearchCandidateData;
@@ -236,16 +290,34 @@ function buildHeuristicEvidence(args: {
   minThemeScore: number;
   strongAdjacentThemeScore: number;
 }): ResearchThemeEvidence {
+  if (args.candidate.preservedThemeEvidence) {
+    return args.candidate.preservedThemeEvidence;
+  }
   const providerText = candidateProviderProfileText(args.candidate);
   const providerTokens = new Set(tokenize(providerText));
   const queryTokens = tokenize(args.query);
   const facetTokens = new Set(tokenize((args.candidate.sourceFacets || []).join(' ')));
+  const sourceEvidence = bestSourceEvidence(args.candidate);
   const queryMatches = queryTokens.filter((token) => providerTokens.has(token)).length;
   const facetProviderMatches = Array.from(facetTokens).filter((token) => providerTokens.has(token)).length;
   const profileEvidenceStrong = queryMatches >= Math.min(2, queryTokens.length) || facetProviderMatches >= 2;
   const profileEvidenceModerate = queryMatches >= 1 || facetProviderMatches >= 1;
   const role = inferSubtheme(args.candidate, args.llmSubtheme);
   const llmConfidence = clamp(args.llmConfidence ?? 60);
+
+  if (
+    sourceEvidence &&
+    (sourceEvidence.level === 'direct' || sourceEvidence.level === 'enabler') &&
+    sourceEvidence.confidence >= 65 &&
+    !(args.llmEvidenceLevel === 'unrelated' && llmConfidence >= 90)
+  ) {
+    return {
+      level: sourceEvidence.level,
+      role: sourceEvidence.role,
+      rationale: sourceEvidence.rationale || 'Verified bucket evidence supports material theme exposure.',
+      confidence: Math.max(sourceEvidence.confidence, profileEvidenceStrong ? 75 : 0),
+    };
+  }
 
   if (args.llmEvidenceLevel === 'direct' || args.llmEvidenceLevel === 'enabler') {
     const level = profileEvidenceModerate || args.themeScore >= args.minThemeScore
@@ -483,7 +555,7 @@ export async function selectResearchUniverse(args: {
     const resolverRankScore = candidates.length <= 1
       ? 100
       : clamp(100 - ((index / (candidates.length - 1)) * 40));
-    const themeScore = scoreThemeRelevance(args.query, candidate, llm.themeScore ?? null, resolverRankScore);
+    const themeScore = clamp(candidate.preservedThemeScore ?? scoreThemeRelevance(args.query, candidate, llm.themeScore ?? null, resolverRankScore));
     const themeEvidence = buildHeuristicEvidence({
       query: args.query,
       candidate,
@@ -496,9 +568,9 @@ export async function selectResearchUniverse(args: {
       minThemeScore,
       strongAdjacentThemeScore,
     });
-    const themeFit = llm.themeFit
+    const themeFit = candidate.preservedThemeFit ?? (llm.themeFit
       ? inferThemeFit(themeScore, llm.themeFit, minThemeScore, strongAdjacentThemeScore)
-      : evidenceToFit(themeEvidence, themeScore, minThemeScore, strongAdjacentThemeScore);
+      : evidenceToFit(themeEvidence, themeScore, minThemeScore, strongAdjacentThemeScore));
     const evidenceFit = evidenceToFit(themeEvidence, themeScore, minThemeScore, strongAdjacentThemeScore);
     const finalThemeFit = themeFit === 'core' && evidenceFit !== 'core'
       ? evidenceFit
@@ -546,6 +618,9 @@ export async function selectResearchUniverse(args: {
 
   const pool = [...baseScores].sort((a, b) => b.totalScore - a.totalScore);
   const qualifiedPool = pool.filter((candidate) => {
+    const source = candidates.find((item) => item.symbol === candidate.symbol);
+    if (mode === 'locked_diagnostics' && source?.preservedQualified === true) return true;
+    if (mode === 'locked_diagnostics' && source?.preservedQualified === false) return false;
     if (candidate.themeEvidence.level === 'unrelated') return false;
     if (candidate.themeFit === 'core') return candidate.themeScore >= minThemeScore;
     if (candidate.themeFit === 'strong_adjacent') return allowStrongAdjacent && candidate.themeScore >= strongAdjacentThemeScore;

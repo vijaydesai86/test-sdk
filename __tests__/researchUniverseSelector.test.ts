@@ -233,6 +233,151 @@ describe('research universe selection', () => {
     expect(selection.fitCounts.weak_adjacent).toBe(1);
   });
 
+  it('treats verified role-bucket evidence as real theme evidence for broad provider profiles', async () => {
+    const selection = await selectResearchUniverse({
+      query: 'AI infrastructure',
+      finalCount: 4,
+      candidates: [
+        candidate('NVDA', 'Semiconductors and data center accelerators', {
+          sourceFacets: ['Compute chip designers'],
+          sourceEvidence: [{
+            role: 'Compute chip designers',
+            level: 'direct',
+            confidence: 98,
+            rationale: 'Designs GPUs used for AI training and inference.',
+            source: 'theme-candidate-plan',
+          }],
+        }),
+        candidate('MSFT', 'Enterprise software and cloud platform', {
+          overview: {
+            name: 'Microsoft Corp',
+            sector: 'Technology',
+            industry: 'Software Infrastructure',
+            description: 'Enterprise software and cloud platform',
+            marketCapitalization: 3_000_000_000_000,
+            forwardPE: 30,
+          },
+          sourceFacets: ['Cloud/Data-center operators'],
+          sourceEvidence: [{
+            role: 'Cloud/Data-center operators',
+            level: 'direct',
+            confidence: 96,
+            rationale: 'Operates cloud infrastructure for AI workloads.',
+            source: 'theme-candidate-plan',
+          }],
+        }),
+        candidate('AMZN', 'Online retail and cloud services', {
+          overview: {
+            name: 'Amazon.com Inc',
+            sector: 'Consumer Cyclical',
+            industry: 'Internet Retail',
+            description: 'Online retail and cloud services',
+            marketCapitalization: 2_500_000_000_000,
+            forwardPE: 35,
+          },
+          sourceFacets: ['Cloud/Data-center operators'],
+          sourceEvidence: [{
+            role: 'Cloud/Data-center operators',
+            level: 'direct',
+            confidence: 95,
+            rationale: 'Operates cloud infrastructure for AI workloads.',
+            source: 'theme-candidate-plan',
+          }],
+        }),
+        candidate('VRT', 'Electrical equipment and thermal management', {
+          overview: {
+            name: 'Vertiv Holdings Co',
+            sector: 'Industrials',
+            industry: 'Electrical Equipment',
+            description: 'Electrical equipment and thermal management',
+            marketCapitalization: 40_000_000_000,
+            forwardPE: 32,
+          },
+          sourceFacets: ['Physical power/cooling infrastructure'],
+          sourceEvidence: [{
+            role: 'Physical power/cooling infrastructure',
+            level: 'enabler',
+            confidence: 90,
+            rationale: 'Provides power and cooling infrastructure for data centers.',
+            source: 'theme-candidate-plan',
+          }],
+        }),
+      ],
+      llmFill: async () => JSON.stringify({
+        candidates: [
+          { symbol: 'NVDA', themeScore: 88, fit: 'core', evidenceLevel: 'direct', subtheme: 'Compute chip designers' },
+          { symbol: 'MSFT', themeScore: 50, fit: 'weak_adjacent', evidenceLevel: 'beneficiary', subtheme: 'Technology' },
+          { symbol: 'AMZN', themeScore: 48, fit: 'weak_adjacent', evidenceLevel: 'beneficiary', subtheme: 'Retail' },
+          { symbol: 'VRT', themeScore: 52, fit: 'weak_adjacent', evidenceLevel: 'beneficiary', subtheme: 'Electrical Equipment' },
+        ],
+      }),
+    });
+
+    expect(selection.selectedSymbols).toEqual(expect.arrayContaining(['NVDA', 'MSFT', 'AMZN', 'VRT']));
+    expect(selection.candidates.find((row) => row.symbol === 'MSFT')?.themeEvidence.level).toBe('direct');
+    expect(selection.candidates.find((row) => row.symbol === 'VRT')?.themeEvidence.level).toBe('enabler');
+    expect(selection.subthemes.map((role) => role.name)).toEqual(expect.arrayContaining([
+      'Compute chip designers',
+      'Cloud/Data-center operators',
+      'Physical power/cooling infrastructure',
+    ]));
+  });
+
+  it('locked diagnostics preserves prior qualified universe metadata instead of reclassifying it away', async () => {
+    const selection = await selectResearchUniverse({
+      query: 'AI infrastructure',
+      finalCount: 3,
+      mode: 'locked_diagnostics',
+      candidates: [
+        candidate('NVDA', 'Semiconductors', {
+          preservedQualified: true,
+          preservedThemeFit: 'core',
+          preservedThemeScore: 88,
+          preservedThemeEvidence: {
+            role: 'Compute chip designers',
+            level: 'direct',
+            confidence: 96,
+            rationale: 'Prior verified bucket evidence.',
+          },
+        }),
+        candidate('MSFT', 'Enterprise software', {
+          preservedQualified: true,
+          preservedThemeFit: 'strong_adjacent',
+          preservedThemeScore: 76,
+          preservedThemeEvidence: {
+            role: 'Cloud/Data-center operators',
+            level: 'direct',
+            confidence: 92,
+            rationale: 'Prior verified bucket evidence.',
+          },
+        }),
+        candidate('RETL', 'Discount retail stores', {
+          preservedQualified: false,
+          preservedThemeFit: 'reject',
+          preservedThemeScore: 5,
+          preservedThemeEvidence: {
+            role: 'Retail',
+            level: 'unrelated',
+            confidence: 90,
+            rationale: 'Prior rejected candidate.',
+          },
+        }),
+      ],
+      llmFill: async () => JSON.stringify({
+        candidates: [
+          { symbol: 'NVDA', themeScore: 90, fit: 'core', evidenceLevel: 'direct' },
+          { symbol: 'MSFT', themeScore: 10, fit: 'reject', evidenceLevel: 'unrelated' },
+          { symbol: 'RETL', themeScore: 95, fit: 'core', evidenceLevel: 'direct' },
+        ],
+      }),
+    });
+
+    expect(selection.selectedSymbols).toEqual(expect.arrayContaining(['NVDA', 'MSFT', 'RETL']));
+    expect(selection.qualifiedSymbols).toEqual(expect.arrayContaining(['NVDA', 'MSFT']));
+    expect(selection.qualifiedSymbols).not.toContain('RETL');
+    expect(selection.candidates.find((row) => row.symbol === 'MSFT')?.themeEvidence.role).toBe('Cloud/Data-center operators');
+  });
+
   it('uses role concentration controls without hardcoding any production sectors', async () => {
     const selection = await selectResearchUniverse({
       query: 'industrial automation',

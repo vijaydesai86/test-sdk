@@ -24,6 +24,7 @@ import {
   buildResearchUniverseMermaid,
   selectResearchUniverse,
   type ResearchCandidateData,
+  type ResearchSourceEvidence,
   type ResearchUniverseSelection,
 } from './researchUniverseSelector';
 import {
@@ -695,12 +696,18 @@ interface ResearchThemeFacetPlan {
   label: string;
   query: string;
   role: string;
-  candidates: string[];
+  candidates: Array<{
+    symbol?: string;
+    companyName?: string;
+    evidence?: ResearchSourceEvidence;
+  }>;
 }
 
 interface ResearchCandidateSeed {
   symbol: string;
   sourceFacets: string[];
+  sourceEvidence: ResearchSourceEvidence[];
+  companyNames: string[];
 }
 
 function sanitizeResearchFacetLabel(value: unknown): string {
@@ -711,17 +718,36 @@ function sanitizeResearchFacetLabel(value: unknown): string {
     .slice(0, 80);
 }
 
+function normalizeStoredResearchSourceEvidence(value: any): ResearchSourceEvidence[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => {
+      const level = String(item?.level || '').toLowerCase();
+      if (level !== 'direct' && level !== 'enabler' && level !== 'beneficiary' && level !== 'unrelated') return null;
+      return {
+        role: sanitizeResearchFacetLabel(item?.role),
+        level,
+        rationale: String(item?.rationale || '').trim().slice(0, 240),
+        confidence: Math.max(0, Math.min(100, Number(item?.confidence) || 0)),
+        source: typeof item?.source === 'string' ? item.source : undefined,
+      } as ResearchSourceEvidence;
+    })
+    .filter((item: ResearchSourceEvidence | null): item is ResearchSourceEvidence => Boolean(item?.role));
+}
+
 function buildResearchThemeCandidatePrompt(theme: string, targetCount: number, maxFacets: number, candidatesPerFacet: number): string {
   return [
-    `Build a thematic public-equity candidate map for the investment theme "${theme}".`,
-    'This is for an investment research universe, not a generic search list.',
-    'Create generic economic role buckets/facets that together cover the theme value chain or beneficiary chain.',
-    'For each facet, list publicly traded NYSE/NASDAQ/US ADR ticker candidates that are directly exposed to that facet.',
-    'Do not provide financial values. Do not include stale, acquired, delisted, shell, OTC, or unsupported symbols.',
-    'Avoid broad generic companies unless the facet exposure is direct and material.',
-    `Return up to ${maxFacets} facets and roughly ${targetCount} unique candidate symbols total; each facet may have up to ${candidatesPerFacet} symbols.`,
+    `Build a verified-candidate proposal for the public-equity investment theme "${theme}".`,
+    'This is for a portfolio research universe. The purpose is representative investable exposure across the theme value chain, not a generic search list.',
+    'Output company names plus likely US-listed ticker/ADR candidates. Do not invent tickers. If unsure, include companyName with likelyTicker null so provider verification can search by name.',
+    'Infer generic investable role buckets from the theme: upstream suppliers, direct producers/operators, critical tools/services, distribution or networking, platforms/operators, and physical infrastructure only when relevant.',
+    'Main candidates must be theme providers or enablers. Exclude generic broad beneficiaries and weakly related companies from main candidates.',
+    'For every role bucket, return 3-6 candidate ideas where possible. Include companyName, likelyTicker, listingHint, evidenceLevel direct|enabler, confidence 0-100, and a concrete product/service reason.',
+    'No duplicate likelyTicker across role buckets; assign each company to its strongest role. Prefer the most liquid/common US listing or ADR. Prefer GOOGL over GOOG unless a reason says otherwise.',
+    'Put questionable, stale, acquired, delisted, shell, OTC, unsupported, wrong-share-class, generic SaaS, consumer-app, retail, finance, or weakly related names in excluded, not candidates.',
+    `Return up to ${maxFacets} role buckets and roughly ${targetCount} unique candidate ideas total; each role may have up to ${candidatesPerFacet} main candidates.`,
     'Return valid JSON only with this shape:',
-    '{"facets":[{"label":"theme role","query":"search phrase for this role","role":"portfolio role","candidates":["TICK1","TICK2"]}],"exclusions":["generic exclusion hint"]}',
+    '{"roles":[{"label":"theme role","required":true,"query":"search phrase","candidates":[{"companyName":"Company","likelyTicker":"TICKER | null","listingHint":"US|ADR","evidenceLevel":"direct|enabler","confidence":0-100,"reason":"concrete product/service evidence"}],"excluded":[{"companyName":"Company","likelyTicker":"TICKER | null","reason":"why excluded"}]}],"globalExclusions":["generic exclusion hint"]}',
   ].join('\n\n');
 }
 
@@ -731,14 +757,57 @@ function parseResearchThemeCandidatePlan(raw: string, fallbackTheme: string): Re
     const objectMatch = cleaned.match(/\{[\s\S]*\}/);
     if (objectMatch) cleaned = objectMatch[0];
     const parsed = JSON.parse(cleaned);
-    const rawFacets = Array.isArray(parsed?.facets) ? parsed.facets : [];
+    const rawFacets = Array.isArray(parsed?.roles)
+      ? parsed.roles
+      : Array.isArray(parsed?.facets)
+        ? parsed.facets
+        : Array.isArray(parsed?.buckets)
+          ? parsed.buckets
+          : [];
     const facets: ResearchThemeFacetPlan[] = [];
     for (const facet of rawFacets) {
       const label = sanitizeResearchFacetLabel(facet?.label || facet?.role || facet?.query);
       const query = sanitizeResearchFacetLabel(facet?.query || label || fallbackTheme);
       const role = sanitizeResearchFacetLabel(facet?.role || label || query);
       const candidates = Array.isArray(facet?.candidates)
-        ? facet.candidates.map((item: unknown) => normalizeTickerCandidate(item)).filter((item: string | undefined): item is string => Boolean(item))
+        ? facet.candidates
+            .map((item: unknown) => {
+              if (typeof item === 'string') {
+                const symbol = normalizeTickerCandidate(item);
+                if (!symbol) return null;
+                return {
+                  symbol,
+                  evidence: {
+                    role: role || label || fallbackTheme,
+                    level: 'enabler' as const,
+                    rationale: `Listed by theme role "${role || label || fallbackTheme}".`,
+                    confidence: 70,
+                    source: 'theme-candidate-plan',
+                  },
+                };
+              }
+              const row = item as Record<string, unknown>;
+              const symbol = normalizeTickerCandidate(row?.likelyTicker ?? row?.symbol ?? row?.ticker);
+              const companyName = typeof row?.companyName === 'string' ? row.companyName.trim().slice(0, 120) : undefined;
+              if (!symbol && !companyName) return null;
+              const levelRaw = String(row?.evidenceLevel || '').toLowerCase();
+              const level = levelRaw === 'direct' ? 'direct' : levelRaw === 'enabler' ? 'enabler' : 'beneficiary';
+              if (level !== 'direct' && level !== 'enabler') return null;
+              return {
+                symbol,
+                companyName,
+                evidence: {
+                  role: role || label || fallbackTheme,
+                  level,
+                  rationale: typeof row?.reason === 'string'
+                    ? row.reason
+                    : `Listed by theme role "${role || label || fallbackTheme}".`,
+                  confidence: Math.max(0, Math.min(100, Number(row?.confidence) || 70)),
+                  source: 'theme-candidate-plan',
+                },
+              };
+            })
+            .filter((item: any): item is NonNullable<typeof item> => Boolean(item))
         : [];
       if (!label && candidates.length === 0) continue;
       facets.push({
@@ -763,7 +832,11 @@ async function resolveResearchCandidateSeeds(args: {
 }): Promise<{ seeds: ResearchCandidateSeed[]; facets: ResearchThemeFacetPlan[]; notes: string[] }> {
   const notes: string[] = [];
   const seedMap = new Map<string, Set<string>>();
+  const evidenceMap = new Map<string, ResearchSourceEvidence[]>();
+  const companyNameMap = new Map<string, Set<string>>();
   let facets: ResearchThemeFacetPlan[] = [];
+  let nameOnlyLookups = 0;
+  const maxNameOnlyLookups = Math.max(3, Math.min(12, Math.ceil(args.targetCount / 4)));
 
   if (args.llmFill && hasReportLLMBudget(args.deadlineAt)) {
     try {
@@ -776,10 +849,31 @@ async function resolveResearchCandidateSeeds(args: {
       const raw = await args.llmFill(prompt);
       facets = parseResearchThemeCandidatePlan(raw, args.theme).slice(0, RESEARCH_THEME_FACET_COUNT);
       for (const facet of facets) {
-        for (const symbol of facet.candidates.slice(0, RESEARCH_FACET_CANDIDATES)) {
+        for (const item of facet.candidates.slice(0, RESEARCH_FACET_CANDIDATES)) {
+          let symbol = item.symbol;
+          if (!symbol && item.companyName && args.stockService && !isDeadlineNear(args.deadlineAt) && nameOnlyLookups < maxNameOnlyLookups) {
+            nameOnlyLookups += 1;
+            const resolved = await withReportTaskTimeout(
+              resolveSymbolFromQuery(args.stockService, item.companyName),
+              'optional',
+              args.deadlineAt
+            ).catch(() => null);
+            if (resolved?.ok && resolved.symbol) {
+              symbol = normalizeTickerCandidate(resolved.symbol);
+            }
+          }
+          if (!symbol) continue;
           const existing = seedMap.get(symbol) || new Set<string>();
           existing.add(facet.label);
           seedMap.set(symbol, existing);
+          if (item.evidence) {
+            evidenceMap.set(symbol, [...(evidenceMap.get(symbol) || []), item.evidence]);
+          }
+          if (item.companyName) {
+            const names = companyNameMap.get(symbol) || new Set<string>();
+            names.add(item.companyName);
+            companyNameMap.set(symbol, names);
+          }
         }
       }
       if (facets.length) {
@@ -792,10 +886,24 @@ async function resolveResearchCandidateSeeds(args: {
 
   if (seedMap.size < Math.max(2, Math.ceil(args.targetCount / 3))) {
     const fallback = await resolveSectorTickers(args.theme, args.targetCount, args.llmFill, args.stockService);
+    const fallbackEvidenceLevel = facets.length ? 'beneficiary' : 'enabler';
+    const fallbackEvidenceConfidence = facets.length ? 45 : 58;
     for (const symbol of fallback) {
       const existing = seedMap.get(symbol) || new Set<string>();
       existing.add('Broad theme resolver');
       seedMap.set(symbol, existing);
+      evidenceMap.set(symbol, [
+        ...(evidenceMap.get(symbol) || []),
+        {
+          role: 'Broad theme resolver',
+          level: fallbackEvidenceLevel,
+          rationale: facets.length
+            ? 'Broad resolver candidate; requires provider/profile corroboration.'
+            : 'Provider-confirmed broad resolver candidate used because role-bucket LLM discovery was unavailable.',
+          confidence: fallbackEvidenceConfidence,
+          source: 'broad-theme-resolver',
+        },
+      ]);
     }
     if (fallback.length) {
       notes.push(`Broad resolver added ${fallback.length} fallback candidate${fallback.length === 1 ? '' : 's'}.`);
@@ -815,6 +923,16 @@ async function resolveResearchCandidateSeeds(args: {
           const existing = seedMap.get(symbol) || new Set<string>();
           existing.add(facet.label);
           seedMap.set(symbol, existing);
+          evidenceMap.set(symbol, [
+            ...(evidenceMap.get(symbol) || []),
+            {
+              role: facet.label,
+              level: 'enabler',
+              rationale: `Provider search matched role query "${facet.query}".`,
+              confidence: 55,
+              source: 'provider-role-search',
+            },
+          ]);
         }
       } catch {
         // Provider search is supplemental; the broad resolver and LLM plan remain sufficient.
@@ -825,6 +943,8 @@ async function resolveResearchCandidateSeeds(args: {
   const seeds = Array.from(seedMap.entries()).map(([symbol, sourceFacets]) => ({
     symbol,
     sourceFacets: Array.from(sourceFacets),
+    sourceEvidence: evidenceMap.get(symbol) || [],
+    companyNames: Array.from(companyNameMap.get(symbol) || []),
   })).slice(0, args.targetCount);
 
   return { seeds, facets, notes };
@@ -4497,10 +4617,24 @@ export async function executeTool(
           };
         }
 
+        const updateContext = await prepareReportUpdateContext(args, {
+          kind: 'research',
+          query: String(args.updateQuery || sector),
+          symbols: lockedSymbols,
+        });
+
         // ── Phase 1: Build a theme-bucketed candidate pool (with fallback) ──
         const candidateDiscovery = lockedSymbols.length > 0
           ? {
-              seeds: lockedSymbols.map((symbol) => ({ symbol, sourceFacets: ['Locked saved universe'] })),
+              seeds: lockedSymbols.map((symbol) => {
+                const priorCandidate = updateContext.previous?.metadata?.researchUniverse?.candidates?.find((item: any) => item.symbol === symbol);
+                return {
+                  symbol,
+                  sourceFacets: priorCandidate?.sourceFacets?.length ? priorCandidate.sourceFacets : ['Locked saved universe'],
+                  sourceEvidence: normalizeStoredResearchSourceEvidence(priorCandidate?.sourceEvidence),
+                  companyNames: [],
+                };
+              }),
               facets: [] as ResearchThemeFacetPlan[],
               notes: [] as string[],
             }
@@ -4512,6 +4646,12 @@ export async function executeTool(
               deadlineAt,
             });
         const candidateFacetMap = new Map(candidateDiscovery.seeds.map((seed) => [seed.symbol, seed.sourceFacets]));
+        const candidateEvidenceMap = new Map<string, ResearchSourceEvidence[]>(
+          candidateDiscovery.seeds.map((seed) => [seed.symbol, normalizeStoredResearchSourceEvidence(seed.sourceEvidence)])
+        );
+        const priorUniverseCandidateMap = new Map(
+          (updateContext.previous?.metadata?.researchUniverse?.candidates || []).map((item: any) => [item.symbol, item])
+        );
         const initialCandidates = candidateDiscovery.seeds.map((seed) => seed.symbol);
         const normalizedInitialCandidates = Array.from(new Set(
           initialCandidates
@@ -4582,7 +4722,20 @@ export async function executeTool(
             const basicFinancials = await fetchSelectionField(symbol, cache, 'Basic financials', 'basicFinancials', () => stockService.getBasicFinancials(symbol), allowHigh, 'high');
             const priceHistory = await fetchSelectionField(symbol, cache, 'Price history', `priceHistory:${range}`, () => stockService.getPriceHistory(symbol, range), allowHigh && candidateCount <= finalCount, 'high');
             await saveSymbolCache(symbol, cache);
-            return { symbol, sourceFacets: candidateFacetMap.get(symbol) || [], price, overview, basicFinancials, priceHistory };
+            const priorCandidate = priorUniverseCandidateMap.get(symbol) as any;
+            return {
+              symbol,
+              sourceFacets: candidateFacetMap.get(symbol) || [],
+              sourceEvidence: candidateEvidenceMap.get(symbol) || [],
+              preservedThemeEvidence: priorCandidate?.themeEvidence,
+              preservedThemeFit: priorCandidate?.themeFit,
+              preservedThemeScore: priorCandidate?.themeScore,
+              preservedQualified: typeof priorCandidate?.qualified === 'boolean' ? priorCandidate.qualified : undefined,
+              price,
+              overview,
+              basicFinancials,
+              priceHistory,
+            };
           }
         );
         const invalidCandidateNotes: string[] = [];
@@ -4644,11 +4797,6 @@ export async function executeTool(
         const universe = lockedSymbols.length > 0
           ? lockedSymbols
           : universeSelection.selectedSymbols;
-        const updateContext = await prepareReportUpdateContext(args, {
-          kind: 'research',
-          query: String(args.updateQuery || sector),
-          symbols: universe,
-        });
         let dependencyAnalysis: string | undefined;
         let ecosystemDiagram: string | undefined;
         let refinementNotes: string | undefined;
@@ -5110,6 +5258,19 @@ export async function executeTool(
           generatedAt,
           updatedFrom: updateContext.previous,
           notes,
+          researchUniverse: universeSelection ? {
+            selectedSymbols: universeSelection.selectedSymbols,
+            qualifiedSymbols: universeSelection.qualifiedSymbols,
+            candidates: universeSelection.candidates.map((candidate) => ({
+              symbol: candidate.symbol,
+              sourceFacets: candidateFacetMap.get(candidate.symbol) || [],
+              sourceEvidence: candidateEvidenceMap.get(candidate.symbol) || [],
+              themeEvidence: candidate.themeEvidence,
+              themeFit: candidate.themeFit,
+              themeScore: candidate.themeScore,
+              qualified: candidate.qualified,
+            })),
+          } : undefined,
           coverage: items.flatMap((item) => [
             ...coreDecisionCoverage({
               symbol: item.symbol,
