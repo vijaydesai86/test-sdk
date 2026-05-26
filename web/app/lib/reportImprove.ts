@@ -55,6 +55,9 @@ export interface ImproveToolRequest {
 export interface ImproveCandidateDecision {
   accepted: boolean;
   reason: 'missing_candidate_checkpoint'
+    | 'research_universe_locked'
+    | 'research_universe_readiness_improved'
+    | 'research_universe_still_unready'
     | 'candidate_improved_critical'
     | 'candidate_improved_missing'
     | 'candidate_improved_available'
@@ -106,6 +109,21 @@ export function sameReportUniverse(
   if (beforeSymbols.length !== afterSymbols.length) return false;
   const afterSet = new Set(afterSymbols);
   return beforeSymbols.every((symbol) => afterSet.has(symbol));
+}
+
+export function researchUniverseStatus(metadata?: Pick<ReportRunMetadata, 'kind' | 'researchUniverse'> | null) {
+  return metadata?.kind === 'research' ? metadata.researchUniverse?.status || null : null;
+}
+
+export function isResearchUniverseLocked(metadata?: Pick<ReportRunMetadata, 'kind' | 'researchUniverse'> | null): boolean {
+  const status = researchUniverseStatus(metadata);
+  return metadata?.kind !== 'research' || !status || status === 'locked';
+}
+
+export function shouldEnforceSameReportUniverse(
+  before?: Pick<ReportRunMetadata, 'kind' | 'symbols' | 'researchUniverse'> | null
+): boolean {
+  return before?.kind !== 'research' || isResearchUniverseLocked(before);
 }
 
 export function parseImproveConfig(input: {
@@ -291,10 +309,51 @@ export function compareImproveCandidate(before: CoverageStats | null, after: Cov
   return { accepted: false, reason: 'candidate_flat' };
 }
 
+function researchReadinessScore(metadata?: Pick<ReportRunMetadata, 'researchUniverse'> | null): number {
+  const universe = metadata?.researchUniverse;
+  const readiness = universe?.readiness;
+  if (!universe || !readiness) return 0;
+  return (
+    (universe.status === 'locked' ? 100_000 : 0) +
+    (readiness.selectedCount || 0) * 1_000 +
+    (readiness.roleCount || 0) * 100 +
+    (readiness.coveredDimensions?.length || 0) * 25 -
+    (readiness.missingDimensions?.length || 0) * 25
+  );
+}
+
+export function compareImproveCandidateForReport(args: {
+  beforeMetadata?: ReportRunMetadata | null;
+  afterMetadata?: ReportRunMetadata | null;
+  beforeCoverage: CoverageStats | null;
+  afterCoverage: CoverageStats | null;
+}): ImproveCandidateDecision {
+  const beforeStatus = researchUniverseStatus(args.beforeMetadata);
+  const afterStatus = researchUniverseStatus(args.afterMetadata);
+  if (args.beforeMetadata?.kind === 'research' && beforeStatus && beforeStatus !== 'locked') {
+    if (!args.afterMetadata) return { accepted: false, reason: 'missing_candidate_checkpoint' };
+    if (afterStatus === 'locked') return { accepted: true, reason: 'research_universe_locked' };
+    if (researchReadinessScore(args.afterMetadata) > researchReadinessScore(args.beforeMetadata)) {
+      return { accepted: true, reason: 'research_universe_readiness_improved' };
+    }
+    return { accepted: false, reason: 'research_universe_still_unready' };
+  }
+  return compareImproveCandidate(args.beforeCoverage, args.afterCoverage);
+}
+
 export function isImproveTargetComplete(stats: CoverageStats | null, target: ImproveTarget): boolean {
   if (!stats) return false;
   if (target === 'all') return stats.missing === 0;
   return stats.criticalMissing === 0;
+}
+
+export function isImproveTargetCompleteForReport(
+  metadata: ReportRunMetadata | null | undefined,
+  stats: CoverageStats | null,
+  target: ImproveTarget
+): boolean {
+  if (metadata?.kind === 'research' && !isResearchUniverseLocked(metadata)) return false;
+  return isImproveTargetComplete(stats, target);
 }
 
 export function decideImproveStatus(args: {
@@ -302,10 +361,17 @@ export function decideImproveStatus(args: {
   after: CoverageStats | null;
   passesDone: number;
   config: ImproveConfig;
+  metadata?: ReportRunMetadata | null;
 }): { status: 'complete' | 'continue' | 'stopped'; reason: string; nextRunAfterMs: number } {
   const after = args.after;
   if (!after) return { status: 'stopped', reason: 'missing_checkpoint', nextRunAfterMs: 0 };
-  if (isImproveTargetComplete(after, args.config.target)) {
+  if (args.metadata?.kind === 'research' && !isResearchUniverseLocked(args.metadata)) {
+    if (args.passesDone >= args.config.maxPasses) {
+      return { status: 'stopped', reason: 'max_passes_reached', nextRunAfterMs: 0 };
+    }
+    return { status: 'continue', reason: 'research_universe_refining', nextRunAfterMs: args.config.minWaitMs };
+  }
+  if (isImproveTargetCompleteForReport(args.metadata, after, args.config.target)) {
     return {
       status: 'complete',
       reason: args.config.target === 'all' ? 'all_complete' : 'critical_complete',
@@ -462,10 +528,17 @@ export function buildImproveToolRequest(report: SavedReportForImprove): ImproveT
   }
 
   if (kind === 'research') {
-    if (symbols.length === 0) throw new Error('Research report is missing universe metadata.');
+    if (symbols.length === 0 && isResearchUniverseLocked(metadata)) {
+      throw new Error('Research report is missing universe metadata.');
+    }
     return {
       toolName: 'generate_research_report',
-      args: { ...baseArgs, sector: query || symbols.join(', '), range: range || '1y', count: symbols.length || undefined },
+      args: {
+        ...baseArgs,
+        sector: query || symbols.join(', '),
+        range: range || '1y',
+        count: symbols.length || metadata?.researchUniverse?.readiness?.targetLockCount || undefined,
+      },
     };
   }
 

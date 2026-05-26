@@ -370,6 +370,10 @@ function improveReasonLabel(reason?: string) {
   if (reason === 'max_passes_reached') return 'Stopped at pass limit.';
   if (reason === 'no_coverage_improvement') return 'Stopped because coverage did not improve.';
   if (reason === 'missing_checkpoint') return 'Stopped because checkpoint metadata is unavailable.';
+  if (reason === 'research_universe_refining') return 'Universe still refining; continuing discovery and role coverage.';
+  if (reason === 'research_universe_locked') return 'Research universe locked; continuing data improvement.';
+  if (reason === 'research_universe_readiness_improved') return 'Universe readiness improved; continuing refinement.';
+  if (reason === 'research_universe_still_unready') return 'Universe still unready; continuing while passes remain.';
   if (reason === 'coverage_improved_with_remaining_gaps') return 'Coverage improved; checking whether another pass is useful.';
   if (reason === 'coverage_flat_with_remaining_gaps') return 'Coverage did not improve; continuing because more configured passes remain.';
   return 'Improve pass finished.';

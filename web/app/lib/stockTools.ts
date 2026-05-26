@@ -725,6 +725,114 @@ interface ResearchCandidateSeed {
   companyNames: string[];
 }
 
+interface ResearchProfileRoleRule {
+  role: string;
+  level: ResearchSourceEvidence['level'];
+  priority: number;
+  themeHints: string[];
+  must: string[][];
+  any?: string[][];
+}
+
+const RESEARCH_PROFILE_ROLE_RULES: ResearchProfileRoleRule[] = [
+  {
+    role: 'Semiconductor equipment/tools',
+    level: 'enabler',
+    priority: 96,
+    themeHints: ['semiconductor', 'chip', 'ai infrastructure', 'data center'],
+    must: [['semiconductor equipment', 'lithography', 'metrology', 'inspection', 'wafer fabrication', 'process control', 'materials engineering']],
+    any: [['semiconductor', 'chip', 'wafer']],
+  },
+  {
+    role: 'Foundry/manufacturing',
+    level: 'enabler',
+    priority: 95,
+    themeHints: ['semiconductor', 'chip', 'ai infrastructure', 'data center'],
+    must: [['foundry', 'semiconductor foundry', 'manufactures integrated circuits', 'contract manufacturer']],
+    any: [['semiconductor', 'chip', 'integrated circuit']],
+  },
+  {
+    role: 'Memory/storage',
+    level: 'enabler',
+    priority: 94,
+    themeHints: ['memory', 'storage', 'ai infrastructure', 'data center', 'cloud infrastructure'],
+    must: [['memory', 'dram', 'nand', 'storage products', 'storage systems']],
+    any: [['data center', 'ai', 'compute', 'server', 'cloud', 'infrastructure']],
+  },
+  {
+    role: 'Power/cooling/data-center infrastructure',
+    level: 'enabler',
+    priority: 93,
+    themeHints: ['power', 'cooling', 'data center', 'infrastructure', 'energy'],
+    must: [['power', 'cooling', 'thermal', 'electrical', 'power management']],
+    any: [['data center', 'critical digital infrastructure', 'infrastructure', 'facility']],
+  },
+  {
+    role: 'Networking/connectivity',
+    level: 'enabler',
+    priority: 92,
+    themeHints: ['networking', 'connectivity', 'data center', 'cloud infrastructure', 'ai infrastructure'],
+    must: [['ethernet', 'switches', 'routers', 'interconnect', 'connectors', 'connectivity chips', 'networking storage', 'data center network', 'network infrastructure']],
+    any: [['data center', 'ai', 'semiconductor', 'cloud', 'infrastructure']],
+  },
+  {
+    role: 'Chip design/IP/tools',
+    level: 'enabler',
+    priority: 91,
+    themeHints: ['semiconductor', 'chip', 'ai infrastructure', 'processor'],
+    must: [['semiconductor ip', 'electronic design automation', 'processor architecture', 'chip design', 'eda software']],
+    any: [['ai', 'cpu', 'semiconductor', 'chips', 'processor']],
+  },
+  {
+    role: 'Compute accelerators/chips',
+    level: 'direct',
+    priority: 90,
+    themeHints: ['ai', 'semiconductor', 'accelerator', 'data center', 'compute'],
+    must: [['gpu', 'accelerator', 'cpu', 'processor', 'custom silicon', 'chip', 'semiconductor', 'soc']],
+    any: [['ai', 'data center', 'compute', 'accelerated', 'inference', 'training']],
+  },
+  {
+    role: 'Cloud/data-center operators',
+    level: 'enabler',
+    priority: 86,
+    themeHints: ['cloud', 'data center', 'ai infrastructure', 'infrastructure'],
+    must: [['cloud infrastructure', 'cloud computing', 'data centers', 'data center', 'azure', 'google cloud', 'infrastructure cloud']],
+    any: [['ai', 'infrastructure', 'operator', 'database', 'platform', 'compute']],
+  },
+  {
+    role: 'Charging network/operators',
+    level: 'direct',
+    priority: 94,
+    themeHints: ['ev charging', 'charging infrastructure', 'electric vehicle'],
+    must: [['charging network', 'charging stations', 'ev charging', 'electric vehicle charging', 'charging infrastructure']],
+    any: [['electric vehicle', 'ev', 'charging', 'infrastructure']],
+  },
+  {
+    role: 'Charging equipment/hardware',
+    level: 'enabler',
+    priority: 90,
+    themeHints: ['ev charging', 'charging infrastructure', 'electric vehicle'],
+    must: [['charging equipment', 'evse', 'chargers', 'power electronics']],
+    any: [['electric vehicle', 'ev', 'charging', 'infrastructure']],
+  },
+  {
+    role: 'Cybersecurity platforms',
+    level: 'direct',
+    priority: 94,
+    themeHints: ['cybersecurity', 'security', 'zero trust'],
+    must: [['cybersecurity', 'security platform', 'threat protection', 'endpoint security', 'identity security', 'cloud security', 'network security', 'zero trust']],
+    any: [['security', 'cyber', 'threat', 'identity', 'endpoint', 'cloud']],
+  },
+  {
+    role: 'Security observability/operations',
+    level: 'enabler',
+    priority: 88,
+    themeHints: ['cybersecurity', 'security', 'observability'],
+    must: [['security operations', 'siem', 'observability', 'monitoring', 'log management']],
+    any: [['security', 'threat', 'cloud', 'platform']],
+  },
+];
+
 function sanitizeResearchFacetLabel(value: unknown): string {
   return String(value || '')
     .replace(/[^a-z0-9 /&+.-]/gi, ' ')
@@ -748,6 +856,101 @@ function normalizeStoredResearchSourceEvidence(value: any): ResearchSourceEviden
       } as ResearchSourceEvidence;
     })
     .filter((item: ResearchSourceEvidence | null): item is ResearchSourceEvidence => Boolean(item?.role));
+}
+
+function normalizeResearchEvidenceText(value: unknown): string {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function researchTextHasAny(text: string, values: string[]): boolean {
+  return values.some((value) => {
+    const normalized = normalizeResearchEvidenceText(value);
+    return normalized.length > 0 && text.includes(normalized);
+  });
+}
+
+function researchRuleMatches(text: string, rule: ResearchProfileRoleRule): boolean {
+  const mustMatch = rule.must.every((group) => researchTextHasAny(text, group));
+  const anyMatch = !rule.any?.length || rule.any.every((group) => researchTextHasAny(text, group));
+  return mustMatch && anyMatch;
+}
+
+function researchRuleIsRelevantToTheme(args: {
+  themeText: string;
+  dimensionsText: string;
+  sourceText: string;
+  rule: ResearchProfileRoleRule;
+}): boolean {
+  const context = `${args.themeText} ${args.dimensionsText} ${args.sourceText}`;
+  if (researchTextHasAny(context, args.rule.themeHints)) return true;
+  const roleTokens = normalizeResearchEvidenceText(args.rule.role).split(' ').filter((token) => token.length > 3);
+  return roleTokens.some((token) => context.includes(token));
+}
+
+export function classifyResearchCandidateProfileEvidence(args: {
+  theme: string;
+  candidate: Pick<ResearchCandidateData, 'symbol' | 'overview' | 'sourceFacets'>;
+  requiredDimensions?: ResearchRequiredDimension[];
+  roles?: ResearchUniverseRole[];
+}): ResearchSourceEvidence | null {
+  const overview = args.candidate.overview || {};
+  const profileText = normalizeResearchEvidenceText([
+    args.candidate.symbol,
+    overview.name,
+    overview.sector,
+    overview.industry,
+    overview.description,
+  ].filter(Boolean).join(' '));
+  if (!profileText) return null;
+  const themeText = normalizeResearchEvidenceText(args.theme);
+  const dimensionsText = normalizeResearchEvidenceText([
+    ...(args.requiredDimensions || []).map((dimension) => [
+      dimension.label,
+      dimension.rationale,
+      ...(dimension.searchQueries || []),
+    ].filter(Boolean).join(' ')),
+    ...(args.roles || []).map((role) => [
+      role.label,
+      role.definition,
+      role.query,
+      ...(role.dimensions || []),
+      ...(role.searchQueries || []),
+    ].filter(Boolean).join(' ')),
+  ].join(' '));
+  const sourceText = normalizeResearchEvidenceText((args.candidate.sourceFacets || []).join(' '));
+  const matches = RESEARCH_PROFILE_ROLE_RULES
+    .filter((rule) => researchRuleIsRelevantToTheme({ themeText, dimensionsText, sourceText, rule }))
+    .filter((rule) => researchRuleMatches(profileText, rule))
+    .sort((a, b) => b.priority - a.priority);
+  const match = matches[0];
+  if (!match) return null;
+  const confidence = Math.min(95, Math.max(70, match.priority));
+  return {
+    role: match.role,
+    level: match.level,
+    confidence,
+    rationale: `Provider profile matched concrete ${match.role} terms for this theme.`,
+    source: 'provider-profile-classifier',
+  };
+}
+
+function mergeResearchProfileEvidence(args: {
+  theme: string;
+  candidate: ResearchCandidateData;
+  requiredDimensions?: ResearchRequiredDimension[];
+  roles?: ResearchUniverseRole[];
+}): ResearchSourceEvidence[] {
+  const existing = normalizeStoredResearchSourceEvidence(args.candidate.sourceEvidence);
+  const profileEvidence = classifyResearchCandidateProfileEvidence(args);
+  if (!profileEvidence) return existing;
+  if (existing.some((item) => item.role === profileEvidence.role && item.level === profileEvidence.level)) {
+    return existing;
+  }
+  return [profileEvidence, ...existing];
 }
 
 function buildResearchThemeCandidatePrompt(theme: string, targetCount: number, maxFacets: number, candidatesPerFacet: number): string {
@@ -4755,6 +4958,14 @@ export async function executeTool(
               deadlineAt,
               previousUniverse: updateContext.previous?.metadata?.researchUniverse,
             });
+        const universeRoles: ResearchUniverseRole[] = candidateDiscovery.facets.map((facet) => ({
+          label: facet.label,
+          definition: facet.definition,
+          required: facet.required,
+          query: facet.query,
+          dimensions: facet.dimensions,
+          searchQueries: facet.searchQueries,
+        }));
         const candidateFacetMap = new Map(candidateDiscovery.seeds.map((seed) => [seed.symbol, seed.sourceFacets]));
         const candidateEvidenceMap = new Map<string, ResearchSourceEvidence[]>(
           candidateDiscovery.seeds.map((seed) => [seed.symbol, normalizeStoredResearchSourceEvidence(seed.sourceEvidence)])
@@ -4833,7 +5044,7 @@ export async function executeTool(
             const priceHistory = await fetchSelectionField(symbol, cache, 'Price history', `priceHistory:${range}`, () => stockService.getPriceHistory(symbol, range), allowHigh && candidateCount <= finalCount, 'high');
             await saveSymbolCache(symbol, cache);
             const priorCandidate = priorUniverseCandidateMap.get(symbol) as any;
-            return {
+            const candidateData: ResearchCandidateData = {
               symbol,
               sourceFacets: candidateFacetMap.get(symbol) || [],
               sourceEvidence: candidateEvidenceMap.get(symbol) || [],
@@ -4846,6 +5057,17 @@ export async function executeTool(
               overview,
               basicFinancials,
               priceHistory,
+            };
+            const sourceEvidence = mergeResearchProfileEvidence({
+              theme: resolverSector,
+              candidate: candidateData,
+              requiredDimensions: candidateDiscovery.requiredDimensions,
+              roles: universeRoles,
+            });
+            candidateEvidenceMap.set(symbol, sourceEvidence);
+            return {
+              ...candidateData,
+              sourceEvidence,
             };
           }
         );
@@ -4885,14 +5107,6 @@ export async function executeTool(
           allowStrongAdjacent: RESEARCH_UNIVERSE_ALLOW_STRONG_ADJACENT !== 'false',
           maxRoleShare: RESEARCH_UNIVERSE_MAX_ROLE_SHARE,
         });
-        const universeRoles: ResearchUniverseRole[] = candidateDiscovery.facets.map((facet) => ({
-          label: facet.label,
-          definition: facet.definition,
-          required: facet.required,
-          query: facet.query,
-          dimensions: facet.dimensions,
-          searchQueries: facet.searchQueries,
-        }));
         const universeReadiness: ResearchUniverseReadiness = evaluateResearchUniverseReadiness({
           selection: universeSelection,
           roles: universeRoles,

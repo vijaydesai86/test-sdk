@@ -2,7 +2,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { promises as fsp } from 'fs';
 import path from 'path';
 import axios from 'axios';
-import { executeTool, parsePositionRationaleEntry, resolveSymbolFromQuery } from '../web/app/lib/stockTools';
+import {
+  classifyResearchCandidateProfileEvidence,
+  executeTool,
+  parsePositionRationaleEntry,
+  resolveSymbolFromQuery,
+} from '../web/app/lib/stockTools';
 import type { StockDataService } from '../web/app/lib/stockDataService';
 
 vi.mock('axios');
@@ -470,6 +475,118 @@ describe('generate_research_report via executeTool', () => {
     expect(result.success).toBe(true);
     expect(result.data?.content).toContain('below the minimum 3');
     expect(service.getStockPrice).not.toHaveBeenCalled();
+  });
+
+  it('classifies raw fallback candidates from provider profiles and rejects broad-only names', async () => {
+    const dimensions = [
+      { label: 'cloud/data-center operators', required: true },
+      { label: 'compute accelerators', required: true },
+      { label: 'foundry/manufacturing', required: true },
+      { label: 'semiconductor equipment', required: true },
+      { label: 'memory/storage', required: true },
+      { label: 'networking/connectivity', required: true },
+      { label: 'power/cooling/data-center infrastructure', required: false },
+      { label: 'chip design/IP/tools', required: false },
+    ];
+
+    expect(classifyResearchCandidateProfileEvidence({
+      theme: 'AI infrastructure',
+      requiredDimensions: dimensions,
+      candidate: {
+        symbol: 'NVDA',
+        sourceFacets: ['Broad resolver raw candidate'],
+        overview: {
+          name: 'NVIDIA Corp',
+          sector: 'Technology',
+          industry: 'Semiconductors',
+          description: 'Designs GPUs and accelerated computing platforms for AI data center training and inference.',
+        },
+      },
+    })).toMatchObject({ role: 'Compute accelerators/chips', level: 'direct' });
+
+    expect(classifyResearchCandidateProfileEvidence({
+      theme: 'AI infrastructure',
+      requiredDimensions: dimensions,
+      candidate: {
+        symbol: 'CRM',
+        sourceFacets: ['Broad resolver raw candidate'],
+        overview: {
+          name: 'Salesforce Inc',
+          sector: 'Technology',
+          industry: 'Software Application',
+          description: 'Customer relationship management cloud application software and data cloud.',
+        },
+      },
+    })).toBeNull();
+  });
+
+  it('uses profile evidence after taxonomy timeout so AI infrastructure does not collapse to zero candidates', async () => {
+    const profileBySymbol: Record<string, any> = {
+      NVDA: { name: 'NVIDIA Corp', sector: 'Technology', industry: 'Semiconductors', description: 'Designs GPUs accelerated computing AI data center platforms and networking systems.', marketCapitalization: 500_000_000_000, forwardPE: 35 },
+      AMD: { name: 'Advanced Micro Devices Inc', sector: 'Technology', industry: 'Semiconductors', description: 'Designs CPUs GPUs adaptive SoCs and data center accelerators for computing.', marketCapitalization: 200_000_000_000, forwardPE: 35 },
+      TSM: { name: 'Taiwan Semiconductor Manufacturing Co Ltd', sector: 'Technology', industry: 'Semiconductors', description: 'Semiconductor foundry manufacturing integrated circuits for fabless chip companies.', marketCapitalization: 400_000_000_000, forwardPE: 25 },
+      AMAT: { name: 'Applied Materials Inc', sector: 'Technology', industry: 'Semiconductor Equipment', description: 'Materials engineering equipment used to manufacture semiconductors chips.', marketCapitalization: 150_000_000_000, forwardPE: 25 },
+      MU: { name: 'Micron Technology Inc', sector: 'Technology', industry: 'Semiconductors', description: 'Memory and storage products DRAM NAND for data center AI and compute systems.', marketCapitalization: 100_000_000_000, forwardPE: 30 },
+      ANET: { name: 'Arista Networks Inc', sector: 'Technology', industry: 'Communications Equipment', description: 'Cloud networking ethernet switches for data center and AI networking.', marketCapitalization: 100_000_000_000, forwardPE: 30 },
+      VRT: { name: 'Vertiv Holdings Co', sector: 'Industrials', industry: 'Electrical Equipment', description: 'Critical digital infrastructure power cooling thermal management for data centers.', marketCapitalization: 50_000_000_000, forwardPE: 30 },
+      SNPS: { name: 'Synopsys Inc', sector: 'Technology', industry: 'Software Infrastructure', description: 'Electronic design automation semiconductor IP software used to design chips.', marketCapitalization: 80_000_000_000, forwardPE: 35 },
+      MSFT: { name: 'Microsoft Corp', sector: 'Technology', industry: 'Software Infrastructure', description: 'Azure cloud computing data centers AI infrastructure productivity software.', marketCapitalization: 1_000_000_000_000, forwardPE: 30 },
+      CRM: { name: 'Salesforce Inc', sector: 'Technology', industry: 'Software Application', description: 'Customer relationship management cloud application software and data cloud.', marketCapitalization: 150_000_000_000, forwardPE: 20 },
+      NET: { name: 'Cloudflare Inc', sector: 'Technology', industry: 'Internet Services', description: 'Connectivity cloud content delivery network security and edge network.', marketCapitalization: 50_000_000_000, forwardPE: 50 },
+    };
+    (service.searchStock as ReturnType<typeof vi.fn>).mockResolvedValue({
+      results: Object.keys(profileBySymbol).map((symbol) => ({ symbol, name: profileBySymbol[symbol].name, type: 'Equity', region: 'United States' })),
+    });
+    (service.getCompanyOverview as ReturnType<typeof vi.fn>).mockImplementation(async (symbol: string) => profileBySymbol[symbol] || { name: symbol });
+    (service.getBasicFinancials as ReturnType<typeof vi.fn>).mockResolvedValue({
+      metric: {
+        revenueGrowthTTM: 0.25,
+        epsGrowthTTM: 0.20,
+        grossMarginTTM: 0.55,
+        operatingMarginTTM: 0.30,
+        roeTTM: 0.25,
+      },
+    });
+    const llmFill = vi.fn().mockRejectedValue(new Error('taxonomy timeout'));
+
+    const result = await executeTool('generate_research_report', { sector: 'AI infrastructure', count: 8 }, service, { llmFill });
+
+    expect(result.success).toBe(true);
+    expect(result.data?.runMetadata?.researchUniverse?.status).toBe('locked');
+    expect(result.data?.runMetadata?.symbols).toEqual(expect.arrayContaining(['NVDA', 'TSM', 'AMAT', 'MU', 'VRT', 'SNPS', 'MSFT']));
+    expect(result.data?.runMetadata?.symbols).not.toContain('CRM');
+    expect(result.data?.runMetadata?.symbols).not.toContain('NET');
+    expect(result.data?.content).not.toContain('Verified Data Status');
+  });
+
+  it('keeps profile classification generic for other themes', () => {
+    expect(classifyResearchCandidateProfileEvidence({
+      theme: 'EV charging infrastructure',
+      candidate: {
+        symbol: 'CHRG',
+        sourceFacets: ['Broad resolver raw candidate'],
+        overview: {
+          name: 'Charging Network Co',
+          sector: 'Industrials',
+          industry: 'Specialty Retail',
+          description: 'Operates electric vehicle charging stations and EV charging infrastructure.',
+        },
+      },
+    })).toMatchObject({ role: 'Charging network/operators', level: 'direct' });
+
+    expect(classifyResearchCandidateProfileEvidence({
+      theme: 'Cybersecurity platforms',
+      candidate: {
+        symbol: 'SECU',
+        sourceFacets: ['Broad resolver raw candidate'],
+        overview: {
+          name: 'Security Platform Co',
+          sector: 'Technology',
+          industry: 'Cybersecurity',
+          description: 'Cloud security platform for endpoint security and threat protection.',
+        },
+      },
+    })).toMatchObject({ role: 'Cybersecurity platforms', level: 'direct' });
   });
 
   it('report content includes sector query', async () => {

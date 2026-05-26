@@ -4,16 +4,17 @@ import { createStockService } from '@/app/lib/stockDataService';
 import {
   appendImproveHistoryToSavedReport,
   buildImproveToolRequest,
-  compareImproveCandidate,
+  compareImproveCandidateForReport,
   coverageStats,
   deleteSavedReportForImprove,
   decideImproveStatus,
-  isImproveTargetComplete,
+  isImproveTargetCompleteForReport,
   loadSavedReportForImproveByStoragePath,
   loadSavedReportForImprove,
   parseImproveConfig,
   sameReportUniverse,
   savedReportMetaFromToolData,
+  shouldEnforceSameReportUniverse,
 } from '@/app/lib/reportImprove';
 
 export const maxDuration = 300;
@@ -63,7 +64,7 @@ export async function POST(
   }
 
   const beforeCoverage = coverageStats(report.metadata);
-  if (isImproveTargetComplete(beforeCoverage, config.target)) {
+  if (isImproveTargetCompleteForReport(report.metadata, beforeCoverage, config.target)) {
     return NextResponse.json({
       success: true,
       status: 'complete',
@@ -107,7 +108,7 @@ export async function POST(
   const latestSavedReport = latestReport?.id ? await loadSavedReportForImprove(latestReport.id) : null;
   const afterMetadata = latestSavedReport?.metadata || result.data?.runMetadata || null;
   const afterCoverage = coverageStats(afterMetadata);
-  if (!sameReportUniverse(report.metadata, afterMetadata)) {
+  if (shouldEnforceSameReportUniverse(report.metadata) && !sameReportUniverse(report.metadata, afterMetadata)) {
     if (latestReport?.id) {
       await deleteSavedReportForImprove(latestReport.id).catch(() => false);
     }
@@ -125,13 +126,20 @@ export async function POST(
       { status: 409 }
     );
   }
-  const candidateDecision = compareImproveCandidate(beforeCoverage, afterCoverage);
+  const candidateDecision = compareImproveCandidateForReport({
+    beforeMetadata: report.metadata,
+    afterMetadata,
+    beforeCoverage,
+    afterCoverage,
+  });
   const bestCoverage = candidateDecision.accepted ? afterCoverage : beforeCoverage;
+  const bestMetadata = candidateDecision.accepted ? afterMetadata : report.metadata;
   const decision = decideImproveStatus({
     before: beforeCoverage,
     after: bestCoverage,
     passesDone: passNumber,
     config,
+    metadata: bestMetadata,
   });
   const replaceReportId = typeof body.replaceReportId === 'string' ? body.replaceReportId : '';
   const improveHistoryEntry = {

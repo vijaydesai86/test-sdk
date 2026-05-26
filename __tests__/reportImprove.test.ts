@@ -2,9 +2,12 @@ import { describe, expect, it } from 'vitest';
 import {
   buildImproveToolRequest,
   compareImproveCandidate,
+  compareImproveCandidateForReport,
   coverageStats,
   decideImproveStatus,
+  isImproveTargetCompleteForReport,
   sameReportUniverse,
+  shouldEnforceSameReportUniverse,
   parseImproveConfig,
   type SavedReportForImprove,
 } from '../web/app/lib/reportImprove';
@@ -124,6 +127,148 @@ describe('reportImprove', () => {
         lockedSymbols: ['NVDA', 'AMD', 'MSFT'],
       },
     });
+  });
+
+  it('treats legacy research reports without universe status as locked by symbols', () => {
+    const metadata = buildReportRunMetadata({
+      kind: 'research',
+      query: 'AI infrastructure',
+      symbols: ['NVDA', 'AMD'],
+      range: '1y',
+      generatedAt: '2026-05-25T10:00:00.000Z',
+      coverage: [],
+    });
+
+    expect(shouldEnforceSameReportUniverse(metadata)).toBe(true);
+    expect(buildImproveToolRequest(report('research', metadata))).toMatchObject({
+      args: {
+        lockedSymbols: ['NVDA', 'AMD'],
+        count: 2,
+      },
+    });
+  });
+
+  it('continues research discovery checkpoints instead of treating empty coverage as complete', () => {
+    const metadata = buildReportRunMetadata({
+      kind: 'research',
+      query: 'AI infrastructure',
+      symbols: [],
+      range: '1y',
+      generatedAt: '2026-05-25T10:00:00.000Z',
+      coverage: [],
+      researchUniverse: {
+        status: 'failed',
+        selectedSymbols: [],
+        qualifiedSymbols: [],
+        candidates: [],
+        readiness: {
+          status: 'failed',
+          selectedCount: 0,
+          targetLockCount: 12,
+          targetPartialCount: 7,
+          roleCount: 0,
+          minRoleCount: 4,
+          directEnablerShare: 0,
+          broadShare: 0,
+          coveredDimensions: [],
+          missingDimensions: ['compute', 'cloud'],
+          repairActions: ['Continue candidate discovery.'],
+          canBuildFullReport: false,
+        },
+      },
+    });
+    const stats = coverageStats(metadata);
+
+    expect(stats).toEqual({
+      total: 0,
+      available: 0,
+      missing: 0,
+      criticalMissing: 0,
+      coveragePct: null,
+    });
+    expect(isImproveTargetCompleteForReport(metadata, stats, 'critical')).toBe(false);
+    expect(buildImproveToolRequest(report('research', metadata))).toMatchObject({
+      toolName: 'generate_research_report',
+      args: {
+        updateMode: true,
+        updateQuery: 'AI infrastructure',
+        sector: 'AI infrastructure',
+        lockedSymbols: [],
+        count: 12,
+      },
+    });
+    expect(shouldEnforceSameReportUniverse(metadata)).toBe(false);
+    expect(decideImproveStatus({
+      before: stats,
+      after: stats,
+      passesDone: 1,
+      config: { maxPasses: 7, target: 'critical', minWaitMs: 0 },
+      metadata,
+    })).toMatchObject({ status: 'continue', reason: 'research_universe_refining' });
+  });
+
+  it('accepts research universe readiness progress before the universe is locked', () => {
+    const failedMetadata = buildReportRunMetadata({
+      kind: 'research',
+      query: 'AI infrastructure',
+      symbols: [],
+      generatedAt: '2026-05-25T10:00:00.000Z',
+      coverage: [],
+      researchUniverse: {
+        status: 'failed',
+        selectedSymbols: [],
+        qualifiedSymbols: [],
+        candidates: [],
+        readiness: {
+          status: 'failed',
+          selectedCount: 0,
+          targetLockCount: 12,
+          targetPartialCount: 7,
+          roleCount: 0,
+          minRoleCount: 4,
+          directEnablerShare: 0,
+          broadShare: 0,
+          coveredDimensions: [],
+          missingDimensions: ['compute', 'cloud'],
+          repairActions: [],
+          canBuildFullReport: false,
+        },
+      },
+    });
+    const lockedMetadata = buildReportRunMetadata({
+      kind: 'research',
+      query: 'AI infrastructure',
+      symbols: ['NVDA', 'MSFT'],
+      generatedAt: '2026-05-25T10:05:00.000Z',
+      coverage: [],
+      researchUniverse: {
+        status: 'locked',
+        selectedSymbols: ['NVDA', 'MSFT'],
+        qualifiedSymbols: ['NVDA', 'MSFT'],
+        candidates: [],
+        readiness: {
+          status: 'locked',
+          selectedCount: 12,
+          targetLockCount: 12,
+          targetPartialCount: 7,
+          roleCount: 6,
+          minRoleCount: 4,
+          directEnablerShare: 1,
+          broadShare: 0,
+          coveredDimensions: ['compute', 'cloud'],
+          missingDimensions: [],
+          repairActions: [],
+          canBuildFullReport: true,
+        },
+      },
+    });
+
+    expect(compareImproveCandidateForReport({
+      beforeMetadata: failedMetadata,
+      afterMetadata: lockedMetadata,
+      beforeCoverage: coverageStats(failedMetadata),
+      afterCoverage: coverageStats(lockedMetadata),
+    })).toEqual({ accepted: true, reason: 'research_universe_locked' });
   });
 
   it('detects report universe changes after improve', () => {
