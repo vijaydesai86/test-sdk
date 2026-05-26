@@ -18,13 +18,24 @@ export interface ResearchUniverseWeights {
 }
 
 export type ResearchThemeFit = 'core' | 'strong_adjacent' | 'weak_adjacent' | 'reject';
+export type ResearchThemeEvidenceLevel = 'direct' | 'enabler' | 'beneficiary' | 'unrelated';
+export type ResearchSelectionMode = 'fresh_selection' | 'locked_diagnostics';
+
+export interface ResearchThemeEvidence {
+  level: ResearchThemeEvidenceLevel;
+  role: string;
+  rationale: string;
+  confidence: number;
+}
 
 export interface ResearchCandidateScore {
   symbol: string;
   companyName: string;
   subtheme: string;
+  themeEvidence: ResearchThemeEvidence;
   themeFit: ResearchThemeFit;
   selected: boolean;
+  qualified: boolean;
   totalScore: number;
   universeFitScore: number;
   themeScore: number;
@@ -40,6 +51,7 @@ export interface ResearchCandidateScore {
 
 export interface ResearchUniverseSelection {
   query: string;
+  mode: ResearchSelectionMode;
   requestedCount: number;
   candidateCount: number;
   selectedSymbols: string[];
@@ -102,6 +114,23 @@ function normalizeThemeFit(value: unknown): ResearchThemeFit | null {
   return null;
 }
 
+function normalizeEvidenceLevel(value: unknown): ResearchThemeEvidenceLevel | null {
+  const normalized = String(value || '').toLowerCase().replace(/[^a-z]/g, '');
+  if (normalized === 'direct' || normalized === 'core') return 'direct';
+  if (normalized === 'enabler' || normalized === 'infrastructureenabler' || normalized === 'supplier' || normalized === 'operator') return 'enabler';
+  if (normalized === 'beneficiary' || normalized === 'adjacent' || normalized === 'platform') return 'beneficiary';
+  if (normalized === 'unrelated' || normalized === 'reject' || normalized === 'weak') return 'unrelated';
+  return null;
+}
+
+function evidenceToFit(evidence: ResearchThemeEvidence, themeScore: number, minThemeScore: number, strongAdjacentThemeScore: number): ResearchThemeFit {
+  if (evidence.level === 'direct' && themeScore >= minThemeScore) return 'core';
+  if ((evidence.level === 'direct' || evidence.level === 'enabler') && themeScore >= strongAdjacentThemeScore) return 'strong_adjacent';
+  if (evidence.level === 'beneficiary' && themeScore >= strongAdjacentThemeScore) return 'strong_adjacent';
+  if (evidence.level === 'unrelated') return 'reject';
+  return 'weak_adjacent';
+}
+
 function inferThemeFit(themeScore: number, llmFit: ResearchThemeFit | null, minThemeScore: number, strongAdjacentThemeScore: number): ResearchThemeFit {
   if (llmFit) {
     if (llmFit === 'core' && themeScore < strongAdjacentThemeScore) return 'weak_adjacent';
@@ -141,7 +170,7 @@ function metricValue(candidate: ResearchCandidateData, keys: string[]): number |
   return null;
 }
 
-function candidateProfileText(candidate: ResearchCandidateData): string {
+function candidateProviderProfileText(candidate: ResearchCandidateData): string {
   const overview = candidate.overview || {};
   return [
     candidate.symbol,
@@ -149,7 +178,6 @@ function candidateProfileText(candidate: ResearchCandidateData): string {
     overview.sector,
     overview.industry,
     overview.description,
-    ...(candidate.sourceFacets || []),
     overview.exchange,
   ].filter(Boolean).join(' ');
 }
@@ -168,14 +196,11 @@ function inferSubtheme(candidate: ResearchCandidateData, llmSubtheme?: string): 
 function scoreThemeRelevance(query: string, candidate: ResearchCandidateData, llmScore?: number | null, resolverRankScore = 0): number {
   const llm = llmScore === null || llmScore === undefined ? null : clamp(llmScore);
   const queryTokens = tokenize(query);
-  const profileTokens = new Set(tokenize(candidateProfileText(candidate)));
+  const profileTokens = new Set(tokenize(candidateProviderProfileText(candidate)));
   if (queryTokens.length === 0) return llm ?? 0;
   const matched = queryTokens.filter((token) => profileTokens.has(token)).length;
   const lexicalScore = clamp((matched / queryTokens.length) * 100);
-  const facetTokens = new Set(tokenize((candidate.sourceFacets || []).join(' ')));
-  const facetMatched = queryTokens.filter((token) => facetTokens.has(token)).length;
-  const facetScore = queryTokens.length === 0 ? 0 : clamp((facetMatched / queryTokens.length) * 100);
-  if (llm !== null) return clamp((llm * 0.72) + (lexicalScore * 0.12) + (facetScore * 0.08) + (resolverRankScore * 0.08));
+  if (llm !== null) return clamp((llm * 0.76) + (lexicalScore * 0.14) + (resolverRankScore * 0.10));
   return Math.max(lexicalScore, resolverRankScore * 0.60);
 }
 
@@ -190,6 +215,92 @@ function fitTierScore(fit: ResearchThemeFit): number {
   if (fit === 'strong_adjacent') return 72;
   if (fit === 'weak_adjacent') return 25;
   return 0;
+}
+
+function evidenceTierScore(evidence: ResearchThemeEvidence): number {
+  if (evidence.level === 'direct') return 100;
+  if (evidence.level === 'enabler') return 88;
+  if (evidence.level === 'beneficiary') return 58;
+  return 0;
+}
+
+function buildHeuristicEvidence(args: {
+  query: string;
+  candidate: ResearchCandidateData;
+  resolverRankScore: number;
+  llmEvidenceLevel?: ResearchThemeEvidenceLevel | null;
+  llmRationale?: string;
+  llmSubtheme?: string;
+  llmConfidence?: number | null;
+  themeScore: number;
+  minThemeScore: number;
+  strongAdjacentThemeScore: number;
+}): ResearchThemeEvidence {
+  const providerText = candidateProviderProfileText(args.candidate);
+  const providerTokens = new Set(tokenize(providerText));
+  const queryTokens = tokenize(args.query);
+  const facetTokens = new Set(tokenize((args.candidate.sourceFacets || []).join(' ')));
+  const queryMatches = queryTokens.filter((token) => providerTokens.has(token)).length;
+  const facetProviderMatches = Array.from(facetTokens).filter((token) => providerTokens.has(token)).length;
+  const profileEvidenceStrong = queryMatches >= Math.min(2, queryTokens.length) || facetProviderMatches >= 2;
+  const profileEvidenceModerate = queryMatches >= 1 || facetProviderMatches >= 1;
+  const role = inferSubtheme(args.candidate, args.llmSubtheme);
+  const llmConfidence = clamp(args.llmConfidence ?? 60);
+
+  if (args.llmEvidenceLevel === 'direct' || args.llmEvidenceLevel === 'enabler') {
+    const level = profileEvidenceModerate || args.themeScore >= args.minThemeScore
+      ? args.llmEvidenceLevel
+      : 'beneficiary';
+    return {
+      level,
+      role,
+      rationale: args.llmRationale || (profileEvidenceModerate ? 'Profile evidence supports material theme exposure.' : 'LLM evidence was not strongly corroborated by provider profile text.'),
+      confidence: profileEvidenceStrong ? Math.max(llmConfidence, 75) : llmConfidence,
+    };
+  }
+
+  if (args.llmEvidenceLevel === 'beneficiary') {
+    return {
+      level: profileEvidenceModerate || args.themeScore >= args.strongAdjacentThemeScore ? 'beneficiary' : 'unrelated',
+      role,
+      rationale: args.llmRationale || 'Broad beneficiary exposure only.',
+      confidence: llmConfidence,
+    };
+  }
+
+  if (args.llmEvidenceLevel === 'unrelated') {
+    return {
+      level: 'unrelated',
+      role,
+      rationale: args.llmRationale || 'Provider profile does not support material theme exposure.',
+      confidence: llmConfidence,
+    };
+  }
+
+  if (profileEvidenceStrong) {
+    return {
+      level: 'enabler',
+      role,
+      rationale: 'Provider profile has direct overlap with the requested theme or source role.',
+      confidence: 72,
+    };
+  }
+  if (profileEvidenceModerate || args.resolverRankScore >= 85) {
+    return {
+      level: 'beneficiary',
+      role,
+      rationale: profileEvidenceModerate
+        ? 'Provider profile has partial overlap with the requested theme or source role.'
+        : 'High-ranked resolver candidate without enough profile evidence for direct/enabler status.',
+      confidence: profileEvidenceModerate ? 58 : 45,
+    };
+  }
+  return {
+    level: 'unrelated',
+    role,
+    rationale: 'No sufficient provider-profile evidence for theme membership.',
+    confidence: 50,
+  };
 }
 
 function scoreDataConfidence(candidate: ResearchCandidateData): number {
@@ -264,6 +375,7 @@ function computePriceChange(prices: PricePoint[] = []): number | null {
 
 function reasonForCandidate(candidate: ResearchCandidateData, score: Omit<ResearchCandidateScore, 'selected' | 'reasons'>): string[] {
   const reasons: string[] = [];
+  reasons.push(`${score.themeEvidence.level} theme evidence`);
   if (score.themeFit === 'core') reasons.push('core theme fit');
   else if (score.themeFit === 'strong_adjacent') reasons.push('strong adjacent theme fit');
   else if (score.themeFit === 'weak_adjacent') reasons.push('weak adjacent theme fit');
@@ -282,7 +394,7 @@ async function classifyThemeWithLLM(args: {
   query: string;
   candidates: ResearchCandidateData[];
   llmFill?: LLMFiller;
-}): Promise<Record<string, { themeScore?: number; themeFit?: ResearchThemeFit; subtheme?: string; rationale?: string }>> {
+}): Promise<Record<string, { themeScore?: number; themeFit?: ResearchThemeFit; evidenceLevel?: ResearchThemeEvidenceLevel; evidenceConfidence?: number; subtheme?: string; rationale?: string }>> {
   if (!args.llmFill || args.candidates.length === 0) return {};
   const payload = args.candidates.map((candidate) => ({
     symbol: candidate.symbol,
@@ -295,6 +407,11 @@ async function classifyThemeWithLLM(args: {
   const prompt = [
     `Classify each public company against the investment theme "${args.query}".`,
     'Use only the supplied company profile text. Do not add financial facts, supplier/customer claims, or unsupported claims.',
+    'Separately classify evidenceLevel:',
+    '- direct: supplied profile shows direct products/services/operations in the theme.',
+    '- enabler: supplied profile shows supplier, infrastructure, platform, or operator exposure that enables the theme.',
+    '- beneficiary: broad financial or platform beneficiary with plausible but not direct profile evidence.',
+    '- unrelated: profile does not support meaningful theme membership.',
     'Fit definitions:',
     '- core: the company directly sells, enables, operates, or supplies a main activity in the user theme.',
     '- strong_adjacent: the company is a major platform, operator, supplier, or financial beneficiary with clear material exposure to the theme, but it is not a pure/direct role.',
@@ -302,7 +419,8 @@ async function classifyThemeWithLLM(args: {
     '- reject: the supplied profile does not support meaningful exposure to the theme.',
     'Prefer rejecting broad companies unless the profile clearly connects them to the theme.',
     'Use theme-derived roles/subthemes, not generic provider sectors like Technology, Retail, or Media when a better role is supported.',
-    'Return valid JSON only: {"candidates":[{"symbol":"TICKER","themeScore":0-100,"fit":"core|strong_adjacent|weak_adjacent|reject","subtheme":"theme role","rationale":"short evidence reason"}]}',
+    'Return weak_adjacent/reject when evidenceLevel is unrelated. Discovery/sourceFacets are hints, not proof.',
+    'Return valid JSON only: {"candidates":[{"symbol":"TICKER","themeScore":0-100,"fit":"core|strong_adjacent|weak_adjacent|reject","evidenceLevel":"direct|enabler|beneficiary|unrelated","evidenceConfidence":0-100,"subtheme":"theme role","rationale":"short evidence reason from supplied text"}]}',
     JSON.stringify(payload),
   ].join('\n\n');
   try {
@@ -310,13 +428,15 @@ async function classifyThemeWithLLM(args: {
     const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
     const parsed = JSON.parse(cleaned);
     const rows = Array.isArray(parsed?.candidates) ? parsed.candidates : [];
-    const result: Record<string, { themeScore?: number; themeFit?: ResearchThemeFit; subtheme?: string; rationale?: string }> = {};
+    const result: Record<string, { themeScore?: number; themeFit?: ResearchThemeFit; evidenceLevel?: ResearchThemeEvidenceLevel; evidenceConfidence?: number; subtheme?: string; rationale?: string }> = {};
     for (const row of rows) {
       const symbol = normalizeSymbol(row?.symbol);
       if (!symbol) continue;
       result[symbol] = {
         themeScore: toNumber(row?.themeScore) ?? undefined,
         themeFit: normalizeThemeFit(row?.fit) ?? undefined,
+        evidenceLevel: normalizeEvidenceLevel(row?.evidenceLevel ?? row?.themeEvidence ?? row?.level) ?? undefined,
+        evidenceConfidence: toNumber(row?.evidenceConfidence ?? row?.confidence) ?? undefined,
         subtheme: typeof row?.subtheme === 'string' ? row.subtheme : undefined,
         rationale: typeof row?.rationale === 'string' ? row.rationale : undefined,
       };
@@ -331,6 +451,7 @@ export async function selectResearchUniverse(args: {
   query: string;
   candidates: ResearchCandidateData[];
   finalCount: number;
+  mode?: ResearchSelectionMode;
   llmFill?: LLMFiller;
   weights?: Partial<ResearchUniverseWeights>;
   minThemeScore?: number;
@@ -339,6 +460,7 @@ export async function selectResearchUniverse(args: {
   maxRoleShare?: number;
 }): Promise<ResearchUniverseSelection> {
   const weights = { ...DEFAULT_WEIGHTS, ...(args.weights || {}) };
+  const mode = args.mode || 'fresh_selection';
   const minThemeScore = clamp(args.minThemeScore ?? 70);
   const strongAdjacentThemeScore = clamp(args.strongAdjacentThemeScore ?? Math.max(55, minThemeScore - 15), 0, minThemeScore);
   const allowStrongAdjacent = args.allowStrongAdjacent !== false;
@@ -362,17 +484,38 @@ export async function selectResearchUniverse(args: {
       ? 100
       : clamp(100 - ((index / (candidates.length - 1)) * 40));
     const themeScore = scoreThemeRelevance(args.query, candidate, llm.themeScore ?? null, resolverRankScore);
-    const themeFit = inferThemeFit(themeScore, llm.themeFit ?? null, minThemeScore, strongAdjacentThemeScore);
+    const themeEvidence = buildHeuristicEvidence({
+      query: args.query,
+      candidate,
+      resolverRankScore,
+      llmEvidenceLevel: llm.evidenceLevel ?? null,
+      llmRationale: llm.rationale,
+      llmSubtheme: llm.subtheme,
+      llmConfidence: llm.evidenceConfidence ?? null,
+      themeScore,
+      minThemeScore,
+      strongAdjacentThemeScore,
+    });
+    const themeFit = llm.themeFit
+      ? inferThemeFit(themeScore, llm.themeFit, minThemeScore, strongAdjacentThemeScore)
+      : evidenceToFit(themeEvidence, themeScore, minThemeScore, strongAdjacentThemeScore);
+    const evidenceFit = evidenceToFit(themeEvidence, themeScore, minThemeScore, strongAdjacentThemeScore);
+    const finalThemeFit = themeFit === 'core' && evidenceFit !== 'core'
+      ? evidenceFit
+      : themeFit === 'strong_adjacent' && evidenceFit === 'reject'
+        ? 'weak_adjacent'
+        : themeFit;
     const dataConfidenceScore = scoreDataConfidence(candidate);
     const liquidityScaleScore = scoreLiquidityScale(candidate);
     const sourceFacetScore = scoreSourceFacetSupport(candidate);
     const factorScore = scoreFinancialFactors(candidate);
     const investmentReadinessScore = clamp((factorScore * 0.60) + (dataConfidenceScore * 0.25) + (liquidityScaleScore * 0.15));
-    const subtheme = inferSubtheme(candidate, llm.subtheme);
+    const subtheme = themeEvidence.role;
     const universeFitScore = clamp(
-      (themeScore * 0.36) +
-      (fitTierScore(themeFit) * 0.26) +
-      (sourceFacetScore * 0.12) +
+      (themeScore * 0.28) +
+      (fitTierScore(finalThemeFit) * 0.22) +
+      (evidenceTierScore(themeEvidence) * 0.18) +
+      (sourceFacetScore * 0.06) +
       (dataConfidenceScore * 0.12) +
       (liquidityScaleScore * 0.07) +
       (factorScore * 0.07)
@@ -382,7 +525,8 @@ export async function selectResearchUniverse(args: {
       symbol: candidate.symbol,
       companyName: candidate.overview?.name || candidate.symbol,
       subtheme,
-      themeFit,
+      themeEvidence,
+      themeFit: finalThemeFit,
       totalScore,
       universeFitScore,
       themeScore,
@@ -392,6 +536,7 @@ export async function selectResearchUniverse(args: {
       sourceFacetScore,
       representativeCoverageScore: 0,
       factorScore,
+      qualified: false,
       exclusionReason: undefined,
     };
     const reasons = reasonForCandidate(candidate, partial);
@@ -401,6 +546,7 @@ export async function selectResearchUniverse(args: {
 
   const pool = [...baseScores].sort((a, b) => b.totalScore - a.totalScore);
   const qualifiedPool = pool.filter((candidate) => {
+    if (candidate.themeEvidence.level === 'unrelated') return false;
     if (candidate.themeFit === 'core') return candidate.themeScore >= minThemeScore;
     if (candidate.themeFit === 'strong_adjacent') return allowStrongAdjacent && candidate.themeScore >= strongAdjacentThemeScore;
     return false;
@@ -410,7 +556,16 @@ export async function selectResearchUniverse(args: {
   const selectedRoleCounts = new Map<string, number>();
   const roleSoftCap = Math.max(2, Math.ceil(args.finalCount * maxRoleShare));
   const remaining = new Map(qualifiedPool.map((candidate) => [candidate.symbol, candidate]));
-  while (selected.length < args.finalCount && remaining.size > 0) {
+  if (mode === 'locked_diagnostics') {
+    for (const candidate of pool) {
+      candidate.selected = true;
+      candidate.qualified = qualifiedPool.some((qualified) => qualified.symbol === candidate.symbol);
+      candidate.representativeCoverageScore = 50;
+      selected.push(candidate);
+    }
+  }
+
+  while (mode === 'fresh_selection' && selected.length < args.finalCount && remaining.size > 0) {
     let best: ResearchCandidateScore | null = null;
     let bestAdjusted = -Infinity;
     const candidatesToConsider = Array.from(remaining.values());
@@ -431,6 +586,7 @@ export async function selectResearchUniverse(args: {
     }
     if (!best) break;
     best.selected = true;
+    best.qualified = true;
     best.representativeCoverageScore = selectedSubthemes.has(best.subtheme) ? 50 : 100;
     best.totalScore = clamp(best.totalScore + (best.representativeCoverageScore * weights.representativeCoverage));
     selected.push(best);
@@ -440,6 +596,7 @@ export async function selectResearchUniverse(args: {
   }
 
   for (const candidate of pool) {
+    candidate.qualified = qualifiedPool.some((qualified) => qualified.symbol === candidate.symbol);
     if (candidate.selected) continue;
     candidate.exclusionReason = candidate.themeFit === 'reject'
       ? 'Excluded: supplied profile does not support meaningful theme exposure.'
@@ -448,7 +605,7 @@ export async function selectResearchUniverse(args: {
         : candidate.themeFit === 'strong_adjacent' && !allowStrongAdjacent
           ? 'Excluded: strong-adjacent exposure disabled by configuration.'
           : candidate.themeScore < strongAdjacentThemeScore
-            ? 'Excluded: below configured theme-fit gate.'
+            ? 'Excluded: below configured theme evidence/fit gate.'
             : candidate.dataConfidenceScore < 35
               ? 'Excluded: weaker provider coverage than selected candidates.'
               : 'Excluded: lower combined score or redundant qualified role coverage.';
@@ -468,14 +625,16 @@ export async function selectResearchUniverse(args: {
     .filter((candidate) => !qualifiedSymbols.includes(candidate.symbol))
     .map((candidate) => candidate.symbol);
   const shortfallNote = selected.length < args.finalCount
+    && mode === 'fresh_selection'
     ? [
-        `Only ${selected.length} of ${args.finalCount} configured slots cleared the theme-fit gate; weak or unsupported candidates were not forced into the universe.`,
+        `Only ${selected.length} of ${args.finalCount} configured slots cleared the theme evidence/fit gate; weak or unsupported candidates were not forced into the universe.`,
         'Quality gates, runtime budget, and provider-data limits favor a qualified partial universe over filling every configured slot.',
       ]
     : [];
 
   return {
     query: args.query,
+    mode,
     requestedCount: args.finalCount,
     candidateCount: candidates.length,
     selectedSymbols: selected.map((candidate) => candidate.symbol),
@@ -489,8 +648,10 @@ export async function selectResearchUniverse(args: {
     strongAdjacentThemeScore,
     maxRoleShare,
     notes: [
-      `Universe selection scored ${candidates.length} verified candidates for ${args.finalCount} configured slots.`,
-      `Theme-fit gates: core >= ${minThemeScore.toFixed(0)}, strong adjacent >= ${strongAdjacentThemeScore.toFixed(0)}${allowStrongAdjacent ? '' : ' (strong adjacent disabled)'}.`,
+      mode === 'locked_diagnostics'
+        ? `Locked universe diagnostics scored ${candidates.length} preserved companies; ${qualifiedSymbols.length} currently clear the qualified theme gate.`
+        : `Universe selection scored ${candidates.length} verified candidates for ${args.finalCount} configured slots.`,
+      `Theme evidence/fit gates: core >= ${minThemeScore.toFixed(0)}, strong adjacent >= ${strongAdjacentThemeScore.toFixed(0)}${allowStrongAdjacent ? '' : ' (strong adjacent disabled)'}.`,
       `Candidate fit mix: core ${fitCounts.core}, strong adjacent ${fitCounts.strong_adjacent}, weak adjacent ${fitCounts.weak_adjacent}, rejected ${fitCounts.reject}.`,
       ...shortfallNote,
       `Selection weights: theme purity, fit tier, source-facet support, data readiness, liquidity/scale, preliminary financial sanity, and representative coverage; financial attractiveness cannot override weak theme fit.`,

@@ -4614,6 +4614,7 @@ export async function executeTool(
           query: resolverSector,
           candidates: validatedSelectionCandidateData,
           finalCount,
+          mode: lockedSymbols.length > 0 ? 'locked_diagnostics' : 'fresh_selection',
           llmFill: hasReportLLMBudget(deadlineAt) ? options?.llmFill : undefined,
           minThemeScore: RESEARCH_UNIVERSE_MIN_THEME_SCORE,
           strongAdjacentThemeScore: RESEARCH_UNIVERSE_STRONG_ADJACENT_THEME_SCORE,
@@ -4622,7 +4623,7 @@ export async function executeTool(
         });
         if (lockedSymbols.length === 0 && universeSelection.selectedSymbols.length === 0) {
           const reason = [
-            `No verified candidate cleared the configured theme-fit gate for "${sector}". The report was not forced with weak or unsupported companies.`,
+            `No verified candidate cleared the configured theme evidence/fit gate for "${sector}". The report was not forced with weak or unsupported companies.`,
             'Runtime budget or provider-data limits prevented a qualified market-data-backed universe from being completed in this pass.',
           ].filter(Boolean).join(' ');
           const content = buildUnavailableResearchContent(sector, reason);

@@ -136,8 +136,8 @@ _Note: SEC EDGAR filings (`get_sec_filings`), SEC XBRL company facts (`get_sec_c
 | `RESEARCH_CANDIDATE_POOL_MULTIPLIER` | `3` | Research candidate pool size before scoring, as a multiple of `NUM_COMPANIES`. Range: 1–5 and bounded by runtime/provider limits. |
 | `RESEARCH_THEME_FACET_COUNT` | `6` | Maximum generic theme role buckets generated before candidate discovery. Range: 1–10. |
 | `RESEARCH_FACET_CANDIDATES` | `8` | Maximum candidate symbols requested per generated role bucket. Range: 2–15. |
-| `RESEARCH_UNIVERSE_MIN_THEME_SCORE` | `70` | Core theme-fit gate for fresh research universe selection. |
-| `RESEARCH_UNIVERSE_STRONG_ADJACENT_THEME_SCORE` | `55` | Strong-adjacent theme-fit gate. Weak-adjacent/rejected candidates are not forced into the universe just to fill configured slots. |
+| `RESEARCH_UNIVERSE_MIN_THEME_SCORE` | `70` | Core theme-evidence/fit gate for fresh research universe selection. |
+| `RESEARCH_UNIVERSE_STRONG_ADJACENT_THEME_SCORE` | `55` | Strong-adjacent theme-evidence/fit gate. Weak-adjacent, unrelated, or unsupported candidates are not forced into the universe just to fill configured slots. |
 | `RESEARCH_UNIVERSE_ALLOW_STRONG_ADJACENT` | `true` | Set to `false` to require only core theme-fit candidates in fresh research universes. |
 | `RESEARCH_UNIVERSE_MAX_ROLE_SHARE` | `0.35` | Soft maximum share for one theme-derived role before selection prioritizes other qualified roles. |
 | `DEEP_RESEARCH_DEPTH` | `1` | Optional post-core-data ecosystem/refinement passes for research reports. Core market data is fetched before any pass runs. Range: 1–10. |
@@ -145,6 +145,8 @@ _Note: SEC EDGAR filings (`get_sec_filings`), SEC XBRL company facts (`get_sec_c
 | `RESEARCH_ALLOCATION_MIN_SCORE` | `60` | Minimum report score for a research allocation scenario candidate. Range: 0–100. This controls selective allocation only; it does not remove companies from the report universe. |
 | `RESEARCH_ALLOCATION_MIN_THEME_SCORE` | `50` | Minimum universe-selection theme-fit score for research allocation eligibility when theme score is available. Range: 0–100. |
 | `RESEARCH_ALLOCATION_MIN_DATA_CONFIDENCE` | `50` | Minimum universe-selection provider-data confidence score for research allocation eligibility when data confidence is available. Range: 0–100. |
+
+Research updates preserve the locked report universe. Diagnostics may mark locked names as qualified, weak, or unrelated, but the dependency graph and financial tables keep the locked universe while allocation and research conclusion use only the qualified subset.
 | `DATA_FETCH_CONCURRENCY` | `3` | Parallel ticker fetches per report round. Range: 1–4. |
 | `VERCEL_EXTENDED_DATA_MAX_COMPANIES` | `3` | On Vercel, reports larger than this preserve the configured company/watchlist universe but prioritize core decision inputs and cached optional data so free-tier providers do not consume the whole 300 s function window. Improve/update passes fill missing fields in later saved versions. Local runs still attempt extended data. |
 | `REPORTS_DIR` | `reports` (local) / `/tmp/reports` (Vercel) | Where generated report files are stored. |

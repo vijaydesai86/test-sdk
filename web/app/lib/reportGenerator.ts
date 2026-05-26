@@ -3583,14 +3583,18 @@ function buildResearchUniverseSelectionSection(selection?: ResearchUniverseSelec
   const lines = [
     manualUniverse ? '## 🧭 Locked Universe Diagnostics' : '## 🧭 Universe Selection Summary',
     modeLine,
-    `Configured slots: ${selection.requestedCount}. Verified candidates scored: ${selection.candidateCount}. Selected ${selection.selectedSymbols.length}: ${selection.selectedSymbols.join(', ') || 'none'}.`,
+    manualUniverse
+      ? `Locked companies: ${selection.selectedSymbols.length}. Qualified allocation subset: ${selection.qualifiedSymbols.length ? selection.qualifiedSymbols.join(', ') : 'none'}.`
+      : `Configured slots: ${selection.requestedCount}. Verified candidates scored: ${selection.candidateCount}. Selected ${selection.selectedSymbols.length}: ${selection.selectedSymbols.join(', ') || 'none'}.`,
     `Fit mix: core ${selection.fitCounts.core}, strong adjacent ${selection.fitCounts.strong_adjacent}, weak adjacent ${selection.fitCounts.weak_adjacent}, rejected ${selection.fitCounts.reject}. Theme gates: core >= ${selection.minThemeScore.toFixed(0)}, strong adjacent >= ${selection.strongAdjacentThemeScore.toFixed(0)}.`,
     `Role coverage: ${roleSummary}`,
-    'Scoring: theme purity and fit tier are gates first; source role support, provider data readiness, liquidity/scale, preliminary financial sanity, and role coverage then rank the qualified candidates. Weak or unsupported names are not forced in to fill slots.',
+    manualUniverse
+      ? 'Diagnostics: the locked universe remains the report/table/graph universe. Allocation and research conclusion use only the qualified subset so weak or unsupported locked names are not recommended.'
+      : 'Scoring: theme evidence and fit tier are gates first; source role support, provider data readiness, liquidity/scale, preliminary financial sanity, and role coverage then rank the qualified candidates. Weak or unsupported names are not forced in to fill slots.',
   ];
 
   if (debugMode) {
-    lines.push('### Selected Candidate Diagnostics', selectedTable);
+    lines.push(manualUniverse ? '### Locked Candidate Diagnostics' : '### Selected Candidate Diagnostics', selectedTable);
     const excludedRows = selection.candidates
       .filter((candidate) => !candidate.selected)
       .map((candidate) => [
@@ -3650,7 +3654,7 @@ function buildResearchAllocationSection(
     const universeScore = selector?.totalScore ?? null;
     const themeScore = selector?.themeScore ?? null;
     const dataScore = selector?.dataConfidenceScore ?? null;
-    const themeFitEligible = !selector || selector.themeFit === 'core' || selector.themeFit === 'strong_adjacent';
+    const themeFitEligible = !selector || selector.qualified;
     const allocationScore = reportScore === null
       ? null
       : (
@@ -3661,7 +3665,7 @@ function buildResearchAllocationSection(
         ) * (guidance.forNonOwners === 'Buy' ? 1 : 0.65);
     const reasons: string[] = [];
     if (reportScore === null) reasons.push('missing report score');
-    if (!themeFitEligible) reasons.push(`theme fit is ${selector?.themeFit}`);
+    if (!themeFitEligible) reasons.push(`theme evidence is ${selector?.themeEvidence.level ?? selector?.themeFit}`);
     if (reportScore !== null && reportScore < minReportScore) reasons.push(`report score below ${minReportScore}`);
     if (themeScore !== null && themeScore < minThemeScore) reasons.push(`theme score below ${minThemeScore}`);
     if (dataScore !== null && dataScore < minDataScore) reasons.push(`data confidence below ${minDataScore}`);
@@ -3686,6 +3690,7 @@ function buildResearchAllocationSection(
     const reasons = [
       candidate.guidance.forNonOwners === 'Buy' ? 'fresh-entry buy' : 'watch-sized candidate',
       candidate.selector ? `theme ${formatScore(candidate.selector.themeScore)}` : null,
+      candidate.selector ? `evidence ${candidate.selector.themeEvidence.level}` : null,
       candidate.selector ? `data ${formatScore(candidate.selector.dataConfidenceScore)}` : null,
     ].filter(Boolean).join('; ');
     return [
@@ -3700,7 +3705,7 @@ function buildResearchAllocationSection(
   const debugMode = process.env.DEBUG === 'true';
   const lines = [
     '## 🧭 Research Allocation Scenario (Not Investment Advice)',
-    `Selective scenario only. Companies must clear report score (${minReportScore}), theme fit (${minThemeScore}), and data confidence (${minDataScore}) gates when those selector scores are available; no cash or equal-weight remainder is forced.`,
+    `Selective qualified-subset scenario only. Companies must clear report score (${minReportScore}), theme evidence/fit (${minThemeScore}), and data confidence (${minDataScore}) gates when those selector scores are available; no cash or equal-weight remainder is forced.`,
     rows.length
       ? buildTable(['Company', 'Report', 'Allocation Score', 'Scenario Weight', 'Why Included'], rows, ['left', 'right', 'right', 'right', 'left'])
       : '_No company cleared the configured allocation gates with the current verified data._',
@@ -3837,7 +3842,7 @@ export function buildDeepSectorReport(data: DeepSectorReportData): string {
 
   const scored = scoreComparisonItems(data.items, data.generatedAt);
   const allocationSection = buildResearchAllocationSection(scored, data.universeSelection, data.generatedAt);
-  const conclusion = buildComparisonConclusion(data.items, scored, 'research', data.sectorQuery, data.llmConclusion);
+  const conclusion = buildComparisonConclusion(data.items, scored, 'research', data.sectorQuery, data.llmConclusion, data.universeSelection);
 
   return [header, universeSelectionSection, dependencySection, diagramSection, refinementSection, snapshotsSection, dataQualitySection, comparisonBody, allocationSection, insiderSections, conclusion]
     .filter(Boolean)
@@ -4287,13 +4292,20 @@ function buildComparisonConclusion(
   scored: Array<{ item: ComparisonReportItem; score: number | null }>,
   reportType: 'comparison' | 'sector' | 'research',
   sectorQuery?: string,
-  llmConclusion?: string
+  llmConclusion?: string,
+  universeSelection?: ResearchUniverseSelection
 ): string {
   if (items.length === 0) return '';
+  const qualifiedResearchSymbols = reportType === 'research' && universeSelection
+    ? new Set(universeSelection.qualifiedSymbols)
+    : null;
+  const scoredForRecommendation = qualifiedResearchSymbols
+    ? scored.filter((row) => qualifiedResearchSymbols.has(row.item.symbol))
+    : scored;
 
   // Rank by mixed score source: Decision Snapshot overall score when available,
   // otherwise the data-only composite score.
-  const ranked = scored
+  const ranked = scoredForRecommendation
     .filter((r) => r.score !== null)
     .sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
   const sortedForReference = [...scored].sort((a, b) => {
@@ -4308,7 +4320,7 @@ function buildComparisonConclusion(
   const topName = top?.item.overview?.name || top?.item.symbol || 'N/A';
   const topSymbol = top?.item.symbol || 'N/A';
   const topScore = top?.score;
-  const recommendationRows = scored.map((row) => {
+  const recommendationRows = scoredForRecommendation.map((row) => {
     const stockData = asStockReportData(row.item, '');
     return {
       item: row.item,
@@ -4345,7 +4357,9 @@ function buildComparisonConclusion(
     : `**Peer Group Outlook:** ${outlook}`;
 
   const strategyAdvice =
-    topScore !== null && topScore >= 65
+    qualifiedResearchSymbols && scoredForRecommendation.length === 0
+      ? `No qualified theme subset cleared the current evidence gates; wait for a fresh universe rebuild before using allocation guidance.`
+      : topScore !== null && topScore >= 65
       ? `Focused allocation to the top-ranked name(s) is supported by the data.`
       : `A diversified basket approach reduces single-name risk given mixed fundamentals.`;
 
@@ -4364,6 +4378,7 @@ function buildComparisonConclusion(
 
   // Summary block always shown
   const summaryLines = [
+    qualifiedResearchSymbols ? `**Qualified research subset:** ${scoredForRecommendation.length ? scoredForRecommendation.map((row) => row.item.symbol).join(', ') : 'none'}` : null,
     top ? `**Top Pick: ${topName} (${topSymbol})** — ${formatScoreSummary(comparisonScoreSourceLabel(top.item), topScore)}` : '_Insufficient data for ranking._',
     runnerUp ? `- Runner-up: ${runnerUp.item.overview?.name || runnerUp.item.symbol} (${runnerUp.item.symbol}) — ${formatScoreSummary(comparisonScoreSourceLabel(runnerUp.item), runnerUp.score)}` : null,
     freshEntryBuys.length ? `- Fresh-entry buys: ${freshEntryBuys.slice(0, 3).join(', ')}` : '- Fresh-entry buys: none at current thresholds',
