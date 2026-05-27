@@ -76,7 +76,7 @@ function parseBoundedEnvInt(name: string, fallback: number, min: number, max: nu
 // Clamp to a free-tier-safe ceiling so a bad env value cannot fan out into dozens of API calls.
 const NUM_COMPANIES = parseBoundedEnvInt('NUM_COMPANIES', 10, 2, 15);
 const RESEARCH_CANDIDATE_POOL_MULTIPLIER = parseBoundedEnvInt('RESEARCH_CANDIDATE_POOL_MULTIPLIER', 3, 1, 5);
-const RESEARCH_THEME_FACET_COUNT = parseBoundedEnvInt('RESEARCH_THEME_FACET_COUNT', 6, 1, 10);
+const RESEARCH_THEME_FACET_COUNT = parseBoundedEnvInt('RESEARCH_THEME_FACET_COUNT', 7, 1, 10);
 const RESEARCH_FACET_CANDIDATES = parseBoundedEnvInt('RESEARCH_FACET_CANDIDATES', 8, 2, 15);
 const RESEARCH_UNIVERSE_MIN_THEME_SCORE = parseBoundedEnvInt('RESEARCH_UNIVERSE_MIN_THEME_SCORE', 70, 0, 100);
 const RESEARCH_UNIVERSE_STRONG_ADJACENT_THEME_SCORE = parseBoundedEnvInt(
@@ -908,10 +908,44 @@ function researchTextHasAny(text: string, values: string[]): boolean {
   });
 }
 
+function researchTextMatchCount(text: string, values: string[]): number {
+  return values.reduce((count, value) => {
+    const normalized = normalizeResearchEvidenceText(value);
+    return normalized.length > 0 && text.includes(normalized) ? count + 1 : count;
+  }, 0);
+}
+
+function researchEvidenceRoleOverlap(left: string, right: string): boolean {
+  const leftTokens = new Set(normalizeResearchEvidenceText(left).split(' ').filter((token) => token.length > 3));
+  const rightTokens = normalizeResearchEvidenceText(right).split(' ').filter((token) => token.length > 3);
+  if (!leftTokens.size || !rightTokens.length) return false;
+  const matches = rightTokens.filter((token) => leftTokens.has(token)).length;
+  return matches >= Math.min(2, rightTokens.length) || matches / rightTokens.length >= 0.5;
+}
+
 function researchRuleMatches(text: string, rule: ResearchProfileRoleRule): boolean {
   const mustMatch = rule.must.every((group) => researchTextHasAny(text, group));
   const anyMatch = !rule.any?.length || rule.any.every((group) => researchTextHasAny(text, group));
   return mustMatch && anyMatch;
+}
+
+function researchRuleEvidenceStrength(text: string, rule: ResearchProfileRoleRule): number {
+  const matchedGroups = [
+    ...rule.must,
+    ...(rule.any || []),
+  ].reduce((count, group) => count + (researchTextHasAny(text, group) ? 1 : 0), 0);
+  const roleTokenMatches = normalizeResearchEvidenceText(rule.role)
+    .split(' ')
+    .filter((token) => token.length > 3)
+    .reduce((count, token) => text.includes(token) ? count + 1 : count, 0);
+  return (matchedGroups * 2) + (roleTokenMatches * 3);
+}
+
+function researchRulePhraseMatchCount(text: string, rule: ResearchProfileRoleRule): number {
+  return [
+    ...rule.must,
+    ...(rule.any || []),
+  ].reduce((count, group) => count + researchTextMatchCount(text, group), 0);
 }
 
 function researchRuleIsRelevantToTheme(args: {
@@ -999,10 +1033,15 @@ export function classifyResearchCandidateProfileEvidence(args: {
   const matches = RESEARCH_PROFILE_ROLE_RULES
     .filter((rule) => researchRuleIsRelevantToTheme({ themeText, dimensionsText, sourceText, rule }))
     .filter((rule) => researchRuleMatches(profileText, rule))
-    .sort((a, b) => b.priority - a.priority);
+    .sort((a, b) => {
+      const priorityDelta = b.priority - a.priority;
+      return priorityDelta || researchRuleEvidenceStrength(profileText, b) - researchRuleEvidenceStrength(profileText, a);
+    });
   const match = matches[0];
   if (!match) return null;
-  const confidence = Math.min(95, Math.max(70, match.priority));
+  const strength = researchRuleEvidenceStrength(profileText, match);
+  const phraseMatches = researchRulePhraseMatchCount(profileText, match);
+  const confidence = Math.min(95, Math.max(70, match.priority - 22 + strength + phraseMatches));
   return {
     role: match.role,
     level: match.level,
@@ -1024,6 +1063,23 @@ function mergeResearchProfileEvidence(args: {
   if (existing.some((item) => item.role === profileEvidence.role && item.level === profileEvidence.level)) {
     return existing;
   }
+  const concreteExistingEvidence = existing.filter((item) =>
+    (item.level === 'direct' || item.level === 'enabler')
+    && !isBroadResearchRole(item.role)
+  );
+  const canonicalRoleEvidence = concreteExistingEvidence.find((item) =>
+    researchEvidenceRoleOverlap(item.role, profileEvidence.role)
+  ) || concreteExistingEvidence.sort((a, b) => b.confidence - a.confidence)[0];
+  if (canonicalRoleEvidence) {
+    return [
+      {
+        ...profileEvidence,
+        role: canonicalRoleEvidence.role,
+        confidence: Math.max(profileEvidence.confidence, canonicalRoleEvidence.confidence),
+      },
+      ...existing,
+    ];
+  }
   return [profileEvidence, ...existing];
 }
 
@@ -1032,7 +1088,7 @@ function buildResearchThemeCandidatePrompt(theme: string, targetCount: number, m
     `Build a verified-candidate proposal for the public-equity investment theme "${theme}".`,
     'This is for a portfolio research universe. The purpose is representative investable exposure across the theme value chain, not a generic search list.',
     'First infer the required economic dimensions that a credible portfolio research universe should cover for this exact theme. Dimensions must be specific to the theme and generic in method, not copied from any hardcoded ticker list.',
-    'Then create concrete investable role buckets mapped to those dimensions. Do not use catch-all roles like Broad theme resolver, Technology, Retail, Media, Financial Services, General beneficiary, or Miscellaneous.',
+    'Then create concrete investable role buckets mapped to those dimensions, ordered from most central/decision-critical to least central for the theme. Do not use catch-all roles like Broad theme resolver, Technology, Retail, Media, Financial Services, General beneficiary, or Miscellaneous.',
     'Output company names plus likely US-listed ticker/ADR candidates. Do not invent tickers. If unsure, include companyName with likelyTicker null so provider verification can search by name.',
     'Infer generic investable role buckets from the theme: upstream suppliers, direct producers/operators, critical tools/services, distribution or networking, platforms/operators, and physical infrastructure only when relevant.',
     'Main candidates must be theme providers or enablers. Exclude generic broad beneficiaries and weakly related companies from main candidates.',
@@ -1128,14 +1184,32 @@ function parseResearchThemeCandidatePlan(raw: string, fallbackTheme: string): Re
             .filter((item: any): item is NonNullable<typeof item> => Boolean(item))
         : [];
       if (!label && candidates.length === 0) continue;
+      const dimensions = parseStringArray(facet?.dimensions, 5);
+      const searchQueries = parseStringArray(facet?.searchQueries || facet?.queries, 5);
+      const normalizedDimensionKeys = [
+        label,
+        role,
+        ...dimensions,
+      ].map((item) => normalizeResearchEvidenceText(item)).filter(Boolean);
+      const matchedRequiredDimensions = requiredDimensions.filter((dimension) => {
+        const normalizedDimension = normalizeResearchEvidenceText(dimension.label);
+        return normalizedDimension && normalizedDimensionKeys.some((key) =>
+          key === normalizedDimension || key.includes(normalizedDimension) || normalizedDimension.includes(key)
+        );
+      });
+      const inferredRequired = typeof facet?.required === 'boolean'
+        ? facet.required
+        : matchedRequiredDimensions.length
+          ? matchedRequiredDimensions.some((dimension) => dimension.required !== false)
+          : true;
       facets.push({
         label: label || query || fallbackTheme,
         query: query || label || fallbackTheme,
         role: role || label || fallbackTheme,
         definition: typeof facet?.definition === 'string' ? facet.definition.slice(0, 240) : undefined,
-        required: facet?.required !== false,
-        dimensions: parseStringArray(facet?.dimensions, 5),
-        searchQueries: parseStringArray(facet?.searchQueries || facet?.queries, 5),
+        required: inferredRequired,
+        dimensions,
+        searchQueries,
         candidates,
       });
     }
@@ -2205,8 +2279,12 @@ function nameTokensForValidation(value: unknown): string[] {
     .filter((token) => token.length > 2)));
 }
 
-function proposedNameMatchesProvider(proposedNames: string[] | undefined, overview: any): boolean {
+function proposedNameMatchesProvider(proposedNames: string[] | undefined, overview: any, symbol?: string): boolean {
   if (!proposedNames?.length) return true;
+  const normalizedSymbol = normalizeTickerCandidate(symbol);
+  if (normalizedSymbol && proposedNames.some((name) => normalizeTickerCandidate(name) === normalizedSymbol)) {
+    return true;
+  }
   const providerName = overview?.name || overview?.Name;
   const providerTokens = new Set(nameTokensForValidation(providerName));
   if (providerTokens.size === 0) return true;
@@ -2221,7 +2299,7 @@ function proposedNameMatchesProvider(proposedNames: string[] | undefined, overvi
 function researchCandidateValidationIssue(candidate: ResearchCandidateData): string | null {
   if (!hasPositivePrice(candidate.price)) return 'active quote unavailable';
   if (!hasUsableOverview(candidate.overview)) return 'company profile unavailable';
-  if (!proposedNameMatchesProvider(candidate.companyNames, candidate.overview)) return 'provider company name did not match proposed candidate';
+  if (!proposedNameMatchesProvider(candidate.companyNames, candidate.overview, candidate.symbol)) return 'provider company name did not match proposed candidate';
   return null;
 }
 
@@ -5210,6 +5288,7 @@ export async function executeTool(
           candidates: validatedSelectionCandidateData,
           finalCount,
           mode: lockedSymbols.length > 0 ? 'locked_diagnostics' : 'fresh_selection',
+          roles: universeRoles,
           llmFill: hasReportLLMBudget(deadlineAt) ? options?.llmFill : undefined,
           minThemeScore: RESEARCH_UNIVERSE_MIN_THEME_SCORE,
           strongAdjacentThemeScore: RESEARCH_UNIVERSE_STRONG_ADJACENT_THEME_SCORE,

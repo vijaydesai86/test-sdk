@@ -289,6 +289,77 @@ function evidenceTierScore(evidence: ResearchThemeEvidence): number {
   return 0;
 }
 
+function roleCoveragePriorityScore(candidate: ResearchCandidateScore): number {
+  return (
+    candidate.themeScore * 0.42 +
+    evidenceTierScore(candidate.themeEvidence) * 0.24 +
+    candidate.themeEvidence.confidence * 0.16 +
+    candidate.sourceFacetScore * 0.10 +
+    candidate.dataConfidenceScore * 0.05 +
+    candidate.factorScore * 0.03
+  );
+}
+
+function roleTextOverlapScore(left: string, right: string): number {
+  const leftTokens = new Set(tokenize(left));
+  const rightTokens = tokenize(right);
+  if (!leftTokens.size || !rightTokens.length) return 0;
+  const overlap = rightTokens.filter((token) => leftTokens.has(token)).length;
+  const normalizedLeft = left.toLowerCase();
+  const normalizedRight = right.toLowerCase();
+  const exactBonus = normalizedLeft.includes(normalizedRight) || normalizedRight.includes(normalizedLeft) ? 5 : 0;
+  return overlap + exactBonus;
+}
+
+function roleRequirementWeight(roleName: string, roles: ResearchUniverseRole[] = []): number {
+  if (!roles.length) return 1;
+  let bestScore = 0;
+  let bestWeight = 0.8;
+  for (const role of roles) {
+    const roleInput = [
+      role.label,
+      role.definition,
+      role.query,
+      ...(role.dimensions || []),
+      ...(role.searchQueries || []),
+    ].filter(Boolean).join(' ');
+    const score = Math.max(
+      roleTextOverlapScore(roleName, roleInput),
+      roleTextOverlapScore(roleInput, roleName)
+    );
+    if (score > bestScore) {
+      bestScore = score;
+      bestWeight = role.required === false ? 0.6 : 1;
+    }
+  }
+  return bestScore > 0 ? bestWeight : 0.8;
+}
+
+function roleCentralityWeight(roleName: string, roles: ResearchUniverseRole[] = []): number {
+  if (!roles.length) return 0.5;
+  let bestScore = 0;
+  let bestIndex = roles.length;
+  roles.forEach((role, index) => {
+    const roleInput = [
+      role.label,
+      role.definition,
+      role.query,
+      ...(role.dimensions || []),
+      ...(role.searchQueries || []),
+    ].filter(Boolean).join(' ');
+    const score = Math.max(
+      roleTextOverlapScore(roleName, roleInput),
+      roleTextOverlapScore(roleInput, roleName)
+    );
+    if (score > bestScore) {
+      bestScore = score;
+      bestIndex = index;
+    }
+  });
+  if (bestScore <= 0) return 0.5;
+  return Math.max(0, 1 - (bestIndex / Math.max(1, roles.length)));
+}
+
 function bestSourceEvidence(candidate: ResearchCandidateData): ResearchSourceEvidence | null {
   const evidence = (candidate.sourceEvidence || [])
     .map((item) => ({
@@ -668,6 +739,7 @@ export async function selectResearchUniverse(args: {
   candidates: ResearchCandidateData[];
   finalCount: number;
   mode?: ResearchSelectionMode;
+  roles?: ResearchUniverseRole[];
   llmFill?: LLMFiller;
   weights?: Partial<ResearchUniverseWeights>;
   minThemeScore?: number;
@@ -776,14 +848,74 @@ export async function selectResearchUniverse(args: {
   const selected: ResearchCandidateScore[] = [];
   const selectedSubthemes = new Set<string>();
   const selectedRoleCounts = new Map<string, number>();
-  const roleSoftCap = Math.max(2, Math.ceil(args.finalCount * maxRoleShare));
+  let roleSoftCap = Math.max(2, Math.ceil(args.finalCount * maxRoleShare));
   const remaining = new Map(qualifiedPool.map((candidate) => [candidate.symbol, candidate]));
+  const selectionPriorityForCandidate = (candidate: ResearchCandidateScore): number =>
+    (candidate.totalScore * 0.55) + (roleCoveragePriorityScore(candidate) * 0.45);
+  const markSelected = (candidate: ResearchCandidateScore, representativeCoverageScore: number): void => {
+    candidate.selected = true;
+    candidate.qualified = true;
+    candidate.representativeCoverageScore = representativeCoverageScore;
+    candidate.totalScore = clamp(candidate.totalScore + (candidate.representativeCoverageScore * weights.representativeCoverage));
+    selected.push(candidate);
+    selectedSubthemes.add(candidate.subtheme);
+    selectedRoleCounts.set(candidate.subtheme, (selectedRoleCounts.get(candidate.subtheme) || 0) + 1);
+    remaining.delete(candidate.symbol);
+  };
   if (mode === 'locked_diagnostics') {
     for (const candidate of pool) {
       candidate.selected = true;
       candidate.qualified = qualifiedPool.some((qualified) => qualified.symbol === candidate.symbol);
       candidate.representativeCoverageScore = 50;
       selected.push(candidate);
+    }
+  }
+
+  if (mode === 'fresh_selection') {
+    const byRole = new Map<string, ResearchCandidateScore[]>();
+    for (const candidate of qualifiedPool) {
+      byRole.set(candidate.subtheme, [...(byRole.get(candidate.subtheme) || []), candidate]);
+    }
+    roleSoftCap = Math.max(
+      2,
+      Math.min(roleSoftCap, Math.ceil(args.finalCount / Math.max(1, byRole.size)) + 1)
+    );
+    const roleRepresentatives = Array.from(byRole.values())
+      .map((candidatesForRole) => [...candidatesForRole].sort((a, b) =>
+        roleCoveragePriorityScore(b) - roleCoveragePriorityScore(a)
+        || b.totalScore - a.totalScore
+      )[0])
+      .filter((candidate): candidate is ResearchCandidateScore => Boolean(candidate))
+      .sort((a, b) =>
+        roleCoveragePriorityScore(b) - roleCoveragePriorityScore(a)
+        || b.totalScore - a.totalScore
+      );
+
+    for (const candidate of roleRepresentatives) {
+      if (selected.length >= args.finalCount) break;
+      markSelected(candidate, 100);
+    }
+
+    const roleNamesByPriority = Array.from(byRole.keys()).sort((a, b) => {
+      const requirementDelta = roleRequirementWeight(b, args.roles) - roleRequirementWeight(a, args.roles);
+      if (requirementDelta) return requirementDelta;
+      const centralityDelta = roleCentralityWeight(b, args.roles) - roleCentralityWeight(a, args.roles);
+      if (centralityDelta) return centralityDelta;
+      const bestA = (byRole.get(a) || []).reduce((best, candidate) => Math.max(best, selectionPriorityForCandidate(candidate)), 0);
+      const bestB = (byRole.get(b) || []).reduce((best, candidate) => Math.max(best, selectionPriorityForCandidate(candidate)), 0);
+      return bestB - bestA;
+    });
+    const requiredRoleNames = roleNamesByPriority.filter((role) => roleRequirementWeight(role, args.roles) >= 1);
+
+    for (let targetPerRole = 2; targetPerRole <= roleSoftCap && selected.length < args.finalCount; targetPerRole += 1) {
+      for (const roleName of requiredRoleNames) {
+        if (selected.length >= args.finalCount) break;
+        if ((selectedRoleCounts.get(roleName) || 0) >= targetPerRole) continue;
+        const candidate = Array.from(remaining.values())
+          .filter((item) => item.subtheme === roleName)
+          .sort((a, b) => selectionPriorityForCandidate(b) - selectionPriorityForCandidate(a))[0];
+        if (candidate) markSelected(candidate, 50);
+      }
     }
   }
 
@@ -797,24 +929,23 @@ export async function selectResearchUniverse(args: {
       : candidatesToConsider.filter((candidate) => candidate.themeFit === 'core');
     const finalEligibleNow = eligibleNow.length > 0 ? eligibleNow : candidatesToConsider;
     for (const candidate of finalEligibleNow) {
+      const selectedRoleCount = selectedRoleCounts.get(candidate.subtheme) || 0;
       const coverageBonus = selectedSubthemes.has(candidate.subtheme) ? 0 : weights.representativeCoverage * 100;
-      const rolePenalty = (selectedRoleCounts.get(candidate.subtheme) || 0) >= roleSoftCap ? weights.representativeCoverage * 50 : 0;
+      const requirementWeight = roleRequirementWeight(candidate.subtheme, args.roles);
+      const requiredRoleBonus = requirementWeight >= 1 ? 8 : 0;
+      const centralityBonus = roleCentralityWeight(candidate.subtheme, args.roles) * 24;
+      const optionalDuplicatePenalty = requirementWeight < 1 && selectedRoleCount > 0 ? 18 : 0;
+      const rolePenalty = selectedRoleCount >= roleSoftCap ? weights.representativeCoverage * 50 : selectedRoleCount * 4;
       const fitPriority = candidate.themeFit === 'core' ? 8 : 0;
-      const adjusted = candidate.totalScore + coverageBonus + fitPriority - rolePenalty;
+      const selectionPriority = selectionPriorityForCandidate(candidate);
+      const adjusted = selectionPriority + coverageBonus + fitPriority + requiredRoleBonus + centralityBonus - optionalDuplicatePenalty - rolePenalty;
       if (adjusted > bestAdjusted) {
         best = candidate;
         bestAdjusted = adjusted;
       }
     }
     if (!best) break;
-    best.selected = true;
-    best.qualified = true;
-    best.representativeCoverageScore = selectedSubthemes.has(best.subtheme) ? 50 : 100;
-    best.totalScore = clamp(best.totalScore + (best.representativeCoverageScore * weights.representativeCoverage));
-    selected.push(best);
-    selectedSubthemes.add(best.subtheme);
-    selectedRoleCounts.set(best.subtheme, (selectedRoleCounts.get(best.subtheme) || 0) + 1);
-    remaining.delete(best.symbol);
+    markSelected(best, selectedSubthemes.has(best.subtheme) ? 50 : 100);
   }
 
   for (const candidate of pool) {
