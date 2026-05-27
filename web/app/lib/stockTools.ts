@@ -562,7 +562,15 @@ function normalizeThematicResearchQuery(query: string): string {
   return normalized || query.trim();
 }
 
-function buildUnavailableResearchContent(query: string, reason: string, generatedAt = new Date().toISOString()): string {
+function buildUnavailableResearchContent(query: string, reason: string, generatedAt = new Date().toISOString(), debugNotes: string[] = []): string {
+  const debugSection = process.env.DEBUG === 'true' && debugNotes.length
+    ? [
+        '## 🧪 Debug Universe Audit',
+        '',
+        ...debugNotes.map((note) => `- ${note}`),
+        '',
+      ]
+    : [];
   return [
     `# Research Report: ${query}`,
     '',
@@ -579,6 +587,8 @@ function buildUnavailableResearchContent(query: string, reason: string, generate
     'Action: Wait for verified inputs.',
     '',
     'This report intentionally does not include guessed tickers, market data, or LLM-derived financial facts.',
+    '',
+    ...debugSection,
   ].join('\n');
 }
 
@@ -5162,7 +5172,14 @@ export async function executeTool(
           const reason = normalizedInitialCandidates.length === 0
             ? `Could not identify verified listed companies for "${sector}" using the configured resolver and market-data providers.`
             : `Only ${normalizedInitialCandidates.length} verified candidate${normalizedInitialCandidates.length === 1 ? '' : 's'} could be identified for "${sector}", below the minimum ${minimumFreshUniverse} needed for a reliable broad research universe.`;
-          const content = buildUnavailableResearchContent(sector, reason);
+          const content = buildUnavailableResearchContent(sector, reason, new Date().toISOString(), [
+            `Candidate pool target: ${initialCount}.`,
+            `Initial candidates discovered: ${normalizedInitialCandidates.join(', ') || 'none'}.`,
+            candidateDiscovery.facets.length
+              ? `Theme role buckets: ${candidateDiscovery.facets.map((facet) => facet.label).join('; ')}.`
+              : 'Theme role buckets: none.',
+            ...candidateDiscovery.notes,
+          ]);
           const safeTitle = sector.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'research';
           const saved = await saveReport(content, `${safeTitle}-research-report`, undefined, {
             reportKind: 'research',
@@ -5270,7 +5287,17 @@ export async function executeTool(
           const reason = validatedSelectionCandidateData.length === 0
             ? `No active provider-confirmed candidates could be validated for "${sector}".`
             : `Only ${validatedSelectionCandidateData.length} active provider-confirmed candidate${validatedSelectionCandidateData.length === 1 ? '' : 's'} could be validated for "${sector}", below the minimum ${minimumFreshUniverse} needed for a reliable broad research universe.`;
-          const content = buildUnavailableResearchContent(sector, reason);
+          const content = buildUnavailableResearchContent(sector, reason, new Date().toISOString(), [
+            `Candidate pool target: ${initialCount}.`,
+            `Initial candidates discovered: ${normalizedInitialCandidates.join(', ') || 'none'}.`,
+            `Provider-validated candidates: ${validatedSelectionCandidateData.map((candidate) => candidate.symbol).join(', ') || 'none'}.`,
+            candidateDiscovery.facets.length
+              ? `Theme role buckets: ${candidateDiscovery.facets.map((facet) => facet.label).join('; ')}.`
+              : 'Theme role buckets: none.',
+            ...candidateDiscovery.notes,
+            ...selectionNotes,
+            ...invalidCandidateNotes,
+          ]);
           const safeTitle = sector.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'research';
           const saved = await saveReport(content, `${safeTitle}-research-report`, undefined, {
             reportKind: 'research',
@@ -5304,9 +5331,11 @@ export async function executeTool(
         selectionNotes.push(
           `Universe readiness: ${universeReadiness.selectedCount}/${universeReadiness.targetLockCount} direct/enabler, ${universeReadiness.roleCount}/${universeReadiness.minRoleCount} roles, status ${universeReadiness.status}.`
         );
+        const hasNearReadyRoleCoverage = universeReadiness.roleCount >= Math.max(1, universeReadiness.minRoleCount - 1);
+        const hasStrongVerifiedCandidateCoverage = universeReadiness.selectedCount >= universeReadiness.targetLockCount;
         const canBuildProvisionalResearchReport = universeReadiness.status === 'refining'
-          && universeReadiness.selectedCount >= universeReadiness.targetPartialCount
-          && universeReadiness.roleCount >= universeReadiness.minRoleCount
+          && (universeReadiness.selectedCount >= universeReadiness.targetPartialCount || hasStrongVerifiedCandidateCoverage)
+          && (universeReadiness.roleCount >= universeReadiness.minRoleCount || (hasStrongVerifiedCandidateCoverage && hasNearReadyRoleCoverage))
           && universeReadiness.directEnablerShare >= 0.60
           && universeReadiness.broadShare <= 0.20;
         if (lockedSymbols.length === 0 && !universeReadiness.canBuildFullReport && !canBuildProvisionalResearchReport) {
@@ -5320,8 +5349,28 @@ export async function executeTool(
             'Runtime budget, provider data, or model availability may require additional improve passes before the universe can lock.',
             'The next improve pass will continue candidate discovery/refinement instead of preserving a weak universe.',
           ].filter(Boolean).join(' ');
-          const content = buildUnavailableResearchContent(sector, reason);
           const generatedAt = new Date().toISOString();
+          const debugNotes = [
+            `Candidate pool target: ${initialCount}.`,
+            `Initial candidates discovered: ${normalizedInitialCandidates.join(', ') || 'none'}.`,
+            `Provider-validated candidates: ${validatedInitialCandidates.join(', ') || 'none'}.`,
+            `Selected universe: ${universeSelection.selectedSymbols.join(', ') || 'none'}.`,
+            `Qualified candidates: ${universeSelection.qualifiedSymbols.join(', ') || 'none'}.`,
+            `Rejected candidates: ${universeSelection.rejectedSymbols.join(', ') || 'none'}.`,
+            `Role coverage: ${universeSelection.subthemes.map((role) => `${role.name}: ${role.symbols.join(', ')}`).join('; ') || 'none'}.`,
+            universeReadiness.coveredDimensions.length
+              ? `Covered dimensions: ${universeReadiness.coveredDimensions.join('; ')}.`
+              : 'Covered dimensions: none.',
+            universeReadiness.missingDimensions.length
+              ? `Missing dimensions: ${universeReadiness.missingDimensions.join('; ')}.`
+              : 'Missing dimensions: none.',
+            ...candidateDiscovery.notes,
+            ...universeSelection.notes,
+            ...selectionNotes,
+            ...invalidCandidateNotes,
+            ...universeReadiness.repairActions,
+          ];
+          const content = buildUnavailableResearchContent(sector, reason, generatedAt, debugNotes);
           const runMetadata = buildReportRunMetadata({
             kind: 'research',
             query: String(args.updateQuery || sector),
@@ -5372,7 +5421,7 @@ export async function executeTool(
         }
         if (lockedSymbols.length === 0 && canBuildProvisionalResearchReport && !universeReadiness.canBuildFullReport) {
           selectionNotes.push(
-            `Provisional research report allowed: ${universeReadiness.selectedCount}/${universeReadiness.targetLockCount} direct/enabler candidates are below lock target but meet partial-report coverage (${universeReadiness.targetPartialCount}) with ${universeReadiness.roleCount}/${universeReadiness.minRoleCount} concrete roles. Improve passes may continue refining this universe.`
+            `Provisional research report allowed: ${universeReadiness.selectedCount}/${universeReadiness.targetLockCount} direct/enabler candidates and ${universeReadiness.roleCount}/${universeReadiness.minRoleCount} concrete roles are sufficient for a market-backed provisional report. Improve passes may continue repairing missing role coverage before lock.`
           );
         }
 

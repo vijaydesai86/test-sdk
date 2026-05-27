@@ -199,7 +199,56 @@ function taxonomyResponse() {
   });
 }
 
-async function main() {
+function nearReadyTaxonomyResponse() {
+  return JSON.stringify({
+    requiredDimensions: [
+      { label: 'compute accelerators', required: true },
+      { label: 'cloud/data-center operators', required: true },
+      { label: 'semiconductor equipment', required: true },
+      { label: 'memory/storage', required: true },
+    ],
+    roles: [
+      {
+        label: 'Compute accelerators',
+        dimensions: ['compute accelerators'],
+        query: 'AI infrastructure compute accelerators',
+        candidates: [
+          { companyName: 'NVIDIA', likelyTicker: 'NVDA', evidenceLevel: 'direct', confidence: 95, reason: 'GPU accelerators' },
+          { companyName: 'AMD', likelyTicker: 'AMD', evidenceLevel: 'direct', confidence: 88, reason: 'AI accelerators' },
+          { companyName: 'Arm', likelyTicker: 'ARM', evidenceLevel: 'enabler', confidence: 82, reason: 'CPU IP' },
+          { companyName: 'Broadcom', likelyTicker: 'AVGO', evidenceLevel: 'enabler', confidence: 80, reason: 'custom silicon' },
+          { companyName: 'Marvell', likelyTicker: 'MRVL', evidenceLevel: 'enabler', confidence: 78, reason: 'data infrastructure silicon' },
+        ],
+      },
+      {
+        label: 'Cloud/data-center operators',
+        dimensions: ['cloud/data-center operators'],
+        query: 'AI infrastructure cloud data center operators',
+        candidates: [
+          { companyName: 'Microsoft', likelyTicker: 'MSFT', evidenceLevel: 'enabler', confidence: 90, reason: 'Azure AI infrastructure' },
+          { companyName: 'Alphabet', likelyTicker: 'GOOGL', evidenceLevel: 'enabler', confidence: 86, reason: 'Google Cloud AI infrastructure' },
+          { companyName: 'Amazon', likelyTicker: 'AMZN', evidenceLevel: 'enabler', confidence: 86, reason: 'AWS AI infrastructure' },
+          { companyName: 'Meta', likelyTicker: 'META', evidenceLevel: 'enabler', confidence: 75, reason: 'AI data centers' },
+        ],
+      },
+      {
+        label: 'Semiconductor equipment',
+        dimensions: ['semiconductor equipment'],
+        query: 'AI infrastructure semiconductor equipment',
+        candidates: [
+          { companyName: 'Taiwan Semiconductor Manufacturing', likelyTicker: 'TSM', evidenceLevel: 'enabler', confidence: 85, reason: 'advanced chip manufacturing' },
+          { companyName: 'ASML', likelyTicker: 'ASML', evidenceLevel: 'enabler', confidence: 90, reason: 'lithography' },
+          { companyName: 'Applied Materials', likelyTicker: 'AMAT', evidenceLevel: 'enabler', confidence: 86, reason: 'wafer fabrication equipment' },
+          { companyName: 'Lam Research', likelyTicker: 'LRCX', evidenceLevel: 'enabler', confidence: 85, reason: 'wafer fabrication equipment' },
+          { companyName: 'KLA', likelyTicker: 'KLAC', evidenceLevel: 'enabler', confidence: 84, reason: 'process control equipment' },
+          { companyName: 'Amphenol', likelyTicker: 'APH', evidenceLevel: 'enabler', confidence: 70, reason: 'electronic components for data infrastructure' },
+        ],
+      },
+    ],
+  });
+}
+
+async function runCompleteUniverseScenario() {
   await fs.rm(testRoot, { recursive: true, force: true });
   const result = await executeTool(
     'generate_research_report',
@@ -259,6 +308,54 @@ async function main() {
   }
   await fs.rm(testRoot, { recursive: true, force: true });
   console.log(`research universe e2e smoke passed with ${symbols.length} symbols: ${symbols.join(', ')}`);
+}
+
+async function runNearReadyProvisionalScenario() {
+  await fs.rm(testRoot, { recursive: true, force: true });
+  const priorDebug = process.env.DEBUG;
+  process.env.DEBUG = 'true';
+  try {
+    const result = await executeTool(
+      'generate_research_report',
+      { sector: 'AI infrastructure', range: '1y', count: 15 },
+      createProductionLikeService(),
+      {
+        deadlineAt: Date.now() + 240000,
+        async llmFill(prompt) {
+          if (prompt.includes('Build a verified-candidate proposal')) return nearReadyTaxonomyResponse();
+          if (prompt.includes('deep research ecosystem analysis')) {
+            return JSON.stringify({
+              dependencyAnalysis: '### Role Map\n\nNear-ready universe with one missing required role.',
+              ecosystemDiagram: 'graph LR\n  NVDA-->MSFT',
+            });
+          }
+          return '{}';
+        },
+      }
+    );
+
+    assert.equal(result.success, true, result.error || 'near-ready research report failed');
+    assert.equal(result.data.reportKind, 'research');
+    assert.ok(!/Verified Data Status/.test(result.data.content), 'near-ready universe should render a provisional market-backed report');
+    assert.match(result.data.content, /Snapshot/);
+    assert.match(result.data.content, /Research Allocation Scenario/);
+    assert.match(result.data.content, /Debug Data Quality Notes/);
+    assert.match(result.data.content, /Missing required dimensions: memory\/storage/i);
+    assert.equal(result.data.runMetadata.researchUniverse.status, 'refining');
+    assert.ok(result.data.runMetadata.researchUniverse.readiness.selectedCount >= result.data.runMetadata.researchUniverse.readiness.targetLockCount);
+    assert.equal(result.data.runMetadata.researchUniverse.readiness.roleCount, 3);
+    assert.ok(result.data.runMetadata.symbols.length >= 12, `expected near-ready provisional universe, got ${result.data.runMetadata.symbols.join(', ')}`);
+    console.log(`research near-ready provisional e2e smoke passed with ${result.data.runMetadata.symbols.length} symbols: ${result.data.runMetadata.symbols.join(', ')}`);
+  } finally {
+    if (priorDebug === undefined) delete process.env.DEBUG;
+    else process.env.DEBUG = priorDebug;
+    await fs.rm(testRoot, { recursive: true, force: true });
+  }
+}
+
+async function main() {
+  await runCompleteUniverseScenario();
+  await runNearReadyProvisionalScenario();
 }
 
 main().catch(async (error) => {

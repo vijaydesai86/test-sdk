@@ -3624,7 +3624,12 @@ function buildResearchUniverseSelectionSection(selection?: ResearchUniverseSelec
 function buildResearchDataQualitySection(notes?: string[]): string {
   if (!notes?.length) return '';
   const debugMode = process.env.DEBUG === 'true';
-  if (debugMode) return '';
+  if (debugMode) {
+    return [
+      '## 🧪 Debug Data Quality Notes',
+      ...notes.map((note) => `- ${note}`),
+    ].join('\n');
+  }
   const visibleNotes = notes.slice(0, 10);
   const hiddenCount = Math.max(0, notes.length - visibleNotes.length);
   return [
