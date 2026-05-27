@@ -539,7 +539,8 @@ export function buildImproveToolRequest(report: SavedReportForImprove): ImproveT
     const lockedResearchUniverse = isResearchUniverseLocked(metadata);
     const researchTargetCount = lockedResearchUniverse
       ? symbols.length
-      : metadata?.researchUniverse?.readiness?.targetLockCount
+      : metadata?.researchUniverse?.readiness?.targetCount
+        || metadata?.researchUniverse?.readiness?.targetLockCount
         || metadata?.researchUniverse?.readiness?.targetPartialCount
         || symbols.length
         || undefined;

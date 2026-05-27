@@ -748,7 +748,7 @@ const RESEARCH_PROFILE_ROLE_RULES: ResearchProfileRoleRule[] = [
   {
     role: 'Semiconductor equipment/tools',
     level: 'enabler',
-    priority: 96,
+    priority: 95,
     themeHints: ['semiconductor', 'chip', 'ai infrastructure', 'data center'],
     must: [['semiconductor equipment', 'lithography', 'metrology', 'inspection', 'wafer fabrication', 'process control', 'materials engineering']],
     any: [['semiconductor', 'chip', 'wafer']],
@@ -756,7 +756,7 @@ const RESEARCH_PROFILE_ROLE_RULES: ResearchProfileRoleRule[] = [
   {
     role: 'Foundry/manufacturing',
     level: 'enabler',
-    priority: 95,
+    priority: 94,
     themeHints: ['semiconductor', 'chip', 'ai infrastructure', 'data center'],
     must: [['foundry', 'semiconductor foundry', 'semiconductor manufacturing', 'integrated circuit manufacturing', 'manufactures integrated circuits', 'contract manufacturer']],
     any: [['semiconductor', 'chip', 'integrated circuit']],
@@ -764,7 +764,7 @@ const RESEARCH_PROFILE_ROLE_RULES: ResearchProfileRoleRule[] = [
   {
     role: 'Memory/storage',
     level: 'enabler',
-    priority: 94,
+    priority: 93,
     themeHints: ['memory', 'storage', 'ai infrastructure', 'data center', 'cloud infrastructure'],
     must: [['memory', 'dram', 'nand', 'storage products', 'storage systems']],
     any: [['data center', 'ai', 'compute', 'server', 'cloud', 'infrastructure']],
@@ -772,7 +772,7 @@ const RESEARCH_PROFILE_ROLE_RULES: ResearchProfileRoleRule[] = [
   {
     role: 'Power/cooling/data-center infrastructure',
     level: 'enabler',
-    priority: 93,
+    priority: 91,
     themeHints: ['power', 'cooling', 'data center', 'infrastructure', 'energy'],
     must: [['power', 'cooling', 'thermal', 'electrical', 'power management']],
     any: [['data center', 'critical digital infrastructure', 'infrastructure', 'facility']],
@@ -788,7 +788,7 @@ const RESEARCH_PROFILE_ROLE_RULES: ResearchProfileRoleRule[] = [
   {
     role: 'Chip design/IP/tools',
     level: 'enabler',
-    priority: 91,
+    priority: 89,
     themeHints: ['semiconductor', 'chip', 'ai infrastructure', 'processor'],
     must: [['semiconductor ip', 'electronic design automation', 'processor architecture', 'chip design', 'eda software']],
     any: [['ai', 'cpu', 'semiconductor', 'chips', 'processor']],
@@ -796,7 +796,7 @@ const RESEARCH_PROFILE_ROLE_RULES: ResearchProfileRoleRule[] = [
   {
     role: 'Compute accelerators/chips',
     level: 'direct',
-    priority: 90,
+    priority: 96,
     themeHints: ['ai', 'semiconductor', 'accelerator', 'data center', 'compute'],
     must: [['gpu', 'accelerator', 'cpu', 'processor', 'custom silicon', 'chip', 'semiconductor', 'soc']],
     any: [['ai', 'data center', 'compute', 'accelerated', 'inference', 'training']],
@@ -804,7 +804,7 @@ const RESEARCH_PROFILE_ROLE_RULES: ResearchProfileRoleRule[] = [
   {
     role: 'Cloud/data-center operators',
     level: 'enabler',
-    priority: 86,
+    priority: 97,
     themeHints: ['cloud', 'data center', 'ai infrastructure', 'infrastructure'],
     must: [['cloud infrastructure', 'cloud computing', 'data centers', 'data center', 'azure', 'google cloud', 'infrastructure cloud']],
     any: [['ai', 'infrastructure', 'operator', 'database', 'platform', 'compute']],
@@ -958,6 +958,13 @@ function researchRulePhraseMatchCount(text: string, rule: ResearchProfileRoleRul
   ].reduce((count, group) => count + researchTextMatchCount(text, group), 0);
 }
 
+function researchRuleLevelRank(level: ResearchSourceEvidence['level']): number {
+  if (level === 'direct') return 3;
+  if (level === 'enabler') return 2;
+  if (level === 'beneficiary') return 1;
+  return 0;
+}
+
 function researchRuleIsRelevantToTheme(args: {
   themeText: string;
   dimensionsText: string;
@@ -1044,6 +1051,8 @@ export function classifyResearchCandidateProfileEvidence(args: {
     .filter((rule) => researchRuleIsRelevantToTheme({ themeText, dimensionsText, sourceText, rule }))
     .filter((rule) => researchRuleMatches(profileText, rule))
     .sort((a, b) => {
+      const levelDelta = researchRuleLevelRank(b.level) - researchRuleLevelRank(a.level);
+      if (levelDelta) return levelDelta;
       const priorityDelta = b.priority - a.priority;
       return priorityDelta || researchRuleEvidenceStrength(profileText, b) - researchRuleEvidenceStrength(profileText, a);
     });
@@ -1339,6 +1348,41 @@ async function resolveResearchCandidateSeeds(args: {
     }
   }
 
+  if (args.stockService && facets.length && !isDeadlineNear(args.deadlineAt)) {
+    const roleSeedTarget = Math.max(2, Math.ceil(args.targetCount / 3));
+    const requiredFacetCount = facets.filter((facet) => facet.required !== false).length;
+    const facetSearchLimit = seedMap.size < roleSeedTarget
+      ? Math.min(facets.length, Math.max(4, requiredFacetCount))
+      : Math.min(2, facets.length);
+    for (const facet of facets.slice(0, facetSearchLimit)) {
+      if (isDeadlineNear(args.deadlineAt)) break;
+      try {
+        const results = await withReportTaskTimeout(args.stockService.searchStock(facet.query), 'optional', args.deadlineAt);
+        const candidates = ((results as any)?.results || [])
+          .map((item: any) => normalizeTickerCandidate(item?.symbol))
+          .filter((item: string | undefined): item is string => Boolean(item))
+          .slice(0, Math.max(2, Math.ceil(RESEARCH_FACET_CANDIDATES / 2)));
+        for (const symbol of candidates) {
+          const existing = seedMap.get(symbol) || new Set<string>();
+          existing.add(facet.label);
+          seedMap.set(symbol, existing);
+          evidenceMap.set(symbol, [
+            ...(evidenceMap.get(symbol) || []),
+            {
+              role: facet.label,
+              level: 'enabler',
+              rationale: `Provider search matched role query "${facet.query}".`,
+              confidence: 68,
+              source: 'provider-role-search',
+            },
+          ]);
+        }
+      } catch {
+        // Provider search is supplemental; the broad resolver and LLM plan remain sufficient.
+      }
+    }
+  }
+
   if (seedMap.size < Math.max(2, Math.ceil(args.targetCount / 3))) {
     const fallback = await resolveSectorTickers(args.theme, args.targetCount, args.llmFill, args.stockService);
     for (const symbol of fallback) {
@@ -1360,39 +1404,6 @@ async function resolveResearchCandidateSeeds(args: {
     }
     if (fallback.length) {
       notes.push(`Broad resolver added ${fallback.length} raw candidate${fallback.length === 1 ? '' : 's'} for later role classification; broad-only evidence cannot lock the universe.`);
-    }
-  }
-
-  if (args.stockService && facets.length && !isDeadlineNear(args.deadlineAt)) {
-    const facetSearchLimit = seedMap.size < args.targetCount
-      ? Math.min(4, facets.length)
-      : Math.min(2, facets.length);
-    for (const facet of facets.slice(0, facetSearchLimit)) {
-      if (isDeadlineNear(args.deadlineAt)) break;
-      try {
-        const results = await withReportTaskTimeout(args.stockService.searchStock(facet.query), 'optional', args.deadlineAt);
-        const candidates = ((results as any)?.results || [])
-          .map((item: any) => normalizeTickerCandidate(item?.symbol))
-          .filter((item: string | undefined): item is string => Boolean(item))
-          .slice(0, Math.max(2, Math.ceil(RESEARCH_FACET_CANDIDATES / 2)));
-        for (const symbol of candidates) {
-          const existing = seedMap.get(symbol) || new Set<string>();
-          existing.add(facet.label);
-          seedMap.set(symbol, existing);
-          evidenceMap.set(symbol, [
-            ...(evidenceMap.get(symbol) || []),
-            {
-              role: facet.label,
-              level: 'enabler',
-              rationale: `Provider search matched role query "${facet.query}".`,
-              confidence: 55,
-              source: 'provider-role-search',
-            },
-          ]);
-        }
-      } catch {
-        // Provider search is supplemental; the broad resolver and LLM plan remain sufficient.
-      }
     }
   }
 
@@ -5331,13 +5342,14 @@ export async function executeTool(
         selectionNotes.push(
           `Universe readiness: ${universeReadiness.selectedCount}/${universeReadiness.targetLockCount} direct/enabler, ${universeReadiness.roleCount}/${universeReadiness.minRoleCount} roles, status ${universeReadiness.status}.`
         );
-        const hasNearReadyRoleCoverage = universeReadiness.roleCount >= Math.max(1, universeReadiness.minRoleCount - 1);
+        const minimumProvisionalRoleCount = Math.max(3, universeReadiness.minRoleCount - 1);
+        const hasNearReadyRoleCoverage = universeReadiness.roleCount >= minimumProvisionalRoleCount;
         const hasStrongVerifiedCandidateCoverage = universeReadiness.selectedCount >= universeReadiness.targetLockCount;
         const canBuildProvisionalResearchReport = universeReadiness.status === 'refining'
           && (universeReadiness.selectedCount >= universeReadiness.targetPartialCount || hasStrongVerifiedCandidateCoverage)
-          && (universeReadiness.roleCount >= universeReadiness.minRoleCount || (hasStrongVerifiedCandidateCoverage && hasNearReadyRoleCoverage))
+          && (universeReadiness.roleCount >= universeReadiness.minRoleCount || hasNearReadyRoleCoverage)
           && universeReadiness.directEnablerShare >= 0.60
-          && universeReadiness.broadShare <= 0.20;
+          && universeReadiness.broadShare <= 0.40;
         if (lockedSymbols.length === 0 && !universeReadiness.canBuildFullReport && !canBuildProvisionalResearchReport) {
           const reason = [
             `The research universe for "${sector}" is still ${universeReadiness.status}; this pass did not lock a full report universe.`,
@@ -5394,9 +5406,12 @@ export async function executeTool(
               coveredDimensions: universeReadiness.coveredDimensions,
               missingDimensions: universeReadiness.missingDimensions,
               roles: universeRoles,
+              subthemes: universeSelection.subthemes,
               readiness: universeReadiness,
               candidates: universeSelection.candidates.map((candidate) => ({
                 symbol: candidate.symbol,
+                subtheme: candidate.subtheme,
+                selected: candidate.selected,
                 sourceFacets: candidateFacetMap.get(candidate.symbol) || [],
                 sourceEvidence: candidateEvidenceMap.get(candidate.symbol) || [],
                 themeEvidence: candidate.themeEvidence,
@@ -5909,9 +5924,12 @@ export async function executeTool(
             coveredDimensions: universeReadiness.coveredDimensions,
             missingDimensions: universeReadiness.missingDimensions,
             roles: universeRoles,
+            subthemes: universeSelection.subthemes,
             readiness: universeReadiness,
             candidates: universeSelection.candidates.map((candidate) => ({
               symbol: candidate.symbol,
+              subtheme: candidate.subtheme,
+              selected: candidate.selected,
               sourceFacets: candidateFacetMap.get(candidate.symbol) || [],
               sourceEvidence: candidateEvidenceMap.get(candidate.symbol) || [],
               themeEvidence: candidate.themeEvidence,

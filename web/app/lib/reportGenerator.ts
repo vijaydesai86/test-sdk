@@ -3739,7 +3739,11 @@ function buildResearchAllocationSection(
 
 function stripResearchNoiseFromComparisonBody(body: string): string {
   if (process.env.DEBUG === 'true') {
-    return stripMarkdownSection(body, '## 🧭 Indicative Allocation (Not Investment Advice)');
+    return [
+      '## ⚠️ Data Gaps',
+      '## 🏦 Balance Sheet & Cash',
+      '## 🧭 Indicative Allocation (Not Investment Advice)',
+    ].reduce((current, heading) => stripMarkdownSection(current, heading), body);
   }
   return [
     '## ⚠️ Data Gaps',

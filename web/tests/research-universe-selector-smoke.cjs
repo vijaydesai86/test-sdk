@@ -124,9 +124,75 @@ async function testConcreteRolesCanLock() {
   assert.ok(readiness.coveredDimensions.includes('semiconductor equipment'));
 }
 
+async function testReadinessUsesSelectedRolesNotPlannedRoles() {
+  const selection = await selectResearchUniverse({
+    query: 'AI infrastructure',
+    finalCount: 8,
+    candidates: [
+      candidate('NVDA', 'AI infrastructure accelerator chips for data center training', {
+        sourceEvidence: [{ role: 'Compute accelerators', level: 'direct', rationale: 'Accelerator chips.', confidence: 90 }],
+      }),
+      candidate('AMD', 'AI infrastructure accelerator chips and CPUs for data centers', {
+        sourceEvidence: [{ role: 'Compute accelerators', level: 'direct', rationale: 'Accelerator chips.', confidence: 88 }],
+      }),
+      candidate('APH', 'Interconnect and electrical components for data infrastructure', {
+        sourceEvidence: [{ role: 'Power/cooling/data-center infrastructure', level: 'enabler', rationale: 'Data-center infrastructure components.', confidence: 82 }],
+      }),
+    ],
+  });
+  const readiness = evaluateResearchUniverseReadiness({
+    selection,
+    roles: [
+      { label: 'Compute accelerators', dimensions: ['compute accelerators'] },
+      { label: 'Cloud/data-center operators', dimensions: ['cloud/data-center operators'] },
+      { label: 'Foundry/manufacturing', dimensions: ['foundry/manufacturing'] },
+      { label: 'Semiconductor equipment', dimensions: ['semiconductor equipment'] },
+      { label: 'Memory/storage', dimensions: ['memory/storage'] },
+      { label: 'Networking/connectivity', dimensions: ['networking/connectivity'] },
+      { label: 'Power/cooling/data-center infrastructure', dimensions: ['power/cooling'] },
+    ],
+    requiredDimensions: [
+      { label: 'compute accelerators' },
+      { label: 'cloud/data-center operators' },
+      { label: 'foundry/manufacturing' },
+      { label: 'semiconductor equipment' },
+      { label: 'memory/storage' },
+      { label: 'networking/connectivity' },
+      { label: 'power/cooling', required: false },
+    ],
+    targetCount: 8,
+  });
+  assert.equal(readiness.roleCount, 2);
+  assert.notEqual(readiness.status, 'locked');
+  assert.ok(readiness.missingDimensions.includes('cloud/data-center operators'), `expected missing cloud role, got ${readiness.missingDimensions.join(', ')}`);
+  assert.ok(readiness.missingDimensions.includes('semiconductor equipment'), `expected missing equipment role, got ${readiness.missingDimensions.join(', ')}`);
+}
+
+async function testFacetEvidenceKeepsCanonicalRole() {
+  const selection = await selectResearchUniverse({
+    query: 'AI infrastructure',
+    finalCount: 2,
+    candidates: [
+      candidate('ASML', 'Semiconductor equipment and lithography tools for advanced chip manufacturing', {
+        sourceFacets: ['Semiconductor equipment'],
+        sourceEvidence: [{ role: 'Semiconductor equipment', level: 'enabler', rationale: 'Lithography equipment.', confidence: 90 }],
+      }),
+      candidate('NVDA', 'GPU accelerators and data center chips for AI training', {
+        sourceFacets: ['Compute accelerators'],
+        sourceEvidence: [{ role: 'Compute accelerators', level: 'direct', rationale: 'GPU accelerators.', confidence: 95 }],
+      }),
+    ],
+  });
+  const asml = selection.candidates.find((item) => item.symbol === 'ASML');
+  assert.equal(asml?.subtheme, 'Semiconductor equipment');
+  assert.notEqual(asml?.subtheme, 'Compute accelerators/chips');
+}
+
 async function main() {
   await testBroadResolverCannotLock();
   await testConcreteRolesCanLock();
+  await testReadinessUsesSelectedRolesNotPlannedRoles();
+  await testFacetEvidenceKeepsCanonicalRole();
   console.log('research universe selector smoke tests passed');
 }
 

@@ -64,10 +64,10 @@ function researchMetadata(symbols, universeStatus, readinessOverride) {
 }
 
 function testPartialUnreadyResearchKeepsTargetCount() {
-  const metadata = researchMetadata(['NVDA', 'TSM'], 'discovering', {});
+  const metadata = researchMetadata(['NVDA', 'TSM'], 'discovering', { targetCount: 15 });
   const request = buildImproveToolRequest(savedResearchReport(metadata));
   assert.equal(request.toolName, 'generate_research_report');
-  assert.equal(request.args.count, 12);
+  assert.equal(request.args.count, 15);
   assert.deepEqual(request.args.lockedSymbols, ['NVDA', 'TSM']);
   assert.equal(shouldEnforceSameReportUniverse(metadata), false);
 }

@@ -101,6 +101,7 @@ export interface ResearchUniverseSelection {
 export interface ResearchUniverseReadiness {
   status: ResearchUniverseStatus;
   selectedCount: number;
+  targetCount: number;
   targetLockCount: number;
   targetPartialCount: number;
   roleCount: number;
@@ -408,6 +409,11 @@ function overlapsDimension(roleText: string, dimension: ResearchRequiredDimensio
   const roleTokens = new Set(tokenize(roleText));
   const dimensionTokens = tokenize(dimensionText(dimension));
   if (dimensionTokens.length === 0) return false;
+  const genericDimensionTokens = new Set(['data', 'center', 'centre', 'infrastructure', 'systems', 'services', 'products', 'technology']);
+  const distinctiveDimensionTokens = dimensionTokens.filter((token) => !genericDimensionTokens.has(token));
+  if (distinctiveDimensionTokens.length > 0 && !distinctiveDimensionTokens.some((token) => roleTokens.has(token))) {
+    return false;
+  }
   const matches = dimensionTokens.filter((token) => roleTokens.has(token)).length;
   return matches >= Math.min(2, dimensionTokens.length) || matches / dimensionTokens.length >= 0.45;
 }
@@ -435,8 +441,6 @@ export function evaluateResearchUniverseReadiness(args: {
   const broadShare = broadSelected.length / selectedTotal;
   const roleNames = Array.from(new Set(directSelected.map((candidate) => candidate.subtheme).filter((role) => role && !isBroadResearchRole(role))));
   const roleCount = roleNames.length;
-  const configuredMinRoleCount = args.minRoleCount ?? Math.min(5, Math.max(2, Math.ceil(targetCount / 4)));
-  const minRoleCount = Math.min(configuredMinRoleCount, Math.max(1, targetLockCount));
   const requiredDimensions = (args.requiredDimensions || [])
     .map((dimension) => ({
       ...dimension,
@@ -444,12 +448,20 @@ export function evaluateResearchUniverseReadiness(args: {
       required: dimension.required !== false,
     }))
     .filter((dimension) => dimension.label);
-  const roleInputs = [
-    ...(args.roles || []),
-    ...roleNames.map((label) => ({ label })),
-  ].filter((role) => role.label && !isBroadResearchRole(role.label));
+  const requiredDimensionCount = requiredDimensions.filter((dimension) => dimension.required !== false).length;
+  const configuredMinRoleCount = args.minRoleCount ?? Math.min(
+    5,
+    Math.max(
+      requiredDimensionCount >= 4 ? 4 : 2,
+      Math.ceil(targetCount / 4)
+    )
+  );
+  const minRoleCount = Math.min(configuredMinRoleCount, Math.max(1, targetLockCount));
+  const selectedRoleInputs = roleNames
+    .map((label) => ({ label }))
+    .filter((role) => role.label && !isBroadResearchRole(role.label));
   const coveredDimensions = requiredDimensions
-    .filter((dimension) => roleInputs.some((role) => overlapsDimension(dimensionText(role), dimension)))
+    .filter((dimension) => selectedRoleInputs.some((role) => overlapsDimension(dimensionText(role), dimension)))
     .map((dimension) => dimension.label);
   const missingDimensions = requiredDimensions
     .filter((dimension) => dimension.required !== false && !coveredDimensions.includes(dimension.label))
@@ -480,6 +492,7 @@ export function evaluateResearchUniverseReadiness(args: {
   return {
     status,
     selectedCount,
+    targetCount,
     targetLockCount,
     targetPartialCount,
     roleCount,
@@ -894,6 +907,23 @@ export async function selectResearchUniverse(args: {
     for (const candidate of roleRepresentatives) {
       if (selected.length >= args.finalCount) break;
       markSelected(candidate, 100);
+    }
+
+    const anchorCount = Math.min(
+      args.finalCount,
+      Math.max(2, Math.ceil(args.finalCount * 0.25))
+    );
+    const anchorCandidates = [...qualifiedPool]
+      .sort((a, b) => {
+        const evidenceDelta = evidenceTierScore(b.themeEvidence) - evidenceTierScore(a.themeEvidence);
+        if (evidenceDelta) return evidenceDelta;
+        return selectionPriorityForCandidate(b) - selectionPriorityForCandidate(a);
+      })
+      .slice(0, anchorCount);
+    for (const candidate of anchorCandidates) {
+      if (selected.length >= args.finalCount) break;
+      if (candidate.selected) continue;
+      markSelected(candidate, selectedSubthemes.has(candidate.subtheme) ? 70 : 100);
     }
 
     const roleNamesByPriority = Array.from(byRole.keys()).sort((a, b) => {

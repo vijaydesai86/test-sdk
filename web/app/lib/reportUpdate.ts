@@ -106,9 +106,11 @@ export interface ReportRunMetadata {
       dimensions?: string[];
       searchQueries?: string[];
     }>;
+    subthemes?: Array<{ name: string; symbols: string[] }>;
     readiness?: {
       status: 'discovering' | 'refining' | 'locked' | 'failed';
       selectedCount: number;
+      targetCount?: number;
       targetLockCount: number;
       targetPartialCount: number;
       roleCount: number;
@@ -122,6 +124,8 @@ export interface ReportRunMetadata {
     };
     candidates: Array<{
       symbol: string;
+      subtheme?: string;
+      selected?: boolean;
       sourceFacets?: string[];
       sourceEvidence?: Array<{
         role: string;
