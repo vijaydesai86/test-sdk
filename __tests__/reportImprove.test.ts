@@ -207,6 +207,49 @@ describe('reportImprove', () => {
     })).toMatchObject({ status: 'continue', reason: 'research_universe_refining' });
   });
 
+  it('keeps target universe size when improving a partial unready research checkpoint', () => {
+    const metadata = buildReportRunMetadata({
+      kind: 'research',
+      query: 'AI infrastructure',
+      symbols: ['NVDA', 'TSM'],
+      range: '1y',
+      generatedAt: '2026-05-25T10:00:00.000Z',
+      coverage: [],
+      researchUniverse: {
+        status: 'discovering',
+        selectedSymbols: ['NVDA', 'TSM'],
+        qualifiedSymbols: ['NVDA', 'TSM'],
+        candidates: [],
+        readiness: {
+          status: 'discovering',
+          selectedCount: 2,
+          targetLockCount: 12,
+          targetPartialCount: 7,
+          roleCount: 1,
+          minRoleCount: 4,
+          directEnablerShare: 1,
+          broadShare: 0,
+          coveredDimensions: ['compute'],
+          missingDimensions: ['cloud', 'networking', 'power'],
+          repairActions: ['Continue candidate discovery.'],
+          canBuildFullReport: false,
+        },
+      },
+    });
+
+    expect(buildImproveToolRequest(report('research', metadata))).toMatchObject({
+      toolName: 'generate_research_report',
+      args: {
+        updateMode: true,
+        updateQuery: 'AI infrastructure',
+        sector: 'AI infrastructure',
+        lockedSymbols: ['NVDA', 'TSM'],
+        count: 12,
+      },
+    });
+    expect(shouldEnforceSameReportUniverse(metadata)).toBe(false);
+  });
+
   it('accepts research universe readiness progress before the universe is locked', () => {
     const failedMetadata = buildReportRunMetadata({
       kind: 'research',
@@ -269,6 +312,134 @@ describe('reportImprove', () => {
       beforeCoverage: coverageStats(failedMetadata),
       afterCoverage: coverageStats(lockedMetadata),
     })).toEqual({ accepted: true, reason: 'research_universe_locked' });
+  });
+
+  it('preserves still-unready research checkpoints so the next pass can resume from the latest attempt', () => {
+    const baseMetadata = buildReportRunMetadata({
+      kind: 'research',
+      query: 'AI infrastructure',
+      symbols: ['NVDA'],
+      generatedAt: '2026-05-25T10:00:00.000Z',
+      coverage: [],
+      researchUniverse: {
+        status: 'discovering',
+        selectedSymbols: ['NVDA'],
+        qualifiedSymbols: ['NVDA'],
+        candidates: [],
+        readiness: {
+          status: 'discovering',
+          selectedCount: 2,
+          targetLockCount: 12,
+          targetPartialCount: 7,
+          roleCount: 1,
+          minRoleCount: 4,
+          directEnablerShare: 1,
+          broadShare: 0,
+          coveredDimensions: ['compute'],
+          missingDimensions: ['cloud', 'memory'],
+          repairActions: [],
+          canBuildFullReport: false,
+        },
+      },
+    });
+    const nextMetadata = buildReportRunMetadata({
+      kind: 'research',
+      query: 'AI infrastructure',
+      symbols: ['NVDA'],
+      generatedAt: '2026-05-25T10:05:00.000Z',
+      coverage: [],
+      researchUniverse: {
+        status: 'discovering',
+        selectedSymbols: ['NVDA'],
+        qualifiedSymbols: ['NVDA'],
+        candidates: [],
+        readiness: {
+          status: 'discovering',
+          selectedCount: 2,
+          targetLockCount: 12,
+          targetPartialCount: 7,
+          roleCount: 1,
+          minRoleCount: 4,
+          directEnablerShare: 1,
+          broadShare: 0,
+          coveredDimensions: ['compute'],
+          missingDimensions: ['cloud', 'memory'],
+          repairActions: [],
+          canBuildFullReport: false,
+        },
+      },
+    });
+
+    expect(compareImproveCandidateForReport({
+      beforeMetadata: baseMetadata,
+      afterMetadata: nextMetadata,
+      beforeCoverage: coverageStats(baseMetadata),
+      afterCoverage: coverageStats(nextMetadata),
+    })).toEqual({ accepted: true, reason: 'research_universe_still_unready' });
+  });
+
+  it('does not replace an unready research checkpoint with a worse readiness checkpoint', () => {
+    const baseMetadata = buildReportRunMetadata({
+      kind: 'research',
+      query: 'AI infrastructure',
+      symbols: ['NVDA', 'TSM', 'MSFT'],
+      generatedAt: '2026-05-25T10:00:00.000Z',
+      coverage: [],
+      researchUniverse: {
+        status: 'refining',
+        selectedSymbols: ['NVDA', 'TSM', 'MSFT'],
+        qualifiedSymbols: ['NVDA', 'TSM', 'MSFT'],
+        candidates: [],
+        readiness: {
+          status: 'refining',
+          selectedCount: 6,
+          targetLockCount: 12,
+          targetPartialCount: 7,
+          roleCount: 3,
+          minRoleCount: 4,
+          directEnablerShare: 1,
+          broadShare: 0,
+          coveredDimensions: ['compute', 'foundry', 'cloud'],
+          missingDimensions: ['memory'],
+          repairActions: [],
+          canBuildFullReport: false,
+        },
+      },
+    });
+    const worseMetadata = buildReportRunMetadata({
+      kind: 'research',
+      query: 'AI infrastructure',
+      symbols: ['NVDA'],
+      generatedAt: '2026-05-25T10:05:00.000Z',
+      coverage: [],
+      researchUniverse: {
+        status: 'discovering',
+        selectedSymbols: ['NVDA'],
+        qualifiedSymbols: ['NVDA'],
+        candidates: [],
+        readiness: {
+          status: 'discovering',
+          selectedCount: 2,
+          targetLockCount: 12,
+          targetPartialCount: 7,
+          roleCount: 1,
+          minRoleCount: 4,
+          directEnablerShare: 1,
+          broadShare: 0,
+          coveredDimensions: ['compute'],
+          missingDimensions: ['foundry', 'cloud', 'memory'],
+          repairActions: [],
+          canBuildFullReport: false,
+        },
+      },
+    });
+
+    expect(compareImproveCandidateForReport({
+      beforeMetadata: baseMetadata,
+      afterMetadata: worseMetadata,
+      beforeCoverage: coverageStats(baseMetadata),
+      afterCoverage: coverageStats(worseMetadata),
+    })).toEqual({ accepted: false, reason: 'research_universe_still_unready' });
   });
 
   it('detects report universe changes after improve', () => {

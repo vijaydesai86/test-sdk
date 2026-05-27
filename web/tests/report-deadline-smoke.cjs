@@ -365,6 +365,73 @@ async function testResearchUsesOneOptionalEcosystemPassWhenBudgetAllows() {
   assert.match(result.data.content, /graph LR/);
 }
 
+async function testResearchRefiningUniverseStillBuildsMarketBackedReport() {
+  const result = await executeTool(
+    'generate_research_report',
+    { sector: 'AI infrastructure stocks', range: '1y', count: 10 },
+    createMockStockService(),
+    {
+      deadlineAt: Date.now() + 240000,
+      async llmFill(prompt) {
+        if (prompt.includes('Build a verified-candidate proposal')) {
+          return JSON.stringify({
+            requiredDimensions: [
+              { label: 'compute accelerators', required: true },
+              { label: 'cloud/data-center operators', required: true },
+              { label: 'custom silicon', required: true },
+              { label: 'memory/storage', required: true },
+              { label: 'networking/connectivity', required: true },
+            ],
+            roles: [
+              {
+                label: 'Compute accelerators',
+                dimensions: ['compute accelerators'],
+                query: 'AI accelerator chips',
+                candidates: [
+                  { companyName: 'NVIDIA', likelyTicker: 'NVDA', evidenceLevel: 'direct', confidence: 90, reason: 'AI accelerator chips' },
+                  { companyName: 'AMD', likelyTicker: 'AMD', evidenceLevel: 'direct', confidence: 85, reason: 'AI accelerator chips' },
+                ],
+              },
+              {
+                label: 'Cloud/data-center operators',
+                dimensions: ['cloud/data-center operators'],
+                query: 'AI cloud infrastructure',
+                candidates: [
+                  { companyName: 'Microsoft', likelyTicker: 'MSFT', evidenceLevel: 'enabler', confidence: 85, reason: 'AI cloud infrastructure' },
+                  { companyName: 'Amazon', likelyTicker: 'AMZN', evidenceLevel: 'enabler', confidence: 80, reason: 'AI cloud infrastructure' },
+                  { companyName: 'Alphabet', likelyTicker: 'GOOGL', evidenceLevel: 'enabler', confidence: 80, reason: 'AI cloud infrastructure' },
+                ],
+              },
+              {
+                label: 'Custom silicon',
+                dimensions: ['custom silicon'],
+                query: 'AI custom silicon',
+                candidates: [
+                  { companyName: 'Broadcom', likelyTicker: 'AVGO', evidenceLevel: 'enabler', confidence: 80, reason: 'custom silicon connectivity' },
+                ],
+              },
+            ],
+          });
+        }
+        if (prompt.includes('deep research ecosystem analysis')) {
+          return JSON.stringify({
+            dependencyAnalysis: '### Role Map\n\nCompute, cloud, and custom silicon companies form a provisional AI infrastructure stack.',
+            ecosystemDiagram: 'graph LR\n  NVDA-->MSFT\n  AVGO-->AMZN',
+          });
+        }
+        return '{}';
+      },
+    }
+  );
+  await assertSavedReport(result, 'research');
+  assert.equal(result.data.runMetadata.researchUniverse.status, 'refining');
+  assert.ok(result.data.runMetadata.symbols.length >= 5, 'expected a usable provisional universe');
+  assert.match(result.data.content, /Snapshot/);
+  assert.match(result.data.content, /Research Allocation Scenario/);
+  assert.doesNotMatch(result.data.content, /Verified Data Status/);
+  assert.doesNotMatch(result.data.content, /Wait for verified inputs/);
+}
+
 async function testComparisonDeadlineStillSaves() {
   const result = await executeTool(
     'generate_comparison_report',
@@ -454,6 +521,7 @@ async function main() {
   await testResearchDeadlineStillSaves();
   await testResearchImmediateDeadlineStillSaves();
   await testResearchUsesOneOptionalEcosystemPassWhenBudgetAllows();
+  await testResearchRefiningUniverseStillBuildsMarketBackedReport();
   await testComparisonDeadlineStillSaves();
   await testComparisonImmediateDeadlineStillSaves();
   await testWatchlistImmediateDeadlineStillSaves();

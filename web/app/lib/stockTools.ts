@@ -748,7 +748,7 @@ const RESEARCH_PROFILE_ROLE_RULES: ResearchProfileRoleRule[] = [
     level: 'enabler',
     priority: 95,
     themeHints: ['semiconductor', 'chip', 'ai infrastructure', 'data center'],
-    must: [['foundry', 'semiconductor foundry', 'manufactures integrated circuits', 'contract manufacturer']],
+    must: [['foundry', 'semiconductor foundry', 'semiconductor manufacturing', 'integrated circuit manufacturing', 'manufactures integrated circuits', 'contract manufacturer']],
     any: [['semiconductor', 'chip', 'integrated circuit']],
   },
   {
@@ -798,6 +798,41 @@ const RESEARCH_PROFILE_ROLE_RULES: ResearchProfileRoleRule[] = [
     themeHints: ['cloud', 'data center', 'ai infrastructure', 'infrastructure'],
     must: [['cloud infrastructure', 'cloud computing', 'data centers', 'data center', 'azure', 'google cloud', 'infrastructure cloud']],
     any: [['ai', 'infrastructure', 'operator', 'database', 'platform', 'compute']],
+  },
+  {
+    role: 'Power/cooling/data-center infrastructure',
+    level: 'enabler',
+    priority: 79,
+    themeHints: ['power', 'cooling', 'data center', 'ai infrastructure', 'infrastructure'],
+    must: [['electrical equipment', 'electrical components', 'power management']],
+  },
+  {
+    role: 'Networking/connectivity',
+    level: 'enabler',
+    priority: 78,
+    themeHints: ['networking', 'connectivity', 'data center', 'cloud infrastructure', 'ai infrastructure'],
+    must: [['communications equipment', 'network infrastructure', 'networking']],
+  },
+  {
+    role: 'Cloud/data-center operators',
+    level: 'enabler',
+    priority: 76,
+    themeHints: ['cloud', 'data center', 'ai infrastructure', 'infrastructure'],
+    must: [['software infrastructure', 'it services', 'information technology services']],
+  },
+  {
+    role: 'Memory/storage',
+    level: 'enabler',
+    priority: 74,
+    themeHints: ['memory', 'storage', 'data center', 'ai infrastructure', 'cloud infrastructure'],
+    must: [['computer hardware', 'storage']],
+  },
+  {
+    role: 'Compute accelerators/chips',
+    level: 'enabler',
+    priority: 72,
+    themeHints: ['ai', 'semiconductor', 'chip', 'data center', 'compute', 'ai infrastructure'],
+    must: [['semiconductor', 'semiconductors']],
   },
   {
     role: 'Charging network/operators',
@@ -889,6 +924,45 @@ function researchRuleIsRelevantToTheme(args: {
   if (researchTextHasAny(context, args.rule.themeHints)) return true;
   const roleTokens = normalizeResearchEvidenceText(args.rule.role).split(' ').filter((token) => token.length > 3);
   return roleTokens.some((token) => context.includes(token));
+}
+
+const GENERIC_THEME_HINTS = new Set(['infrastructure', 'platform', 'operator', 'operators', 'energy']);
+
+function researchRuleHasSpecificThemeMatch(themeText: string, rule: ResearchProfileRoleRule): boolean {
+  return rule.themeHints.some((hint) => {
+    const normalized = normalizeResearchEvidenceText(hint);
+    if (!normalized || GENERIC_THEME_HINTS.has(normalized)) return false;
+    return themeText.includes(normalized);
+  });
+}
+
+function buildFallbackResearchThemeFacets(theme: string, limit = RESEARCH_THEME_FACET_COUNT): ResearchThemeFacetPlan[] {
+  const themeText = normalizeResearchEvidenceText(theme);
+  if (!themeText) return [];
+  const seen = new Set<string>();
+  return RESEARCH_PROFILE_ROLE_RULES
+    .filter((rule) => researchRuleHasSpecificThemeMatch(themeText, rule))
+    .sort((a, b) => b.priority - a.priority)
+    .map((rule) => {
+      const key = rule.role.toLowerCase();
+      if (seen.has(key)) return null;
+      seen.add(key);
+      return {
+        label: rule.role,
+        role: rule.role,
+        query: `${theme} ${rule.role}`,
+        definition: `Provider profile evidence must support ${rule.role} exposure for this theme.`,
+        required: rule.level === 'direct' || rule.priority >= 90,
+        dimensions: [rule.role],
+        searchQueries: [
+          `${theme} ${rule.role} stocks`,
+          `${theme} ${rule.role} public companies`,
+        ],
+        candidates: [],
+      } as ResearchThemeFacetPlan;
+    })
+    .filter((facet: ResearchThemeFacetPlan | null): facet is ResearchThemeFacetPlan => Boolean(facet))
+    .slice(0, limit);
 }
 
 export function classifyResearchCandidateProfileEvidence(args: {
@@ -1109,11 +1183,13 @@ async function resolveResearchCandidateSeeds(args: {
 
   if (args.llmFill && hasReportLLMBudget(args.deadlineAt)) {
     try {
+      const taxonomyCandidatesPerFacet = Math.min(RESEARCH_FACET_CANDIDATES, process.env.VERCEL ? 4 : 6);
+      const taxonomyTargetCount = Math.min(args.targetCount, RESEARCH_THEME_FACET_COUNT * taxonomyCandidatesPerFacet);
       const prompt = buildResearchThemeCandidatePrompt(
         args.theme,
-        args.targetCount,
+        taxonomyTargetCount,
         RESEARCH_THEME_FACET_COUNT,
-        RESEARCH_FACET_CANDIDATES
+        taxonomyCandidatesPerFacet
       );
       const raw = await args.llmFill(prompt);
       const parsedPlan = parseResearchThemeCandidatePlan(raw, args.theme);
@@ -1161,6 +1237,24 @@ async function resolveResearchCandidateSeeds(args: {
     }
   }
 
+  if (facets.length === 0) {
+    const fallbackFacets = buildFallbackResearchThemeFacets(args.theme);
+    if (fallbackFacets.length) {
+      facets = fallbackFacets;
+      const mergedDimensions = new Map(requiredDimensions.map((dimension) => [dimension.label.toLowerCase(), dimension]));
+      for (const facet of fallbackFacets) {
+        mergedDimensions.set(facet.label.toLowerCase(), {
+          label: facet.label,
+          required: facet.required !== false,
+          searchQueries: facet.searchQueries,
+          rationale: facet.definition,
+        });
+      }
+      requiredDimensions = Array.from(mergedDimensions.values());
+      notes.push(`Fallback role taxonomy derived ${fallbackFacets.length} concrete role bucket${fallbackFacets.length === 1 ? '' : 's'} from generic provider-profile rules.`);
+    }
+  }
+
   if (seedMap.size < Math.max(2, Math.ceil(args.targetCount / 3))) {
     const fallback = await resolveSectorTickers(args.theme, args.targetCount, args.llmFill, args.stockService);
     for (const symbol of fallback) {
@@ -1185,9 +1279,12 @@ async function resolveResearchCandidateSeeds(args: {
     }
   }
 
-  if (args.stockService && seedMap.size < args.targetCount && facets.length && !isDeadlineNear(args.deadlineAt)) {
-    for (const facet of facets.slice(0, Math.min(3, facets.length))) {
-      if (seedMap.size >= args.targetCount || isDeadlineNear(args.deadlineAt)) break;
+  if (args.stockService && facets.length && !isDeadlineNear(args.deadlineAt)) {
+    const facetSearchLimit = seedMap.size < args.targetCount
+      ? Math.min(4, facets.length)
+      : Math.min(2, facets.length);
+    for (const facet of facets.slice(0, facetSearchLimit)) {
+      if (isDeadlineNear(args.deadlineAt)) break;
       try {
         const results = await withReportTaskTimeout(args.stockService.searchStock(facet.query), 'optional', args.deadlineAt);
         const candidates = ((results as any)?.results || [])
@@ -5071,6 +5168,17 @@ export async function executeTool(
             };
           }
         );
+        const profileClassifiedCount = selectionCandidateData.filter((candidate) =>
+          (candidate.sourceEvidence || []).some((evidence) => evidence.source === 'provider-profile-classifier')
+        ).length;
+        const directEnablerEvidenceCount = selectionCandidateData.filter((candidate) =>
+          (candidate.sourceEvidence || []).some((evidence) =>
+            (evidence.level === 'direct' || evidence.level === 'enabler') && !isBroadResearchRole(evidence.role)
+          )
+        ).length;
+        selectionNotes.push(
+          `Universe diagnostics: ${normalizedInitialCandidates.length} initial, ${selectionCandidateData.length} profiled, ${profileClassifiedCount} profile-classified, ${directEnablerEvidenceCount} direct/enabler evidence before validation.`
+        );
         const invalidCandidateNotes: string[] = [];
         const validatedSelectionCandidateData = lockedSymbols.length > 0
           ? selectionCandidateData
@@ -5079,6 +5187,7 @@ export async function executeTool(
               if (issue) invalidCandidateNotes.push(`${candidate.symbol}: excluded from initial universe (${issue}).`);
               return !issue;
             });
+        selectionNotes.push(`Universe validation: ${validatedSelectionCandidateData.length}/${selectionCandidateData.length} candidates remained active/provider-confirmed.`);
         if (lockedSymbols.length === 0 && validatedSelectionCandidateData.length < minimumFreshUniverse) {
           const reason = validatedSelectionCandidateData.length === 0
             ? `No active provider-confirmed candidates could be validated for "${sector}".`
@@ -5113,7 +5222,15 @@ export async function executeTool(
           requiredDimensions: candidateDiscovery.requiredDimensions,
           targetCount: finalCount,
         });
-        if (lockedSymbols.length === 0 && !universeReadiness.canBuildFullReport) {
+        selectionNotes.push(
+          `Universe readiness: ${universeReadiness.selectedCount}/${universeReadiness.targetLockCount} direct/enabler, ${universeReadiness.roleCount}/${universeReadiness.minRoleCount} roles, status ${universeReadiness.status}.`
+        );
+        const canBuildProvisionalResearchReport = universeReadiness.status === 'refining'
+          && universeReadiness.selectedCount >= universeReadiness.targetPartialCount
+          && universeReadiness.roleCount >= universeReadiness.minRoleCount
+          && universeReadiness.directEnablerShare >= 0.60
+          && universeReadiness.broadShare <= 0.20;
+        if (lockedSymbols.length === 0 && !universeReadiness.canBuildFullReport && !canBuildProvisionalResearchReport) {
           const reason = [
             `The research universe for "${sector}" is still ${universeReadiness.status}; this pass did not lock a full report universe.`,
             `Qualified direct/enabler candidates: ${universeReadiness.selectedCount}/${universeReadiness.targetLockCount}.`,
@@ -5173,6 +5290,11 @@ export async function executeTool(
             data: { content, ...saved, downloadUrl: buildReportDownloadUrl(saved) },
             message: `Saved research universe-refinement checkpoint for "${sector}" to ${saved.filePath}`,
           };
+        }
+        if (lockedSymbols.length === 0 && canBuildProvisionalResearchReport && !universeReadiness.canBuildFullReport) {
+          selectionNotes.push(
+            `Provisional research report allowed: ${universeReadiness.selectedCount}/${universeReadiness.targetLockCount} direct/enabler candidates are below lock target but meet partial-report coverage (${universeReadiness.targetPartialCount}) with ${universeReadiness.roleCount}/${universeReadiness.minRoleCount} concrete roles. Improve passes may continue refining this universe.`
+          );
         }
 
         // Vercel/local priority: lock a saveable universe and fetch market data

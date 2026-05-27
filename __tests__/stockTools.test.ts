@@ -520,6 +520,78 @@ describe('generate_research_report via executeTool', () => {
     })).toBeNull();
   });
 
+  it('classifies AI infrastructure roles from thin provider profiles without descriptions', () => {
+    const requiredDimensions = [
+      { label: 'cloud/data-center operators', required: true },
+      { label: 'compute accelerators/chips', required: true },
+      { label: 'foundry/manufacturing', required: true },
+      { label: 'semiconductor equipment/tools', required: true },
+      { label: 'memory/storage', required: true },
+      { label: 'networking/connectivity', required: true },
+      { label: 'power/cooling/data-center infrastructure', required: false },
+    ];
+
+    expect(classifyResearchCandidateProfileEvidence({
+      theme: 'AI infrastructure',
+      requiredDimensions,
+      candidate: {
+        symbol: 'NVDA',
+        sourceFacets: ['Broad resolver raw candidate'],
+        overview: { name: 'NVIDIA Corp', sector: 'Technology', industry: 'Semiconductors', description: null },
+      },
+    })).toMatchObject({ role: 'Compute accelerators/chips', level: 'enabler' });
+
+    expect(classifyResearchCandidateProfileEvidence({
+      theme: 'AI infrastructure',
+      requiredDimensions,
+      candidate: {
+        symbol: 'TSM',
+        sourceFacets: ['Broad resolver raw candidate'],
+        overview: { name: 'Taiwan Semiconductor Manufacturing Co Ltd', sector: 'Technology', industry: 'Semiconductors', description: null },
+      },
+    })).toMatchObject({ role: 'Foundry/manufacturing', level: 'enabler' });
+
+    expect(classifyResearchCandidateProfileEvidence({
+      theme: 'AI infrastructure',
+      requiredDimensions,
+      candidate: {
+        symbol: 'LRCX',
+        sourceFacets: ['Broad resolver raw candidate'],
+        overview: { name: 'Lam Research Corp', sector: 'Technology', industry: 'Semiconductor Equipment', description: null },
+      },
+    })).toMatchObject({ role: 'Semiconductor equipment/tools', level: 'enabler' });
+
+    expect(classifyResearchCandidateProfileEvidence({
+      theme: 'AI infrastructure',
+      requiredDimensions,
+      candidate: {
+        symbol: 'ANET',
+        sourceFacets: ['Broad resolver raw candidate'],
+        overview: { name: 'Arista Networks Inc', sector: 'Technology', industry: 'Communications Equipment', description: null },
+      },
+    })).toMatchObject({ role: 'Networking/connectivity', level: 'enabler' });
+
+    expect(classifyResearchCandidateProfileEvidence({
+      theme: 'AI infrastructure',
+      requiredDimensions,
+      candidate: {
+        symbol: 'VRT',
+        sourceFacets: ['Broad resolver raw candidate'],
+        overview: { name: 'Vertiv Holdings Co', sector: 'Industrials', industry: 'Electrical Equipment', description: null },
+      },
+    })).toMatchObject({ role: 'Power/cooling/data-center infrastructure', level: 'enabler' });
+
+    expect(classifyResearchCandidateProfileEvidence({
+      theme: 'AI infrastructure',
+      requiredDimensions,
+      candidate: {
+        symbol: 'CRM',
+        sourceFacets: ['Broad resolver raw candidate'],
+        overview: { name: 'Salesforce Inc', sector: 'Technology', industry: 'Software Application', description: null },
+      },
+    })).toBeNull();
+  });
+
   it('uses profile evidence after taxonomy timeout so AI infrastructure does not collapse to zero candidates', async () => {
     const profileBySymbol: Record<string, any> = {
       NVDA: { name: 'NVIDIA Corp', sector: 'Technology', industry: 'Semiconductors', description: 'Designs GPUs accelerated computing AI data center platforms and networking systems.', marketCapitalization: 500_000_000_000, forwardPE: 35 },
@@ -556,6 +628,74 @@ describe('generate_research_report via executeTool', () => {
     expect(result.data?.runMetadata?.symbols).toEqual(expect.arrayContaining(['NVDA', 'TSM', 'AMAT', 'MU', 'VRT', 'SNPS', 'MSFT']));
     expect(result.data?.runMetadata?.symbols).not.toContain('CRM');
     expect(result.data?.runMetadata?.symbols).not.toContain('NET');
+    expect(result.data?.content).not.toContain('Verified Data Status');
+  });
+
+  it('locks a usable AI infrastructure universe from a broad raw ticker fallback and thin provider profiles', async () => {
+    const rawSymbols = [
+      'NVDA', 'AMD', 'INTC', 'MSFT', 'GOOGL', 'AMZN', 'META', 'TSM', 'ASML', 'LRCX', 'KLAC', 'MU',
+      'ADI', 'NXPI', 'CDNS', 'SNPS', 'AVGO', 'CRWD', 'PANW', 'FTNT', 'NOW', 'WDC', 'STX', 'CSCO',
+      'JNPR', 'ANET', 'DELL', 'HPE', 'ORCL', 'IBM', 'CRM', 'QCOM', 'TXN',
+    ];
+    const profileBySymbol: Record<string, any> = {
+      NVDA: { name: 'NVIDIA Corp', sector: 'Technology', industry: 'Semiconductors', description: null, marketCapitalization: 5_000_000_000_000, forwardPE: 35 },
+      AMD: { name: 'Advanced Micro Devices Inc', sector: 'Technology', industry: 'Semiconductors', description: null, marketCapitalization: 700_000_000_000, forwardPE: 50 },
+      INTC: { name: 'Intel Corp', sector: 'Technology', industry: 'Semiconductors', description: null, marketCapitalization: 200_000_000_000, forwardPE: 40 },
+      MSFT: { name: 'Microsoft Corp', sector: 'Technology', industry: 'Software Infrastructure', description: null, marketCapitalization: 3_000_000_000_000, forwardPE: 30 },
+      GOOGL: { name: 'Alphabet Inc', sector: 'Communication Services', industry: 'Internet Content & Information', description: null, marketCapitalization: 2_000_000_000_000, forwardPE: 25 },
+      AMZN: { name: 'Amazon.com Inc', sector: 'Consumer Cyclical', industry: 'Internet Retail', description: null, marketCapitalization: 2_000_000_000_000, forwardPE: 35 },
+      META: { name: 'Meta Platforms Inc', sector: 'Communication Services', industry: 'Internet Content & Information', description: null, marketCapitalization: 1_000_000_000_000, forwardPE: 25 },
+      TSM: { name: 'Taiwan Semiconductor Manufacturing Co Ltd', sector: 'Technology', industry: 'Semiconductors', description: null, marketCapitalization: 900_000_000_000, forwardPE: 25 },
+      ASML: { name: 'ASML Holding NV', sector: 'Technology', industry: 'Semiconductor Equipment', description: null, marketCapitalization: 350_000_000_000, forwardPE: 35 },
+      LRCX: { name: 'Lam Research Corp', sector: 'Technology', industry: 'Semiconductor Equipment', description: null, marketCapitalization: 120_000_000_000, forwardPE: 30 },
+      KLAC: { name: 'KLA Corp', sector: 'Technology', industry: 'Semiconductor Equipment', description: null, marketCapitalization: 100_000_000_000, forwardPE: 30 },
+      MU: { name: 'Micron Technology Inc', sector: 'Technology', industry: 'Semiconductors', description: null, marketCapitalization: 150_000_000_000, forwardPE: 35 },
+      ADI: { name: 'Analog Devices Inc', sector: 'Technology', industry: 'Semiconductors', description: null, marketCapitalization: 110_000_000_000, forwardPE: 30 },
+      NXPI: { name: 'NXP Semiconductors NV', sector: 'Technology', industry: 'Semiconductors', description: null, marketCapitalization: 80_000_000_000, forwardPE: 25 },
+      CDNS: { name: 'Cadence Design Systems Inc', sector: 'Technology', industry: 'Software Infrastructure', description: null, marketCapitalization: 90_000_000_000, forwardPE: 50 },
+      SNPS: { name: 'Synopsys Inc', sector: 'Technology', industry: 'Software Infrastructure', description: null, marketCapitalization: 100_000_000_000, forwardPE: 45 },
+      AVGO: { name: 'Broadcom Inc', sector: 'Technology', industry: 'Semiconductors', description: null, marketCapitalization: 1_000_000_000_000, forwardPE: 35 },
+      WDC: { name: 'Western Digital Corp', sector: 'Technology', industry: 'Computer Hardware', description: null, marketCapitalization: 30_000_000_000, forwardPE: 20 },
+      STX: { name: 'Seagate Technology Holdings PLC', sector: 'Technology', industry: 'Computer Hardware', description: null, marketCapitalization: 25_000_000_000, forwardPE: 18 },
+      CSCO: { name: 'Cisco Systems Inc', sector: 'Technology', industry: 'Communications Equipment', description: null, marketCapitalization: 250_000_000_000, forwardPE: 18 },
+      JNPR: { name: 'Juniper Networks Inc', sector: 'Technology', industry: 'Communications Equipment', description: null, marketCapitalization: 12_000_000_000, forwardPE: 18 },
+      ANET: { name: 'Arista Networks Inc', sector: 'Technology', industry: 'Communications Equipment', description: null, marketCapitalization: 100_000_000_000, forwardPE: 35 },
+      DELL: { name: 'Dell Technologies Inc', sector: 'Technology', industry: 'Computer Hardware', description: null, marketCapitalization: 80_000_000_000, forwardPE: 18 },
+      HPE: { name: 'Hewlett Packard Enterprise Co', sector: 'Technology', industry: 'Computer Hardware', description: null, marketCapitalization: 30_000_000_000, forwardPE: 15 },
+      ORCL: { name: 'Oracle Corp', sector: 'Technology', industry: 'Software Infrastructure', description: null, marketCapitalization: 500_000_000_000, forwardPE: 30 },
+      IBM: { name: 'International Business Machines Corp', sector: 'Technology', industry: 'Information Technology Services', description: null, marketCapitalization: 200_000_000_000, forwardPE: 18 },
+      CRM: { name: 'Salesforce Inc', sector: 'Technology', industry: 'Software Application', description: null, marketCapitalization: 200_000_000_000, forwardPE: 22 },
+      QCOM: { name: 'Qualcomm Inc', sector: 'Technology', industry: 'Semiconductors', description: null, marketCapitalization: 200_000_000_000, forwardPE: 25 },
+      TXN: { name: 'Texas Instruments Inc', sector: 'Technology', industry: 'Semiconductors', description: null, marketCapitalization: 180_000_000_000, forwardPE: 25 },
+    };
+    (service.getStockPrice as ReturnType<typeof vi.fn>).mockResolvedValue({ price: 100, changePercent: '1.0%' });
+    (service.getCompanyOverview as ReturnType<typeof vi.fn>).mockImplementation(async (symbol: string) => profileBySymbol[symbol] || { name: symbol, sector: 'Technology', industry: 'Software Application', description: null });
+    (service.getBasicFinancials as ReturnType<typeof vi.fn>).mockResolvedValue({
+      metric: {
+        revenueGrowthTTM: 0.20,
+        epsGrowthTTM: 0.15,
+        grossMarginTTM: 0.55,
+        operatingMarginTTM: 0.30,
+        roeTTM: 0.20,
+      },
+    });
+    const llmFill = vi.fn(async (prompt: string) => {
+      if (prompt.includes('Build a verified-candidate proposal')) throw new Error('taxonomy timeout');
+      if (prompt.includes('valid JSON array')) return JSON.stringify(rawSymbols);
+      return '{}';
+    });
+
+    const result = await executeTool('generate_research_report', { sector: 'AI infrastructure', count: 15 }, service, { llmFill });
+
+    expect(result.success).toBe(true);
+    const metadata = result.data?.runMetadata;
+    expect(metadata?.researchUniverse?.status).toBe('locked');
+    expect(metadata?.symbols.length).toBeGreaterThanOrEqual(12);
+    expect(metadata?.symbols).toEqual(expect.arrayContaining(['NVDA', 'TSM', 'ASML', 'LRCX', 'ANET', 'MSFT']));
+    expect(metadata?.symbols).not.toContain('CRM');
+    expect(metadata?.notes.join('\n')).toContain('Fallback role taxonomy derived');
+    expect(metadata?.notes.join('\n')).toContain('Universe diagnostics:');
+    expect(result.data?.content).not.toContain('Broad theme resolver');
     expect(result.data?.content).not.toContain('Verified Data Status');
   });
 

@@ -333,8 +333,13 @@ export function compareImproveCandidateForReport(args: {
   if (args.beforeMetadata?.kind === 'research' && beforeStatus && beforeStatus !== 'locked') {
     if (!args.afterMetadata) return { accepted: false, reason: 'missing_candidate_checkpoint' };
     if (afterStatus === 'locked') return { accepted: true, reason: 'research_universe_locked' };
-    if (researchReadinessScore(args.afterMetadata) > researchReadinessScore(args.beforeMetadata)) {
+    const beforeReadiness = researchReadinessScore(args.beforeMetadata);
+    const afterReadiness = researchReadinessScore(args.afterMetadata);
+    if (afterReadiness > beforeReadiness) {
       return { accepted: true, reason: 'research_universe_readiness_improved' };
+    }
+    if (afterStatus && afterReadiness >= beforeReadiness) {
+      return { accepted: true, reason: 'research_universe_still_unready' };
     }
     return { accepted: false, reason: 'research_universe_still_unready' };
   }
@@ -531,13 +536,20 @@ export function buildImproveToolRequest(report: SavedReportForImprove): ImproveT
     if (symbols.length === 0 && isResearchUniverseLocked(metadata)) {
       throw new Error('Research report is missing universe metadata.');
     }
+    const lockedResearchUniverse = isResearchUniverseLocked(metadata);
+    const researchTargetCount = lockedResearchUniverse
+      ? symbols.length
+      : metadata?.researchUniverse?.readiness?.targetLockCount
+        || metadata?.researchUniverse?.readiness?.targetPartialCount
+        || symbols.length
+        || undefined;
     return {
       toolName: 'generate_research_report',
       args: {
         ...baseArgs,
         sector: query || symbols.join(', '),
         range: range || '1y',
-        count: symbols.length || metadata?.researchUniverse?.readiness?.targetLockCount || undefined,
+        count: researchTargetCount,
       },
     };
   }
