@@ -506,4 +506,71 @@ describe('reportImprove', () => {
       reason: 'candidate_flat',
     });
   });
+
+  it('rejects research improve candidates that lose companies or data even if they claim to lock', () => {
+    const beforeMetadata = buildReportRunMetadata({
+      kind: 'research',
+      query: 'generic infrastructure theme',
+      symbols: ['AAA', 'BBB', 'CCC'],
+      generatedAt: '2026-05-25T10:00:00.000Z',
+      coverage: [
+        { symbol: 'AAA', key: 'price', label: 'Price', data: { price: 1 }, priority: 'critical' },
+        { symbol: 'BBB', key: 'price', label: 'Price', data: { price: 2 }, priority: 'critical' },
+        { symbol: 'CCC', key: 'price', label: 'Price', data: { price: 3 }, priority: 'critical' },
+      ],
+      researchUniverse: {
+        status: 'refining',
+        selectedSymbols: ['AAA', 'BBB', 'CCC'],
+        qualifiedSymbols: [],
+        candidates: [],
+      },
+    });
+    const fewerSymbols = buildReportRunMetadata({
+      kind: 'research',
+      query: 'generic infrastructure theme',
+      symbols: ['AAA', 'BBB'],
+      generatedAt: '2026-05-25T10:05:00.000Z',
+      coverage: [
+        { symbol: 'AAA', key: 'price', label: 'Price', data: { price: 1 }, priority: 'critical' },
+        { symbol: 'BBB', key: 'price', label: 'Price', data: { price: 2 }, priority: 'critical' },
+      ],
+      researchUniverse: {
+        status: 'locked',
+        selectedSymbols: ['AAA', 'BBB'],
+        qualifiedSymbols: ['AAA', 'BBB'],
+        candidates: [],
+      },
+    });
+    const lessData = buildReportRunMetadata({
+      kind: 'research',
+      query: 'generic infrastructure theme',
+      symbols: ['AAA', 'BBB', 'CCC'],
+      generatedAt: '2026-05-25T10:05:00.000Z',
+      coverage: [
+        { symbol: 'AAA', key: 'price', label: 'Price', data: { price: 1 }, priority: 'critical' },
+        { symbol: 'BBB', key: 'price', label: 'Price', data: undefined, priority: 'critical' },
+        { symbol: 'CCC', key: 'price', label: 'Price', data: { price: 3 }, priority: 'critical' },
+      ],
+      researchUniverse: {
+        status: 'locked',
+        selectedSymbols: ['AAA', 'BBB', 'CCC'],
+        qualifiedSymbols: ['AAA', 'BBB', 'CCC'],
+        candidates: [],
+      },
+    });
+
+    expect(compareImproveCandidateForReport({
+      beforeMetadata,
+      afterMetadata: fewerSymbols,
+      beforeCoverage: coverageStats(beforeMetadata),
+      afterCoverage: coverageStats(fewerSymbols),
+    })).toEqual({ accepted: false, reason: 'candidate_regressed_available' });
+
+    expect(compareImproveCandidateForReport({
+      beforeMetadata,
+      afterMetadata: lessData,
+      beforeCoverage: coverageStats(beforeMetadata),
+      afterCoverage: coverageStats(lessData),
+    })).toEqual({ accepted: false, reason: 'candidate_regressed_missing' });
+  });
 });

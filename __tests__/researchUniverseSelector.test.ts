@@ -721,4 +721,35 @@ describe('research report rendering', () => {
     expect(readiness.status).toBe('locked');
     expect(readiness.coveredDimensions).toEqual(expect.arrayContaining(['compute accelerators', 'semiconductor equipment']));
   });
+
+  it('fills the selected universe from provider-backed candidates even when strict qualification is empty', async () => {
+    const selection = await selectResearchUniverse({
+      query: 'emerging infrastructure theme',
+      finalCount: 4,
+      candidates: [
+        candidate('AAAA', 'General industrial technology services'),
+        candidate('BBBB', 'Broad enterprise platform services'),
+        candidate('CCCC', 'Component manufacturing and distribution'),
+        candidate('DDDD', 'Infrastructure software operations'),
+        candidate('EEEE', 'Specialty equipment and support services'),
+      ],
+      llmFill: async () => JSON.stringify({
+        candidates: ['AAAA', 'BBBB', 'CCCC', 'DDDD', 'EEEE'].map((symbol) => ({
+          symbol,
+          themeScore: 5,
+          fit: 'reject',
+          evidenceLevel: 'unrelated',
+          evidenceConfidence: 90,
+          subtheme: 'Unsupported provider candidate',
+          rationale: 'Supplied profile does not establish strict theme membership.',
+        })),
+      }),
+    });
+
+    expect(selection.selectedSymbols).toHaveLength(4);
+    expect(selection.qualifiedSymbols).toEqual([]);
+    expect(selection.selectedSymbols.every((symbol) => selection.candidates.find((row) => row.symbol === symbol)?.selected)).toBe(true);
+    expect(selection.candidates.filter((row) => row.selected).every((row) => row.qualified === false)).toBe(true);
+    expect(selection.notes.join(' ')).toContain('best-effort provisional');
+  });
 });

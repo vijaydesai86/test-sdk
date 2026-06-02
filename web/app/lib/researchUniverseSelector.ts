@@ -78,6 +78,7 @@ export interface ResearchCandidateScore {
   factorScore: number;
   reasons: string[];
   exclusionReason?: string;
+  progressState?: 'unprocessed' | 'basic_scored' | 'temporary_failed' | 'invalid';
 }
 
 export interface ResearchUniverseSelection {
@@ -1017,6 +1018,29 @@ export async function selectResearchUniverse(args: {
         continue;
       }
       markProvisional(candidate, selectedSubthemes.has(candidate.subtheme) ? 25 : 60);
+    }
+  }
+
+  if (mode === 'fresh_selection' && selected.length < args.finalCount) {
+    const bestEffortCandidates = pool
+      .filter((candidate) => !candidate.selected)
+      .sort((a, b) => {
+        const fitDelta = fitTierScore(b.themeFit) - fitTierScore(a.themeFit);
+        if (fitDelta) return fitDelta;
+        const evidenceDelta = evidenceTierScore(b.themeEvidence) - evidenceTierScore(a.themeEvidence);
+        if (evidenceDelta) return evidenceDelta;
+        return selectionPriorityForCandidate(b) - selectionPriorityForCandidate(a);
+      });
+
+    for (const candidate of bestEffortCandidates) {
+      if (selected.length >= args.finalCount) break;
+      const selectedRoleCount = selectedRoleCounts.get(candidate.subtheme) || 0;
+      const hasRoleRoom = selectedRoleCount < roleSoftCap;
+      const coverageScore = selectedSubthemes.has(candidate.subtheme)
+        ? hasRoleRoom ? 20 : 5
+        : 45;
+      markProvisional(candidate, coverageScore);
+      candidate.reasons.unshift('best-effort provider-validated fallback');
     }
   }
 

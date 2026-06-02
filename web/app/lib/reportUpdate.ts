@@ -136,6 +136,10 @@ export interface ReportRunMetadata {
       finalUniverseSymbols?: string[];
       shortlistSymbols?: string[];
       lastProgress?: string;
+      processedCursor?: number;
+      basicScoredCount?: number;
+      temporaryFailedCount?: number;
+      invalidCount?: number;
     };
     candidates: Array<{
       symbol: string;
@@ -158,6 +162,8 @@ export interface ReportRunMetadata {
       themeFit?: string;
       themeScore?: number;
       qualified?: boolean;
+      progressState?: 'unprocessed' | 'basic_scored' | 'temporary_failed' | 'invalid';
+      progressReason?: string;
     }>;
   };
 }

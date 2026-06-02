@@ -3576,7 +3576,7 @@ function buildResearchUniverseSelectionSection(selection?: ResearchUniverseSelec
   );
   const modeLine = manualUniverse
     ? 'The saved report universe was preserved. Diagnostics below describe the locked companies; update passes do not silently replace the selected universe.'
-    : 'The final universe was selected from verified candidates before the deeper financial comparison ran.';
+    : 'The report universe is the best available provider-validated shortlist at this pass; strict-qualified names are tracked separately for lock and allocation.';
   const roleSummary = selection.subthemes.length
     ? selection.subthemes.map((role) => `${role.name}: ${role.symbols.join(', ')}`).join('; ')
     : 'No selected role groups available.';
@@ -3590,7 +3590,7 @@ function buildResearchUniverseSelectionSection(selection?: ResearchUniverseSelec
     `Role coverage: ${roleSummary}`,
     manualUniverse
       ? 'Diagnostics: the locked universe remains the report/table/graph universe. Allocation and research conclusion use only the qualified subset so weak or unsupported locked names are not recommended.'
-      : 'Scoring: theme evidence and fit tier are gates first; source role support, provider data readiness, liquidity/scale, preliminary financial sanity, and role coverage then rank the qualified candidates. Weak or unsupported names are not forced in to fill slots.',
+      : 'Scoring: theme evidence, provider data readiness, liquidity/scale, preliminary financial sanity, and role coverage rank the selected shortlist. Strict qualification controls lock and allocation; best-effort provisional names can fill report slots when provider-validated candidates exist.',
   ];
 
   if (debugMode) {

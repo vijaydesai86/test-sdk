@@ -332,6 +332,13 @@ export function compareImproveCandidateForReport(args: {
   const afterStatus = researchUniverseStatus(args.afterMetadata);
   if (args.beforeMetadata?.kind === 'research' && beforeStatus && beforeStatus !== 'locked') {
     if (!args.afterMetadata) return { accepted: false, reason: 'missing_candidate_checkpoint' };
+    if (metadataSymbols(args.afterMetadata).length < metadataSymbols(args.beforeMetadata).length) {
+      return { accepted: false, reason: 'candidate_regressed_available' };
+    }
+    const regressionCheck = compareImproveCandidate(args.beforeCoverage, args.afterCoverage);
+    if (!regressionCheck.accepted && regressionCheck.reason.startsWith('candidate_regressed')) {
+      return regressionCheck;
+    }
     if (afterStatus === 'locked') return { accepted: true, reason: 'research_universe_locked' };
     const beforeReadiness = researchReadinessScore(args.beforeMetadata);
     const afterReadiness = researchReadinessScore(args.afterMetadata);

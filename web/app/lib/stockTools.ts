@@ -75,7 +75,7 @@ function parseBoundedEnvInt(name: string, fallback: number, min: number, max: nu
 // Number of companies to include in comparison and research reports.
 // Clamp to a free-tier-safe ceiling so a bad env value cannot fan out into dozens of API calls.
 const NUM_COMPANIES = parseBoundedEnvInt('NUM_COMPANIES', 10, 2, 15);
-const RESEARCH_CANDIDATE_POOL_MULTIPLIER = parseBoundedEnvInt('RESEARCH_CANDIDATE_POOL_MULTIPLIER', 3, 1, 5);
+const RESEARCH_CANDIDATE_POOL_MULTIPLIER = parseBoundedEnvInt('RESEARCH_CANDIDATE_POOL_MULTIPLIER', 5, 1, 6);
 const RESEARCH_THEME_FACET_COUNT = parseBoundedEnvInt('RESEARCH_THEME_FACET_COUNT', 7, 1, 10);
 const RESEARCH_FACET_CANDIDATES = parseBoundedEnvInt('RESEARCH_FACET_CANDIDATES', 8, 2, 15);
 const RESEARCH_UNIVERSE_MIN_THEME_SCORE = parseBoundedEnvInt('RESEARCH_UNIVERSE_MIN_THEME_SCORE', 70, 0, 100);
@@ -822,7 +822,51 @@ function buildResearchPipelineCheckpoint(args: {
     finalUniverseSymbols: args.locked || args.readiness.canBuildFullReport ? args.selection.selectedSymbols : undefined,
     shortlistSymbols: args.selection.selectedSymbols,
     lastProgress: completedTasks[completedTasks.length - 1],
+    processedCursor: args.selection.candidates.filter((candidate) => candidate.progressState && candidate.progressState !== 'unprocessed').length,
+    basicScoredCount: args.selection.candidates.filter((candidate) => candidate.progressState === 'basic_scored').length,
+    temporaryFailedCount: args.selection.candidates.filter((candidate) => candidate.progressState === 'temporary_failed').length,
+    invalidCount: args.selection.candidates.filter((candidate) => candidate.progressState === 'invalid').length,
   };
+}
+
+type ResearchCandidateProgressState = 'unprocessed' | 'basic_scored' | 'temporary_failed' | 'invalid';
+
+function hasRecommendationGradeBasicData(item: any): boolean {
+  return hasMeaningfulReportValue(item?.price)
+    && hasMeaningfulReportValue(item?.overview)
+    && hasMeaningfulReportValue(item?.basicFinancials)
+    && hasMeaningfulReportValue(item?.priceHistory);
+}
+
+function hasAnyResearchCandidateData(item: any): boolean {
+  return hasMeaningfulReportValue(item?.price)
+    || hasMeaningfulReportValue(item?.overview)
+    || hasMeaningfulReportValue(item?.basicFinancials)
+    || hasMeaningfulReportValue(item?.priceHistory);
+}
+
+function previousResearchCandidateState(previous: PreviousReportMatch | null | undefined, symbol: string): ResearchCandidateProgressState | undefined {
+  const normalized = normalizeTickerCandidate(symbol);
+  if (!normalized) return undefined;
+  const candidate = previous?.metadata?.researchUniverse?.candidates?.find((item: any) => normalizeTickerCandidate(item?.symbol) === normalized);
+  const state = String(candidate?.progressState || '');
+  return state === 'basic_scored' || state === 'temporary_failed' || state === 'invalid' || state === 'unprocessed'
+    ? state
+    : undefined;
+}
+
+function researchCandidateProgressState(args: {
+  item?: any;
+  previous?: PreviousReportMatch | null;
+  symbol: string;
+  selected: boolean;
+}): ResearchCandidateProgressState {
+  if (args.item && hasRecommendationGradeBasicData(args.item)) return 'basic_scored';
+  if (args.item && hasAnyResearchCandidateData(args.item)) return 'temporary_failed';
+  const previous = previousResearchCandidateState(args.previous, args.symbol);
+  if (previous === 'basic_scored' && !args.selected) return previous;
+  if (previous && previous !== 'unprocessed') return previous;
+  return args.selected ? 'temporary_failed' : 'unprocessed';
 }
 
 function normalizeResearchEvidenceText(value: unknown): string {
@@ -4840,7 +4884,7 @@ export async function executeTool(
         let initialCount = lockedSymbols.length > 0
           ? lockedSymbols.length
           : hasReportWorkBudget(deadlineAt, 'optional', requestedFinalCount)
-            ? Math.min(60, Math.max(finalCount, finalCount * RESEARCH_CANDIDATE_POOL_MULTIPLIER))
+            ? Math.min(90, Math.max(finalCount, finalCount * RESEARCH_CANDIDATE_POOL_MULTIPLIER))
             : finalCount;
         const range = args.range || '1y';
         const resolverSector = normalizeThematicResearchQuery(sector);
@@ -5055,7 +5099,7 @@ export async function executeTool(
           requestedFinalCount = Math.min(NUM_COMPANIES, Math.max(3, Number(args.count) || NUM_COMPANIES));
           finalCount = requestedFinalCount;
           initialCount = hasReportWorkBudget(deadlineAt, 'optional', requestedFinalCount)
-            ? Math.min(60, Math.max(finalCount, finalCount * RESEARCH_CANDIDATE_POOL_MULTIPLIER))
+            ? Math.min(90, Math.max(finalCount, finalCount * RESEARCH_CANDIDATE_POOL_MULTIPLIER))
             : finalCount;
         }
 
@@ -5223,7 +5267,7 @@ export async function executeTool(
               return !issue;
             });
         selectionNotes.push(`Universe validation: ${validatedSelectionCandidateData.length}/${selectionCandidateData.length} candidates remained active/provider-confirmed.`);
-        if (lockedSymbols.length === 0 && validatedSelectionCandidateData.length < minimumFreshUniverse) {
+        if (lockedSymbols.length === 0 && validatedSelectionCandidateData.length === 0) {
           const reason = validatedSelectionCandidateData.length === 0
             ? `No active provider-confirmed candidates could be validated for "${sector}".`
             : `Only ${validatedSelectionCandidateData.length} active provider-confirmed candidate${validatedSelectionCandidateData.length === 1 ? '' : 's'} could be validated for "${sector}", below the minimum ${minimumFreshUniverse} needed for a reliable broad research universe.`;
@@ -5275,12 +5319,7 @@ export async function executeTool(
         const hasNearReadyRoleCoverage = universeReadiness.roleCount >= minimumProvisionalRoleCount;
         const hasStrongVerifiedCandidateCoverage = universeReadiness.selectedCount >= universeReadiness.targetLockCount;
         const hasLimitedUsableRoleCoverage = universeReadiness.roleCount >= 2;
-        const hasBestEffortProvisionalCoverage = universeReadiness.status === "refining"
-          && universeSelection.selectedSymbols.length >= Math.max(minimumFreshUniverse, universeReadiness.targetPartialCount)
-          && universeSelection.selectedSymbols.some((symbol) => {
-            const candidate = universeSelection.candidates.find((item) => item.symbol === symbol);
-            return candidate && candidate.themeFit !== "reject" && candidate.themeEvidence.level !== "unrelated";
-          });
+        const hasBestEffortProvisionalCoverage = universeSelection.selectedSymbols.length > 0;
         const canBuildLimitedRoleProvisionalResearchReport = universeReadiness.status === 'refining'
           && hasStrongVerifiedCandidateCoverage
           && hasLimitedUsableRoleCoverage
@@ -5716,6 +5755,21 @@ export async function executeTool(
           await saveSymbolCache(symbol, item.cache);
         }
 
+        const researchItemsBySymbol = new Map(items.map((item) => [item.symbol, item]));
+        for (const candidate of universeSelection.candidates) {
+          candidate.progressState = researchCandidateProgressState({
+            item: researchItemsBySymbol.get(candidate.symbol),
+            previous: updateContext.previous,
+            symbol: candidate.symbol,
+            selected: candidate.selected,
+          });
+        }
+        researchPipelineCheckpoint.processedCursor = universeSelection.candidates.filter((candidate) => candidate.progressState && candidate.progressState !== "unprocessed").length;
+        researchPipelineCheckpoint.basicScoredCount = universeSelection.candidates.filter((candidate) => candidate.progressState === "basic_scored").length;
+        researchPipelineCheckpoint.temporaryFailedCount = universeSelection.candidates.filter((candidate) => candidate.progressState === "temporary_failed").length;
+        researchPipelineCheckpoint.invalidCount = universeSelection.candidates.filter((candidate) => candidate.progressState === "invalid").length;
+        notes.push("Research refinement progress: " + (researchPipelineCheckpoint.basicScoredCount || 0) + " recommendation-grade basic-scored / " + validatedSelectionCandidateData.length + " provider-validated candidates; " + (researchPipelineCheckpoint.temporaryFailedCount || 0) + " temporary failures remain retryable.");
+
         if (items.length === 0) {
           return { success: false, error: 'Could not collect enough data before the runtime deadline to build a research report.' };
         }
@@ -5896,6 +5950,7 @@ export async function executeTool(
               themeFit: candidate.themeFit,
               themeScore: candidate.themeScore,
               qualified: candidate.qualified,
+              progressState: candidate.progressState,
             })),
           } : undefined,
           coverage: items.flatMap((item) => [
