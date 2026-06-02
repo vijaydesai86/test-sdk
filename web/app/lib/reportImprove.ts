@@ -338,8 +338,9 @@ export function compareImproveCandidateForReport(args: {
     if (afterReadiness > beforeReadiness) {
       return { accepted: true, reason: 'research_universe_readiness_improved' };
     }
-    if (afterStatus && afterReadiness >= beforeReadiness) {
-      return { accepted: true, reason: 'research_universe_still_unready' };
+    const coverageDecision = compareImproveCandidate(args.beforeCoverage, args.afterCoverage);
+    if (coverageDecision.accepted) {
+      return coverageDecision;
     }
     return { accepted: false, reason: 'research_universe_still_unready' };
   }

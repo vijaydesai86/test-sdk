@@ -134,13 +134,16 @@ export async function POST(
   });
   const bestCoverage = candidateDecision.accepted ? afterCoverage : beforeCoverage;
   const bestMetadata = candidateDecision.accepted ? afterMetadata : report.metadata;
-  const decision = decideImproveStatus({
+  const baseDecision = decideImproveStatus({
     before: beforeCoverage,
     after: bestCoverage,
     passesDone: passNumber,
     config,
     metadata: bestMetadata,
   });
+  const decision = !candidateDecision.accepted && candidateDecision.reason === 'research_universe_still_unready'
+    ? { status: 'stopped' as const, reason: 'research_universe_no_progress', nextRunAfterMs: 0 }
+    : baseDecision;
   const replaceReportId = typeof body.replaceReportId === 'string' ? body.replaceReportId : '';
   const improveHistoryEntry = {
     passNumber,
@@ -184,11 +187,16 @@ export async function POST(
     discardedReportId = latestReport.id;
     await deleteSavedReportForImprove(latestReport.id).catch(() => false);
   }
+  const responseReason = candidateDecision.accepted
+    ? decision.reason
+    : candidateDecision.reason === 'research_universe_still_unready'
+      ? decision.reason
+      : candidateDecision.reason;
 
   return NextResponse.json({
     success: true,
     status: decision.status,
-    reason: candidateDecision.accepted ? decision.reason : candidateDecision.reason,
+    reason: responseReason,
     latestReport: candidateDecision.accepted ? acceptedReport : null,
     discardedReportId,
     beforeCoverage,

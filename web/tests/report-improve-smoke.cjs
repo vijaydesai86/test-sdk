@@ -31,6 +31,7 @@ function readiness(overrides = {}) {
   return {
     status: 'discovering',
     selectedCount: 2,
+    targetCount: 15,
     targetLockCount: 12,
     targetPartialCount: 7,
     roleCount: 1,
@@ -80,7 +81,7 @@ function testFlatUnreadyCheckpointIsAcceptedButWorseOneIsRejected() {
     afterMetadata: flat,
     beforeCoverage: coverageStats(before),
     afterCoverage: coverageStats(flat),
-  }), { accepted: true, reason: 'research_universe_still_unready' });
+  }), { accepted: false, reason: 'research_universe_still_unready' });
 
   const better = researchMetadata(['NVDA', 'TSM', 'MSFT'], 'refining', readiness({
     status: 'refining',
@@ -97,9 +98,41 @@ function testFlatUnreadyCheckpointIsAcceptedButWorseOneIsRejected() {
   }), { accepted: false, reason: 'research_universe_still_unready' });
 }
 
+function testUnreadyResearchCanImproveByFetchingCoreData() {
+  const before = researchMetadata(['NVDA', 'TSM'], 'refining', readiness({
+    status: 'refining',
+    selectedCount: 8,
+    roleCount: 2,
+    coveredDimensions: ['compute', 'foundry'],
+    missingDimensions: ['cloud', 'memory'],
+  }));
+  const after = buildReportRunMetadata({
+    kind: 'research',
+    query: 'AI infrastructure',
+    symbols: ['NVDA', 'TSM'],
+    range: '1y',
+    generatedAt: '2026-05-27T10:05:00.000Z',
+    coverage: [
+      { symbol: 'NVDA', key: 'price', label: 'Price', data: { price: 100 }, priority: 'critical' },
+      { symbol: 'TSM', key: 'price', label: 'Price', data: { price: 100 }, priority: 'critical' },
+    ],
+    researchUniverse: {
+      ...before.researchUniverse,
+      status: 'refining',
+    },
+  });
+  assert.deepEqual(compareImproveCandidateForReport({
+    beforeMetadata: before,
+    afterMetadata: after,
+    beforeCoverage: coverageStats(before),
+    afterCoverage: coverageStats(after),
+  }), { accepted: true, reason: 'candidate_improved_available' });
+}
+
 function main() {
   testPartialUnreadyResearchKeepsTargetCount();
   testFlatUnreadyCheckpointIsAcceptedButWorseOneIsRejected();
+  testUnreadyResearchCanImproveByFetchingCoreData();
   console.log('report improve smoke tests passed');
 }
 

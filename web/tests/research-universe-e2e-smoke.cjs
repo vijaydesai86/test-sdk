@@ -153,6 +153,35 @@ function createFallbackStressService() {
   };
 }
 
+function createLimitedRoleService() {
+  const symbols = ['TSM', 'INTC', 'NVDA', 'MU', 'ASML', 'LRCX', 'AMAT', 'KLAC', 'AMD', 'ADI', 'QCOM', 'GLW'];
+  const limitedProfiles = Object.fromEntries(symbols.map((symbol) => [
+    symbol,
+    {
+      ...(PROFILES[symbol] || {
+        name: `${symbol} Corp`,
+        sector: 'Technology',
+        industry: 'Semiconductors',
+        description: 'Semiconductor products for data infrastructure.',
+        marketCapitalization: 100000000000,
+        forwardPE: 35,
+      }),
+      description: symbol === 'GLW'
+        ? 'Optical connectivity and materials for data infrastructure.'
+        : 'Semiconductor products for AI infrastructure and data center systems.',
+    },
+  ]));
+  return {
+    ...createProductionLikeService(),
+    async searchStock() {
+      return { results: symbols.map((symbol) => ({ symbol, name: limitedProfiles[symbol].name, type: 'Equity', region: 'United States', currency: 'USD' })), __source: 'Mock' };
+    },
+    async getCompanyOverview(symbol) {
+      return { symbol, ...limitedProfiles[symbol], __source: 'Mock' };
+    },
+  };
+}
+
 function taxonomyResponse() {
   return JSON.stringify({
     requiredDimensions: [
@@ -285,6 +314,41 @@ function nearReadyTaxonomyResponse() {
   });
 }
 
+function limitedRoleTaxonomyResponse() {
+  return JSON.stringify({
+    requiredDimensions: [
+      { label: 'Compute accelerators/chips', required: true },
+      { label: 'Cloud/data-center operators', required: true },
+      { label: 'Semiconductor equipment/tools', required: true },
+      { label: 'Foundry/manufacturing', required: true },
+      { label: 'Memory/storage', required: true },
+      { label: 'Networking/connectivity', required: true },
+    ],
+    roles: [
+      {
+        label: 'Compute accelerators/chips',
+        dimensions: ['Compute accelerators/chips'],
+        query: 'AI infrastructure compute accelerators chips',
+        candidates: ['TSM', 'INTC', 'NVDA', 'MU', 'ASML', 'LRCX', 'AMAT', 'KLAC', 'AMD', 'ADI', 'QCOM'].map((symbol) => ({
+          companyName: PROFILES[symbol]?.name || `${symbol} Corp`,
+          likelyTicker: symbol,
+          evidenceLevel: symbol === 'NVDA' || symbol === 'AMD' ? 'direct' : 'enabler',
+          confidence: 86,
+          reason: 'Semiconductor exposure in AI infrastructure.',
+        })),
+      },
+      {
+        label: 'Power/cooling/data-center infrastructure',
+        dimensions: ['Power/cooling/data-center infrastructure'],
+        query: 'AI infrastructure data center infrastructure components',
+        candidates: [
+          { companyName: 'Corning', likelyTicker: 'GLW', evidenceLevel: 'enabler', confidence: 78, reason: 'Data infrastructure materials.' },
+        ],
+      },
+    ],
+  });
+}
+
 async function runCompleteUniverseScenario() {
   await fs.rm(testRoot, { recursive: true, force: true });
   const result = await executeTool(
@@ -345,6 +409,50 @@ async function runCompleteUniverseScenario() {
   }
   await fs.rm(testRoot, { recursive: true, force: true });
   console.log(`research universe e2e smoke passed with ${symbols.length} symbols: ${symbols.join(', ')}`);
+}
+
+async function runLimitedRoleProvisionalDataScenario() {
+  await fs.rm(testRoot, { recursive: true, force: true });
+  const priorDebug = process.env.DEBUG;
+  process.env.DEBUG = 'true';
+  try {
+    const result = await executeTool(
+      'generate_research_report',
+      { sector: 'AI infrastructure', range: '1y', count: 15 },
+      createLimitedRoleService(),
+      {
+        deadlineAt: Date.now() + 240000,
+        async llmFill(prompt) {
+          if (prompt.includes('Build a verified-candidate proposal')) return limitedRoleTaxonomyResponse();
+          if (prompt.includes('deep research ecosystem analysis')) return '{}';
+          return '{}';
+        },
+      }
+    );
+
+    assert.equal(result.success, true, result.error || 'limited-role provisional research report failed');
+    assert.equal(result.data.reportKind, 'research');
+    assert.ok(!/No market-data-backed decision was generated/.test(result.data.content), 'useful limited-role universe should fetch core data');
+    assert.ok(!/Verified Data Status/.test(result.data.content), 'useful limited-role universe should not render only a discovery checkpoint');
+    assert.match(result.data.content, /Snapshot/);
+    assert.match(result.data.content, /Research Allocation Scenario/);
+    assert.match(result.data.content, /Missing required dimensions:/i);
+    const readiness = result.data.runMetadata.researchUniverse.readiness;
+    const pipeline = result.data.runMetadata.researchUniverse.pipeline;
+    assert.equal(result.data.runMetadata.researchUniverse.status, 'refining');
+    assert.equal(pipeline.stage, 'core_data');
+    assert.equal(pipeline.stageStatus, 'provisional_market_backed');
+    assert.equal(pipeline.targetFinalCount, 15);
+    assert.match(pipeline.nextObjective, /provisional market-backed report/i);
+    assert.ok(readiness.roleCount >= 2, `expected at least 2 concrete roles, got ${readiness.roleCount}`);
+    assert.ok(readiness.missingDimensions.length > 0, 'limited-role report should remain visibly incomplete');
+    assert.ok(result.data.runMetadata.symbols.length >= 10, `expected data-backed limited-role universe, got ${result.data.runMetadata.symbols.join(', ')}`);
+    console.log(`research limited-role provisional e2e smoke passed with ${result.data.runMetadata.symbols.length} symbols: ${result.data.runMetadata.symbols.join(', ')}`);
+  } finally {
+    if (priorDebug === undefined) delete process.env.DEBUG;
+    else process.env.DEBUG = priorDebug;
+    await fs.rm(testRoot, { recursive: true, force: true });
+  }
 }
 
 async function runNearReadyProvisionalScenario() {
@@ -454,6 +562,7 @@ async function runFallbackTaxonomyRepairScenario() {
 
 async function main() {
   await runCompleteUniverseScenario();
+  await runLimitedRoleProvisionalDataScenario();
   await runNearReadyProvisionalScenario();
   await runFallbackTaxonomyRepairScenario();
 }

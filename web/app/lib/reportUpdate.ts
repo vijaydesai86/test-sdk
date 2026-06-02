@@ -122,6 +122,21 @@ export interface ReportRunMetadata {
       repairActions: string[];
       canBuildFullReport: boolean;
     };
+    pipeline?: {
+      stage: 'discovery' | 'role_repair' | 'core_data' | 'final_universe' | 'detail_data' | 'report_ready';
+      stageStatus: 'pending' | 'in_progress' | 'blocked' | 'provisional_market_backed' | 'locked' | 'complete';
+      targetFinalCount: number;
+      candidatePoolCount: number;
+      selectedCount: number;
+      roleCount: number;
+      missingDimensions: string[];
+      pendingTasks: string[];
+      completedTasks: string[];
+      nextObjective: string;
+      finalUniverseSymbols?: string[];
+      shortlistSymbols?: string[];
+      lastProgress?: string;
+    };
     candidates: Array<{
       symbol: string;
       subtheme?: string;

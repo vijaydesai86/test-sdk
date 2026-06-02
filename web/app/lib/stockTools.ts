@@ -735,6 +735,8 @@ interface ResearchCandidateSeed {
   companyNames: string[];
 }
 
+type ResearchPipelineCheckpoint = NonNullable<NonNullable<ReportRunMetadata['researchUniverse']>['pipeline']>;
+
 interface ResearchProfileRoleRule {
   role: string;
   level: ResearchSourceEvidence['level'];
@@ -901,6 +903,60 @@ function normalizeStoredResearchSourceEvidence(value: any): ResearchSourceEviden
       } as ResearchSourceEvidence;
     })
     .filter((item: ResearchSourceEvidence | null): item is ResearchSourceEvidence => Boolean(item?.role));
+}
+
+function buildResearchPipelineCheckpoint(args: {
+  targetFinalCount: number;
+  candidatePoolCount: number;
+  selection: ResearchUniverseSelection;
+  readiness: ResearchUniverseReadiness;
+  locked: boolean;
+  canBuildMarketBackedReport: boolean;
+}): ResearchPipelineCheckpoint {
+  const missingDimensions = args.readiness.missingDimensions || [];
+  const pendingTasks = args.readiness.repairActions.length
+    ? args.readiness.repairActions
+    : missingDimensions.map((dimension) => `Repair missing role/dimension: ${dimension}.`);
+  const completedTasks = [
+    args.candidatePoolCount > 0 ? `Discovered ${args.candidatePoolCount} provider-validated candidate${args.candidatePoolCount === 1 ? '' : 's'}.` : null,
+    args.selection.selectedSymbols.length > 0 ? `Selected ${args.selection.selectedSymbols.length} qualified candidate${args.selection.selectedSymbols.length === 1 ? '' : 's'} for the current universe.` : null,
+    args.readiness.roleCount > 0 ? `Classified ${args.readiness.roleCount} concrete role${args.readiness.roleCount === 1 ? '' : 's'}.` : null,
+    args.canBuildMarketBackedReport ? 'Core market-data fetch/report rendering is allowed for the current provisional universe.' : null,
+  ].filter((item): item is string => Boolean(item));
+  const stage: ResearchPipelineCheckpoint['stage'] = args.locked || args.readiness.canBuildFullReport
+    ? 'final_universe'
+    : args.canBuildMarketBackedReport
+      ? 'core_data'
+      : missingDimensions.length
+        ? 'role_repair'
+        : 'discovery';
+  const stageStatus: ResearchPipelineCheckpoint['stageStatus'] = args.locked || args.readiness.canBuildFullReport
+    ? 'locked'
+    : args.canBuildMarketBackedReport
+      ? 'provisional_market_backed'
+      : args.readiness.status === 'failed'
+        ? 'blocked'
+        : 'in_progress';
+  const nextObjective = args.locked || args.readiness.canBuildFullReport
+    ? 'Fetch/fill detailed data for the locked final universe.'
+    : args.canBuildMarketBackedReport
+      ? 'Render a provisional market-backed report now, then continue repairing missing roles/dimensions on later passes.'
+      : pendingTasks[0] || 'Continue provider-backed candidate discovery and role classification.';
+  return {
+    stage,
+    stageStatus,
+    targetFinalCount: args.targetFinalCount,
+    candidatePoolCount: args.candidatePoolCount,
+    selectedCount: args.readiness.selectedCount,
+    roleCount: args.readiness.roleCount,
+    missingDimensions,
+    pendingTasks,
+    completedTasks,
+    nextObjective,
+    finalUniverseSymbols: args.locked || args.readiness.canBuildFullReport ? args.selection.selectedSymbols : undefined,
+    shortlistSymbols: args.selection.selectedSymbols,
+    lastProgress: completedTasks[completedTasks.length - 1],
+  };
 }
 
 function normalizeResearchEvidenceText(value: unknown): string {
@@ -5345,11 +5401,29 @@ export async function executeTool(
         const minimumProvisionalRoleCount = Math.max(3, universeReadiness.minRoleCount - 1);
         const hasNearReadyRoleCoverage = universeReadiness.roleCount >= minimumProvisionalRoleCount;
         const hasStrongVerifiedCandidateCoverage = universeReadiness.selectedCount >= universeReadiness.targetLockCount;
+        const hasLimitedUsableRoleCoverage = universeReadiness.roleCount >= 2;
+        const canBuildLimitedRoleProvisionalResearchReport = universeReadiness.status === 'refining'
+          && hasStrongVerifiedCandidateCoverage
+          && hasLimitedUsableRoleCoverage
+          && universeReadiness.directEnablerShare >= 0.75
+          && universeReadiness.broadShare <= 0.20;
         const canBuildProvisionalResearchReport = universeReadiness.status === 'refining'
           && (universeReadiness.selectedCount >= universeReadiness.targetPartialCount || hasStrongVerifiedCandidateCoverage)
-          && (universeReadiness.roleCount >= universeReadiness.minRoleCount || hasNearReadyRoleCoverage)
+          && (
+            universeReadiness.roleCount >= universeReadiness.minRoleCount
+            || hasNearReadyRoleCoverage
+            || canBuildLimitedRoleProvisionalResearchReport
+          )
           && universeReadiness.directEnablerShare >= 0.60
           && universeReadiness.broadShare <= 0.40;
+        const researchPipelineCheckpoint = buildResearchPipelineCheckpoint({
+          targetFinalCount: finalCount,
+          candidatePoolCount: validatedSelectionCandidateData.length,
+          selection: universeSelection,
+          readiness: universeReadiness,
+          locked: lockedSymbols.length > 0,
+          canBuildMarketBackedReport: universeReadiness.canBuildFullReport || canBuildProvisionalResearchReport,
+        });
         if (lockedSymbols.length === 0 && !universeReadiness.canBuildFullReport && !canBuildProvisionalResearchReport) {
           const reason = [
             `The research universe for "${sector}" is still ${universeReadiness.status}; this pass did not lock a full report universe.`,
@@ -5408,6 +5482,7 @@ export async function executeTool(
               roles: universeRoles,
               subthemes: universeSelection.subthemes,
               readiness: universeReadiness,
+              pipeline: researchPipelineCheckpoint,
               candidates: universeSelection.candidates.map((candidate) => ({
                 symbol: candidate.symbol,
                 subtheme: candidate.subtheme,
@@ -5436,7 +5511,9 @@ export async function executeTool(
         }
         if (lockedSymbols.length === 0 && canBuildProvisionalResearchReport && !universeReadiness.canBuildFullReport) {
           selectionNotes.push(
-            `Provisional research report allowed: ${universeReadiness.selectedCount}/${universeReadiness.targetLockCount} direct/enabler candidates and ${universeReadiness.roleCount}/${universeReadiness.minRoleCount} concrete roles are sufficient for a market-backed provisional report. Improve passes may continue repairing missing role coverage before lock.`
+            canBuildLimitedRoleProvisionalResearchReport
+              ? `Limited-role provisional research report allowed: ${universeReadiness.selectedCount}/${universeReadiness.targetLockCount} direct/enabler candidates and ${universeReadiness.roleCount}/${universeReadiness.minRoleCount} concrete roles are enough to fetch market data while improve passes continue role repair.`
+              : `Provisional research report allowed: ${universeReadiness.selectedCount}/${universeReadiness.targetLockCount} direct/enabler candidates and ${universeReadiness.roleCount}/${universeReadiness.minRoleCount} concrete roles are sufficient for a market-backed provisional report. Improve passes may continue repairing missing role coverage before lock.`
           );
         }
 
@@ -5926,6 +6003,7 @@ export async function executeTool(
             roles: universeRoles,
             subthemes: universeSelection.subthemes,
             readiness: universeReadiness,
+            pipeline: researchPipelineCheckpoint,
             candidates: universeSelection.candidates.map((candidate) => ({
               symbol: candidate.symbol,
               subtheme: candidate.subtheme,
