@@ -96,7 +96,7 @@ function testFlatUnreadyCheckpointIsAcceptedButWorseOneIsRejected() {
     afterMetadata: before,
     beforeCoverage: coverageStats(better),
     afterCoverage: coverageStats(before),
-  }), { accepted: false, reason: 'research_universe_still_unready' });
+  }), { accepted: false, reason: 'candidate_regressed_available' });
 }
 
 function testUnreadyResearchCanImproveByFetchingCoreData() {

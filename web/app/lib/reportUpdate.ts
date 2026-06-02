@@ -6,6 +6,8 @@ import path from 'path';
 
 export type ReportKind = 'stock' | 'comparison' | 'research' | 'watchlist-daily';
 
+export type ResearchProgressState = 'unprocessed' | 'basic_scored' | 'temporary_failed' | 'invalid';
+
 export type ReportCoverageStatus = 'available' | 'missing';
 
 export interface ReportCoverageEntry {
@@ -121,6 +123,26 @@ export interface ReportRunMetadata {
       missingDimensions: string[];
       repairActions: string[];
       canBuildFullReport: boolean;
+    };
+    progress?: {
+      targetCount: number;
+      batchSize: number;
+      cursor: number;
+      candidates: Array<{
+        symbol: string;
+        rank: number;
+        selected: boolean;
+        qualified: boolean;
+        subtheme?: string;
+        themeScore: number;
+        dataConfidenceScore: number;
+        universeScore: number;
+        reportScore: number;
+        finalScore: number;
+        roleCoverageScore: number;
+        state: ResearchProgressState;
+        attempts: number;
+      }>;
     };
     pipeline?: {
       stage: 'discovery' | 'role_repair' | 'core_data' | 'final_universe' | 'detail_data' | 'report_ready';

@@ -267,9 +267,9 @@ async function testResearchDeadlineStillSaves() {
   await assertSavedReport(result, 'research');
   assert.equal(llmCalls, 0, 'tight budget should skip thematic LLM refinement');
   assert.match(result.data.content, /Vercel budget prioritized|Time budget reached|runtime budget/i);
-  assert.match(result.data.content, /Wait for verified inputs/);
-  assert.doesNotMatch(result.data.content, /\(NVDA\)[^\n]*\$/);
-  assert.doesNotMatch(result.data.content, /\(AMD\)[^\n]*\$/);
+  assert.match(result.data.content, /Final universe \(\d+ companies\)/);
+  assert.match(result.data.content, /Position Guidance/);
+  assert.doesNotMatch(result.data.content, /Wait for verified inputs/);
 }
 
 async function testResearchImmediateDeadlineStillSaves() {
@@ -289,9 +289,9 @@ async function testResearchImmediateDeadlineStillSaves() {
   await assertSavedReport(result, 'research');
   assert.equal(llmCalls, 0, 'immediate deadline should not spend time on LLM refinement');
   assert.match(result.data.content, /Vercel budget|Time budget reached|runtime budget/i);
-  assert.match(result.data.content, /Wait for verified inputs/);
-  assert.doesNotMatch(result.data.content, /\(NVDA\)[^\n]*\$/);
-  assert.doesNotMatch(result.data.content, /\(AMD\)[^\n]*\$/);
+  assert.match(result.data.content, /(?:Final universe \(\d+ companies\)|Refined to \d+ companies)/);
+  assert.match(result.data.content, /Position Guidance/);
+  assert.doesNotMatch(result.data.content, /Wait for verified inputs/);
 }
 
 async function testResearchUsesOneOptionalEcosystemPassWhenBudgetAllows() {

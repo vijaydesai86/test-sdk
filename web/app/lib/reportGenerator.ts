@@ -3707,13 +3707,38 @@ function buildResearchAllocationSection(
     ];
   });
 
+  const provisional = rows.length ? [] : candidates
+    .filter((candidate) => candidate.selector?.selected && candidate.allocationScore !== null && candidate.allocationScore > 0 && candidate.row.score !== null)
+    .sort((a, b) => (b.allocationScore || 0) - (a.allocationScore || 0))
+    .slice(0, Math.max(1, selection?.requestedCount || scored.length));
+  const provisionalTotal = provisional.reduce((sum, candidate) => sum + (candidate.allocationScore || 0), 0);
+  const provisionalRows = provisional.map((candidate) => {
+    const item = candidate.row.item;
+    const weight = provisionalTotal > 0 ? ((candidate.allocationScore || 0) / provisionalTotal) * 100 : null;
+    const reasons = [
+      candidate.guidance.forNonOwners === 'Buy' ? 'fresh-entry buy' : 'watch-sized candidate',
+      candidate.selector ? `provisional theme ${formatScore(candidate.selector.themeScore)}` : null,
+      candidate.selector ? `evidence ${candidate.selector.themeEvidence.level}` : null,
+      candidate.selector ? `data ${formatScore(candidate.selector.dataConfidenceScore)}` : null,
+    ].filter(Boolean).join('; ');
+    return [
+      tableCell(`${item.overview?.name || item.symbol} (${item.symbol})`),
+      formatScore(candidate.row.score),
+      formatScore(candidate.allocationScore),
+      weight === null ? 'N/A' : `${weight.toFixed(1)}%`,
+      tableCell(reasons),
+    ];
+  });
+
   const debugMode = process.env.DEBUG === 'true';
   const lines = [
     '## 🧭 Research Allocation Scenario (Not Investment Advice)',
-    `Selective qualified-subset scenario only. Companies must clear report score (${minReportScore}), theme evidence/fit (${minThemeScore}), and data confidence (${minDataScore}) gates when those selector scores are available; no cash or equal-weight remainder is forced.`,
+    `Strict scenario uses only the qualified direct/enabler subset. Companies must clear report score (${minReportScore}), theme evidence/fit (${minThemeScore}), and data confidence (${minDataScore}) gates when selector scores are available.`,
     rows.length
       ? buildTable(['Company', 'Report', 'Allocation Score', 'Scenario Weight', 'Why Included'], rows, ['left', 'right', 'right', 'right', 'left'])
-      : '_No company cleared the configured allocation gates with the current verified data._',
+      : provisionalRows.length
+        ? ['_No company cleared strict qualified-subset gates. Provisional selected-universe scenario below uses the current best-effort research universe and must not be treated as locked allocation guidance._', buildTable(['Company', 'Report', 'Provisional Score', 'Scenario Weight', 'Why Included'], provisionalRows, ['left', 'right', 'right', 'right', 'left'])].join('\n\n')
+        : '_No company cleared the configured allocation gates with the current verified data._',
   ];
 
   if (debugMode) {

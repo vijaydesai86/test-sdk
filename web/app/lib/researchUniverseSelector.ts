@@ -79,6 +79,7 @@ export interface ResearchCandidateScore {
   reasons: string[];
   exclusionReason?: string;
   progressState?: 'unprocessed' | 'basic_scored' | 'temporary_failed' | 'invalid';
+  llmClassified?: boolean;
 }
 
 export interface ResearchUniverseSelection {
@@ -841,6 +842,7 @@ export async function selectResearchUniverse(args: {
       sourceFacetScore,
       representativeCoverageScore: 0,
       factorScore,
+      llmClassified: Boolean(llm.subtheme || llm.themeFit || llm.evidenceLevel || llm.rationale),
       qualified: false,
       exclusionReason: undefined,
     };

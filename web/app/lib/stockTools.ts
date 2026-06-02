@@ -33,6 +33,14 @@ import {
   type ResearchUniverseSelection,
 } from './researchUniverseSelector';
 import {
+  applyResearchProgressSelection,
+  buildResearchProgressCheckpoint,
+  selectResearchProgressBatch,
+  selectResearchProgressUniverse,
+  updateResearchProgressScores,
+  type ResearchProgressCheckpoint,
+} from './researchProgress';
+import {
   buildReportRunMetadata,
   buildUpdateNotes,
   findPreviousReportForUpdate,
@@ -924,6 +932,30 @@ function buildFallbackResearchThemeFacets(theme: string, limit = RESEARCH_THEME_
   });
 }
 
+function collapseGenericFallbackUniverseSelection(selection: ResearchUniverseSelection): void {
+  const fallbackRole = 'Generic fallback checkpoint';
+  const selectedSymbols = selection.selectedSymbols.slice();
+  const selectedSet = new Set(selectedSymbols);
+  for (const candidate of selection.candidates) {
+    candidate.subtheme = fallbackRole;
+    candidate.themeEvidence = {
+      ...candidate.themeEvidence,
+      role: fallbackRole,
+      level: candidate.selected ? 'beneficiary' : candidate.themeEvidence.level,
+      rationale: candidate.selected
+        ? 'Selected from provider-validated generic fallback discovery; concrete theme role still requires refinement.'
+        : candidate.themeEvidence.rationale,
+    };
+    if (selectedSet.has(candidate.symbol)) {
+      candidate.qualified = false;
+      candidate.selected = true;
+    }
+  }
+  selection.qualifiedSymbols = [];
+  selection.subthemes = selectedSymbols.length ? [{ name: fallbackRole, symbols: selectedSymbols }] : [];
+  selection.notes.push('Generic fallback checkpoint: concrete role taxonomy unavailable, so selected companies remain provider-backed but are not treated as qualified theme-role coverage.');
+}
+
 function genericResearchRoleText(role: ResearchUniverseRole | ResearchRequiredDimension): string {
   return [
     role.label,
@@ -1218,7 +1250,7 @@ async function resolveResearchCandidateSeeds(args: {
   stockService?: StockDataService;
   deadlineAt?: number;
   previousUniverse?: any;
-}): Promise<{ seeds: ResearchCandidateSeed[]; facets: ResearchThemeFacetPlan[]; requiredDimensions: ResearchRequiredDimension[]; notes: string[] }> {
+}): Promise<{ seeds: ResearchCandidateSeed[]; facets: ResearchThemeFacetPlan[]; requiredDimensions: ResearchRequiredDimension[]; notes: string[]; usedFallbackTaxonomy: boolean }> {
   const notes: string[] = [];
   const seedMap = new Map<string, Set<string>>();
   const evidenceMap = new Map<string, ResearchSourceEvidence[]>();
@@ -1234,6 +1266,7 @@ async function resolveResearchCandidateSeeds(args: {
     evidenceMap.set(symbol, normalizeStoredResearchSourceEvidence(item?.sourceEvidence));
   }
   let facets: ResearchThemeFacetPlan[] = [];
+  let usedFallbackTaxonomy = false;
   let requiredDimensions: ResearchRequiredDimension[] = Array.isArray(args.previousUniverse?.requiredDimensions)
     ? args.previousUniverse.requiredDimensions
         .map((item: any) => ({
@@ -1317,6 +1350,7 @@ async function resolveResearchCandidateSeeds(args: {
         });
       }
       requiredDimensions = Array.from(mergedDimensions.values());
+      usedFallbackTaxonomy = true;
       notes.push(`Fallback query-derived role taxonomy derived ${fallbackFacets.length} generic role bucket${fallbackFacets.length === 1 ? '' : 's'} from the user theme.`);
     }
   }
@@ -1387,7 +1421,7 @@ async function resolveResearchCandidateSeeds(args: {
     companyNames: Array.from(companyNameMap.get(symbol) || []),
   })).slice(0, args.targetCount);
 
-  return { seeds, facets, requiredDimensions, notes };
+  return { seeds, facets, requiredDimensions, notes, usedFallbackTaxonomy };
 }
 
 /**
@@ -5118,6 +5152,7 @@ export async function executeTool(
               facets: [] as ResearchThemeFacetPlan[],
               requiredDimensions: (updateContext.previous?.metadata?.researchUniverse?.requiredDimensions || []) as ResearchRequiredDimension[],
               notes: [] as string[],
+              usedFallbackTaxonomy: false,
             }
           : await resolveResearchCandidateSeeds({
               theme: resolverSector,
@@ -5306,7 +5341,13 @@ export async function executeTool(
           allowStrongAdjacent: RESEARCH_UNIVERSE_ALLOW_STRONG_ADJACENT !== 'false',
           maxRoleShare: RESEARCH_UNIVERSE_MAX_ROLE_SHARE,
         });
-        const universeReadiness: ResearchUniverseReadiness = evaluateResearchUniverseReadiness({
+        const fallbackHasConcreteClassifier = candidateDiscovery.usedFallbackTaxonomy && universeSelection.candidates.some((candidate) =>
+          candidate.selected && candidate.llmClassified && !isBroadResearchRole(candidate.subtheme)
+        );
+        if (candidateDiscovery.usedFallbackTaxonomy && !fallbackHasConcreteClassifier) {
+          collapseGenericFallbackUniverseSelection(universeSelection);
+        }
+        let universeReadiness: ResearchUniverseReadiness = evaluateResearchUniverseReadiness({
           selection: universeSelection,
           roles: universeRoles,
           requiredDimensions: candidateDiscovery.requiredDimensions,
@@ -5438,18 +5479,52 @@ export async function executeTool(
           );
         }
 
+        const previousProgress = updateContext.previous?.metadata?.researchUniverse?.progress as ResearchProgressCheckpoint | undefined;
+        let researchProgressCheckpoint = buildResearchProgressCheckpoint({
+          targetCount: finalCount,
+          rankedCandidates: universeSelection.candidates.map((candidate, index) => ({
+            symbol: candidate.symbol,
+            rank: index,
+            selected: candidate.selected,
+            qualified: candidate.qualified,
+            subtheme: candidate.subtheme,
+            themeScore: candidate.themeScore,
+            dataConfidenceScore: candidate.dataConfidenceScore,
+            universeScore: candidate.totalScore,
+            roleCoverageScore: candidate.representativeCoverageScore,
+            state: candidate.progressState,
+          })),
+          previous: previousProgress,
+          improveBatchSize: args.updateMode ? finalCount : Math.max(finalCount, finalCount * 2),
+        });
+        const progressBatch = lockedSymbols.length > 0
+          ? { symbols: lockedSymbols, retrySymbols: [], unprocessedSymbols: [], nextCursor: lockedSymbols.length }
+          : selectResearchProgressBatch(researchProgressCheckpoint, args.updateMode ? finalCount : Math.max(finalCount, finalCount * 2));
+        researchProgressCheckpoint.cursor = Math.max(researchProgressCheckpoint.cursor, progressBatch.nextCursor);
+        const progressDataUniverse = Array.from(new Set([
+          ...universeSelection.selectedSymbols,
+          ...progressBatch.symbols,
+          ...(previousProgress?.candidates || [])
+            .filter((candidate) => candidate.selected)
+            .map((candidate) => candidate.symbol),
+        ].map((symbol) => normalizeTickerCandidate(symbol)).filter(Boolean) as string[]));
+
         // Vercel/local priority: lock a saveable universe and fetch market data
         // before any optional ecosystem/refinement LLM work.
-        const universe = lockedSymbols.length > 0
+        let universe = lockedSymbols.length > 0
           ? lockedSymbols
-          : universeSelection.selectedSymbols;
+          : (progressDataUniverse.length ? progressDataUniverse : universeSelection.selectedSymbols);
         let dependencyAnalysis: string | undefined;
         let ecosystemDiagram: string | undefined;
         let refinementNotes: string | undefined;
         let companySnapshots: Record<string, string> | undefined;
 
         // ── Phase 2: Fetch full comparison data for the locked universe ──────────
+        const researchRuntimeBudgetNote = deadlineAt && !hasReportLLMBudget(deadlineAt)
+          ? 'Runtime budget prioritized: provider-backed candidate scoring and report persistence ran before optional LLM enrichment.'
+          : undefined;
         const notes: string[] = [
+          ...(researchRuntimeBudgetNote ? [researchRuntimeBudgetNote] : []),
           lockedSymbols.length > 0
             ? `Universe preserved from prior report metadata for: "${sector}"`
             : `Universe refined through research analysis (${DEEP_RESEARCH_DEPTH} pass${DEEP_RESEARCH_DEPTH > 1 ? 'es' : ''}) for: "${sector}"`,
@@ -5756,19 +5831,73 @@ export async function executeTool(
         }
 
         const researchItemsBySymbol = new Map(items.map((item) => [item.symbol, item]));
+        const scoreUpdates = items.map((item) => ({
+          symbol: item.symbol,
+          reportScore: Number.isFinite(item.decisionSnapshot?.overallScore) ? item.decisionSnapshot.overallScore : getComparisonPromptScore(item),
+          state: researchCandidateProgressState({
+            item,
+            previous: updateContext.previous,
+            symbol: item.symbol,
+            selected: universeSelection.selectedSymbols.includes(item.symbol),
+          }),
+        }));
+        researchProgressCheckpoint = updateResearchProgressScores(
+          researchProgressCheckpoint,
+          scoreUpdates,
+          progressBatch.symbols.length ? progressBatch.symbols : universe
+        );
+        let selectedFromProgress = selectResearchProgressUniverse(researchProgressCheckpoint, finalCount);
+        if (selectedFromProgress.length === 0) selectedFromProgress = universeSelection.selectedSymbols;
+        const selectedWithData = selectedFromProgress.filter((symbol) => researchItemsBySymbol.has(symbol));
+        const selectedSymbols = selectedWithData.length ? selectedWithData : universeSelection.selectedSymbols.filter((symbol) => researchItemsBySymbol.has(symbol));
+        researchProgressCheckpoint = applyResearchProgressSelection(researchProgressCheckpoint, selectedSymbols);
+        universe = selectedSymbols;
+        const selectedSet = new Set(selectedSymbols);
         for (const candidate of universeSelection.candidates) {
-          candidate.progressState = researchCandidateProgressState({
+          const progressCandidate = researchProgressCheckpoint.candidates.find((item) => item.symbol === candidate.symbol);
+          candidate.selected = selectedSet.has(candidate.symbol);
+          candidate.progressState = progressCandidate?.state || researchCandidateProgressState({
             item: researchItemsBySymbol.get(candidate.symbol),
             previous: updateContext.previous,
             symbol: candidate.symbol,
             selected: candidate.selected,
           });
+          if (progressCandidate && candidate.selected) {
+            candidate.totalScore = progressCandidate.finalScore;
+          }
         }
-        researchPipelineCheckpoint.processedCursor = universeSelection.candidates.filter((candidate) => candidate.progressState && candidate.progressState !== "unprocessed").length;
-        researchPipelineCheckpoint.basicScoredCount = universeSelection.candidates.filter((candidate) => candidate.progressState === "basic_scored").length;
-        researchPipelineCheckpoint.temporaryFailedCount = universeSelection.candidates.filter((candidate) => candidate.progressState === "temporary_failed").length;
-        researchPipelineCheckpoint.invalidCount = universeSelection.candidates.filter((candidate) => candidate.progressState === "invalid").length;
-        notes.push("Research refinement progress: " + (researchPipelineCheckpoint.basicScoredCount || 0) + " recommendation-grade basic-scored / " + validatedSelectionCandidateData.length + " provider-validated candidates; " + (researchPipelineCheckpoint.temporaryFailedCount || 0) + " temporary failures remain retryable.");
+        universeSelection.selectedSymbols = selectedSymbols;
+        universeSelection.rejectedSymbols = universeSelection.candidates.filter((candidate) => !candidate.selected).map((candidate) => candidate.symbol);
+        universeSelection.subthemes = Array.from(universeSelection.candidates
+          .filter((candidate) => candidate.selected)
+          .reduce((map, candidate) => {
+            map.set(candidate.subtheme, [...(map.get(candidate.subtheme) || []), candidate.symbol]);
+            return map;
+          }, new Map<string, string[]>())
+          .entries())
+          .map(([name, symbols]) => ({ name, symbols }));
+        const orderedItems = selectedSymbols
+          .map((symbol) => researchItemsBySymbol.get(symbol))
+          .filter(Boolean);
+        items.splice(0, items.length, ...orderedItems);
+        researchPipelineCheckpoint.processedCursor = researchProgressCheckpoint.cursor;
+        researchPipelineCheckpoint.basicScoredCount = researchProgressCheckpoint.candidates.filter((candidate) => candidate.state === 'basic_scored').length;
+        researchPipelineCheckpoint.temporaryFailedCount = researchProgressCheckpoint.candidates.filter((candidate) => candidate.state === 'temporary_failed').length;
+        researchPipelineCheckpoint.invalidCount = researchProgressCheckpoint.candidates.filter((candidate) => candidate.state === 'invalid').length;
+        researchPipelineCheckpoint.shortlistSymbols = selectedSymbols;
+        universeReadiness = evaluateResearchUniverseReadiness({
+          selection: universeSelection,
+          roles: universeRoles,
+          requiredDimensions: candidateDiscovery.requiredDimensions,
+          targetCount: finalCount,
+        });
+        researchPipelineCheckpoint.selectedCount = universeReadiness.selectedCount;
+        researchPipelineCheckpoint.roleCount = universeReadiness.roleCount;
+        researchPipelineCheckpoint.missingDimensions = universeReadiness.missingDimensions;
+        researchPipelineCheckpoint.pendingTasks = universeReadiness.repairActions.length
+          ? universeReadiness.repairActions
+          : universeReadiness.missingDimensions.map((dimension) => "Repair missing role/dimension: " + dimension + ".");
+        notes.push("Research refinement progress: " + (researchPipelineCheckpoint.basicScoredCount || 0) + " recommendation-grade basic-scored / " + validatedSelectionCandidateData.length + " provider-validated candidates; cursor " + researchPipelineCheckpoint.processedCursor + "; " + (researchPipelineCheckpoint.temporaryFailedCount || 0) + " temporary failures remain retryable.");
 
         if (items.length === 0) {
           return { success: false, error: 'Could not collect enough data before the runtime deadline to build a research report.' };
@@ -5939,6 +6068,7 @@ export async function executeTool(
             roles: universeRoles,
             subthemes: universeSelection.subthemes,
             readiness: universeReadiness,
+            progress: researchProgressCheckpoint,
             pipeline: researchPipelineCheckpoint,
             candidates: universeSelection.candidates.map((candidate) => ({
               symbol: candidate.symbol,

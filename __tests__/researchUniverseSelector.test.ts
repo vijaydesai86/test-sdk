@@ -753,3 +753,72 @@ describe('research report rendering', () => {
     expect(selection.notes.join(' ')).toContain('best-effort provisional');
   });
 });
+
+
+describe('research provisional allocation rendering', () => {
+  it('renders provisional selected-universe allocation when strict qualified subset is empty', async () => {
+    const selection = await selectResearchUniverse({
+      query: 'generic infrastructure theme',
+      finalCount: 2,
+      candidates: [
+        candidate('AAAA', 'Provider validated infrastructure platform candidate'),
+        candidate('BBBB', 'Provider validated infrastructure component candidate'),
+      ],
+      llmFill: async () => JSON.stringify({
+        candidates: ['AAAA', 'BBBB'].map((symbol) => ({
+          symbol,
+          themeScore: 10,
+          fit: 'reject',
+          evidenceLevel: 'unrelated',
+          subtheme: 'Unsupported provider candidate',
+        })),
+      }),
+    });
+    const items = selection.selectedSymbols.map((symbol, index) => ({
+      symbol,
+      price: { price: 100 + index },
+      overview: {
+        name: symbol + ' Corp',
+        sector: 'Technology',
+        industry: 'Infrastructure',
+        description: 'Provider validated infrastructure candidate',
+        marketCapitalization: 100_000_000_000,
+        forwardPE: 25,
+      },
+      basicFinancials: {
+        metric: {
+          revenueGrowthTTM: 0.25,
+          epsGrowthTTM: 0.20,
+          grossMarginTTM: 0.55,
+          operatingMarginTTM: 0.25,
+          roeTTM: 0.20,
+        },
+      },
+      priceHistory: {
+        prices: [
+          { date: '2025-01-01', close: 80 },
+          { date: '2026-01-01', close: 120 },
+        ],
+      },
+      decisionSnapshot: { overallScore: 80 - index, action: 'Initiate', confidence: 'Medium', summary: 'Data-backed candidate.' },
+    })) as any;
+
+    const report = buildDeepSectorReport({
+      sectorQuery: 'generic infrastructure theme',
+      selectedBy: 'llm',
+      generatedAt: '2026-06-02T00:00:00.000Z',
+      range: '1y',
+      universe: selection.selectedSymbols,
+      initialCandidates: selection.candidates.map((candidate) => candidate.symbol),
+      universeSelection: selection,
+      dependencyAnalysis: buildResearchUniverseDependencySummary(selection),
+      ecosystemDiagram: buildResearchUniverseMermaid('generic infrastructure theme', selection),
+      items,
+      notes: [],
+    });
+
+    expect(selection.qualifiedSymbols).toEqual([]);
+    expect(report).toContain('Provisional selected-universe scenario');
+    expect(report).toContain('must not be treated as locked allocation guidance');
+  });
+});
