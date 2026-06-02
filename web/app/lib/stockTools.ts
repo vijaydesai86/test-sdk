@@ -785,7 +785,7 @@ function buildResearchPipelineCheckpoint(args: {
     : missingDimensions.map((dimension) => `Repair missing role/dimension: ${dimension}.`);
   const completedTasks = [
     args.candidatePoolCount > 0 ? `Discovered ${args.candidatePoolCount} provider-validated candidate${args.candidatePoolCount === 1 ? '' : 's'}.` : null,
-    args.selection.selectedSymbols.length > 0 ? `Selected ${args.selection.selectedSymbols.length} qualified candidate${args.selection.selectedSymbols.length === 1 ? '' : 's'} for the current universe.` : null,
+    args.selection.selectedSymbols.length > 0 ? 'Selected ' + args.selection.selectedSymbols.length + ' best-effort candidate' + (args.selection.selectedSymbols.length === 1 ? '' : 's') + ' for the current universe (' + args.selection.qualifiedSymbols.length + ' strict-qualified).' : null,
     args.readiness.roleCount > 0 ? `Classified ${args.readiness.roleCount} concrete role${args.readiness.roleCount === 1 ? '' : 's'}.` : null,
     args.canBuildMarketBackedReport ? 'Core market-data fetch/report rendering is allowed for the current provisional universe.' : null,
   ].filter((item): item is string => Boolean(item));
@@ -5275,12 +5275,18 @@ export async function executeTool(
         const hasNearReadyRoleCoverage = universeReadiness.roleCount >= minimumProvisionalRoleCount;
         const hasStrongVerifiedCandidateCoverage = universeReadiness.selectedCount >= universeReadiness.targetLockCount;
         const hasLimitedUsableRoleCoverage = universeReadiness.roleCount >= 2;
+        const hasBestEffortProvisionalCoverage = universeReadiness.status === "refining"
+          && universeSelection.selectedSymbols.length >= Math.max(minimumFreshUniverse, universeReadiness.targetPartialCount)
+          && universeSelection.selectedSymbols.some((symbol) => {
+            const candidate = universeSelection.candidates.find((item) => item.symbol === symbol);
+            return candidate && candidate.themeFit !== "reject" && candidate.themeEvidence.level !== "unrelated";
+          });
         const canBuildLimitedRoleProvisionalResearchReport = universeReadiness.status === 'refining'
           && hasStrongVerifiedCandidateCoverage
           && hasLimitedUsableRoleCoverage
           && universeReadiness.directEnablerShare >= 0.75
           && universeReadiness.broadShare <= 0.20;
-        const canBuildProvisionalResearchReport = universeReadiness.status === 'refining'
+        const canBuildStrictProvisionalResearchReport = universeReadiness.status === 'refining'
           && (universeReadiness.selectedCount >= universeReadiness.targetPartialCount || hasStrongVerifiedCandidateCoverage)
           && (
             universeReadiness.roleCount >= universeReadiness.minRoleCount
@@ -5289,6 +5295,7 @@ export async function executeTool(
           )
           && universeReadiness.directEnablerShare >= 0.60
           && universeReadiness.broadShare <= 0.40;
+        const canBuildProvisionalResearchReport = canBuildStrictProvisionalResearchReport || hasBestEffortProvisionalCoverage;
         const researchPipelineCheckpoint = buildResearchPipelineCheckpoint({
           targetFinalCount: finalCount,
           candidatePoolCount: validatedSelectionCandidateData.length,
@@ -5384,9 +5391,11 @@ export async function executeTool(
         }
         if (lockedSymbols.length === 0 && canBuildProvisionalResearchReport && !universeReadiness.canBuildFullReport) {
           selectionNotes.push(
-            canBuildLimitedRoleProvisionalResearchReport
-              ? `Limited-role provisional research report allowed: ${universeReadiness.selectedCount}/${universeReadiness.targetLockCount} direct/enabler candidates and ${universeReadiness.roleCount}/${universeReadiness.minRoleCount} concrete roles are enough to fetch market data while improve passes continue role repair.`
-              : `Provisional research report allowed: ${universeReadiness.selectedCount}/${universeReadiness.targetLockCount} direct/enabler candidates and ${universeReadiness.roleCount}/${universeReadiness.minRoleCount} concrete roles are sufficient for a market-backed provisional report. Improve passes may continue repairing missing role coverage before lock.`
+            hasBestEffortProvisionalCoverage && !canBuildStrictProvisionalResearchReport
+              ? "Best-effort provisional research report allowed: " + universeSelection.selectedSymbols.length + " provider-confirmed candidates were selected for market-backed reporting while strict role evidence remains incomplete."
+              : canBuildLimitedRoleProvisionalResearchReport
+                ? "Limited-role provisional research report allowed: " + universeReadiness.selectedCount + "/" + universeReadiness.targetLockCount + " direct/enabler candidates and " + universeReadiness.roleCount + "/" + universeReadiness.minRoleCount + " concrete roles are enough to fetch market data while improve passes continue role repair."
+                : "Provisional research report allowed: " + universeReadiness.selectedCount + "/" + universeReadiness.targetLockCount + " direct/enabler candidates and " + universeReadiness.roleCount + "/" + universeReadiness.minRoleCount + " concrete roles are sufficient for a market-backed provisional report. Improve passes may continue repairing missing role coverage before lock."
           );
         }
 

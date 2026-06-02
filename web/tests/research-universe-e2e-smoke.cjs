@@ -729,9 +729,14 @@ async function runGenericFallbackCheckpointScenario() {
 
     assert.equal(result.success, true, result.error || 'generic fallback research report failed');
     assert.equal(result.data.reportKind, 'research');
-    assert.match(result.data.content, /Verified Data Status/);
-    assert.match(result.data.content, /Debug Universe Audit/);
+    assert.ok(!/Verified Data Status/.test(result.data.content), 'valid fallback candidates should produce a provisional market-backed report');
+    assert.match(result.data.content, /Snapshot/);
+    assert.match(result.data.content, /Research Allocation Scenario/);
     const universe = result.data.runMetadata.researchUniverse;
+    assert.equal(universe.status, 'refining');
+    assert.equal(universe.pipeline.stage, 'core_data');
+    assert.equal(universe.pipeline.stageStatus, 'provisional_market_backed');
+    assert.ok(result.data.runMetadata.symbols.length >= 8, 'expected provisional fallback universe');
     const roleText = JSON.stringify(universe.subthemes || []);
     assert.ok(
       !/Cloud\/data-center operators|Semiconductor equipment|Memory\/storage|Networking\/connectivity/i.test(roleText),

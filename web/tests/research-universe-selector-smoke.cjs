@@ -73,9 +73,11 @@ async function testBroadResolverCannotLock() {
     requiredDimensions: [{ label: 'compute accelerators' }, { label: 'cloud operators' }],
     targetCount: 3,
   });
-  assert.deepEqual(selection.selectedSymbols, []);
+  assert.ok(selection.selectedSymbols.includes('MSFT'));
   assert.deepEqual(selection.qualifiedSymbols, []);
   assert.notEqual(readiness.status, 'locked');
+  assert.notEqual(readiness.status, 'failed');
+  assert.equal(readiness.selectedCount, 0);
   assert.match(readiness.repairActions.join(' '), /broad|concrete role/i);
 }
 

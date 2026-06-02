@@ -625,7 +625,7 @@ describe('research report rendering', () => {
     expect(content).not.toContain('Fresh-entry buys: RETL');
   });
 
-  it('does not allow broad resolver beneficiary evidence to qualify or lock a fresh universe', async () => {
+  it('uses broad resolver/profile evidence only as a provisional universe, not as lock-qualified evidence', async () => {
     const selection = await selectResearchUniverse({
       query: 'AI infrastructure',
       finalCount: 3,
@@ -653,8 +653,10 @@ describe('research report rendering', () => {
       ],
     });
 
-    expect(selection.selectedSymbols).toEqual([]);
+    expect(selection.selectedSymbols).toContain('MSFT');
     expect(selection.qualifiedSymbols).toEqual([]);
+    expect(selection.candidates.find((row) => row.symbol === 'MSFT')?.selected).toBe(true);
+    expect(selection.candidates.find((row) => row.symbol === 'MSFT')?.qualified).toBe(false);
 
     const readiness = evaluateResearchUniverseReadiness({
       selection,
@@ -663,6 +665,8 @@ describe('research report rendering', () => {
       targetCount: 3,
     });
     expect(readiness.status).not.toBe('locked');
+    expect(readiness.status).not.toBe('failed');
+    expect(readiness.selectedCount).toBe(0);
     expect(readiness.repairActions.join(' ')).toContain('broad');
   });
 

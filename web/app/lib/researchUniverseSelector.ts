@@ -875,17 +875,24 @@ export async function selectResearchUniverse(args: {
   const selectedRoleCounts = new Map<string, number>();
   let roleSoftCap = Math.max(2, Math.ceil(args.finalCount * maxRoleShare));
   const remaining = new Map(qualifiedPool.map((candidate) => [candidate.symbol, candidate]));
+  const provisionalFloorScore = Math.max(35, strongAdjacentThemeScore - 20);
   const selectionPriorityForCandidate = (candidate: ResearchCandidateScore): number =>
     (candidate.totalScore * 0.55) + (roleCoveragePriorityScore(candidate) * 0.45);
-  const markSelected = (candidate: ResearchCandidateScore, representativeCoverageScore: number): void => {
+  const markCandidate = (candidate: ResearchCandidateScore, representativeCoverageScore: number, qualified: boolean): void => {
     candidate.selected = true;
-    candidate.qualified = true;
+    candidate.qualified = qualified;
     candidate.representativeCoverageScore = representativeCoverageScore;
     candidate.totalScore = clamp(candidate.totalScore + (candidate.representativeCoverageScore * weights.representativeCoverage));
     selected.push(candidate);
     selectedSubthemes.add(candidate.subtheme);
     selectedRoleCounts.set(candidate.subtheme, (selectedRoleCounts.get(candidate.subtheme) || 0) + 1);
     remaining.delete(candidate.symbol);
+  };
+  const markSelected = (candidate: ResearchCandidateScore, representativeCoverageScore: number): void => {
+    markCandidate(candidate, representativeCoverageScore, true);
+  };
+  const markProvisional = (candidate: ResearchCandidateScore, representativeCoverageScore: number): void => {
+    markCandidate(candidate, representativeCoverageScore, false);
   };
   if (mode === 'locked_diagnostics') {
     for (const candidate of pool) {
@@ -990,6 +997,29 @@ export async function selectResearchUniverse(args: {
     markSelected(best, selectedSubthemes.has(best.subtheme) ? 50 : 100);
   }
 
+  if (mode === 'fresh_selection' && selected.length < args.finalCount) {
+    const provisionalCandidates = pool
+      .filter((candidate) => !candidate.selected)
+      .filter((candidate) => candidate.themeFit !== 'reject')
+      .filter((candidate) => candidate.themeEvidence.level !== 'unrelated')
+      .filter((candidate) => candidate.themeScore >= provisionalFloorScore)
+      .filter((candidate) => candidate.dataConfidenceScore >= 35)
+      .sort((a, b) => {
+        const fitDelta = fitTierScore(b.themeFit) - fitTierScore(a.themeFit);
+        if (fitDelta) return fitDelta;
+        return selectionPriorityForCandidate(b) - selectionPriorityForCandidate(a);
+      });
+
+    for (const candidate of provisionalCandidates) {
+      if (selected.length >= args.finalCount) break;
+      const selectedRoleCount = selectedRoleCounts.get(candidate.subtheme) || 0;
+      if (selectedRoleCount >= roleSoftCap && selected.some((item) => (selectedRoleCounts.get(item.subtheme) || 0) < roleSoftCap)) {
+        continue;
+      }
+      markProvisional(candidate, selectedSubthemes.has(candidate.subtheme) ? 25 : 60);
+    }
+  }
+
   for (const candidate of pool) {
     candidate.qualified = qualifiedPool.some((qualified) => qualified.symbol === candidate.symbol);
     if (candidate.selected) continue;
@@ -1017,13 +1047,17 @@ export async function selectResearchUniverse(args: {
   }, { core: 0, strong_adjacent: 0, weak_adjacent: 0, reject: 0 });
   const qualifiedSymbols = qualifiedPool.map((candidate) => candidate.symbol);
   const rejectedSymbols = pool
-    .filter((candidate) => !qualifiedSymbols.includes(candidate.symbol))
+    .filter((candidate) => !candidate.selected)
     .map((candidate) => candidate.symbol);
-  const shortfallNote = selected.length < args.finalCount
-    && mode === 'fresh_selection'
+  const strictShortfall = qualifiedPool.length < args.finalCount && mode === "fresh_selection";
+  const provisionalCount = selected.filter((candidate) => !candidate.qualified).length;
+  const provisionalNote = provisionalCount
+    ? "; " + provisionalCount + " best-effort provisional candidate" + (provisionalCount === 1 ? "" : "s") + " were selected for market-backed reporting while refinement continues"
+    : "";
+  const shortfallNote = strictShortfall
     ? [
-        `Only ${selected.length} of ${args.finalCount} configured slots cleared the theme evidence/fit gate; weak or unsupported candidates were not forced into the universe.`,
-        'Quality gates, runtime budget, and provider-data limits favor a qualified partial universe over filling every configured slot.',
+        "Only " + qualifiedPool.length + " of " + args.finalCount + " configured slots cleared the strict theme evidence/fit gate" + provisionalNote + ".",
+        "Quality gates still control lock readiness and allocation; provisional names can support report data without being treated as final qualified holdings.",
       ]
     : [];
 
