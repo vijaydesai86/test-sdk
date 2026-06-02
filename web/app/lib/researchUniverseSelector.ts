@@ -463,7 +463,7 @@ export function evaluateResearchUniverseReadiness(args: {
   const coveredDimensions = requiredDimensions
     .filter((dimension) => selectedRoleInputs.some((role) => overlapsDimension(dimensionText(role), dimension)))
     .map((dimension) => dimension.label);
-  const missingDimensions = requiredDimensions
+  const missingRequiredDimensions = requiredDimensions
     .filter((dimension) => dimension.required !== false && !coveredDimensions.includes(dimension.label))
     .map((dimension) => dimension.label);
   const minDimensionCoverage = requiredDimensions.length
@@ -474,12 +474,15 @@ export function evaluateResearchUniverseReadiness(args: {
   const broadShareReady = broadShare <= Math.min(1, Math.max(0, args.maxBroadShare ?? 0.05));
   const roleReady = roleCount >= minRoleCount;
   const countReady = selectedCount >= targetLockCount;
+  const missingDimensions = roleReady || missingRequiredDimensions.length
+    ? missingRequiredDimensions
+    : [`Additional concrete role coverage (${roleCount}/${minRoleCount})`];
   const repairActions: string[] = [];
   if (!countReady) repairActions.push(`Continue candidate discovery until at least ${targetLockCount} direct/enabler companies clear the theme gate.`);
   if (!roleReady) repairActions.push(`Classify candidates into at least ${minRoleCount} concrete theme roles; broad/catch-all roles cannot lock the universe.`);
   if (!directShareReady) repairActions.push('Reclassify or reject beneficiary-only candidates before allocation or conclusion.');
   if (!broadShareReady) repairActions.push('Quarantine broad resolver candidates until provider profiles support a concrete theme role.');
-  if (!dimensionReady && missingDimensions.length) repairActions.push(`Expand discovery for missing required dimensions: ${missingDimensions.join(', ')}.`);
+  if (!dimensionReady && missingRequiredDimensions.length) repairActions.push(`Expand discovery for missing required dimensions: ${missingRequiredDimensions.join(', ')}.`);
 
   const status: ResearchUniverseStatus = countReady && roleReady && directShareReady && broadShareReady && dimensionReady
     ? 'locked'

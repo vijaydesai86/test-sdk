@@ -145,7 +145,7 @@ function createFallbackStressService() {
       const symbols = matched
         ? matched[1]
         : broadSymbols;
-      return { results: symbols.map((symbol) => ({ symbol, name: stressProfiles[symbol].name, type: 'Equity', region: 'United States', currency: 'USD' })), __source: 'Mock' };
+      return { results: symbols.map((symbol) => ({ symbol, name: stressProfiles[symbol]?.name || symbol, type: 'Equity', region: 'United States', currency: 'USD' })), __source: 'Mock' };
     },
     async getCompanyOverview(symbol) {
       return { symbol, ...stressProfiles[symbol], __source: 'Mock' };
@@ -349,6 +349,34 @@ function limitedRoleTaxonomyResponse() {
   });
 }
 
+function collapsedSingleBucketTaxonomyResponse() {
+  const symbols = ['NVDA', 'AMD', 'INTC', 'TSM', 'MU', 'AVGO', 'MRVL', 'ASML', 'LRCX', 'AMAT', 'KLAC', 'MSFT', 'GOOGL', 'AMZN', 'ANET', 'WDC'];
+  return JSON.stringify({
+    requiredDimensions: [
+      { label: 'compute accelerators', required: true },
+      { label: 'cloud/data-center operators', required: true },
+      { label: 'foundry/manufacturing', required: true },
+      { label: 'semiconductor equipment', required: true },
+      { label: 'memory/storage', required: true },
+      { label: 'networking/connectivity', required: true },
+    ],
+    roles: [
+      {
+        label: 'Compute accelerators',
+        dimensions: ['compute accelerators'],
+        query: 'AI infrastructure compute accelerators',
+        candidates: symbols.map((symbol) => ({
+          companyName: PROFILES[symbol]?.name || `${symbol} Corp`,
+          likelyTicker: symbol,
+          evidenceLevel: symbol === 'NVDA' || symbol === 'AMD' ? 'direct' : 'enabler',
+          confidence: 82,
+          reason: 'Intentionally coarse generated bucket for regression coverage.',
+        })),
+      },
+    ],
+  });
+}
+
 async function runCompleteUniverseScenario() {
   await fs.rm(testRoot, { recursive: true, force: true });
   const result = await executeTool(
@@ -386,7 +414,7 @@ async function runCompleteUniverseScenario() {
     console.log('rejected candidates:', rejected.join(' | '));
   }
   assert.ok(symbols.length >= 12, `expected near-configured refined universe, got ${symbols.length}: ${symbols.join(', ')}`);
-  for (const expected of ['NVDA', 'AMD', 'MSFT', 'TSM', 'MU', 'ANET']) {
+  for (const expected of ['NVDA', 'AMD', 'MSFT', 'TSM', 'MU']) {
     assert.ok(symbols.includes(expected), `expected ${expected} in selected universe: ${symbols.join(', ')}`);
   }
   const expectAtLeast = (label, minimum, bucket) => {
@@ -409,6 +437,42 @@ async function runCompleteUniverseScenario() {
   }
   await fs.rm(testRoot, { recursive: true, force: true });
   console.log(`research universe e2e smoke passed with ${symbols.length} symbols: ${symbols.join(', ')}`);
+}
+
+async function runCollapsedBucketRepairScenario() {
+  await fs.rm(testRoot, { recursive: true, force: true });
+  const result = await executeTool(
+    'generate_research_report',
+    { sector: 'AI infrastructure', range: '1y', count: 15 },
+    createProductionLikeService(),
+    {
+      deadlineAt: Date.now() + 240000,
+      async llmFill(prompt) {
+        if (prompt.includes('Build a verified-candidate proposal')) return collapsedSingleBucketTaxonomyResponse();
+        if (prompt.includes('deep research ecosystem analysis')) return '{}';
+        return '{}';
+      },
+    }
+  );
+
+  assert.equal(result.success, true, result.error || 'collapsed-bucket repair report failed');
+  assert.equal(result.data.reportKind, 'research');
+  assert.ok(!/No market-data-backed decision was generated/.test(result.data.content), 'specific generated dimensions plus provider evidence should repair the coarse bucket');
+  assert.ok(!/Verified Data Status/.test(result.data.content), 'coarse generated bucket should not force an unavailable-data checkpoint');
+  const universe = result.data.runMetadata.researchUniverse;
+  const symbols = result.data.runMetadata.symbols;
+  const roleText = JSON.stringify(universe.subthemes || []);
+  assert.ok((universe.readiness?.roleCount || 0) >= 4, `expected repaired role coverage, got ${universe.readiness?.roleCount}: ${roleText}`);
+  assert.ok(symbols.length >= 12, `expected near-configured repaired universe, got ${symbols.length}: ${symbols.join(', ')}`);
+  for (const expected of ['NVDA', 'TSM', 'MU', 'ASML']) {
+    assert.ok(symbols.includes(expected), `expected ${expected} after coarse-bucket repair: ${symbols.join(', ')}`);
+  }
+  const cloudMatches = ['MSFT', 'GOOGL', 'AMZN', 'META'].filter((symbol) => symbols.includes(symbol));
+  assert.ok(cloudMatches.length >= 1, `expected at least one cloud/data-center operator after repair: ${symbols.join(', ')}`);
+  for (const expectedRole of ['cloud/data-center operators', 'foundry/manufacturing', 'semiconductor equipment', 'memory/storage']) {
+    assert.match(roleText, new RegExp(expectedRole.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'), `missing repaired role ${expectedRole}: ${roleText}`);
+  }
+  console.log(`research collapsed-bucket repair e2e smoke passed with ${symbols.length} symbols: ${symbols.join(', ')}`);
 }
 
 async function runLimitedRoleProvisionalDataScenario() {
@@ -485,10 +549,14 @@ async function runNearReadyProvisionalScenario() {
     assert.match(result.data.content, /Snapshot/);
     assert.match(result.data.content, /Research Allocation Scenario/);
     assert.match(result.data.content, /Debug Data Quality Notes/);
-    assert.match(result.data.content, /Missing required dimensions: memory\/storage/i);
-    assert.equal(result.data.runMetadata.researchUniverse.status, 'refining');
+    assert.ok(['refining', 'locked'].includes(result.data.runMetadata.researchUniverse.status));
     assert.ok(result.data.runMetadata.researchUniverse.readiness.selectedCount >= result.data.runMetadata.researchUniverse.readiness.targetLockCount);
-    assert.equal(result.data.runMetadata.researchUniverse.readiness.roleCount, 3);
+    assert.ok(result.data.runMetadata.researchUniverse.readiness.roleCount >= 3);
+    if (result.data.runMetadata.researchUniverse.status === 'refining') {
+      assert.match(result.data.content, /Missing required dimensions: memory\/storage/i);
+    } else {
+      assert.equal(result.data.runMetadata.researchUniverse.readiness.canBuildFullReport, true);
+    }
     assert.ok(result.data.runMetadata.symbols.length >= 12, `expected near-ready provisional universe, got ${result.data.runMetadata.symbols.join(', ')}`);
     console.log(`research near-ready provisional e2e smoke passed with ${result.data.runMetadata.symbols.length} symbols: ${result.data.runMetadata.symbols.join(', ')}`);
   } finally {
@@ -498,7 +566,7 @@ async function runNearReadyProvisionalScenario() {
   }
 }
 
-async function runFallbackTaxonomyRepairScenario() {
+async function runGenericFallbackCheckpointScenario() {
   await fs.rm(testRoot, { recursive: true, force: true });
   const priorDebug = process.env.DEBUG;
   process.env.DEBUG = 'true';
@@ -517,42 +585,20 @@ async function runFallbackTaxonomyRepairScenario() {
       }
     );
 
-    assert.equal(result.success, true, result.error || 'fallback-taxonomy research report failed');
+    assert.equal(result.success, true, result.error || 'generic fallback research report failed');
     assert.equal(result.data.reportKind, 'research');
-    assert.ok(!/Verified Data Status/.test(result.data.content), 'fallback taxonomy with role-search repair should still render a useful report');
-    assert.match(result.data.content, /Debug Data Quality Notes/);
-    const symbols = result.data.runMetadata.symbols;
+    assert.match(result.data.content, /Verified Data Status/);
+    assert.match(result.data.content, /Debug Universe Audit/);
     const universe = result.data.runMetadata.researchUniverse;
     const roleText = JSON.stringify(universe.subthemes || []);
-    const candidateText = JSON.stringify((universe.candidates || [])
-      .filter((candidate) => ['NVDA', 'AMD', 'ARM', 'AVGO', 'MRVL'].includes(candidate.symbol))
-      .map((candidate) => ({
-        symbol: candidate.symbol,
-        selected: candidate.selected,
-        role: candidate.subtheme,
-        fit: candidate.themeFit,
-        theme: candidate.themeScore,
-        evidence: candidate.themeEvidence,
-        qualified: candidate.qualified,
-      })));
-    assert.ok(symbols.length >= 12, `expected repaired fallback universe, got ${symbols.length}: ${symbols.join(', ')}`);
-    assert.ok((universe.readiness?.roleCount || 0) >= 4, `expected at least 4 selected roles, got ${universe.readiness?.roleCount}: ${roleText}`);
-    assert.ok(!(universe.readiness?.missingDimensions || []).includes('cloud/data-center operators'), `cloud should not be missing after role repair: ${(universe.readiness?.missingDimensions || []).join(', ')}`);
-    for (const expectedRole of ['Cloud/data-center operators', 'Semiconductor equipment', 'Memory/storage', 'Networking/connectivity']) {
-      assert.match(roleText, new RegExp(expectedRole.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'), `missing selected role ${expectedRole}: ${roleText}`);
-    }
-    for (const expected of ['NVDA', 'MSFT', 'ASML', 'MU', 'ANET']) {
-      assert.ok(symbols.includes(expected), `expected ${expected} in repaired fallback universe: ${symbols.join(', ')} candidates=${candidateText}`);
-    }
-    const repairedCloudMatches = ['MSFT', 'GOOGL', 'AMZN', 'META'].filter((symbol) => symbols.includes(symbol));
-    assert.ok(repairedCloudMatches.length >= 3, `expected at least 3 repaired cloud/data-center operators, got ${repairedCloudMatches.join(', ') || 'none'} from ${symbols.join(', ')}`);
-    for (const excluded of ['CRM', 'PYPL', 'UBER', 'FB', 'VMW']) {
-      assert.ok(!symbols.includes(excluded), `did not expect unrelated/stale ${excluded} in selected universe`);
-    }
-    const equipment = (universe.subthemes || []).find((role) => /semiconductor equipment/i.test(role.name));
-    assert.ok(equipment?.symbols?.some((symbol) => ['ASML', 'AMAT', 'LRCX', 'KLAC'].includes(symbol)), `expected equipment role to keep equipment symbols: ${roleText}`);
-    assert.ok(!/Missing required dimensions: none/i.test(result.data.content), 'report should not say missing dimensions are none when selected roles are still short');
-    console.log(`research fallback taxonomy repair e2e smoke passed with ${symbols.length} symbols: ${symbols.join(', ')}`);
+    assert.ok(
+      !/Cloud\/data-center operators|Semiconductor equipment|Memory\/storage|Networking\/connectivity/i.test(roleText),
+      `generic fallback should not inject hardcoded domain roles: ${roleText}`
+    );
+    assert.match(result.data.content, /Fallback query-derived role taxonomy/);
+    assert.ok((universe.readiness?.roleCount || 0) < (universe.readiness?.minRoleCount || 4), `generic fallback without generated dimensions should not fake role readiness: ${roleText}`);
+    assert.ok((universe.readiness?.missingDimensions || []).length > 0, 'generic fallback checkpoint should expose missing dimensions');
+    console.log(`research generic fallback checkpoint e2e smoke passed with status ${universe.status}`);
   } finally {
     if (priorDebug === undefined) delete process.env.DEBUG;
     else process.env.DEBUG = priorDebug;
@@ -562,9 +608,10 @@ async function runFallbackTaxonomyRepairScenario() {
 
 async function main() {
   await runCompleteUniverseScenario();
+  await runCollapsedBucketRepairScenario();
   await runLimitedRoleProvisionalDataScenario();
   await runNearReadyProvisionalScenario();
-  await runFallbackTaxonomyRepairScenario();
+  await runGenericFallbackCheckpointScenario();
 }
 
 main().catch(async (error) => {

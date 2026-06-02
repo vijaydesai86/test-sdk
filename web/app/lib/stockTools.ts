@@ -737,147 +737,13 @@ interface ResearchCandidateSeed {
 
 type ResearchPipelineCheckpoint = NonNullable<NonNullable<ReportRunMetadata['researchUniverse']>['pipeline']>;
 
-interface ResearchProfileRoleRule {
-  role: string;
-  level: ResearchSourceEvidence['level'];
-  priority: number;
-  themeHints: string[];
-  must: string[][];
-  any?: string[][];
-}
-
-const RESEARCH_PROFILE_ROLE_RULES: ResearchProfileRoleRule[] = [
-  {
-    role: 'Semiconductor equipment/tools',
-    level: 'enabler',
-    priority: 95,
-    themeHints: ['semiconductor', 'chip', 'ai infrastructure', 'data center'],
-    must: [['semiconductor equipment', 'lithography', 'metrology', 'inspection', 'wafer fabrication', 'process control', 'materials engineering']],
-    any: [['semiconductor', 'chip', 'wafer']],
-  },
-  {
-    role: 'Foundry/manufacturing',
-    level: 'enabler',
-    priority: 94,
-    themeHints: ['semiconductor', 'chip', 'ai infrastructure', 'data center'],
-    must: [['foundry', 'semiconductor foundry', 'semiconductor manufacturing', 'integrated circuit manufacturing', 'manufactures integrated circuits', 'contract manufacturer']],
-    any: [['semiconductor', 'chip', 'integrated circuit']],
-  },
-  {
-    role: 'Memory/storage',
-    level: 'enabler',
-    priority: 93,
-    themeHints: ['memory', 'storage', 'ai infrastructure', 'data center', 'cloud infrastructure'],
-    must: [['memory', 'dram', 'nand', 'storage products', 'storage systems']],
-    any: [['data center', 'ai', 'compute', 'server', 'cloud', 'infrastructure']],
-  },
-  {
-    role: 'Power/cooling/data-center infrastructure',
-    level: 'enabler',
-    priority: 91,
-    themeHints: ['power', 'cooling', 'data center', 'infrastructure', 'energy'],
-    must: [['power', 'cooling', 'thermal', 'electrical', 'power management']],
-    any: [['data center', 'critical digital infrastructure', 'infrastructure', 'facility']],
-  },
-  {
-    role: 'Networking/connectivity',
-    level: 'enabler',
-    priority: 92,
-    themeHints: ['networking', 'connectivity', 'data center', 'cloud infrastructure', 'ai infrastructure'],
-    must: [['ethernet', 'switches', 'routers', 'interconnect', 'connectors', 'connectivity chips', 'networking storage', 'data center network', 'network infrastructure']],
-    any: [['data center', 'ai', 'semiconductor', 'cloud', 'infrastructure']],
-  },
-  {
-    role: 'Chip design/IP/tools',
-    level: 'enabler',
-    priority: 89,
-    themeHints: ['semiconductor', 'chip', 'ai infrastructure', 'processor'],
-    must: [['semiconductor ip', 'electronic design automation', 'processor architecture', 'chip design', 'eda software']],
-    any: [['ai', 'cpu', 'semiconductor', 'chips', 'processor']],
-  },
-  {
-    role: 'Compute accelerators/chips',
-    level: 'direct',
-    priority: 96,
-    themeHints: ['ai', 'semiconductor', 'accelerator', 'data center', 'compute'],
-    must: [['gpu', 'accelerator', 'cpu', 'processor', 'custom silicon', 'chip', 'semiconductor', 'soc']],
-    any: [['ai', 'data center', 'compute', 'accelerated', 'inference', 'training']],
-  },
-  {
-    role: 'Cloud/data-center operators',
-    level: 'enabler',
-    priority: 97,
-    themeHints: ['cloud', 'data center', 'ai infrastructure', 'infrastructure'],
-    must: [['cloud infrastructure', 'cloud computing', 'data centers', 'data center', 'azure', 'google cloud', 'infrastructure cloud']],
-    any: [['ai', 'infrastructure', 'operator', 'database', 'platform', 'compute']],
-  },
-  {
-    role: 'Power/cooling/data-center infrastructure',
-    level: 'enabler',
-    priority: 79,
-    themeHints: ['power', 'cooling', 'data center', 'ai infrastructure', 'infrastructure'],
-    must: [['electrical equipment', 'electrical components', 'power management']],
-  },
-  {
-    role: 'Networking/connectivity',
-    level: 'enabler',
-    priority: 78,
-    themeHints: ['networking', 'connectivity', 'data center', 'cloud infrastructure', 'ai infrastructure'],
-    must: [['communications equipment', 'network infrastructure', 'networking']],
-  },
-  {
-    role: 'Cloud/data-center operators',
-    level: 'enabler',
-    priority: 76,
-    themeHints: ['cloud', 'data center', 'ai infrastructure', 'infrastructure'],
-    must: [['software infrastructure', 'it services', 'information technology services']],
-  },
-  {
-    role: 'Memory/storage',
-    level: 'enabler',
-    priority: 74,
-    themeHints: ['memory', 'storage', 'data center', 'ai infrastructure', 'cloud infrastructure'],
-    must: [['computer hardware', 'storage']],
-  },
-  {
-    role: 'Compute accelerators/chips',
-    level: 'enabler',
-    priority: 72,
-    themeHints: ['ai', 'semiconductor', 'chip', 'data center', 'compute', 'ai infrastructure'],
-    must: [['semiconductor', 'semiconductors']],
-  },
-  {
-    role: 'Charging network/operators',
-    level: 'direct',
-    priority: 94,
-    themeHints: ['ev charging', 'charging infrastructure', 'electric vehicle'],
-    must: [['charging network', 'charging stations', 'ev charging', 'electric vehicle charging', 'charging infrastructure']],
-    any: [['electric vehicle', 'ev', 'charging', 'infrastructure']],
-  },
-  {
-    role: 'Charging equipment/hardware',
-    level: 'enabler',
-    priority: 90,
-    themeHints: ['ev charging', 'charging infrastructure', 'electric vehicle'],
-    must: [['charging equipment', 'evse', 'chargers', 'power electronics']],
-    any: [['electric vehicle', 'ev', 'charging', 'infrastructure']],
-  },
-  {
-    role: 'Cybersecurity platforms',
-    level: 'direct',
-    priority: 94,
-    themeHints: ['cybersecurity', 'security', 'zero trust'],
-    must: [['cybersecurity', 'security platform', 'threat protection', 'endpoint security', 'identity security', 'cloud security', 'network security', 'zero trust']],
-    any: [['security', 'cyber', 'threat', 'identity', 'endpoint', 'cloud']],
-  },
-  {
-    role: 'Security observability/operations',
-    level: 'enabler',
-    priority: 88,
-    themeHints: ['cybersecurity', 'security', 'observability'],
-    must: [['security operations', 'siem', 'observability', 'monitoring', 'log management']],
-    any: [['security', 'threat', 'cloud', 'platform']],
-  },
+const RESEARCH_GENERIC_ROLE_ARCHETYPES = [
+  'direct providers/operators',
+  'infrastructure/platform operators',
+  'critical suppliers/enablers',
+  'tools/services providers',
+  'components/materials suppliers',
+  'distribution/connectivity channels',
 ];
 
 function sanitizeResearchFacetLabel(value: unknown): string {
@@ -967,109 +833,126 @@ function normalizeResearchEvidenceText(value: unknown): string {
     .trim();
 }
 
-function researchTextHasAny(text: string, values: string[]): boolean {
-  return values.some((value) => {
-    const normalized = normalizeResearchEvidenceText(value);
-    return normalized.length > 0 && text.includes(normalized);
-  });
-}
+const RESEARCH_GENERIC_STOP_WORDS = new Set([
+  'and', 'the', 'for', 'with', 'from', 'into', 'that', 'this', 'public', 'listed',
+  'company', 'companies', 'corp', 'inc', 'ltd', 'plc', 'holdings', 'holding',
+  'theme', 'stock', 'stocks', 'equity', 'research', 'provider', 'providers',
+  'operator', 'operators', 'supplier', 'suppliers', 'service', 'services',
+  'product', 'products', 'system', 'systems', 'solution', 'solutions',
+]);
 
-function researchTextMatchCount(text: string, values: string[]): number {
-  return values.reduce((count, value) => {
-    const normalized = normalizeResearchEvidenceText(value);
-    return normalized.length > 0 && text.includes(normalized) ? count + 1 : count;
-  }, 0);
-}
-
-function researchEvidenceRoleOverlap(left: string, right: string): boolean {
-  const leftTokens = new Set(normalizeResearchEvidenceText(left).split(' ').filter((token) => token.length > 3));
-  const rightTokens = normalizeResearchEvidenceText(right).split(' ').filter((token) => token.length > 3);
-  if (!leftTokens.size || !rightTokens.length) return false;
-  const matches = rightTokens.filter((token) => leftTokens.has(token)).length;
-  return matches >= Math.min(2, rightTokens.length) || matches / rightTokens.length >= 0.5;
-}
-
-function researchRuleMatches(text: string, rule: ResearchProfileRoleRule): boolean {
-  const mustMatch = rule.must.every((group) => researchTextHasAny(text, group));
-  const anyMatch = !rule.any?.length || rule.any.every((group) => researchTextHasAny(text, group));
-  return mustMatch && anyMatch;
-}
-
-function researchRuleEvidenceStrength(text: string, rule: ResearchProfileRoleRule): number {
-  const matchedGroups = [
-    ...rule.must,
-    ...(rule.any || []),
-  ].reduce((count, group) => count + (researchTextHasAny(text, group) ? 1 : 0), 0);
-  const roleTokenMatches = normalizeResearchEvidenceText(rule.role)
+function researchEvidenceTokens(value: unknown): string[] {
+  return Array.from(new Set(normalizeResearchEvidenceText(value)
     .split(' ')
-    .filter((token) => token.length > 3)
-    .reduce((count, token) => text.includes(token) ? count + 1 : count, 0);
-  return (matchedGroups * 2) + (roleTokenMatches * 3);
+    .filter((token) => token.length > 2 && !RESEARCH_GENERIC_STOP_WORDS.has(token))));
 }
 
-function researchRulePhraseMatchCount(text: string, rule: ResearchProfileRoleRule): number {
-  return [
-    ...rule.must,
-    ...(rule.any || []),
-  ].reduce((count, group) => count + researchTextMatchCount(text, group), 0);
-}
-
-function researchRuleLevelRank(level: ResearchSourceEvidence['level']): number {
-  if (level === 'direct') return 3;
-  if (level === 'enabler') return 2;
-  if (level === 'beneficiary') return 1;
-  return 0;
-}
-
-function researchRuleIsRelevantToTheme(args: {
-  themeText: string;
-  dimensionsText: string;
-  sourceText: string;
-  rule: ResearchProfileRoleRule;
-}): boolean {
-  const context = `${args.themeText} ${args.dimensionsText} ${args.sourceText}`;
-  if (researchTextHasAny(context, args.rule.themeHints)) return true;
-  const roleTokens = normalizeResearchEvidenceText(args.rule.role).split(' ').filter((token) => token.length > 3);
-  return roleTokens.some((token) => context.includes(token));
-}
-
-const GENERIC_THEME_HINTS = new Set(['infrastructure', 'platform', 'operator', 'operators', 'energy']);
-
-function researchRuleHasSpecificThemeMatch(themeText: string, rule: ResearchProfileRoleRule): boolean {
-  return rule.themeHints.some((hint) => {
-    const normalized = normalizeResearchEvidenceText(hint);
-    if (!normalized || GENERIC_THEME_HINTS.has(normalized)) return false;
-    return themeText.includes(normalized);
-  });
+function researchTokenOverlapScore(left: string, right: string): number {
+  const leftTokens = new Set(researchEvidenceTokens(left));
+  const rightTokens = researchEvidenceTokens(right);
+  if (!leftTokens.size || !rightTokens.length) return 0;
+  const matches = rightTokens.filter((token) => leftTokens.has(token)).length;
+  const exactBonus = normalizeResearchEvidenceText(left).includes(normalizeResearchEvidenceText(right))
+    || normalizeResearchEvidenceText(right).includes(normalizeResearchEvidenceText(left))
+    ? 2
+    : 0;
+  return (matches / rightTokens.length) + exactBonus;
 }
 
 function buildFallbackResearchThemeFacets(theme: string, limit = RESEARCH_THEME_FACET_COUNT): ResearchThemeFacetPlan[] {
-  const themeText = normalizeResearchEvidenceText(theme);
-  if (!themeText) return [];
-  const seen = new Set<string>();
-  return RESEARCH_PROFILE_ROLE_RULES
-    .filter((rule) => researchRuleHasSpecificThemeMatch(themeText, rule))
-    .sort((a, b) => b.priority - a.priority)
-    .map((rule) => {
-      const key = rule.role.toLowerCase();
-      if (seen.has(key)) return null;
-      seen.add(key);
-      return {
-        label: rule.role,
-        role: rule.role,
-        query: `${theme} ${rule.role}`,
-        definition: `Provider profile evidence must support ${rule.role} exposure for this theme.`,
-        required: rule.level === 'direct' || rule.priority >= 90,
-        dimensions: [rule.role],
-        searchQueries: [
-          `${theme} ${rule.role} stocks`,
-          `${theme} ${rule.role} public companies`,
-        ],
-        candidates: [],
-      } as ResearchThemeFacetPlan;
-    })
-    .filter((facet: ResearchThemeFacetPlan | null): facet is ResearchThemeFacetPlan => Boolean(facet))
-    .slice(0, limit);
+  const cleanTheme = sanitizeResearchFacetLabel(theme);
+  if (!cleanTheme) return [];
+  return RESEARCH_GENERIC_ROLE_ARCHETYPES.slice(0, limit).map((archetype, index) => {
+    const label = `${cleanTheme} ${archetype}`;
+    return {
+      label,
+      role: label,
+      query: `${cleanTheme} ${archetype} public companies`,
+      definition: `Query-derived generic role for ${cleanTheme}; provider profile evidence must corroborate exposure.`,
+      required: index < 4,
+      dimensions: [label],
+      searchQueries: [
+        `${cleanTheme} ${archetype} stocks`,
+        `${cleanTheme} ${archetype} public companies`,
+      ],
+      candidates: [],
+    };
+  });
+}
+
+function genericResearchRoleText(role: ResearchUniverseRole | ResearchRequiredDimension): string {
+  return [
+    role.label,
+    'definition' in role ? role.definition : '',
+    'query' in role ? role.query : '',
+    Array.isArray(role.searchQueries) ? role.searchQueries.join(' ') : '',
+    'dimensions' in role && Array.isArray(role.dimensions) ? role.dimensions.join(' ') : '',
+    'rationale' in role ? role.rationale : '',
+  ].filter(Boolean).join(' ');
+}
+
+function scoreGenericResearchRole(args: {
+  profileText: string;
+  sourceText: string;
+  themeText: string;
+  roleText: string;
+}): number {
+  const roleTokens = researchEvidenceTokens(args.roleText);
+  if (!roleTokens.length) return 0;
+  const profileTokens = new Set(researchEvidenceTokens(args.profileText));
+  const sourceTokens = new Set(researchEvidenceTokens(args.sourceText));
+  const themeTokens = new Set(researchEvidenceTokens(args.themeText));
+  const profileMatches = roleTokens.filter((token) => profileTokens.has(token)).length;
+  const sourceMatches = roleTokens.filter((token) => sourceTokens.has(token)).length;
+  const themeMatches = roleTokens.filter((token) => themeTokens.has(token)).length;
+  const roleText = normalizeResearchEvidenceText(args.roleText);
+  const profileText = normalizeResearchEvidenceText(args.profileText);
+  const sourceText = normalizeResearchEvidenceText(args.sourceText);
+  const phraseBonus = profileText.includes(roleText) || sourceText.includes(roleText) ? 35 : 0;
+  const profileScore = (profileMatches / roleTokens.length) * 70;
+  const sourceScore = (sourceMatches / roleTokens.length) * 28;
+  const themePenalty = themeMatches === roleTokens.length && profileMatches === 0 && sourceMatches === 0 ? 25 : 0;
+  return Math.max(0, profileScore + sourceScore + phraseBonus - themePenalty);
+}
+
+function deriveProviderGroundedRole(args: {
+  themeText: string;
+  profileText: string;
+  sourceText: string;
+  overview: any;
+}): ResearchSourceEvidence | null {
+  const sourceFacet = String(args.sourceText || '').trim();
+  if (sourceFacet && !isBroadResearchRole(sourceFacet) && researchTokenOverlapScore(args.profileText, sourceFacet) >= 0.25) {
+    return {
+      role: sanitizeResearchFacetLabel(sourceFacet),
+      level: 'enabler',
+      confidence: 68,
+      rationale: 'Provider profile corroborated the generated/source role label.',
+      source: 'provider-profile-classifier',
+    };
+  }
+  const industry = sanitizeResearchFacetLabel(args.overview.industry || args.overview.Industry);
+  const sector = sanitizeResearchFacetLabel(args.overview.sector || args.overview.Sector);
+  const profileThemeScore = researchTokenOverlapScore(args.profileText, args.themeText);
+  if (industry && profileThemeScore >= 0.25) {
+    return {
+      role: industry,
+      level: 'beneficiary',
+      confidence: 58,
+      rationale: 'Provider industry/profile text overlaps the requested theme, but no generated concrete role matched.',
+      source: 'provider-profile-classifier',
+    };
+  }
+  if (sector && profileThemeScore >= 0.40) {
+    return {
+      role: sector,
+      level: 'beneficiary',
+      confidence: 52,
+      rationale: 'Provider sector/profile text overlaps the requested theme, but no generated concrete role matched.',
+      source: 'provider-profile-classifier',
+    };
+  }
+  return null;
 }
 
 export function classifyResearchCandidateProfileEvidence(args: {
@@ -1088,42 +971,49 @@ export function classifyResearchCandidateProfileEvidence(args: {
   ].filter(Boolean).join(' '));
   if (!profileText) return null;
   const themeText = normalizeResearchEvidenceText(args.theme);
-  const dimensionsText = normalizeResearchEvidenceText([
-    ...(args.requiredDimensions || []).map((dimension) => [
-      dimension.label,
-      dimension.rationale,
-      ...(dimension.searchQueries || []),
-    ].filter(Boolean).join(' ')),
-    ...(args.roles || []).map((role) => [
-      role.label,
-      role.definition,
-      role.query,
-      ...(role.dimensions || []),
-      ...(role.searchQueries || []),
-    ].filter(Boolean).join(' ')),
-  ].join(' '));
   const sourceText = normalizeResearchEvidenceText((args.candidate.sourceFacets || []).join(' '));
-  const matches = RESEARCH_PROFILE_ROLE_RULES
-    .filter((rule) => researchRuleIsRelevantToTheme({ themeText, dimensionsText, sourceText, rule }))
-    .filter((rule) => researchRuleMatches(profileText, rule))
-    .sort((a, b) => {
-      const levelDelta = researchRuleLevelRank(b.level) - researchRuleLevelRank(a.level);
-      if (levelDelta) return levelDelta;
-      const priorityDelta = b.priority - a.priority;
-      return priorityDelta || researchRuleEvidenceStrength(profileText, b) - researchRuleEvidenceStrength(profileText, a);
-    });
-  const match = matches[0];
-  if (!match) return null;
-  const strength = researchRuleEvidenceStrength(profileText, match);
-  const phraseMatches = researchRulePhraseMatchCount(profileText, match);
-  const confidence = Math.min(95, Math.max(70, match.priority - 22 + strength + phraseMatches));
-  return {
-    role: match.role,
-    level: match.level,
-    confidence,
-    rationale: `Provider profile matched concrete ${match.role} terms for this theme.`,
-    source: 'provider-profile-classifier',
-  };
+  const generatedRoles = [
+    ...(args.roles || []).map((role) => ({
+      label: sanitizeResearchFacetLabel(role.label),
+      text: genericResearchRoleText(role),
+      required: role.required !== false,
+    })),
+    ...(args.requiredDimensions || []).map((dimension) => ({
+      label: sanitizeResearchFacetLabel(dimension.label),
+      text: genericResearchRoleText(dimension),
+      required: dimension.required !== false,
+    })),
+  ].filter((role) => role.label && !isBroadResearchRole(role.label));
+  const uniqueRoles = Array.from(new Map(generatedRoles.map((role) => [role.label.toLowerCase(), role])).values());
+  const scoredRoles = uniqueRoles
+    .map((role) => ({
+      ...role,
+      score: scoreGenericResearchRole({
+        profileText,
+        sourceText,
+        themeText,
+        roleText: role.text || role.label,
+      }),
+    }))
+    .filter((role) => role.score >= 30)
+    .sort((a, b) => b.score - a.score || Number(b.required) - Number(a.required));
+  const match = scoredRoles[0];
+  if (match) {
+    const confidence = Math.min(92, Math.max(64, match.score + (match.required ? 26 : 8)));
+    return {
+      role: match.label,
+      level: confidence >= 64 ? 'enabler' : 'beneficiary',
+      confidence,
+      rationale: `Provider profile matched generated role/dimension "${match.label}" for this theme.`,
+      source: 'provider-profile-classifier',
+    };
+  }
+  return deriveProviderGroundedRole({
+    themeText,
+    profileText,
+    sourceText,
+    overview,
+  });
 }
 
 function mergeResearchProfileEvidence(args: {
@@ -1137,23 +1027,6 @@ function mergeResearchProfileEvidence(args: {
   if (!profileEvidence) return existing;
   if (existing.some((item) => item.role === profileEvidence.role && item.level === profileEvidence.level)) {
     return existing;
-  }
-  const concreteExistingEvidence = existing.filter((item) =>
-    (item.level === 'direct' || item.level === 'enabler')
-    && !isBroadResearchRole(item.role)
-  );
-  const canonicalRoleEvidence = concreteExistingEvidence.find((item) =>
-    researchEvidenceRoleOverlap(item.role, profileEvidence.role)
-  ) || concreteExistingEvidence.sort((a, b) => b.confidence - a.confidence)[0];
-  if (canonicalRoleEvidence) {
-    return [
-      {
-        ...profileEvidence,
-        role: canonicalRoleEvidence.role,
-        confidence: Math.max(profileEvidence.confidence, canonicalRoleEvidence.confidence),
-      },
-      ...existing,
-    ];
   }
   return [profileEvidence, ...existing];
 }
@@ -1400,7 +1273,7 @@ async function resolveResearchCandidateSeeds(args: {
         });
       }
       requiredDimensions = Array.from(mergedDimensions.values());
-      notes.push(`Fallback role taxonomy derived ${fallbackFacets.length} concrete role bucket${fallbackFacets.length === 1 ? '' : 's'} from generic provider-profile rules.`);
+      notes.push(`Fallback query-derived role taxonomy derived ${fallbackFacets.length} generic role bucket${fallbackFacets.length === 1 ? '' : 's'} from the user theme.`);
     }
   }
 

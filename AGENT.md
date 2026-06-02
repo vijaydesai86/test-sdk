@@ -51,7 +51,9 @@ General chat is supported for data-only questions (e.g. "what is NVDA's P/E?") b
 
 4. **Provider truth beats LLM confidence.** The LLM orchestrates, explains, and synthesises. It may reason from supplied verified data, but it must not silently substitute missing provider data with model memory or web/training knowledge. Rendered report conclusions must be deterministic or tightly data-derived; do not include freeform LLM narratives that can introduce unsupported numbers or contradict tables.
 
-5. **No production hardcoding.** Do not hardcode company/ticker lists, provider facts, financial values, or special-case production behavior for individual companies. Hardcoded symbols and values are acceptable only in tests, fixtures, and mocks.
+5. **No production hardcoding.** Do not hardcode company/ticker lists, provider facts, financial values, theme/domain taxonomies, sector-specific role rules, baked-in theme example lists, or special-case production behavior for individual companies, sectors, or themes. Theme roles and candidate dimensions in production must be generated from the user query and grounded in verified provider/profile evidence, not fixed domain templates. Hardcoded symbols, values, domain examples, and theme taxonomies are acceptable only in tests, fixtures, and mocks.
+
+   Any change touching research universe selection, theme classification, sector/theme routing, role buckets, or candidate discovery must include tests that would fail if production code uses baked-in domain logic instead of query-derived/provider-grounded logic.
 
 6. **Local and Vercel both matter.** Vercel must respect the hard function timeout and still return a saved report with the highest-value verified data collected before the deadline. Local runs are not Vercel-truncated and should attempt the full available data set, subject to sensible provider rate-limit handling. Timeouts must be priority-aware: fetch critical decision inputs before optional enrichment, cap individual upstream waits, and reserve enough time to render, persist, and return the report.
 
