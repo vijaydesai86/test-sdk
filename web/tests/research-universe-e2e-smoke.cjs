@@ -182,6 +182,63 @@ function createLimitedRoleService() {
   };
 }
 
+const BROAD_ONLY_SYMBOLS = [
+  'NVDA', 'AMD', 'INTC', 'MSFT', 'GOOGL', 'META', 'TSM', 'AMAT', 'LRCX', 'QCOM',
+  'AVGO', 'MRVL', 'TER', 'CRWD', 'PANW', 'FTNT', 'NOW', 'SNPS', 'CDNS', 'ZG',
+  'MDB', 'OKTA', 'SNOW', 'NET', 'FIVE', 'DLTR', 'CLS', 'ZI', 'DOCU', 'TEAM',
+  'BIDU', 'BABA', 'VIVO', 'ORCL', 'SAP', 'IBM', 'CSCO', 'TWLO', 'DDOG', 'ZTS',
+  'TXN', 'XLNX', 'HPE', 'DELL', 'CRM',
+];
+
+function createBroadOnlyFailureService() {
+  const profiles = {
+    ...Object.fromEntries(BROAD_ONLY_SYMBOLS.map((symbol) => [
+      symbol,
+      {
+        name: `${symbol} Corp`,
+        sector: 'Technology',
+        industry: 'Software Application',
+        description: 'General software and digital services.',
+        marketCapitalization: 25000000000,
+        forwardPE: 30,
+      },
+    ])),
+    ...PROFILES,
+    TER: { name: 'Teradyne Inc', sector: 'Technology', industry: 'Semiconductor Equipment', description: 'Automated test equipment for semiconductor manufacturing.', marketCapitalization: 18000000000, forwardPE: 28 },
+    CLS: { name: 'Celestica Inc', sector: 'Technology', industry: 'Electronic Components', description: 'Design and manufacturing services for cloud and communications infrastructure hardware.', marketCapitalization: 8000000000, forwardPE: 18 },
+    HPE: { name: 'Hewlett Packard Enterprise Co', sector: 'Technology', industry: 'Communication Equipment', description: 'Servers, networking, and hybrid cloud infrastructure systems.', marketCapitalization: 30000000000, forwardPE: 12 },
+    DELL: { name: 'Dell Technologies Inc', sector: 'Technology', industry: 'Computer Hardware', description: 'Servers, storage, and infrastructure systems for enterprise and AI workloads.', marketCapitalization: 90000000000, forwardPE: 14 },
+  };
+  return {
+    ...createProductionLikeService(),
+    async searchStock(query) {
+      const text = String(query || '').trim().toUpperCase();
+      if (BROAD_ONLY_SYMBOLS.includes(text)) {
+        const profile = profiles[text];
+        return { results: [{ symbol: text, name: profile.name, type: 'Equity', region: 'United States', currency: 'USD' }], __source: 'Mock' };
+      }
+      return { results: [], __source: 'Mock' };
+    },
+    async getCompanyOverview(symbol) {
+      return { symbol, ...profiles[symbol], __source: 'Mock' };
+    },
+    async getBasicFinancials(symbol) {
+      return {
+        symbol,
+        metric: {
+          revenueGrowthTTM: ['FIVE', 'DLTR', 'ZTS'].includes(symbol) ? 0.03 : 0.20,
+          epsGrowthTTM: 0.15,
+          grossMarginTTM: 0.52,
+          operatingMarginTTM: 0.24,
+          roeTTM: 0.22,
+          peBasicExclExtraTTM: 28,
+        },
+        __source: 'Mock',
+      };
+    },
+  };
+}
+
 function taxonomyResponse() {
   return JSON.stringify({
     requiredDimensions: [
@@ -377,6 +434,53 @@ function collapsedSingleBucketTaxonomyResponse() {
   });
 }
 
+function broadOnlyClassifierResponse() {
+  const roleBySymbol = {
+    NVDA: ['direct', 'AI accelerator providers', 94, 'GPU accelerators and networking for AI data centers.'],
+    AMD: ['direct', 'AI accelerator providers', 88, 'CPUs, GPUs, and data center accelerators.'],
+    TSM: ['enabler', 'Foundry and manufacturing providers', 92, 'Semiconductor foundry manufacturing advanced integrated circuits.'],
+    AMAT: ['enabler', 'Semiconductor equipment providers', 86, 'Wafer fabrication and materials engineering semiconductor equipment.'],
+    LRCX: ['enabler', 'Semiconductor equipment providers', 86, 'Wafer fabrication equipment for semiconductor manufacturing.'],
+    AVGO: ['enabler', 'AI infrastructure silicon and networking suppliers', 86, 'Custom silicon, networking chips, and connectivity for data centers.'],
+    MRVL: ['enabler', 'AI infrastructure silicon and networking suppliers', 84, 'Data infrastructure semiconductors, custom silicon, and optical networking.'],
+    MSFT: ['enabler', 'Cloud and data-center operators', 88, 'Azure cloud infrastructure and AI data centers.'],
+    GOOGL: ['enabler', 'Cloud and data-center operators', 86, 'Google Cloud infrastructure, data centers, and AI platforms.'],
+    META: ['enabler', 'Cloud and data-center operators', 80, 'AI infrastructure, data centers, and custom AI accelerators.'],
+    CSCO: ['enabler', 'Networking and connectivity providers', 76, 'Networking, switching, routing, and data center connectivity.'],
+    DELL: ['enabler', 'Servers and infrastructure systems', 76, 'Servers, storage, and infrastructure systems for enterprise and AI workloads.'],
+    TXN: ['enabler', 'Infrastructure semiconductor suppliers', 72, 'Analog and embedded semiconductor products used in industrial and data infrastructure.'],
+  };
+  const candidates = BROAD_ONLY_SYMBOLS.map((symbol) => {
+    const mapped = roleBySymbol[symbol];
+    if (!mapped) {
+      return {
+        symbol,
+        themeScore: 25,
+        fit: 'reject',
+        evidenceLevel: 'unrelated',
+        evidenceConfidence: 75,
+        subtheme: 'Unsupported broad candidate',
+        rationale: 'Supplied profile does not support material AI infrastructure exposure.',
+      };
+    }
+    const [evidenceLevel, subtheme, confidence, rationale] = mapped;
+    return {
+      symbol,
+      themeScore: confidence,
+      fit: evidenceLevel === 'direct' ? 'core' : 'strong_adjacent',
+      evidenceLevel,
+      evidenceConfidence: confidence,
+      subtheme,
+      rationale,
+    };
+  });
+  return JSON.stringify({ candidates });
+}
+
+function broadOnlyTickerResponse() {
+  return JSON.stringify(BROAD_ONLY_SYMBOLS);
+}
+
 async function runCompleteUniverseScenario() {
   await fs.rm(testRoot, { recursive: true, force: true });
   const result = await executeTool(
@@ -473,6 +577,44 @@ async function runCollapsedBucketRepairScenario() {
     assert.match(roleText, new RegExp(expectedRole.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'), `missing repaired role ${expectedRole}: ${roleText}`);
   }
   console.log(`research collapsed-bucket repair e2e smoke passed with ${symbols.length} symbols: ${symbols.join(', ')}`);
+}
+
+async function runBroadOnlyClassifierRescueScenario() {
+  await fs.rm(testRoot, { recursive: true, force: true });
+  const result = await executeTool(
+    'generate_research_report',
+    { sector: 'AI infrastructure', range: '1y', count: 15 },
+    createBroadOnlyFailureService(),
+    {
+      deadlineAt: Date.now() + 240000,
+      async llmFill(prompt) {
+        if (prompt.includes('Build a verified-candidate proposal')) return '{}';
+        if (prompt.includes('Return ONLY official NYSE/NASDAQ/US ADR ticker symbols')) return broadOnlyTickerResponse();
+        if (prompt.includes('Classify each public company against')) return broadOnlyClassifierResponse();
+        if (prompt.includes('deep research ecosystem analysis')) return '{}';
+        return '{}';
+      },
+    }
+  );
+
+  assert.equal(result.success, true, result.error || 'broad-only classifier rescue report failed');
+  assert.equal(result.data.reportKind, 'research');
+  assert.ok(!/No market-data-backed decision was generated/.test(result.data.content), 'broad candidates classified from provider profiles should produce market-backed report');
+  assert.ok(!/Selected universe: none/.test(result.data.content), 'classified broad candidates should not leave selected universe empty');
+  assert.ok(!/Qualified candidates: none/.test(result.data.content), 'classified broad candidates should produce qualified candidates');
+  const symbols = result.data.runMetadata.symbols;
+  const universe = result.data.runMetadata.researchUniverse;
+  const roleText = JSON.stringify(universe.subthemes || []);
+  assert.ok(symbols.length >= 10, `expected useful broad-only classified universe, got ${symbols.length}: ${symbols.join(', ')}`);
+  for (const expected of ['NVDA', 'TSM', 'MSFT', 'GOOGL', 'AVGO', 'AMD']) {
+    assert.ok(symbols.includes(expected), `expected ${expected} in broad-only classified universe: ${symbols.join(', ')}`);
+  }
+  assert.ok((universe.readiness?.selectedCount || 0) >= 10, `expected selected direct/enabler coverage, got ${universe.readiness?.selectedCount}`);
+  assert.ok((universe.readiness?.roleCount || 0) >= 4, `expected concrete role coverage, got ${universe.readiness?.roleCount}: ${roleText}`);
+  for (const rejected of ['FIVE', 'DLTR', 'ZTS']) {
+    assert.ok(!symbols.includes(rejected), `did not expect unrelated ${rejected} in broad-only classified universe`);
+  }
+  console.log(`research broad-only classifier rescue e2e smoke passed with ${symbols.length} symbols: ${symbols.join(', ')}`);
 }
 
 async function runLimitedRoleProvisionalDataScenario() {
@@ -609,6 +751,7 @@ async function runGenericFallbackCheckpointScenario() {
 async function main() {
   await runCompleteUniverseScenario();
   await runCollapsedBucketRepairScenario();
+  await runBroadOnlyClassifierRescueScenario();
   await runLimitedRoleProvisionalDataScenario();
   await runNearReadyProvisionalScenario();
   await runGenericFallbackCheckpointScenario();

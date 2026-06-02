@@ -853,8 +853,17 @@ export async function selectResearchUniverse(args: {
     const source = candidates.find((item) => item.symbol === candidate.symbol);
     if (mode === 'locked_diagnostics' && source?.preservedQualified === false) return false;
     if (!hasDirectEnablerEvidence(candidate)) return false;
-    if (source?.sourceEvidence?.some((item) => isBroadResearchRole(item.role) && item.level !== 'unrelated')
-      && !source.sourceEvidence.some((item) => (item.level === 'direct' || item.level === 'enabler') && !isBroadResearchRole(item.role))) {
+    const hasBroadResolverEvidence = source?.sourceEvidence?.some((item) => isBroadResearchRole(item.role) && item.level !== 'unrelated');
+    const hasConcreteSourceEvidence = source?.sourceEvidence?.some((item) =>
+      (item.level === 'direct' || item.level === 'enabler') && !isBroadResearchRole(item.role)
+    );
+    const hasConcreteClassifierEvidence = (
+      (candidate.themeEvidence.level === 'direct' || candidate.themeEvidence.level === 'enabler') &&
+      !isBroadResearchRole(candidate.themeEvidence.role) &&
+      candidate.themeEvidence.confidence >= 65 &&
+      candidate.themeScore >= strongAdjacentThemeScore
+    );
+    if (hasBroadResolverEvidence && !hasConcreteSourceEvidence && !hasConcreteClassifierEvidence) {
       return false;
     }
     if (candidate.themeFit === 'core') return candidate.themeScore >= minThemeScore;

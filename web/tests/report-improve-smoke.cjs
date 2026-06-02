@@ -8,6 +8,7 @@ const {
   buildImproveToolRequest,
   compareImproveCandidateForReport,
   coverageStats,
+  decideImproveStatus,
   shouldEnforceSameReportUniverse,
 } = jiti(path.join(process.cwd(), 'app/lib/reportImprove.ts'));
 const { buildReportRunMetadata } = jiti(path.join(process.cwd(), 'app/lib/reportUpdate.ts'));
@@ -129,10 +130,35 @@ function testUnreadyResearchCanImproveByFetchingCoreData() {
   }), { accepted: true, reason: 'candidate_improved_available' });
 }
 
+function testUnreadyResearchPassContinuesUntilPassLimit() {
+  const metadata = researchMetadata(['NVDA'], 'failed', readiness({
+    status: 'failed',
+    selectedCount: 0,
+    roleCount: 0,
+    coveredDimensions: [],
+    missingDimensions: ['additional role coverage'],
+  }));
+  assert.deepEqual(decideImproveStatus({
+    before: coverageStats(metadata),
+    after: coverageStats(metadata),
+    passesDone: 1,
+    config: { maxPasses: 7, minWaitMs: 1000, target: 'critical' },
+    metadata,
+  }), { status: 'continue', reason: 'research_universe_refining', nextRunAfterMs: 1000 });
+  assert.deepEqual(decideImproveStatus({
+    before: coverageStats(metadata),
+    after: coverageStats(metadata),
+    passesDone: 7,
+    config: { maxPasses: 7, minWaitMs: 1000, target: 'critical' },
+    metadata,
+  }), { status: 'stopped', reason: 'max_passes_reached', nextRunAfterMs: 0 });
+}
+
 function main() {
   testPartialUnreadyResearchKeepsTargetCount();
   testFlatUnreadyCheckpointIsAcceptedButWorseOneIsRejected();
   testUnreadyResearchCanImproveByFetchingCoreData();
+  testUnreadyResearchPassContinuesUntilPassLimit();
   console.log('report improve smoke tests passed');
 }
 

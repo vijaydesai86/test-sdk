@@ -141,9 +141,7 @@ export async function POST(
     config,
     metadata: bestMetadata,
   });
-  const decision = !candidateDecision.accepted && candidateDecision.reason === 'research_universe_still_unready'
-    ? { status: 'stopped' as const, reason: 'research_universe_no_progress', nextRunAfterMs: 0 }
-    : baseDecision;
+  const decision = baseDecision;
   const replaceReportId = typeof body.replaceReportId === 'string' ? body.replaceReportId : '';
   const improveHistoryEntry = {
     passNumber,
