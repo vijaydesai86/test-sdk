@@ -738,8 +738,10 @@ async function runGenericFallbackCheckpointScenario() {
     assert.equal(universe.pipeline.stageStatus, 'provisional_market_backed');
     assert.ok(result.data.runMetadata.symbols.length >= 8, 'expected provisional fallback universe');
     const roleText = JSON.stringify(universe.subthemes || []);
-    assert.ok(!/Generic fallback checkpoint/i.test(roleText), `generic fallback should not collapse role map into one opaque bucket: ${roleText}`);
-    assert.ok(/Provider profile group:/i.test(roleText), `generic fallback should expose transparent provider profile groups: ${roleText}`);
+    assert.ok(roleText.includes('Provisional / unclassified'), `generic fallback should map unclassified companies into a transparent provisional bucket: ${roleText}`);
+    assert.ok(!/Provider profile group:/i.test(roleText), `provider profile groups must stay diagnostic-only, not dependency-map roles: ${roleText}`);
+    assert.ok(!/direct providers\/operators|critical suppliers|tools\/services providers/i.test(roleText), `generic fallback archetypes must not masquerade as concrete dependency roles: ${roleText}`);
+    assert.ok((universe.candidates || []).some((candidate) => candidate.providerGroup), 'generic fallback should preserve provider groups as diagnostics');
     assert.match(result.data.content, /Fallback query-derived role taxonomy/);
     assert.ok((universe.readiness?.roleCount || 0) < (universe.readiness?.minRoleCount || 4), `generic fallback without generated dimensions should not fake role readiness: ${roleText}`);
     assert.ok((universe.readiness?.missingDimensions || []).length > 0, 'generic fallback checkpoint should expose missing dimensions');

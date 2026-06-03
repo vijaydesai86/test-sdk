@@ -24,6 +24,7 @@ import {
   buildResearchUniverseMermaid,
   evaluateResearchUniverseReadiness,
   isBroadResearchRole,
+  PROVISIONAL_UNCLASSIFIED_ROLE,
   selectResearchUniverse,
   type ResearchCandidateData,
   type ResearchRequiredDimension,
@@ -934,21 +935,27 @@ function buildFallbackResearchThemeFacets(theme: string, limit = RESEARCH_THEME_
 function collapseGenericFallbackUniverseSelection(selection: ResearchUniverseSelection, candidateDataBySymbol: Map<string, ResearchCandidateData>): void {
   const selectedSymbols = selection.selectedSymbols.slice();
   const selectedSet = new Set(selectedSymbols);
-  const groupFor = (symbol: string): string => {
+  const providerGroupFor = (symbol: string): string | null => {
     const candidateData = candidateDataBySymbol.get(symbol);
     const overview = candidateData?.overview || {};
-    const providerGroup = sanitizeResearchFacetLabel(overview.industry || overview.Industry || overview.sector || overview.Sector || 'Unclassified');
-    return `Provider profile group: ${providerGroup || 'Unclassified'}`;
+    return sanitizeResearchFacetLabel(overview.industry || overview.Industry || overview.sector || overview.Sector) || null;
   };
   for (const candidate of selection.candidates) {
-    const fallbackRole = groupFor(candidate.symbol);
+    candidate.providerGroup = candidate.providerGroup || providerGroupFor(candidate.symbol);
+    const themeRole = candidate.themeRole && !isBroadResearchRole(candidate.themeRole)
+      ? candidate.themeRole
+      : null;
+    const fallbackRole = themeRole || PROVISIONAL_UNCLASSIFIED_ROLE;
+    candidate.themeRole = themeRole;
+    candidate.themeRoleConfidence = themeRole ? candidate.themeRoleConfidence : 0;
+    candidate.themeRoleSource = themeRole ? candidate.themeRoleSource : 'none';
     candidate.subtheme = fallbackRole;
     candidate.themeEvidence = {
       ...candidate.themeEvidence,
       role: fallbackRole,
-      level: candidate.selected ? 'beneficiary' : candidate.themeEvidence.level,
-      rationale: candidate.selected
-        ? 'Selected from provider-validated generic fallback discovery; provider profile group is shown for transparency but does not qualify as concrete theme-role evidence.'
+      level: themeRole ? candidate.themeEvidence.level : candidate.selected ? 'beneficiary' : candidate.themeEvidence.level,
+      rationale: candidate.selected && !themeRole
+        ? 'Selected from provider-validated generic fallback discovery; provider industry is diagnostic only and does not qualify as concrete theme-role evidence.'
         : candidate.themeEvidence.rationale,
     };
     if (selectedSet.has(candidate.symbol)) {
@@ -959,11 +966,14 @@ function collapseGenericFallbackUniverseSelection(selection: ResearchUniverseSel
   selection.qualifiedSymbols = [];
   const subthemeMap = new Map<string, string[]>();
   for (const symbol of selectedSymbols) {
-    const name = groupFor(symbol);
+    const candidate = selection.candidates.find((item) => item.symbol === symbol);
+    const name = candidate?.themeRole && !isBroadResearchRole(candidate.themeRole)
+      ? candidate.themeRole
+      : PROVISIONAL_UNCLASSIFIED_ROLE;
     subthemeMap.set(name, [...(subthemeMap.get(name) || []), symbol]);
   }
   selection.subthemes = Array.from(subthemeMap.entries()).map(([name, symbols]) => ({ name, symbols }));
-  selection.notes.push('Generic fallback checkpoint: concrete role taxonomy unavailable, so provider profile groups are shown for transparency but are not treated as qualified theme-role coverage.');
+  selection.notes.push('Generic fallback checkpoint: concrete role taxonomy unavailable, so provider profile groups remain diagnostics only and selected companies are mapped as provisional/unclassified until role evidence improves.');
 }
 
 function genericResearchRoleText(role: ResearchUniverseRole | ResearchRequiredDimension): string {
@@ -988,17 +998,19 @@ function scoreGenericResearchRole(args: {
   const profileTokens = new Set(researchEvidenceTokens(args.profileText));
   const sourceTokens = new Set(researchEvidenceTokens(args.sourceText));
   const themeTokens = new Set(researchEvidenceTokens(args.themeText));
-  const profileMatches = roleTokens.filter((token) => profileTokens.has(token)).length;
-  const sourceMatches = roleTokens.filter((token) => sourceTokens.has(token)).length;
-  const themeMatches = roleTokens.filter((token) => themeTokens.has(token)).length;
+  const distinctiveRoleTokens = roleTokens.filter((token) => !themeTokens.has(token));
+  const matchTokens = distinctiveRoleTokens.length ? distinctiveRoleTokens : roleTokens;
+  const profileMatches = matchTokens.filter((token) => profileTokens.has(token)).length;
+  if (profileMatches === 0) return 0;
+  const sourceMatches = matchTokens.filter((token) => sourceTokens.has(token)).length;
   const roleText = normalizeResearchEvidenceText(args.roleText);
   const profileText = normalizeResearchEvidenceText(args.profileText);
-  const sourceText = normalizeResearchEvidenceText(args.sourceText);
-  const phraseBonus = profileText.includes(roleText) || sourceText.includes(roleText) ? 35 : 0;
-  const profileScore = (profileMatches / roleTokens.length) * 70;
-  const sourceScore = (sourceMatches / roleTokens.length) * 28;
-  const themePenalty = themeMatches === roleTokens.length && profileMatches === 0 && sourceMatches === 0 ? 25 : 0;
-  return Math.max(0, profileScore + sourceScore + phraseBonus - themePenalty);
+  const compactRoleText = normalizeResearchEvidenceText(matchTokens.join(' '));
+  const phraseBonus = compactRoleText && (profileText.includes(compactRoleText) || roleText.includes(compactRoleText)) ? 18 : 0;
+  const multiTokenBonus = profileMatches >= 2 ? 10 : 0;
+  const profileScore = (profileMatches / matchTokens.length) * 78;
+  const sourceScore = (sourceMatches / matchTokens.length) * 12;
+  return Math.max(0, profileScore + sourceScore + phraseBonus + multiTokenBonus);
 }
 
 function deriveProviderGroundedRole(args: {
@@ -5459,6 +5471,10 @@ export async function executeTool(
               candidates: universeSelection.candidates.map((candidate) => ({
                 symbol: candidate.symbol,
                 subtheme: candidate.subtheme,
+                themeRole: candidate.themeRole,
+                themeRoleConfidence: candidate.themeRoleConfidence,
+                themeRoleSource: candidate.themeRoleSource,
+                providerGroup: candidate.providerGroup,
                 selected: candidate.selected,
                 sourceFacets: candidateFacetMap.get(candidate.symbol) || [],
                 sourceEvidence: candidateEvidenceMap.get(candidate.symbol) || [],
@@ -6086,6 +6102,10 @@ export async function executeTool(
             candidates: universeSelection.candidates.map((candidate) => ({
               symbol: candidate.symbol,
               subtheme: candidate.subtheme,
+              themeRole: candidate.themeRole,
+              themeRoleConfidence: candidate.themeRoleConfidence,
+              themeRoleSource: candidate.themeRoleSource,
+              providerGroup: candidate.providerGroup,
               selected: candidate.selected,
               sourceFacets: candidateFacetMap.get(candidate.symbol) || [],
               sourceEvidence: candidateEvidenceMap.get(candidate.symbol) || [],

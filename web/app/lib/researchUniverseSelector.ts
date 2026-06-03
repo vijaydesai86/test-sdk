@@ -27,6 +27,7 @@ export type ResearchThemeFit = 'core' | 'strong_adjacent' | 'weak_adjacent' | 'r
 export type ResearchThemeEvidenceLevel = 'direct' | 'enabler' | 'beneficiary' | 'unrelated';
 export type ResearchSelectionMode = 'fresh_selection' | 'locked_diagnostics';
 export type ResearchUniverseStatus = 'discovering' | 'refining' | 'locked' | 'failed';
+export type ResearchThemeRoleSource = 'source_evidence' | 'llm' | 'profile_evidence' | 'none';
 
 export interface ResearchThemeEvidence {
   level: ResearchThemeEvidenceLevel;
@@ -63,6 +64,10 @@ export interface ResearchCandidateScore {
   symbol: string;
   companyName: string;
   subtheme: string;
+  themeRole: string | null;
+  themeRoleConfidence: number;
+  themeRoleSource: ResearchThemeRoleSource;
+  providerGroup: string | null;
   themeEvidence: ResearchThemeEvidence;
   themeFit: ResearchThemeFit;
   selected: boolean;
@@ -134,7 +139,9 @@ const STOP_WORDS = new Set([
   'sector', 'stock', 'stocks', 'the', 'theme', 'to', 'traded', 'with',
 ]);
 
-const BROAD_ROLE_RE = /\b(broad|generic|catch\s*all|misc|general|beneficiar(?:y|ies)|theme resolver|resolver raw|fallback)\b/i;
+export const PROVISIONAL_UNCLASSIFIED_ROLE = 'Provisional / unclassified';
+
+const BROAD_ROLE_RE = /\b(broad|generic|catch\s*all|misc|general|beneficiar(?:y|ies)|theme resolver|resolver raw|fallback|provider profile group|provisional|unclassified|direct providers?\s*\/?\s*operators?|infrastructure\s*\/?\s*platform operators?|critical suppliers?\s*\/?\s*enablers?|tools?\s*\/?\s*services providers?|components?\s*\/?\s*materials suppliers?|distribution\s*\/?\s*connectivity channels?)\b/i;
 
 function normalizeSymbol(value: unknown): string {
   return String(value || '').replace(/[^A-Z0-9.]/gi, '').toUpperCase();
@@ -236,17 +243,42 @@ function candidateProviderProfileText(candidate: ResearchCandidateData): string 
   ].filter(Boolean).join(' ');
 }
 
-function inferSubtheme(candidate: ResearchCandidateData, llmSubtheme?: string): string {
-  const cleanLlm = String(llmSubtheme || '').replace(/[^a-z0-9 /&.-]/gi, ' ').replace(/\s+/g, ' ').trim();
-  if (cleanLlm) return cleanLlm.slice(0, 60);
-  const evidenceRole = bestSourceEvidence(candidate)?.role;
-  if (evidenceRole) return evidenceRole.slice(0, 60);
+function cleanThemeRole(value: unknown): string {
+  return String(value || '').replace(/[^a-z0-9 /&.-]/gi, ' ').replace(/\s+/g, ' ').trim().slice(0, 60);
+}
+
+function providerRoleLabelsForCandidate(candidate: ResearchCandidateData): string[] {
   const overview = candidate.overview || {};
-  const industry = String(overview.industry || overview.Industry || '').trim();
-  if (industry) return industry.slice(0, 60);
-  const sector = String(overview.sector || overview.Sector || '').trim();
-  if (sector) return sector.slice(0, 60);
-  return 'Unclassified';
+  return [
+    overview.industry || overview.Industry,
+    overview.sector || overview.Sector,
+  ].map((value) => cleanThemeRole(value).toLowerCase()).filter(Boolean);
+}
+
+function providerGroupForCandidate(candidate: ResearchCandidateData): string | null {
+  const overview = candidate.overview || {};
+  const providerGroup = cleanThemeRole(overview.industry || overview.Industry || overview.sector || overview.Sector);
+  return providerGroup || null;
+}
+
+function inferThemeRole(candidate: ResearchCandidateData, llmSubtheme?: string): { role: string | null; confidence: number; source: ResearchThemeRoleSource } {
+  const providerLabels = new Set(providerRoleLabelsForCandidate(candidate));
+  const evidenceRole = bestSourceEvidence(candidate);
+  if (evidenceRole) {
+    const role = cleanThemeRole(evidenceRole.role);
+    if (role && !isBroadResearchRole(role) && !providerLabels.has(role.toLowerCase())) {
+      return {
+        role,
+        confidence: evidenceRole.confidence,
+        source: evidenceRole.source === 'provider-profile-classifier' ? 'profile_evidence' : 'source_evidence',
+      };
+    }
+  }
+  const cleanLlm = cleanThemeRole(llmSubtheme);
+  if (cleanLlm && !isBroadResearchRole(cleanLlm) && !providerLabels.has(cleanLlm.toLowerCase())) {
+    return { role: cleanLlm, confidence: 60, source: 'llm' };
+  }
+  return { role: null, confidence: 0, source: 'none' };
 }
 
 function scoreThemeRelevance(query: string, candidate: ResearchCandidateData, llmScore?: number | null, resolverRankScore = 0): number {
@@ -290,6 +322,12 @@ function evidenceTierScore(evidence: ResearchThemeEvidence): number {
   if (evidence.level === 'enabler') return 88;
   if (evidence.level === 'beneficiary') return 58;
   return 0;
+}
+
+function themeFitScoreCap(fit: ResearchThemeFit, evidence: ResearchThemeEvidence): number {
+  if (fit === 'reject' || evidence.level === 'unrelated') return 28;
+  if (fit === 'weak_adjacent') return 58;
+  return 100;
 }
 
 function roleCoveragePriorityScore(candidate: ResearchCandidateScore): number {
@@ -523,7 +561,7 @@ function buildHeuristicEvidence(args: {
   minThemeScore: number;
   strongAdjacentThemeScore: number;
 }): ResearchThemeEvidence {
-  if (args.candidate.preservedThemeEvidence) {
+  if (args.candidate.preservedThemeEvidence && !isBroadResearchRole(args.candidate.preservedThemeEvidence.role)) {
     return args.candidate.preservedThemeEvidence;
   }
   const providerText = candidateProviderProfileText(args.candidate);
@@ -535,7 +573,8 @@ function buildHeuristicEvidence(args: {
   const facetProviderMatches = Array.from(facetTokens).filter((token) => providerTokens.has(token)).length;
   const profileEvidenceStrong = queryMatches >= Math.min(2, queryTokens.length) || facetProviderMatches >= 2;
   const profileEvidenceModerate = queryMatches >= 1 || facetProviderMatches >= 1;
-  const role = inferSubtheme(args.candidate, args.llmSubtheme);
+  const inferredRole = inferThemeRole(args.candidate, args.llmSubtheme);
+  const role = inferredRole.role || PROVISIONAL_UNCLASSIFIED_ROLE;
   const llmConfidence = clamp(args.llmConfidence ?? 60);
 
   if (
@@ -816,8 +855,11 @@ export async function selectResearchUniverse(args: {
     const sourceFacetScore = scoreSourceFacetSupport(candidate);
     const factorScore = scoreFinancialFactors(candidate);
     const investmentReadinessScore = clamp((factorScore * 0.60) + (dataConfidenceScore * 0.25) + (liquidityScaleScore * 0.15));
-    const subtheme = themeEvidence.role;
-    const universeFitScore = clamp(
+    const roleInfo = inferThemeRole(candidate, llm.subtheme);
+    const themeRole = !isBroadResearchRole(themeEvidence.role) ? themeEvidence.role : null;
+    const subtheme = themeRole || PROVISIONAL_UNCLASSIFIED_ROLE;
+    const providerGroup = providerGroupForCandidate(candidate);
+    const rawUniverseFitScore = clamp(
       (themeScore * 0.28) +
       (fitTierScore(finalThemeFit) * 0.22) +
       (evidenceTierScore(themeEvidence) * 0.18) +
@@ -826,11 +868,16 @@ export async function selectResearchUniverse(args: {
       (liquidityScaleScore * 0.07) +
       (factorScore * 0.07)
     );
+    const universeFitScore = Math.min(rawUniverseFitScore, themeFitScoreCap(finalThemeFit, themeEvidence));
     const totalScore = universeFitScore;
     const partial = {
       symbol: candidate.symbol,
       companyName: candidate.overview?.name || candidate.symbol,
       subtheme,
+      themeRole,
+      themeRoleConfidence: themeRole ? Math.max(themeEvidence.confidence, roleInfo.confidence) : 0,
+      themeRoleSource: themeRole ? roleInfo.source : 'none',
+      providerGroup,
       themeEvidence,
       themeFit: finalThemeFit,
       totalScore,

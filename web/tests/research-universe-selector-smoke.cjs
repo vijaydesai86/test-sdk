@@ -7,6 +7,7 @@ const jiti = createJiti(__filename);
 const {
   buildResearchUniverseDependencySummary,
   buildResearchUniverseMermaid,
+  PROVISIONAL_UNCLASSIFIED_ROLE,
   evaluateResearchUniverseReadiness,
   selectResearchUniverse,
 } = jiti(path.join(process.cwd(), 'app/lib/researchUniverseSelector.ts'));
@@ -249,12 +250,76 @@ async function testProvisionalAllocationExcludesRejectedNames() {
   assert.ok(!allocationSection.includes('BAD Corp (BAD)'), allocationSection);
 }
 
+async function testProviderGroupsDoNotDriveFallbackMap() {
+  const selection = await selectResearchUniverse({
+    query: 'AI infrastructure',
+    finalCount: 3,
+    candidates: [
+      candidate('TECH', 'Broad enterprise technology products', {
+        overview: { name: 'TECH Corp', sector: 'Technology', industry: 'Software Application', description: 'Broad enterprise technology products', marketCapitalization: 100_000_000_000, forwardPE: 20 },
+      }),
+      candidate('SERV', 'Commercial services and marketplace operations', {
+        overview: { name: 'SERV Corp', sector: 'Industrials', industry: 'Commercial Services & Supplies', description: 'Commercial services and marketplace operations', marketCapitalization: 120_000_000_000, forwardPE: 18 },
+      }),
+      candidate('MEDI', 'Media and internet content services', {
+        overview: { name: 'MEDI Corp', sector: 'Communication Services', industry: 'Media', description: 'Media and internet content services', marketCapitalization: 140_000_000_000, forwardPE: 22 },
+      }),
+    ],
+    llmFill: async () => JSON.stringify({
+      candidates: [
+        { symbol: 'TECH', themeScore: 10, fit: 'reject', evidenceLevel: 'unrelated', evidenceConfidence: 80, subtheme: 'Technology', rationale: 'No supplied theme evidence.' },
+        { symbol: 'SERV', themeScore: 8, fit: 'reject', evidenceLevel: 'unrelated', evidenceConfidence: 80, subtheme: 'Commercial Services & Supplies', rationale: 'No supplied theme evidence.' },
+        { symbol: 'MEDI', themeScore: 7, fit: 'reject', evidenceLevel: 'unrelated', evidenceConfidence: 80, subtheme: 'Media', rationale: 'No supplied theme evidence.' },
+      ],
+    }),
+  });
+
+  assert.equal(selection.selectedSymbols.length, 3, 'fallback must keep the configured company count when provider-validated candidates exist');
+  assert.deepEqual(selection.subthemes, [{ name: PROVISIONAL_UNCLASSIFIED_ROLE, symbols: selection.selectedSymbols }]);
+  assert.ok(selection.candidates.every((item) => item.providerGroup), 'provider groups should be preserved as diagnostics');
+  assert.ok(selection.candidates.every((item) => item.subtheme === PROVISIONAL_UNCLASSIFIED_ROLE), 'provider groups must not become theme roles');
+  const map = buildResearchUniverseMermaid('AI infrastructure', selection);
+  assert.match(map, /Provisional/);
+  assert.doesNotMatch(map, /Commercial Services|Technology|Media/);
+}
+
+async function testThemeFitBeatsUnrelatedFinancialQuality() {
+  const selection = await selectResearchUniverse({
+    query: 'AI infrastructure',
+    finalCount: 1,
+    candidates: [
+      candidate('STOR', 'Storage systems and flash products for cloud and data center infrastructure', {
+        overview: { name: 'STOR Corp', sector: 'Technology', industry: 'Computer Hardware', description: 'Storage systems and flash products for cloud and data center infrastructure', marketCapitalization: 30_000_000_000, forwardPE: 35 },
+        basicFinancials: { metric: { revenueGrowthTTM: 0.04, epsGrowthTTM: 0.02, grossMarginTTM: 0.30, operatingMarginTTM: 0.10, roeTTM: 0.08 } },
+      }),
+      candidate('AUCT', 'Vehicle auctions, salvage services, and commercial marketplace operations', {
+        overview: { name: 'AUCT Corp', sector: 'Industrials', industry: 'Commercial Services & Supplies', description: 'Vehicle auctions, salvage services, and commercial marketplace operations', marketCapitalization: 80_000_000_000, forwardPE: 16 },
+        basicFinancials: { metric: { revenueGrowthTTM: 0.30, epsGrowthTTM: 0.25, grossMarginTTM: 0.75, operatingMarginTTM: 0.45, roeTTM: 0.35 } },
+      }),
+    ],
+    llmFill: async () => JSON.stringify({
+      candidates: [
+        { symbol: 'STOR', themeScore: 45, fit: 'weak_adjacent', evidenceLevel: 'beneficiary', evidenceConfidence: 62, subtheme: 'Storage infrastructure', rationale: 'Supplied profile supports storage/data-center adjacency.' },
+        { symbol: 'AUCT', themeScore: 5, fit: 'reject', evidenceLevel: 'unrelated', evidenceConfidence: 90, subtheme: 'Commercial Services & Supplies', rationale: 'No supplied AI infrastructure exposure.' },
+      ],
+    }),
+  });
+
+  assert.deepEqual(selection.selectedSymbols, ['STOR']);
+  const unrelated = selection.candidates.find((item) => item.symbol === 'AUCT');
+  assert.ok(unrelated, 'expected unrelated candidate diagnostics');
+  assert.equal(unrelated.themeFit, 'reject');
+  assert.ok(unrelated.totalScore <= 28, 'unrelated score should be capped, got ' + unrelated.totalScore);
+}
+
 async function main() {
   await testBroadResolverCannotLock();
   await testConcreteRolesCanLock();
   await testReadinessUsesSelectedRolesNotPlannedRoles();
   await testFacetEvidenceKeepsCanonicalRole();
   await testProvisionalAllocationExcludesRejectedNames();
+  await testProviderGroupsDoNotDriveFallbackMap();
+  await testThemeFitBeatsUnrelatedFinancialQuality();
   console.log('research universe selector smoke tests passed');
 }
 
