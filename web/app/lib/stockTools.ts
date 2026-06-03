@@ -1129,6 +1129,193 @@ function mergeResearchProfileEvidence(args: {
   return [profileEvidence, ...existing];
 }
 
+function profileRoleCandidateText(candidate: ResearchCandidateData): string {
+  const overview = candidate.overview || {};
+  return [
+    overview.industry || overview.Industry,
+    overview.sector || overview.Sector,
+    overview.description,
+    (candidate.sourceFacets || []).filter((facet) => !isBroadResearchRole(facet)).join(' '),
+  ].filter(Boolean).join(' ');
+}
+
+const GENERIC_PROVIDER_ROLE_LABELS = new Set([
+  'technology',
+  'communication services',
+  'consumer cyclical',
+  'consumer defensive',
+  'financial services',
+  'healthcare',
+  'industrials',
+  'basic materials',
+  'energy',
+  'utilities',
+  'real estate',
+  'media',
+  'retail',
+  'software',
+  'software application',
+  'internet content information',
+  'internet retail',
+  'computer hardware',
+  'services',
+  'business services',
+]);
+
+function titleResearchRoleLabel(value: string): string {
+  return sanitizeResearchFacetLabel(value)
+    .split(' ')
+    .map((word) => word.length <= 3 ? word.toUpperCase() : word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .join(' ');
+}
+
+function orderedResearchRoleTokens(value: unknown): string[] {
+  const generic = new Set([
+    ...Array.from(RESEARCH_GENERIC_STOP_WORDS),
+    'technology', 'technologies', 'business', 'corporation', 'group', 'global', 'market', 'markets',
+    'common', 'class', 'shares', 'american', 'depositary', 'ordinary', 'limited',
+  ]);
+  return normalizeResearchEvidenceText(value)
+    .split(' ')
+    .filter((token) => token.length > 2 && !generic.has(token));
+}
+
+function isUsableProfileRoleLabel(label: string, theme: string): boolean {
+  const clean = sanitizeResearchFacetLabel(label);
+  if (!clean || isBroadResearchRole(clean)) return false;
+  const normalized = normalizeResearchEvidenceText(clean);
+  if (!normalized || GENERIC_PROVIDER_ROLE_LABELS.has(normalized)) return false;
+  const labelTokens = researchEvidenceTokens(clean);
+  if (!labelTokens.length) return false;
+  const themeTokens = new Set(researchEvidenceTokens(theme));
+  const distinctive = labelTokens.filter((token) => !themeTokens.has(token));
+  return distinctive.length > 0;
+}
+
+function addProfileRolePhrase(
+  map: Map<string, { label: string; symbols: Set<string>; weight: number; sourceHits: number }>,
+  symbol: string,
+  rawLabel: string,
+  theme: string,
+  weight: number,
+  sourceHit = false
+): void {
+  const label = titleResearchRoleLabel(rawLabel);
+  if (!isUsableProfileRoleLabel(label, theme)) return;
+  const key = normalizeResearchEvidenceText(label);
+  const entry = map.get(key) || { label, symbols: new Set<string>(), weight: 0, sourceHits: 0 };
+  entry.symbols.add(symbol);
+  entry.weight += weight;
+  if (sourceHit) entry.sourceHits += 1;
+  map.set(key, entry);
+}
+
+function buildProfileDerivedResearchRoles(args: {
+  theme: string;
+  candidates: ResearchCandidateData[];
+  targetCount: number;
+}): { roles: ResearchUniverseRole[]; requiredDimensions: ResearchRequiredDimension[]; evidenceBySymbol: Map<string, ResearchSourceEvidence>; notes: string[] } {
+  const phraseMap = new Map<string, { label: string; symbols: Set<string>; weight: number; sourceHits: number }>();
+  const themeTokens = new Set(researchEvidenceTokens(args.theme));
+  for (const candidate of args.candidates) {
+    const overview = candidate.overview || {};
+    const symbol = normalizeTickerCandidate(candidate.symbol);
+    if (!symbol) continue;
+    const industry = sanitizeResearchFacetLabel(overview.industry || overview.Industry);
+    const sector = sanitizeResearchFacetLabel(overview.sector || overview.Sector);
+    const sourceText = (candidate.sourceFacets || []).filter((facet) => !isBroadResearchRole(facet)).join(' ');
+    if (industry) addProfileRolePhrase(phraseMap, symbol, industry, args.theme, 30, researchTokenOverlapScore(sourceText, industry) > 0);
+    if (sector && sector.toLowerCase() !== industry.toLowerCase()) addProfileRolePhrase(phraseMap, symbol, sector, args.theme, 8, false);
+
+    const tokens = orderedResearchRoleTokens([industry, overview.description].filter(Boolean).join(' '));
+    for (const size of [3, 2]) {
+      for (let index = 0; index <= tokens.length - size; index += 1) {
+        const phraseTokens = tokens.slice(index, index + size);
+        const distinctiveCount = phraseTokens.filter((token) => !themeTokens.has(token)).length;
+        if (distinctiveCount === 0) continue;
+        const phrase = phraseTokens.join(' ');
+        const themeOverlap = researchTokenOverlapScore(phrase, args.theme);
+        const sourceOverlap = researchTokenOverlapScore(sourceText, phrase);
+        const phraseWeight = 10 + Math.min(12, themeOverlap * 5) + Math.min(10, sourceOverlap * 4);
+        addProfileRolePhrase(phraseMap, symbol, phrase, args.theme, phraseWeight, sourceOverlap > 0);
+      }
+    }
+  }
+
+  const roleLimit = Math.min(8, Math.max(4, Math.ceil(args.targetCount / 3)));
+  const scored = Array.from(phraseMap.values())
+    .map((entry) => ({
+      ...entry,
+      score: (Math.min(6, entry.symbols.size) * 22)
+        + entry.weight
+        + (entry.sourceHits * 6)
+        + (researchTokenOverlapScore(entry.label, args.theme) * 10),
+    }))
+    .filter((entry) => entry.symbols.size >= 1 && entry.score >= 28)
+    .sort((a, b) => b.score - a.score || b.symbols.size - a.symbols.size || a.label.localeCompare(b.label));
+
+  const selected: typeof scored = [];
+  for (const entry of scored) {
+    const duplicate = selected.some((picked) => {
+      const pickedNorm = normalizeResearchEvidenceText(picked.label);
+      const entryNorm = normalizeResearchEvidenceText(entry.label);
+      return pickedNorm === entryNorm || pickedNorm.includes(entryNorm) || entryNorm.includes(pickedNorm);
+    });
+    if (!duplicate) selected.push(entry);
+    if (selected.length >= roleLimit) break;
+  }
+
+  const roles: ResearchUniverseRole[] = selected.map((entry, index) => ({
+    label: entry.label,
+    definition: 'Derived from recurring verified provider profile text after generated taxonomy was unavailable.',
+    required: index < Math.min(4, selected.length),
+    query: args.theme + ' ' + entry.label,
+    dimensions: [entry.label],
+    searchQueries: [args.theme + ' ' + entry.label + ' public companies'],
+  }));
+  const requiredDimensions: ResearchRequiredDimension[] = roles.map((role) => ({
+    label: role.label,
+    required: role.required !== false,
+    searchQueries: role.searchQueries,
+    rationale: 'Provider-profile-derived role bucket used to repair missing generated taxonomy.',
+  }));
+
+  const evidenceBySymbol = new Map<string, ResearchSourceEvidence>();
+  for (const candidate of args.candidates) {
+    const symbol = normalizeTickerCandidate(candidate.symbol);
+    if (!symbol) continue;
+    const profileText = normalizeResearchEvidenceText(profileRoleCandidateText(candidate));
+    const sourceText = normalizeResearchEvidenceText((candidate.sourceFacets || []).join(' '));
+    let best: { role: ResearchUniverseRole; score: number } | null = null;
+    for (const role of roles) {
+      const score = scoreGenericResearchRole({
+        profileText,
+        sourceText,
+        themeText: normalizeResearchEvidenceText(args.theme),
+        roleText: role.label,
+      });
+      if (!best || score > best.score) best = { role, score };
+    }
+    if (!best || best.score < 28) continue;
+    const confidence = Math.min(88, Math.max(66, best.score + 34));
+    evidenceBySymbol.set(symbol, {
+      role: best.role.label,
+      level: 'enabler',
+      confidence,
+      rationale: 'Verified provider profile matched provider-profile-derived role bucket "' + best.role.label + '" for this theme.',
+      source: 'provider-profile-classifier',
+    });
+  }
+
+  return {
+    roles,
+    requiredDimensions,
+    evidenceBySymbol,
+    notes: roles.length
+      ? ['Profile-derived role buckets repaired missing generated taxonomy: ' + roles.map((role) => role.label).join('; ') + '.']
+      : ['Profile-derived role bucket repair could not find enough concrete provider-profile phrases.'],
+  };
+}
 function buildResearchThemeCandidatePrompt(theme: string, targetCount: number, maxFacets: number, candidatesPerFacet: number): string {
   return [
     `Build a verified-candidate proposal for the public-equity investment theme "${theme}".`,
@@ -5199,8 +5386,8 @@ export async function executeTool(
               previousUniverse: updateContext.previous?.metadata?.researchUniverse,
             });
         const taxonomyAvailable = !candidateDiscovery.usedFallbackTaxonomy;
-        const classificationRequiredDimensions = taxonomyAvailable ? candidateDiscovery.requiredDimensions : [];
-        const universeRoles: ResearchUniverseRole[] = taxonomyAvailable
+        let classificationRequiredDimensions = taxonomyAvailable ? candidateDiscovery.requiredDimensions : [];
+        let universeRoles: ResearchUniverseRole[] = taxonomyAvailable
           ? candidateDiscovery.facets.map((facet) => ({
               label: facet.label,
               definition: facet.definition,
@@ -5342,6 +5529,34 @@ export async function executeTool(
               return !issue;
             });
         selectionNotes.push(`Universe validation: ${validatedSelectionCandidateData.length}/${selectionCandidateData.length} candidates remained active/provider-confirmed.`);
+        if (lockedSymbols.length === 0 && validatedSelectionCandidateData.length > 0 && universeRoles.length === 0) {
+          const profileRoleRepair = buildProfileDerivedResearchRoles({
+            theme: resolverSector,
+            candidates: validatedSelectionCandidateData,
+            targetCount: finalCount,
+          });
+          if (profileRoleRepair.roles.length) {
+            universeRoles = profileRoleRepair.roles;
+            classificationRequiredDimensions = profileRoleRepair.requiredDimensions;
+            let repairedEvidenceCount = 0;
+            for (const candidate of validatedSelectionCandidateData) {
+              const symbol = normalizeTickerCandidate(candidate.symbol);
+              if (!symbol) continue;
+              const evidence = profileRoleRepair.evidenceBySymbol.get(symbol);
+              if (!evidence) continue;
+              const existing = normalizeStoredResearchSourceEvidence(candidate.sourceEvidence);
+              if (!existing.some((item) => item.role === evidence.role && item.level === evidence.level)) {
+                candidate.sourceEvidence = [evidence, ...existing];
+                repairedEvidenceCount += 1;
+              }
+              candidateEvidenceMap.set(symbol, normalizeStoredResearchSourceEvidence(candidate.sourceEvidence));
+            }
+            selectionNotes.push(...profileRoleRepair.notes);
+            selectionNotes.push(`Profile-derived classification repair added concrete role evidence for ${repairedEvidenceCount}/${validatedSelectionCandidateData.length} validated candidates.`);
+          } else {
+            selectionNotes.push(...profileRoleRepair.notes);
+          }
+        }
         if (lockedSymbols.length === 0 && validatedSelectionCandidateData.length === 0) {
           const reason = validatedSelectionCandidateData.length === 0
             ? `No active provider-confirmed candidates could be validated for "${sector}".`
@@ -5382,7 +5597,10 @@ export async function executeTool(
           maxRoleShare: RESEARCH_UNIVERSE_MAX_ROLE_SHARE,
         });
         const fallbackHasConcreteClassifier = candidateDiscovery.usedFallbackTaxonomy && universeSelection.candidates.some((candidate) =>
-          candidate.selected && candidate.llmClassified && !isBroadResearchRole(candidate.subtheme)
+          candidate.selected
+            && (candidate.themeEvidence.level === 'direct' || candidate.themeEvidence.level === 'enabler')
+            && !isBroadResearchRole(candidate.subtheme)
+            && !isBroadResearchRole(candidate.themeEvidence.role)
         );
         if (candidateDiscovery.usedFallbackTaxonomy && !fallbackHasConcreteClassifier) {
           collapseGenericFallbackUniverseSelection(

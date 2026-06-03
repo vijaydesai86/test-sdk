@@ -266,7 +266,10 @@ function inferThemeRole(candidate: ResearchCandidateData, llmSubtheme?: string):
   const evidenceRole = bestSourceEvidence(candidate);
   if (evidenceRole) {
     const role = cleanThemeRole(evidenceRole.role);
-    if (role && !isBroadResearchRole(role) && !providerLabels.has(role.toLowerCase())) {
+    const profileDerivedConcrete = evidenceRole.source === 'provider-profile-classifier'
+      && (evidenceRole.level === 'direct' || evidenceRole.level === 'enabler')
+      && evidenceRole.confidence >= 65;
+    if (role && !isBroadResearchRole(role) && (profileDerivedConcrete || !providerLabels.has(role.toLowerCase()))) {
       return {
         role,
         confidence: evidenceRole.confidence,
