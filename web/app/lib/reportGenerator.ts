@@ -3708,7 +3708,14 @@ function buildResearchAllocationSection(
   });
 
   const provisional = rows.length ? [] : candidates
-    .filter((candidate) => candidate.selector?.selected && candidate.allocationScore !== null && candidate.allocationScore > 0 && candidate.row.score !== null)
+    .filter((candidate) =>
+      candidate.selector?.selected
+      && candidate.selector.themeFit !== 'reject'
+      && candidate.selector.themeEvidence.level !== 'unrelated'
+      && candidate.allocationScore !== null
+      && candidate.allocationScore > 0
+      && candidate.row.score !== null
+    )
     .sort((a, b) => (b.allocationScore || 0) - (a.allocationScore || 0))
     .slice(0, Math.max(1, selection?.requestedCount || scored.length));
   const provisionalTotal = provisional.reduce((sum, candidate) => sum + (candidate.allocationScore || 0), 0);
@@ -4392,7 +4399,9 @@ function buildComparisonConclusion(
 
   const strategyAdvice =
     qualifiedResearchSymbols && scoredForRecommendation.length === 0
-      ? `No qualified theme subset cleared the current evidence gates; wait for a fresh universe rebuild before using allocation guidance.`
+      ? (ranked.length
+          ? `No strict qualified theme subset cleared the current evidence gates. Use the provisional company data only as a watchlist while improve passes continue role classification and data filling.`
+          : `No qualified theme subset cleared the current evidence gates; wait for a fresh universe rebuild before using allocation guidance.`)
       : topScore !== null && topScore >= 65
       ? `Focused allocation to the top-ranked name(s) is supported by the data.`
       : `A diversified basket approach reduces single-name risk given mixed fundamentals.`;

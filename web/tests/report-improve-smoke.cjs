@@ -130,6 +130,69 @@ function testUnreadyResearchCanImproveByFetchingCoreData() {
   }), { accepted: true, reason: 'candidate_improved_available' });
 }
 
+function testUnreadyResearchAcceptsProgressCheckpointAdvance() {
+  const baseUniverse = {
+    status: 'refining',
+    selectedSymbols: ['NVDA', 'AMD'],
+    qualifiedSymbols: [],
+    candidates: [],
+    readiness: readiness({
+      status: 'refining',
+      selectedCount: 0,
+      roleCount: 0,
+      coveredDimensions: [],
+      missingDimensions: ['compute', 'cloud'],
+    }),
+  };
+  const before = buildReportRunMetadata({
+    kind: 'research',
+    query: 'AI infrastructure',
+    symbols: ['NVDA', 'AMD'],
+    range: '1y',
+    generatedAt: '2026-05-27T10:00:00.000Z',
+    coverage: [],
+    researchUniverse: {
+      ...baseUniverse,
+      progress: {
+        targetCount: 2,
+        batchSize: 2,
+        cursor: 0,
+        candidates: [
+          { symbol: 'NVDA', rank: 0, selected: true, qualified: false, themeScore: 35, dataConfidenceScore: 70, universeScore: 50, reportScore: 0, finalScore: 30, roleCoverageScore: 0, state: 'unprocessed', attempts: 0 },
+          { symbol: 'AMD', rank: 1, selected: true, qualified: false, themeScore: 34, dataConfidenceScore: 70, universeScore: 48, reportScore: 0, finalScore: 29, roleCoverageScore: 0, state: 'unprocessed', attempts: 0 },
+        ],
+      },
+    },
+  });
+  const after = buildReportRunMetadata({
+    kind: 'research',
+    query: 'AI infrastructure',
+    symbols: ['NVDA', 'AMD'],
+    range: '1y',
+    generatedAt: '2026-05-27T10:05:00.000Z',
+    coverage: [],
+    researchUniverse: {
+      ...baseUniverse,
+      progress: {
+        targetCount: 2,
+        batchSize: 2,
+        cursor: 2,
+        candidates: [
+          { symbol: 'NVDA', rank: 0, selected: true, qualified: false, themeScore: 35, dataConfidenceScore: 70, universeScore: 50, reportScore: 76, finalScore: 55, roleCoverageScore: 0, state: 'basic_scored', attempts: 1 },
+          { symbol: 'AMD', rank: 1, selected: true, qualified: false, themeScore: 34, dataConfidenceScore: 70, universeScore: 48, reportScore: 48, finalScore: 45, roleCoverageScore: 0, state: 'basic_scored', attempts: 1 },
+        ],
+      },
+    },
+  });
+
+  assert.deepEqual(compareImproveCandidateForReport({
+    beforeMetadata: before,
+    afterMetadata: after,
+    beforeCoverage: coverageStats(before),
+    afterCoverage: coverageStats(after),
+  }), { accepted: true, reason: 'research_progress_advanced' });
+}
+
 function testUnreadyResearchPassContinuesUntilPassLimit() {
   const metadata = researchMetadata(['NVDA'], 'failed', readiness({
     status: 'failed',
@@ -158,6 +221,7 @@ function main() {
   testPartialUnreadyResearchKeepsTargetCount();
   testFlatUnreadyCheckpointIsAcceptedButWorseOneIsRejected();
   testUnreadyResearchCanImproveByFetchingCoreData();
+  testUnreadyResearchAcceptsProgressCheckpointAdvance();
   testUnreadyResearchPassContinuesUntilPassLimit();
   console.log('report improve smoke tests passed');
 }

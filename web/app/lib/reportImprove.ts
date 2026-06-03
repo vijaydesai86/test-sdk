@@ -57,6 +57,7 @@ export interface ImproveCandidateDecision {
   reason: 'missing_candidate_checkpoint'
     | 'research_universe_locked'
     | 'research_universe_readiness_improved'
+    | 'research_progress_advanced'
     | 'research_universe_still_unready'
     | 'candidate_improved_critical'
     | 'candidate_improved_missing'
@@ -322,6 +323,23 @@ function researchReadinessScore(metadata?: Pick<ReportRunMetadata, 'researchUniv
   );
 }
 
+function researchProgressScore(metadata?: Pick<ReportRunMetadata, 'researchUniverse'> | null): number {
+  const progress = metadata?.researchUniverse?.progress;
+  const pipeline = metadata?.researchUniverse?.pipeline;
+  if (!progress && !pipeline) return 0;
+  const candidates = progress?.candidates || [];
+  const basicScored = candidates.filter((candidate) => candidate.state === 'basic_scored').length;
+  const attempted = candidates.filter((candidate) => candidate.state !== 'unprocessed').length;
+  const selected = candidates.filter((candidate) => candidate.selected).length;
+  return (
+    (progress?.cursor || 0) * 10_000 +
+    basicScored * 1_000 +
+    attempted * 100 +
+    selected * 10 +
+    (pipeline?.processedCursor || 0)
+  );
+}
+
 export function compareImproveCandidateForReport(args: {
   beforeMetadata?: ReportRunMetadata | null;
   afterMetadata?: ReportRunMetadata | null;
@@ -344,6 +362,9 @@ export function compareImproveCandidateForReport(args: {
     const afterReadiness = researchReadinessScore(args.afterMetadata);
     if (afterReadiness > beforeReadiness) {
       return { accepted: true, reason: 'research_universe_readiness_improved' };
+    }
+    if (researchProgressScore(args.afterMetadata) > researchProgressScore(args.beforeMetadata)) {
+      return { accepted: true, reason: 'research_progress_advanced' };
     }
     const coverageDecision = compareImproveCandidate(args.beforeCoverage, args.afterCoverage);
     if (coverageDecision.accepted) {

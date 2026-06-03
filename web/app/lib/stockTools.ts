@@ -842,8 +842,7 @@ type ResearchCandidateProgressState = 'unprocessed' | 'basic_scored' | 'temporar
 function hasRecommendationGradeBasicData(item: any): boolean {
   return hasMeaningfulReportValue(item?.price)
     && hasMeaningfulReportValue(item?.overview)
-    && hasMeaningfulReportValue(item?.basicFinancials)
-    && hasMeaningfulReportValue(item?.priceHistory);
+    && hasMeaningfulReportValue(item?.basicFinancials);
 }
 
 function hasAnyResearchCandidateData(item: any): boolean {
@@ -932,18 +931,24 @@ function buildFallbackResearchThemeFacets(theme: string, limit = RESEARCH_THEME_
   });
 }
 
-function collapseGenericFallbackUniverseSelection(selection: ResearchUniverseSelection): void {
-  const fallbackRole = 'Generic fallback checkpoint';
+function collapseGenericFallbackUniverseSelection(selection: ResearchUniverseSelection, candidateDataBySymbol: Map<string, ResearchCandidateData>): void {
   const selectedSymbols = selection.selectedSymbols.slice();
   const selectedSet = new Set(selectedSymbols);
+  const groupFor = (symbol: string): string => {
+    const candidateData = candidateDataBySymbol.get(symbol);
+    const overview = candidateData?.overview || {};
+    const providerGroup = sanitizeResearchFacetLabel(overview.industry || overview.Industry || overview.sector || overview.Sector || 'Unclassified');
+    return `Provider profile group: ${providerGroup || 'Unclassified'}`;
+  };
   for (const candidate of selection.candidates) {
+    const fallbackRole = groupFor(candidate.symbol);
     candidate.subtheme = fallbackRole;
     candidate.themeEvidence = {
       ...candidate.themeEvidence,
       role: fallbackRole,
       level: candidate.selected ? 'beneficiary' : candidate.themeEvidence.level,
       rationale: candidate.selected
-        ? 'Selected from provider-validated generic fallback discovery; concrete theme role still requires refinement.'
+        ? 'Selected from provider-validated generic fallback discovery; provider profile group is shown for transparency but does not qualify as concrete theme-role evidence.'
         : candidate.themeEvidence.rationale,
     };
     if (selectedSet.has(candidate.symbol)) {
@@ -952,8 +957,13 @@ function collapseGenericFallbackUniverseSelection(selection: ResearchUniverseSel
     }
   }
   selection.qualifiedSymbols = [];
-  selection.subthemes = selectedSymbols.length ? [{ name: fallbackRole, symbols: selectedSymbols }] : [];
-  selection.notes.push('Generic fallback checkpoint: concrete role taxonomy unavailable, so selected companies remain provider-backed but are not treated as qualified theme-role coverage.');
+  const subthemeMap = new Map<string, string[]>();
+  for (const symbol of selectedSymbols) {
+    const name = groupFor(symbol);
+    subthemeMap.set(name, [...(subthemeMap.get(name) || []), symbol]);
+  }
+  selection.subthemes = Array.from(subthemeMap.entries()).map(([name, symbols]) => ({ name, symbols }));
+  selection.notes.push('Generic fallback checkpoint: concrete role taxonomy unavailable, so provider profile groups are shown for transparency but are not treated as qualified theme-role coverage.');
 }
 
 function genericResearchRoleText(role: ResearchUniverseRole | ResearchRequiredDimension): string {
@@ -5345,7 +5355,10 @@ export async function executeTool(
           candidate.selected && candidate.llmClassified && !isBroadResearchRole(candidate.subtheme)
         );
         if (candidateDiscovery.usedFallbackTaxonomy && !fallbackHasConcreteClassifier) {
-          collapseGenericFallbackUniverseSelection(universeSelection);
+          collapseGenericFallbackUniverseSelection(
+            universeSelection,
+            new Map(validatedSelectionCandidateData.map((candidate) => [candidate.symbol, candidate]))
+          );
         }
         let universeReadiness: ResearchUniverseReadiness = evaluateResearchUniverseReadiness({
           selection: universeSelection,

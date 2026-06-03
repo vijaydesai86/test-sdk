@@ -5,9 +5,12 @@ const { createJiti } = require('jiti');
 
 const jiti = createJiti(__filename);
 const {
+  buildResearchUniverseDependencySummary,
+  buildResearchUniverseMermaid,
   evaluateResearchUniverseReadiness,
   selectResearchUniverse,
 } = jiti(path.join(process.cwd(), 'app/lib/researchUniverseSelector.ts'));
+const { buildDeepSectorReport } = jiti(path.join(process.cwd(), 'app/lib/reportGenerator.ts'));
 
 function candidate(symbol, description, overrides = {}) {
   return {
@@ -190,11 +193,68 @@ async function testFacetEvidenceKeepsCanonicalRole() {
   assert.notEqual(asml?.subtheme, 'Compute accelerators/chips');
 }
 
+async function testProvisionalAllocationExcludesRejectedNames() {
+  const selection = await selectResearchUniverse({
+    query: 'AI infrastructure',
+    finalCount: 2,
+    candidates: [
+      candidate('GOOD', 'Provider validated AI infrastructure platform candidate'),
+      candidate('BAD', 'Unrelated document workflow software candidate'),
+    ],
+    llmFill: async () => JSON.stringify({
+      candidates: [
+        { symbol: 'GOOD', themeScore: 45, fit: 'weak_adjacent', evidenceLevel: 'beneficiary', subtheme: 'Provider candidate', rationale: 'Some adjacent exposure.' },
+        { symbol: 'BAD', themeScore: 5, fit: 'reject', evidenceLevel: 'unrelated', subtheme: 'Unsupported provider candidate', rationale: 'No material theme exposure.' },
+      ],
+    }),
+  });
+  const items = selection.selectedSymbols.map((symbol, index) => ({
+    symbol,
+    price: { price: 100 + index },
+    overview: {
+      name: symbol + ' Corp',
+      sector: 'Technology',
+      industry: 'Infrastructure',
+      description: symbol === 'GOOD' ? 'AI infrastructure platform candidate' : 'Unrelated workflow software',
+      marketCapitalization: 100_000_000_000,
+      forwardPE: 20,
+    },
+    basicFinancials: {
+      metric: {
+        revenueGrowthTTM: 0.25,
+        epsGrowthTTM: 0.20,
+        grossMarginTTM: 0.60,
+        operatingMarginTTM: 0.30,
+        roeTTM: 0.25,
+      },
+    },
+    priceHistory: { prices: [{ date: '2025-01-01', close: 80 }, { date: '2026-01-01', close: 120 }] },
+    decisionSnapshot: { overallScore: 80, action: 'Initiate', confidence: 'Medium', summary: 'Data-backed candidate.' },
+  }));
+  const report = buildDeepSectorReport({
+    sectorQuery: 'AI infrastructure',
+    selectedBy: 'llm',
+    generatedAt: '2026-06-03T00:00:00.000Z',
+    range: '1y',
+    universe: selection.selectedSymbols,
+    initialCandidates: selection.candidates.map((item) => item.symbol),
+    universeSelection: selection,
+    dependencyAnalysis: buildResearchUniverseDependencySummary(selection),
+    ecosystemDiagram: buildResearchUniverseMermaid('AI infrastructure', selection),
+    items,
+    notes: [],
+  });
+  const allocationSection = report.split('## 🧭 Research Allocation Scenario')[1]?.split('## 🎯 Investment Conclusion')[0] || '';
+  assert.ok(allocationSection.includes('GOOD Corp (GOOD)'), allocationSection);
+  assert.ok(!allocationSection.includes('BAD Corp (BAD)'), allocationSection);
+}
+
 async function main() {
   await testBroadResolverCannotLock();
   await testConcreteRolesCanLock();
   await testReadinessUsesSelectedRolesNotPlannedRoles();
   await testFacetEvidenceKeepsCanonicalRole();
+  await testProvisionalAllocationExcludesRejectedNames();
   console.log('research universe selector smoke tests passed');
 }
 
