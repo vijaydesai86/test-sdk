@@ -121,7 +121,7 @@ export interface ResearchUniverseReadiness {
   canBuildFullReport: boolean;
 }
 
-type LLMFiller = (prompt: string) => Promise<string>;
+type LLMFiller = (prompt: string, options?: { purpose?: 'fill' | 'discovery' | 'classification' | 'narrative'; label?: string }) => Promise<string>;
 type PricePoint = { date?: string; close?: string | number };
 
 const DEFAULT_WEIGHTS: ResearchUniverseWeights = {
@@ -771,7 +771,7 @@ async function classifyThemeWithLLM(args: {
     JSON.stringify(payload),
   ].join('\n\n');
   try {
-    const raw = await args.llmFill(prompt);
+    const raw = await args.llmFill(prompt, { purpose: 'classification', label: 'theme-company-fit-classification' });
     const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
     const parsed = JSON.parse(cleaned);
     const rows = Array.isArray(parsed?.candidates) ? parsed.candidates : [];

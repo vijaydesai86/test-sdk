@@ -3616,6 +3616,25 @@ function buildResearchUniverseSelectionSection(selection?: ResearchUniverseSelec
         )
       );
     }
+    const classificationRows = selection.candidates.map((candidate) => [
+      tableCell(`${candidate.companyName} (${candidate.symbol})`),
+      tableCell(candidate.subtheme),
+      tableCell(candidate.themeEvidence.level),
+      formatScore(candidate.themeEvidence.confidence),
+      tableCell(candidate.themeRoleSource || 'none'),
+      tableCell(candidate.qualified ? 'yes' : 'no'),
+      tableCell(candidate.themeEvidence.rationale || candidate.reasons[0] || ''),
+    ]);
+    if (classificationRows.length) {
+      lines.push(
+        '### Theme Classification Trace',
+        buildTable(
+          ['Company', 'Assigned Role', 'Evidence', 'Confidence', 'Source', 'Qualified', 'Reason'],
+          classificationRows,
+          ['left', 'left', 'left', 'right', 'left', 'left', 'left']
+        )
+      );
+    }
   }
 
   return lines.join('\n\n');

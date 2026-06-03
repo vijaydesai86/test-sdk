@@ -434,6 +434,29 @@ function collapsedSingleBucketTaxonomyResponse() {
   });
 }
 
+function partialTaxonomyResponse() {
+  const symbols = ['NVDA', 'AMD', 'INTC', 'TSM', 'MU', 'AVGO', 'MRVL', 'ASML', 'LRCX', 'AMAT', 'KLAC', 'MSFT', 'GOOGL', 'AMZN', 'ANET', 'WDC'];
+  return JSON.stringify({
+    requiredDimensions: [
+      { label: 'AI infrastructure platform exposure', required: true },
+    ],
+    roles: [
+      {
+        label: 'AI infrastructure platform exposure',
+        dimensions: ['AI infrastructure platform exposure'],
+        query: 'AI infrastructure platform hardware cloud exposure',
+        candidates: symbols.map((symbol) => ({
+          companyName: PROFILES[symbol]?.name || `${symbol} Corp`,
+          likelyTicker: symbol,
+          evidenceLevel: symbol === 'NVDA' ? 'direct' : 'enabler',
+          confidence: 72,
+          reason: 'Intentionally under-specified generated role for repair regression coverage.',
+        })),
+      },
+    ],
+  });
+}
+
 function verifiedProfileRoleRepairResponse() {
   const roleBySymbol = {
     NVDA: ['direct', 'AI accelerator silicon', 92, 'GPU accelerators and networking for AI data centers.'],
@@ -554,7 +577,7 @@ async function runCompleteUniverseScenario() {
 
   assert.equal(result.success, true, result.error || 'research report failed');
   assert.ok(taxonomyCalls >= 2, 'expected taxonomy retry before generic fallback');
-  assert.match(result.data.content, /Theme taxonomy attempt 1 returned 0 concrete role buckets; retrying before generic fallback/);
+  assert.match(result.data.content, /Theme taxonomy attempt 1 returned 0\/5 required concrete role buckets; retrying before generic fallback/);
   assert.equal(result.data.reportKind, 'research');
   assert.ok(!/Verified Data Status/.test(result.data.content), 'did not expect unavailable-data placeholder');
   assert.ok(!/Broad theme resolver/.test(result.data.content), 'did not expect broad resolver role in final report');
@@ -792,7 +815,7 @@ async function runVerifiedProfileLLMRoleRepairScenario() {
     const symbols = result.data.runMetadata.symbols;
     const roleText = JSON.stringify(universe.subthemes || []);
     const roleTextLower = roleText.toLowerCase();
-    assert.match(result.data.content, /Verified-profile LLM role repair produced/);
+    assert.match(result.data.content, /Verified-profile LLM classification produced/);
     assert.doesNotMatch(result.data.content, /Profile-derived role buckets repaired missing generated taxonomy/);
     assert.ok((universe.readiness?.selectedCount || 0) >= 12, 'expected enough direct/enabler classifications, got ' + universe.readiness?.selectedCount);
     assert.ok((universe.readiness?.roleCount || 0) >= 4, 'expected concrete LLM role coverage, got ' + universe.readiness?.roleCount + ': ' + roleText);
@@ -806,6 +829,77 @@ async function runVerifiedProfileLLMRoleRepairScenario() {
       assert.ok(symbols.includes(expected), 'expected ' + expected + ' in LLM-repaired universe: ' + symbols.join(', '));
     }
     console.log('research verified-profile LLM role repair e2e smoke passed with ' + symbols.length + ' symbols: ' + symbols.join(', '));
+  } finally {
+    if (priorDebug === undefined) delete process.env.DEBUG;
+    else process.env.DEBUG = priorDebug;
+    await fs.rm(testRoot, { recursive: true, force: true });
+  }
+}
+
+async function runPartialTaxonomyLLMClassificationRepairScenario() {
+  await fs.rm(testRoot, { recursive: true, force: true });
+  const priorDebug = process.env.DEBUG;
+  process.env.DEBUG = 'true';
+  let taxonomyCalls = 0;
+  let roleRepairCalls = 0;
+  const llmPurposes = [];
+  const llmTrace = [];
+  try {
+    const result = await executeTool(
+      'generate_research_report',
+      { sector: 'AI infrastructure', range: '1y', count: 15 },
+      createProductionLikeService(),
+      {
+        deadlineAt: Date.now() + 240000,
+        llmTrace,
+        async llmFill(prompt, options = {}) {
+          llmPurposes.push(options.purpose || 'fill');
+          llmTrace.push({
+            purpose: options.purpose || 'fill',
+            label: options.label,
+            provider: 'test',
+            model: 'fixture-model',
+            result: 'success',
+          });
+          if (prompt.includes('Build a verified-candidate proposal')) {
+            taxonomyCalls += 1;
+            return partialTaxonomyResponse();
+          }
+          if (prompt.includes('Classify this already provider-verified public-company universe')) {
+            roleRepairCalls += 1;
+            return verifiedProfileRoleRepairResponse();
+          }
+          if (prompt.includes('deep research ecosystem analysis')) return '{}';
+          return '{}';
+        },
+      }
+    );
+
+    assert.equal(result.success, true, result.error || 'partial-taxonomy LLM classification repair report failed');
+    assert.equal(result.data.reportKind, 'research');
+    assert.ok(taxonomyCalls >= 1, 'expected generated subtheme discovery call');
+    assert.equal(roleRepairCalls, 1, 'expected profile-grounded classification repair even when a weak taxonomy exists');
+    assert.ok(llmPurposes.includes('discovery'), 'expected discovery LLM purpose tag');
+    assert.ok(llmPurposes.includes('classification'), 'expected classification LLM purpose tag');
+    assert.match(result.data.content, /Profile-grounded classification checkpoint:/);
+    assert.match(result.data.content, /Profile-grounded classification repair accepted:/);
+    assert.match(result.data.content, /Verified-profile LLM classification produced/);
+    assert.match(result.data.content, /Theme Classification Trace/);
+    assert.match(result.data.content, /LLM attempt trace/);
+    const universe = result.data.runMetadata.researchUniverse;
+    const symbols = result.data.runMetadata.symbols;
+    const roleText = JSON.stringify(universe.subthemes || []);
+    assert.ok((universe.readiness?.selectedCount || 0) >= 12, 'expected enough direct/substantial classifications, got ' + universe.readiness?.selectedCount);
+    assert.ok((universe.readiness?.roleCount || 0) >= 4, 'expected repaired role coverage, got ' + universe.readiness?.roleCount + ': ' + roleText);
+    const roleTextLower = roleText.toLowerCase();
+    for (const expectedRole of ['AI accelerator silicon', 'Advanced chip manufacturing', 'Semiconductor fabrication equipment', 'Cloud data center platforms']) {
+      assert.ok(roleTextLower.includes(expectedRole.toLowerCase()), 'missing repaired role ' + expectedRole + ': ' + roleText);
+    }
+    for (const expected of ['NVDA', 'TSM', 'MSFT', 'MU', 'AMAT']) {
+      assert.ok(symbols.includes(expected), 'expected ' + expected + ' in repaired universe: ' + symbols.join(', '));
+    }
+    assert.ok(!/Provider profile group:/i.test(roleText), 'provider profile groups must not become repaired roles: ' + roleText);
+    console.log('research partial-taxonomy LLM classification repair e2e smoke passed with ' + symbols.length + ' symbols: ' + symbols.join(', '));
   } finally {
     if (priorDebug === undefined) delete process.env.DEBUG;
     else process.env.DEBUG = priorDebug;
@@ -867,6 +961,7 @@ async function main() {
   await runLimitedRoleProvisionalDataScenario();
   await runNearReadyProvisionalScenario();
   await runVerifiedProfileLLMRoleRepairScenario();
+  await runPartialTaxonomyLLMClassificationRepairScenario();
   await runGenericFallbackCheckpointScenario();
 }
 

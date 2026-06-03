@@ -89,8 +89,22 @@ The system **automatically uses all configured providers in sequence** — GitHu
 | `COPILOT_FALLBACK_MODELS` | No | Optional comma-separated GitHub model IDs to try near the front of the automatic fallback ladder. |
 | `GEMINI_FALLBACK_MODELS` | No | Optional comma-separated Gemini IDs. Safe defaults are `gemini-2.5-flash` and `gemini-2.5-flash-lite`; `gemini-2.5-pro` is only added when explicitly requested or `GEMINI_ENABLE_PRO_FALLBACK=true`. |
 | `GEMINI_CHAT_REASONING_EFFORT` / `GEMINI_FILL_REASONING_EFFORT` | No | OpenAI-compatible Gemini reasoning effort for chat/report-routing and targeted fill calls. Default: `low`. Allowed: `low`, `medium`, `high`. |
-| `FILL_MODEL` | No | Lighter model used for ticker resolution. Default: `openai/gpt-4.1-mini`. |
-| `AUTO_DOWNGRADE_GPT5` | No | Set to `false` to disable automatic gpt-5 → gpt-4.1 downgrade. Default: `true`. |
+| `FILL_MODEL` | No | Lighter model used for ticker resolution and low-risk fill work. Default: `openai/gpt-4.1-mini`. |
+| `COPILOT_REASONING_MODEL` | No | Optional shared stronger GitHub Models ID for research discovery/classification when a task-specific model is not set. |
+| `RESEARCH_DISCOVERY_MODEL` / `RESEARCH_DISCOVERY_FALLBACK_MODELS` | No | Optional model ladder for generating theme-specific subthemes and candidate discovery plans. |
+| `RESEARCH_CLASSIFICATION_MODEL` / `RESEARCH_CLASSIFICATION_FALLBACK_MODELS` | No | Optional model ladder for assigning provider-verified companies to theme-specific subthemes. |
+| `NARRATIVE_MODEL` / `NARRATIVE_FALLBACK_MODELS` | No | Optional model ladder for narrative/report text enrichment. |
+| `AUTO_DOWNGRADE_GPT5` | No | Set to `false` to disable automatic gpt-5 → gpt-4.1 downgrade for chat/fill calls. Research discovery/classification model choices are not downgraded by this flag. Default: `true`. |
+
+### Research tuning
+
+| Variable | Required | Description |
+|---|---|---|
+| `NUM_COMPANIES` | No | Target report universe size. Default: `10`. |
+| `RESEARCH_CANDIDATE_POOL_MULTIPLIER` | No | Candidate pool multiplier before provider validation and theme scoring. Default: `5`. |
+| `RESEARCH_THEME_FACET_COUNT` | No | Maximum number of LLM-generated theme subthemes to request. Default: `7`. |
+| `RESEARCH_SUBTHEME_MAX_ATTEMPTS` | No | Maximum bounded retry attempts for usable LLM-generated subthemes. Default: `3` locally, `2` on Vercel. |
+| `RESEARCH_FACET_CANDIDATES` | No | Candidate count requested per generated subtheme. Default: `8`. |
 
 ### Stock data providers (at least one required)
 

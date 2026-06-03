@@ -87,6 +87,7 @@ const NUM_COMPANIES = parseBoundedEnvInt('NUM_COMPANIES', 10, 2, 15);
 const RESEARCH_CANDIDATE_POOL_MULTIPLIER = parseBoundedEnvInt('RESEARCH_CANDIDATE_POOL_MULTIPLIER', 5, 1, 6);
 const RESEARCH_THEME_FACET_COUNT = parseBoundedEnvInt('RESEARCH_THEME_FACET_COUNT', 7, 1, 10);
 const RESEARCH_FACET_CANDIDATES = parseBoundedEnvInt('RESEARCH_FACET_CANDIDATES', 8, 2, 15);
+const RESEARCH_SUBTHEME_MAX_ATTEMPTS = parseBoundedEnvInt('RESEARCH_SUBTHEME_MAX_ATTEMPTS', process.env.VERCEL ? 2 : 3, 1, 5);
 const RESEARCH_UNIVERSE_MIN_THEME_SCORE = parseBoundedEnvInt('RESEARCH_UNIVERSE_MIN_THEME_SCORE', 70, 0, 100);
 const RESEARCH_UNIVERSE_STRONG_ADJACENT_THEME_SCORE = parseBoundedEnvInt(
   'RESEARCH_UNIVERSE_STRONG_ADJACENT_THEME_SCORE',
@@ -492,17 +493,35 @@ const isSuppressedProviderError = (message: string) =>
   /unavailable (in|via) (alpha|finnhub|financial modeling prep|fmp|twelve data|twelvedata|stooq)/i.test(message)
   || /alpha-only mode/i.test(message);
 
+export type LLMTaskPurpose = 'fill' | 'discovery' | 'classification' | 'narrative';
+
+export interface LLMFillOptions {
+  purpose?: LLMTaskPurpose;
+  label?: string;
+}
+
+export interface LLMTraceEntry {
+  purpose: LLMTaskPurpose;
+  label?: string;
+  provider: string;
+  model: string;
+  result: 'success' | 'empty' | 'error';
+  error?: string;
+}
+
 /**
  * Callback that makes a targeted LLM call and returns the raw response string.
- * Used to resolve ambiguous or informal company names/tickers to official US
- * exchange symbols before making any market-data API calls.
+ * Used for bounded report sub-tasks. Accuracy-critical callers should pass a
+ * purpose so the route can pick a stronger model tier than cheap fill.
  */
-export type LLMFiller = (prompt: string) => Promise<string>;
+export type LLMFiller = (prompt: string, options?: LLMFillOptions) => Promise<string>;
 
 /** Optional options passed to executeTool for report generation tools. */
 export interface ExecuteToolOptions {
   /** When provided, called to resolve tickers that the search API could not validate. */
   llmFill?: LLMFiller;
+  /** Optional per-request LLM attempt trace. Rendered only when DEBUG=true. */
+  llmTrace?: LLMTraceEntry[];
   /** Absolute wall-clock deadline for the current request. Used on Vercel to return before maxDuration kills the function. */
   deadlineAt?: number;
 }
@@ -778,6 +797,16 @@ function normalizeStoredResearchSourceEvidence(value: any): ResearchSourceEviden
       } as ResearchSourceEvidence;
     })
     .filter((item: ResearchSourceEvidence | null): item is ResearchSourceEvidence => Boolean(item?.role));
+}
+
+function researchLLMTraceDebugNotes(trace?: LLMTraceEntry[]): string[] {
+  if (process.env.DEBUG !== 'true' || !trace?.length) return [];
+  const rows = trace.slice(-40).map((entry, index) => {
+    const label = entry.label ? '/' + entry.label : '';
+    const outcome = entry.result === 'error' ? 'error: ' + (entry.error || 'unknown') : entry.result;
+    return (index + 1) + '. ' + entry.purpose + label + ' -> ' + entry.provider + '/' + entry.model + ' = ' + outcome;
+  });
+  return ['LLM attempt trace (latest ' + rows.length + '): ' + rows.join(' | ')];
 }
 
 function buildResearchPipelineCheckpoint(args: {
@@ -1350,6 +1379,7 @@ function buildVerifiedProfileRolePrompt(args: {
   theme: string;
   candidates: ResearchCandidateData[];
   targetCount: number;
+  existingRoles?: ResearchUniverseRole[];
 }): string {
   const payload = args.candidates.slice(0, Math.max(args.targetCount * 3, args.targetCount)).map((candidate) => {
     const overview = candidate.overview || {};
@@ -1363,15 +1393,26 @@ function buildVerifiedProfileRolePrompt(args: {
     };
   }).filter((candidate) => candidate.symbol);
 
+  const existingRolePayload = (args.existingRoles || [])
+    .filter((role) => role.label && !isBroadResearchRole(role.label))
+    .slice(0, 12)
+    .map((role) => ({
+      label: role.label,
+      definition: role.definition || '',
+      qualificationHints: [role.query, ...(role.dimensions || []), ...(role.searchQueries || [])].filter(Boolean),
+    }));
+
   return [
     `Classify this already provider-verified public-company universe for the investment theme "${args.theme}".`,
     'Use only the supplied profile text and discovery hints. Do not add financial facts, supplier/customer contracts, ticker ideas, or companies not in the payload.',
     'Create concise role buckets that describe concrete business functions, products, infrastructure, operators, tools, materials, or value-chain positions for this exact theme.',
+    'If existing role buckets are supplied, reuse good ones, split/rename weak ones, and add missing concrete roles when provider profiles support them. Do not force companies into an incomplete role list.',
     'Avoid labels that are only provider sectors/industries or one-word catch-alls when the profile text supports a more specific function.',
     'Assign each company to its single strongest role only when the supplied profile supports direct or enabler exposure to the theme. Mark broad beneficiaries or unsupported names as beneficiary or unrelated.',
     'Return direct or enabler only for companies whose supplied profile text materially supports the role. It is better to leave a company unrelated than to over-classify it.',
     'Return valid JSON only with this shape:',
     '{"roles":[{"label":"concrete role","definition":"profile-grounded qualification rule","required":true,"searchQueries":["optional query"]}],"candidates":[{"symbol":"TICKER","role":"one role label or null","evidenceLevel":"direct|enabler|beneficiary|unrelated","confidence":0-100,"rationale":"short phrase from supplied profile text"}]}',
+    existingRolePayload.length ? 'Existing role buckets to audit/repair: ' + JSON.stringify(existingRolePayload) : '',
     JSON.stringify(payload),
   ].join('\n\n');
 }
@@ -1471,6 +1512,7 @@ async function buildVerifiedProfileLLMResearchRoles(args: {
   targetCount: number;
   llmFill?: LLMFiller;
   deadlineAt?: number;
+  existingRoles?: ResearchUniverseRole[];
 }): Promise<{ roles: ResearchUniverseRole[]; requiredDimensions: ResearchRequiredDimension[]; evidenceBySymbol: Map<string, ResearchSourceEvidence>; notes: string[] }> {
   if (!args.llmFill || args.candidates.length === 0 || !hasReportLLMBudget(args.deadlineAt)) {
     return { roles: [], requiredDimensions: [], evidenceBySymbol: new Map(), notes: [] };
@@ -1485,7 +1527,7 @@ async function buildVerifiedProfileLLMResearchRoles(args: {
   }
   try {
     const prompt = buildVerifiedProfileRolePrompt(args);
-    const raw = await withReportTaskTimeout(args.llmFill(prompt), 'llm', args.deadlineAt);
+    const raw = await withReportTaskTimeout(args.llmFill(prompt, { purpose: 'classification', label: 'verified-profile-role-classification' }), 'llm', args.deadlineAt);
     const parsed = parseVerifiedProfileRolePlan({
       raw,
       theme: args.theme,
@@ -1496,13 +1538,13 @@ async function buildVerifiedProfileLLMResearchRoles(args: {
         roles: [],
         requiredDimensions: [],
         evidenceBySymbol: new Map(),
-        notes: ['Verified-profile LLM role repair returned no usable concrete role evidence; falling back to provider-profile phrase repair.'],
+        notes: ['Verified-profile LLM classification returned no usable concrete role evidence; fallback/previous classification remains in force.'],
       };
     }
     return {
       ...parsed,
       notes: [
-        `Verified-profile LLM role repair produced ${parsed.roles.length} concrete role bucket${parsed.roles.length === 1 ? '' : 's'} and ${parsed.evidenceBySymbol.size}/${args.candidates.length} direct/enabler classifications.`,
+        `Verified-profile LLM classification produced ${parsed.roles.length} concrete role bucket${parsed.roles.length === 1 ? '' : 's'} and ${parsed.evidenceBySymbol.size}/${args.candidates.length} direct/substantial classifications.`,
       ],
     };
   } catch (error: any) {
@@ -1510,7 +1552,7 @@ async function buildVerifiedProfileLLMResearchRoles(args: {
       roles: [],
       requiredDimensions: [],
       evidenceBySymbol: new Map(),
-      notes: [`Verified-profile LLM role repair skipped: ${error?.message || 'LLM unavailable'}; falling back to provider-profile phrase repair.`],
+      notes: [`Verified-profile LLM classification skipped: ${error?.message || 'LLM unavailable'}; fallback/previous classification remains in force.`],
     };
   }
 }
@@ -1698,7 +1740,9 @@ async function resolveResearchCandidateSeeds(args: {
         taxonomyCandidatesPerFacet
       );
       let parsedPlan: ResearchThemeCandidatePlan = { facets: [], requiredDimensions: [], notes: [] };
-      const taxonomyAttempts = hasReportWorkBudget(args.deadlineAt, 'optional', args.targetCount) ? 2 : 1;
+      const inferredConfiguredSlots = Math.max(3, Math.ceil(args.targetCount / Math.max(1, RESEARCH_CANDIDATE_POOL_MULTIPLIER)));
+      const minimumUsableSubthemes = Math.min(RESEARCH_THEME_FACET_COUNT, Math.max(2, Math.ceil(inferredConfiguredSlots / 3)));
+      const taxonomyAttempts = hasReportWorkBudget(args.deadlineAt, 'optional', args.targetCount) ? RESEARCH_SUBTHEME_MAX_ATTEMPTS : 1;
       for (let attempt = 0; attempt < taxonomyAttempts && hasReportLLMBudget(args.deadlineAt); attempt += 1) {
         const prompt = attempt === 0
           ? basePrompt
@@ -1708,10 +1752,10 @@ async function resolveResearchCandidateSeeds(args: {
               'Reject labels that are only the user theme plus generic words such as direct providers/operators, critical suppliers/enablers, tools/services providers, components/materials suppliers, or distribution/connectivity channels.',
               'Roles must contain concrete product, infrastructure, operator, tool, material, channel, or value-chain language that can match company profile descriptions.',
             ].join('\n\n');
-        const raw = await args.llmFill(prompt);
+        const raw = await args.llmFill(prompt, { purpose: 'discovery', label: 'research-candidate-subtheme-discovery' });
         parsedPlan = parseResearchThemeCandidatePlan(raw, args.theme);
-        if (parsedPlan.facets.length >= Math.min(3, RESEARCH_THEME_FACET_COUNT)) break;
-        notes.push(`Theme taxonomy attempt ${attempt + 1} returned ${parsedPlan.facets.length} concrete role bucket${parsedPlan.facets.length === 1 ? '' : 's'}; retrying before generic fallback.`);
+        if (parsedPlan.facets.length >= minimumUsableSubthemes) break;
+        notes.push(`Theme taxonomy attempt ${attempt + 1} returned ${parsedPlan.facets.length}/${minimumUsableSubthemes} required concrete role buckets; retrying before generic fallback.`);
       }
       facets = parsedPlan.facets.slice(0, RESEARCH_THEME_FACET_COUNT);
       if (parsedPlan.requiredDimensions.length) {
@@ -5727,55 +5771,113 @@ export async function executeTool(
               return !issue;
             });
         selectionNotes.push(`Universe validation: ${validatedSelectionCandidateData.length}/${selectionCandidateData.length} candidates remained active/provider-confirmed.`);
-        if (lockedSymbols.length === 0 && validatedSelectionCandidateData.length > 0 && universeRoles.length === 0) {
-          const llmRoleRepair = await buildVerifiedProfileLLMResearchRoles({
-            theme: resolverSector,
-            candidates: validatedSelectionCandidateData,
-            targetCount: finalCount,
-            llmFill: options?.llmFill,
-            deadlineAt,
-          });
-          let profileRoleRepair = llmRoleRepair;
-          if (profileRoleRepair.roles.length === 0 || profileRoleRepair.evidenceBySymbol.size === 0) {
-            const deterministicRepair = buildProfileDerivedResearchRoles({
+        if (lockedSymbols.length === 0 && validatedSelectionCandidateData.length > 0) {
+          const concreteEvidenceSymbols = (candidates: ResearchCandidateData[], sourceFilter?: string) => new Set(
+            candidates
+              .filter((candidate) => normalizeStoredResearchSourceEvidence(candidate.sourceEvidence).some((evidence) =>
+                (evidence.level === 'direct' || evidence.level === 'enabler')
+                && !isBroadResearchRole(evidence.role)
+                && (!sourceFilter || evidence.source === sourceFilter)
+              ))
+              .map((candidate) => normalizeTickerCandidate(candidate.symbol))
+              .filter(Boolean) as string[]
+          );
+          const concreteRoleCount = (candidates: ResearchCandidateData[]) => new Set(
+            candidates.flatMap((candidate) => normalizeStoredResearchSourceEvidence(candidate.sourceEvidence)
+              .filter((evidence) => (evidence.level === 'direct' || evidence.level === 'enabler') && !isBroadResearchRole(evidence.role))
+              .map((evidence) => normalizeResearchEvidenceText(evidence.role))
+            ).filter(Boolean)
+          ).size;
+          const targetConcreteRoles = Math.max(2, Math.ceil(finalCount / 3));
+          const targetClassifiedCandidates = Math.min(
+            validatedSelectionCandidateData.length,
+            Math.max(targetConcreteRoles, Math.ceil(finalCount * 0.80))
+          );
+          const currentProfileClassifiedSymbols = concreteEvidenceSymbols(validatedSelectionCandidateData, 'provider-profile-classifier');
+          const currentConcreteEvidenceSymbols = concreteEvidenceSymbols(validatedSelectionCandidateData);
+          const currentConcreteRoleCount = concreteRoleCount(validatedSelectionCandidateData);
+          const shouldRepairClassification = universeRoles.length < targetConcreteRoles
+            || currentProfileClassifiedSymbols.size < targetClassifiedCandidates
+            || currentConcreteRoleCount < targetConcreteRoles;
+
+          if (shouldRepairClassification) {
+            selectionNotes.push(
+              'Profile-grounded classification checkpoint: '
+              + currentProfileClassifiedSymbols.size + '/' + validatedSelectionCandidateData.length
+              + ' profile-classified, ' + currentConcreteEvidenceSymbols.size + '/' + targetClassifiedCandidates
+              + ' direct/substantial candidates, ' + currentConcreteRoleCount + '/' + targetConcreteRoles
+              + ' concrete roles before repair.'
+            );
+            const llmRoleRepair = await buildVerifiedProfileLLMResearchRoles({
               theme: resolverSector,
               candidates: validatedSelectionCandidateData,
               targetCount: finalCount,
+              llmFill: options?.llmFill,
+              deadlineAt,
+              existingRoles: universeRoles,
             });
-            profileRoleRepair = {
-              roles: deterministicRepair.roles,
-              requiredDimensions: deterministicRepair.requiredDimensions,
-              evidenceBySymbol: deterministicRepair.evidenceBySymbol,
-              notes: [...llmRoleRepair.notes, ...deterministicRepair.notes],
-            };
-          }
-          if (profileRoleRepair.roles.length) {
-            universeRoles = profileRoleRepair.roles;
-            classificationRequiredDimensions = profileRoleRepair.requiredDimensions;
-            let repairedEvidenceCount = 0;
-            for (const candidate of validatedSelectionCandidateData) {
-              const symbol = normalizeTickerCandidate(candidate.symbol);
-              if (!symbol) continue;
-              const evidence = profileRoleRepair.evidenceBySymbol.get(symbol);
-              if (!evidence) continue;
-              const existing = normalizeStoredResearchSourceEvidence(candidate.sourceEvidence);
-              if (!existing.some((item) => item.role === evidence.role && item.level === evidence.level)) {
+            let profileRoleRepair = llmRoleRepair;
+            const minimumUsefulRepairCount = Math.min(
+              validatedSelectionCandidateData.length,
+              Math.max(2, Math.ceil(finalCount / 3))
+            );
+            const llmRepairIsUseful = profileRoleRepair.roles.length >= Math.min(2, targetConcreteRoles)
+              && profileRoleRepair.evidenceBySymbol.size >= minimumUsefulRepairCount;
+
+            if (!llmRepairIsUseful && universeRoles.length === 0) {
+              const deterministicRepair = buildProfileDerivedResearchRoles({
+                theme: resolverSector,
+                candidates: validatedSelectionCandidateData,
+                targetCount: finalCount,
+              });
+              profileRoleRepair = {
+                roles: deterministicRepair.roles,
+                requiredDimensions: deterministicRepair.requiredDimensions,
+                evidenceBySymbol: deterministicRepair.evidenceBySymbol,
+                notes: [...llmRoleRepair.notes, ...deterministicRepair.notes],
+              };
+            }
+
+            const repairImprovesClassification = profileRoleRepair.roles.length > 0
+              && profileRoleRepair.evidenceBySymbol.size >= Math.max(currentProfileClassifiedSymbols.size + 1, minimumUsefulRepairCount);
+            if (repairImprovesClassification) {
+              universeRoles = profileRoleRepair.roles;
+              classificationRequiredDimensions = profileRoleRepair.requiredDimensions;
+              let repairedEvidenceCount = 0;
+              for (const candidate of validatedSelectionCandidateData) {
+                const symbol = normalizeTickerCandidate(candidate.symbol);
+                if (!symbol) continue;
+                const evidence = profileRoleRepair.evidenceBySymbol.get(symbol);
+                if (!evidence) continue;
+                const existing = normalizeStoredResearchSourceEvidence(candidate.sourceEvidence)
+                  .filter((item) => item.source !== 'provider-profile-classifier');
                 candidate.sourceEvidence = [evidence, ...existing];
                 repairedEvidenceCount += 1;
+                candidateEvidenceMap.set(symbol, normalizeStoredResearchSourceEvidence(candidate.sourceEvidence));
               }
-              candidateEvidenceMap.set(symbol, normalizeStoredResearchSourceEvidence(candidate.sourceEvidence));
+              const finalProfileClassifiedCount = concreteEvidenceSymbols(validatedSelectionCandidateData, 'provider-profile-classifier').size;
+              const finalConcreteRoleCount = concreteRoleCount(validatedSelectionCandidateData);
+              selectionNotes.push(...profileRoleRepair.notes);
+              selectionNotes.push(
+                'Profile-grounded classification repair accepted: '
+                + finalProfileClassifiedCount + '/' + validatedSelectionCandidateData.length
+                + ' validated candidates classified across ' + finalConcreteRoleCount
+                + ' concrete roles (' + repairedEvidenceCount + ' evidence rows applied).'
+              );
+            } else {
+              selectionNotes.push(...profileRoleRepair.notes);
+              selectionNotes.push(
+                'Profile-grounded classification repair not accepted: returned '
+                + profileRoleRepair.evidenceBySymbol.size + ' classifications across '
+                + profileRoleRepair.roles.length + ' roles; kept existing/provisional classification.'
+              );
             }
-            const finalConcreteEvidenceCount = validatedSelectionCandidateData.filter((candidate) =>
-              normalizeStoredResearchSourceEvidence(candidate.sourceEvidence).some((evidence) =>
-                evidence.source === 'provider-profile-classifier'
-                  && (evidence.level === 'direct' || evidence.level === 'enabler')
-                  && !isBroadResearchRole(evidence.role)
-              )
-            ).length;
-            selectionNotes.push(...profileRoleRepair.notes);
-            selectionNotes.push(`Profile classification repair has concrete role evidence for ${finalConcreteEvidenceCount}/${validatedSelectionCandidateData.length} validated candidates (${repairedEvidenceCount} newly added this pass).`);
           } else {
-            selectionNotes.push(...profileRoleRepair.notes);
+            selectionNotes.push(
+              'Profile-grounded classification checkpoint passed without repair: '
+              + currentProfileClassifiedSymbols.size + '/' + validatedSelectionCandidateData.length
+              + ' profile-classified across ' + currentConcreteRoleCount + ' concrete roles.'
+            );
           }
         }
         if (lockedSymbols.length === 0 && validatedSelectionCandidateData.length === 0) {
@@ -5912,6 +6014,7 @@ export async function executeTool(
               ...selectionNotes,
               ...invalidCandidateNotes,
               ...updateContext.notes,
+              ...researchLLMTraceDebugNotes(options?.llmTrace),
               ...universeReadiness.repairActions,
             ],
             researchUniverse: {
@@ -6039,6 +6142,7 @@ export async function executeTool(
           ...selectionNotes,
           ...invalidCandidateNotes,
           ...updateContext.notes,
+          ...researchLLMTraceDebugNotes(options?.llmTrace),
           ...timeNotes,
         ];
         if (resolverSector !== sector) {

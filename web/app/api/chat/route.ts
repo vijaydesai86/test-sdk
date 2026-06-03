@@ -88,6 +88,24 @@ type ReportArtifact = {
   runMetadata?: unknown;
 };
 
+type RouteLLMTaskPurpose = 'chat' | 'fill' | 'discovery' | 'classification' | 'narrative';
+
+type RouteLLMFillPurpose = Exclude<RouteLLMTaskPurpose, 'chat'>;
+
+type RouteLLMFillOptions = {
+  purpose?: RouteLLMFillPurpose;
+  label?: string;
+};
+
+type LLMTraceEntry = {
+  purpose: RouteLLMFillPurpose;
+  label?: string;
+  provider: RuntimeLLMProvider;
+  model: string;
+  result: 'success' | 'empty' | 'error';
+  error?: string;
+};
+
 type LLMFailureAttempt = {
   provider: RuntimeLLMProvider;
   model: string;
@@ -387,6 +405,55 @@ type LLMExecutionStrategy = {
   models: string[];
 };
 
+function configuredTaskModel(purpose: RouteLLMTaskPurpose, fallback: string): string {
+  if (purpose === 'classification') {
+    return process.env.RESEARCH_CLASSIFICATION_MODEL
+      || process.env.COPILOT_REASONING_MODEL
+      || fallback;
+  }
+  if (purpose === 'discovery') {
+    return process.env.RESEARCH_DISCOVERY_MODEL
+      || process.env.COPILOT_REASONING_MODEL
+      || fallback;
+  }
+  if (purpose === 'narrative') {
+    return process.env.NARRATIVE_MODEL
+      || fallback;
+  }
+  return fallback;
+}
+
+function buildTaskFallbackModels(
+  requestedModel: string,
+  catalogModels: string[],
+  purpose: RouteLLMTaskPurpose,
+): string[] {
+  const envKey = purpose === 'classification'
+    ? 'RESEARCH_CLASSIFICATION_FALLBACK_MODELS'
+    : purpose === 'discovery'
+      ? 'RESEARCH_DISCOVERY_FALLBACK_MODELS'
+      : purpose === 'narrative'
+        ? 'NARRATIVE_FALLBACK_MODELS'
+        : 'COPILOT_FALLBACK_MODELS';
+  const fromEnv = (process.env[envKey] || process.env.COPILOT_FALLBACK_MODELS || '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const explicitPrimary = Boolean(
+    (purpose === 'classification' && (process.env.RESEARCH_CLASSIFICATION_MODEL || process.env.COPILOT_REASONING_MODEL))
+    || (purpose === 'discovery' && (process.env.RESEARCH_DISCOVERY_MODEL || process.env.COPILOT_REASONING_MODEL))
+    || (purpose === 'narrative' && process.env.NARRATIVE_MODEL)
+  );
+  const catalogFirst = (purpose === 'classification' || purpose === 'discovery') && !explicitPrimary;
+  const base = fromEnv.length > 0 ? fromEnv : DEFAULT_FALLBACK_MODELS;
+  const combined = catalogFirst
+    ? [...catalogModels, requestedModel, ...base, FALLBACK_MODEL]
+    : [requestedModel, ...catalogModels, ...base, FALLBACK_MODEL];
+  const unique = Array.from(new Set(combined.filter(Boolean)));
+  const available = unique.filter((model) => !isModelCoolingDown(model) && !isModelInvalid(model));
+  return available.length > 0 ? available : unique;
+}
+
 function isGitHubModelId(model?: string | null): boolean {
   return Boolean(model && model.includes('/'));
 }
@@ -401,18 +468,19 @@ async function buildLLMExecutionStrategies(
   requestedModel: string,
   githubToken: string | undefined,
   geminiToken: string | undefined,
-  purpose: 'chat' | 'fill' = 'chat',
+  purpose: RouteLLMTaskPurpose = 'chat',
 ): Promise<LLMExecutionStrategy[]> {
   const strategies: LLMExecutionStrategy[] = [];
-  const githubRequestedModel = isGitHubModelId(requestedModel)
-    ? requestedModel
+  const taskRequestedModel = configuredTaskModel(purpose, requestedModel);
+  const githubRequestedModel = isGitHubModelId(taskRequestedModel)
+    ? taskRequestedModel
     : DEFAULT_MODEL;
-  const normalizedGithubModel = AUTO_DOWNGRADE_GPT5 && /gpt-5/i.test(githubRequestedModel)
+  const normalizedGithubModel = AUTO_DOWNGRADE_GPT5 && purpose !== 'classification' && purpose !== 'discovery' && /gpt-5/i.test(githubRequestedModel)
     ? DEFAULT_MODEL
     : githubRequestedModel;
-  const geminiRequestedModel = isGitHubModelId(requestedModel)
+  const geminiRequestedModel = isGitHubModelId(taskRequestedModel)
     ? GEMINI_MODEL
-    : normalizeGeminiModel(requestedModel || GEMINI_MODEL);
+    : normalizeGeminiModel(taskRequestedModel || GEMINI_MODEL);
 
   const useGitHub = provider === null || provider === 'github';
   const useGemini = provider === null || provider === 'gemini';
@@ -423,7 +491,9 @@ async function buildLLMExecutionStrategies(
       provider: 'github',
       models: purpose === 'fill'
         ? buildFillFallbackModels(catalogModels)
-        : buildFallbackModels(normalizedGithubModel, catalogModels),
+        : purpose === 'chat'
+          ? buildFallbackModels(normalizedGithubModel, catalogModels)
+          : buildTaskFallbackModels(normalizedGithubModel, catalogModels, purpose),
     });
   }
 
@@ -750,6 +820,8 @@ async function callLLMForDataFill(
   githubToken: string | undefined,
   geminiToken: string | undefined,
   deadlineAt?: number,
+  options: RouteLLMFillOptions = {},
+  trace?: LLMTraceEntry[],
 ): Promise<string> {
   if (isRouteDeadlineNear(deadlineAt, LLM_FILL_REQUEST_TIMEOUT_MS + 5000)) return '{}';
   const fillDeadlineAt = Math.min(
@@ -775,7 +847,9 @@ async function callLLMForDataFill(
     return content ? String(content) : '{}';
   };
 
-  const executionStrategies = await buildLLMExecutionStrategies(null, FILL_MODEL, githubToken, geminiToken, 'fill');
+  const purpose = options.purpose || 'fill';
+  const requestedModel = configuredTaskModel(purpose, FILL_MODEL);
+  const executionStrategies = await buildLLMExecutionStrategies(null, requestedModel, githubToken, geminiToken, purpose);
   const candidates = executionStrategies.flatMap((strategy) =>
     strategy.models.map((model) => ({ provider: strategy.provider, model }))
   );
@@ -792,10 +866,16 @@ async function callLLMForDataFill(
         ? await callGitHubModelsAPI(fillMessages, githubToken as string, candidate.model, [], timeoutMs)
         : await callGeminiAPI(fillMessages, geminiToken as string, candidate.model, [], timeoutMs, GEMINI_FILL_REASONING_EFFORT);
       const content = extractContent(result);
-      if (content && content !== '{}') return content;
-      console.info(`[callLLMForDataFill] ${candidate.provider}/${candidate.model} returned empty, trying next`);
+      if (content && content !== '{}') {
+        trace?.push({ purpose, label: options.label, provider: candidate.provider, model: candidate.model, result: 'success' });
+        return content;
+      }
+      trace?.push({ purpose, label: options.label, provider: candidate.provider, model: candidate.model, result: 'empty' });
+      console.info('[callLLMForDataFill] ' + candidate.provider + '/' + candidate.model + ' returned empty, trying next');
     } catch (err: any) {
-      console.info(`[callLLMForDataFill] ${candidate.provider}/${candidate.model} failed: ${err?.message || err}`);
+      const errorMessage = summarizeErrorMessage(err);
+      if (trace) trace.push({ purpose, label: options.label, provider: candidate.provider, model: candidate.model, result: 'error', error: errorMessage });
+      console.info('[callLLMForDataFill] ' + candidate.provider + '/' + candidate.model + ' failed: ' + (err?.message || err));
       if (err?.isProviderAuthError) {
         providerAuthFailures.add(candidate.provider);
         continue;
@@ -815,9 +895,10 @@ function createLLMFiller(
   githubToken: string | undefined,
   geminiToken: string | undefined,
   deadlineAt?: number,
+  trace?: LLMTraceEntry[],
 ): LLMFiller | undefined {
   if (!githubToken && !geminiToken) return undefined;
-  return (prompt: string) => callLLMForDataFill(prompt, githubToken, geminiToken, deadlineAt);
+  return (prompt: string, options?: RouteLLMFillOptions) => callLLMForDataFill(prompt, githubToken, geminiToken, deadlineAt, options || {}, trace);
 }
 
 export async function POST(request: NextRequest) {
@@ -909,6 +990,7 @@ export async function POST(request: NextRequest) {
     let assistantContent: string | null = null;
     let toolDefinitionsUsed = toolDefinitions;
     const llmFailureAttempts: LLMFailureAttempt[] = [];
+    const llmTrace: LLMTraceEntry[] = [];
     const reportArtifacts: ReportArtifact[] = [];
     let lastResolvedSearchSymbol: string | undefined;
      const executionStrategies = await buildLLMExecutionStrategies(
@@ -1002,7 +1084,8 @@ export async function POST(request: NextRequest) {
           { ...fallback.args, sessionId: currentSessionId },
           stockService,
           {
-            llmFill: createLLMFiller(githubToken, geminiToken, requestDeadlineAt),
+            llmFill: createLLMFiller(githubToken, geminiToken, requestDeadlineAt, llmTrace),
+            llmTrace,
             deadlineAt: requestDeadlineAt,
           }
         );
@@ -1128,7 +1211,7 @@ export async function POST(request: NextRequest) {
       // If the model wants to call tools, execute all of them in parallel
       if (assistantMessage.tool_calls && assistantMessage.tool_calls.length > 0) {
         totalToolCalls += assistantMessage.tool_calls.length;
-        const loopLLMFill = createLLMFiller(githubToken, geminiToken, requestDeadlineAt);
+        const loopLLMFill = createLLMFiller(githubToken, geminiToken, requestDeadlineAt, llmTrace);
         const reportToolPlan = planReportToolExecution(
           assistantMessage.tool_calls,
           String(message),
@@ -1169,6 +1252,7 @@ export async function POST(request: NextRequest) {
               : toolArgs;
             const toolResult = await executeTool(toolName, { ...effectiveToolArgs, sessionId: currentSessionId }, stockService, {
               llmFill: loopLLMFill,
+              llmTrace,
               deadlineAt: requestDeadlineAt,
             });
             if (toolName === 'search_stock' && toolResult.success) {
