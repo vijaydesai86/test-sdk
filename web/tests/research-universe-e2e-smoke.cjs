@@ -434,6 +434,52 @@ function collapsedSingleBucketTaxonomyResponse() {
   });
 }
 
+function verifiedProfileRoleRepairResponse() {
+  const roleBySymbol = {
+    NVDA: ['direct', 'AI accelerator silicon', 92, 'GPU accelerators and networking for AI data centers.'],
+    AMD: ['direct', 'AI accelerator silicon', 88, 'CPUs, GPUs, and data center accelerators.'],
+    TSM: ['enabler', 'Advanced chip manufacturing', 92, 'Semiconductor foundry manufacturing advanced integrated circuits.'],
+    ASML: ['enabler', 'Semiconductor fabrication equipment', 90, 'Lithography semiconductor equipment for advanced chip manufacturing.'],
+    AMAT: ['enabler', 'Semiconductor fabrication equipment', 88, 'Wafer fabrication and materials engineering semiconductor equipment.'],
+    LRCX: ['enabler', 'Semiconductor fabrication equipment', 88, 'Wafer fabrication equipment for semiconductor manufacturing.'],
+    KLAC: ['enabler', 'Semiconductor fabrication equipment', 86, 'Process control, metrology, and inspection equipment for semiconductor manufacturing.'],
+    MU: ['enabler', 'Memory and storage infrastructure', 88, 'DRAM, NAND, high bandwidth memory, and storage for data center AI systems.'],
+    WDC: ['enabler', 'Memory and storage infrastructure', 76, 'Storage drives and flash storage products for cloud and data centers.'],
+    STX: ['enabler', 'Memory and storage infrastructure', 74, 'Mass-capacity storage systems for data center infrastructure.'],
+    MSFT: ['enabler', 'Cloud data center platforms', 86, 'Azure cloud infrastructure and AI data centers.'],
+    GOOGL: ['enabler', 'Cloud data center platforms', 84, 'Google Cloud infrastructure, data centers, and AI platforms.'],
+    AMZN: ['enabler', 'Cloud data center platforms', 84, 'AWS cloud infrastructure and data center services.'],
+    ANET: ['enabler', 'Data center networking', 84, 'Cloud networking switches for data center and AI clusters.'],
+    CSCO: ['enabler', 'Data center networking', 80, 'Networking, switching, routing, and data center connectivity.'],
+    VRT: ['enabler', 'Power and thermal infrastructure', 82, 'Power, cooling, and thermal management for data centers.'],
+    ETN: ['enabler', 'Power and thermal infrastructure', 78, 'Power management and electrical equipment for data centers.'],
+    APH: ['enabler', 'Interconnect and optical infrastructure', 76, 'Interconnect, connectors, and connectivity systems for communications and data infrastructure.'],
+    GLW: ['enabler', 'Interconnect and optical infrastructure', 74, 'Optical connectivity and materials for communications and data infrastructure.'],
+    CDNS: ['enabler', 'Chip design automation', 72, 'Electronic design automation software for semiconductor chip design.'],
+    SNPS: ['enabler', 'Chip design automation', 72, 'Electronic design automation and semiconductor IP for chip design.'],
+  };
+  return JSON.stringify({
+    roles: [
+      { label: 'AI accelerator silicon', definition: 'Processor, GPU, or custom silicon products used for AI compute.', required: true },
+      { label: 'Advanced chip manufacturing', definition: 'Foundry or manufacturing capacity for advanced integrated circuits.', required: true },
+      { label: 'Semiconductor fabrication equipment', definition: 'Equipment used to manufacture or inspect advanced semiconductors.', required: true },
+      { label: 'Cloud data center platforms', definition: 'Cloud or data-center platforms operating AI infrastructure.', required: true },
+      { label: 'Data center networking', definition: 'Networking and switching products for data-center infrastructure.', required: false },
+      { label: 'Memory and storage infrastructure', definition: 'Memory or storage products used in data-center systems.', required: false },
+      { label: 'Power and thermal infrastructure', definition: 'Power or cooling systems for data-center infrastructure.', required: false },
+      { label: 'Interconnect and optical infrastructure', definition: 'Optical or interconnect components for data infrastructure.', required: false },
+      { label: 'Chip design automation', definition: 'Design tools or IP used to create semiconductors.', required: false },
+    ],
+    candidates: Object.entries(roleBySymbol).map(([symbol, [evidenceLevel, role, confidence, rationale]]) => ({
+      symbol,
+      role,
+      evidenceLevel,
+      confidence,
+      rationale,
+    })),
+  });
+}
+
 function broadOnlyClassifierResponse() {
   const roleBySymbol = {
     NVDA: ['direct', 'AI accelerator providers', 94, 'GPU accelerators and networking for AI data centers.'],
@@ -714,6 +760,59 @@ async function runNearReadyProvisionalScenario() {
   }
 }
 
+async function runVerifiedProfileLLMRoleRepairScenario() {
+  await fs.rm(testRoot, { recursive: true, force: true });
+  const priorDebug = process.env.DEBUG;
+  process.env.DEBUG = 'true';
+  let roleRepairCalls = 0;
+  try {
+    const result = await executeTool(
+      'generate_research_report',
+      { sector: 'AI infrastructure', range: '1y', count: 15 },
+      createFallbackStressService(),
+      {
+        deadlineAt: Date.now() + 240000,
+        async llmFill(prompt) {
+          if (prompt.includes('Build a verified-candidate proposal')) return '{}';
+          if (prompt.includes('Classify this already provider-verified public-company universe')) {
+            roleRepairCalls += 1;
+            return verifiedProfileRoleRepairResponse();
+          }
+          if (prompt.includes('deep research ecosystem analysis')) return '{}';
+          return '{}';
+        },
+      }
+    );
+
+    assert.equal(result.success, true, result.error || 'verified-profile LLM role repair report failed');
+    assert.equal(result.data.reportKind, 'research');
+    assert.equal(roleRepairCalls, 1, 'expected one verified-profile role repair LLM call');
+    assert.ok(!/Verified Data Status/.test(result.data.content), 'LLM role repair should still produce a market-backed report');
+    const universe = result.data.runMetadata.researchUniverse;
+    const symbols = result.data.runMetadata.symbols;
+    const roleText = JSON.stringify(universe.subthemes || []);
+    const roleTextLower = roleText.toLowerCase();
+    assert.match(result.data.content, /Verified-profile LLM role repair produced/);
+    assert.doesNotMatch(result.data.content, /Profile-derived role buckets repaired missing generated taxonomy/);
+    assert.ok((universe.readiness?.selectedCount || 0) >= 12, 'expected enough direct/enabler classifications, got ' + universe.readiness?.selectedCount);
+    assert.ok((universe.readiness?.roleCount || 0) >= 4, 'expected concrete LLM role coverage, got ' + universe.readiness?.roleCount + ': ' + roleText);
+    for (const expectedRole of ['AI accelerator silicon', 'Advanced chip manufacturing', 'Semiconductor fabrication equipment', 'Cloud data center platforms']) {
+      assert.ok(roleTextLower.includes(expectedRole.toLowerCase()), 'missing LLM-repaired role ' + expectedRole + ': ' + roleText);
+    }
+    for (const providerOnlyRole of ['Provider profile group', 'Provisional / unclassified', 'Communications', 'Machinery', 'Based Data']) {
+      assert.ok(!roleTextLower.includes(providerOnlyRole.toLowerCase()), 'did not expect provider/fallback role ' + providerOnlyRole + ': ' + roleText);
+    }
+    for (const expected of ['NVDA', 'TSM', 'MSFT', 'MU']) {
+      assert.ok(symbols.includes(expected), 'expected ' + expected + ' in LLM-repaired universe: ' + symbols.join(', '));
+    }
+    console.log('research verified-profile LLM role repair e2e smoke passed with ' + symbols.length + ' symbols: ' + symbols.join(', '));
+  } finally {
+    if (priorDebug === undefined) delete process.env.DEBUG;
+    else process.env.DEBUG = priorDebug;
+    await fs.rm(testRoot, { recursive: true, force: true });
+  }
+}
+
 async function runGenericFallbackCheckpointScenario() {
   await fs.rm(testRoot, { recursive: true, force: true });
   const priorDebug = process.env.DEBUG;
@@ -767,6 +866,7 @@ async function main() {
   await runBroadOnlyClassifierRescueScenario();
   await runLimitedRoleProvisionalDataScenario();
   await runNearReadyProvisionalScenario();
+  await runVerifiedProfileLLMRoleRepairScenario();
   await runGenericFallbackCheckpointScenario();
 }
 

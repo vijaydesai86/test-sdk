@@ -1141,12 +1141,15 @@ function profileRoleCandidateText(candidate: ResearchCandidateData): string {
 
 const GENERIC_PROVIDER_ROLE_LABELS = new Set([
   'technology',
+  'communications',
+  'communications equipment',
   'communication services',
   'consumer cyclical',
   'consumer defensive',
   'financial services',
   'healthcare',
   'industrials',
+  'machinery',
   'basic materials',
   'energy',
   'utilities',
@@ -1187,9 +1190,35 @@ function isUsableProfileRoleLabel(label: string, theme: string): boolean {
   if (!normalized || GENERIC_PROVIDER_ROLE_LABELS.has(normalized)) return false;
   const labelTokens = researchEvidenceTokens(clean);
   if (!labelTokens.length) return false;
+  const weakBoundaryTokens = new Set([
+    'based',
+    'including',
+    'include',
+    'includes',
+    'provide',
+    'provides',
+    'providing',
+    'offers',
+    'through',
+    'across',
+  ]);
+  if (weakBoundaryTokens.has(labelTokens[0]) || weakBoundaryTokens.has(labelTokens[labelTokens.length - 1])) {
+    return false;
+  }
   const themeTokens = new Set(researchEvidenceTokens(theme));
   const distinctive = labelTokens.filter((token) => !themeTokens.has(token));
   return distinctive.length > 0;
+}
+
+function parseResearchJsonObject(raw: string): any | null {
+  try {
+    let cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+    const objectMatch = cleaned.match(/\{[\s\S]*\}/);
+    if (objectMatch) cleaned = objectMatch[0];
+    return JSON.parse(cleaned);
+  } catch {
+    return null;
+  }
 }
 
 function addProfileRolePhrase(
@@ -1315,6 +1344,175 @@ function buildProfileDerivedResearchRoles(args: {
       ? ['Profile-derived role buckets repaired missing generated taxonomy: ' + roles.map((role) => role.label).join('; ') + '.']
       : ['Profile-derived role bucket repair could not find enough concrete provider-profile phrases.'],
   };
+}
+
+function buildVerifiedProfileRolePrompt(args: {
+  theme: string;
+  candidates: ResearchCandidateData[];
+  targetCount: number;
+}): string {
+  const payload = args.candidates.slice(0, Math.max(args.targetCount * 3, args.targetCount)).map((candidate) => {
+    const overview = candidate.overview || {};
+    return {
+      symbol: normalizeTickerCandidate(candidate.symbol),
+      name: overview.name || overview.Name || candidate.symbol,
+      sector: overview.sector || overview.Sector || '',
+      industry: overview.industry || overview.Industry || '',
+      description: String(overview.description || overview.Description || '').slice(0, 700),
+      discoveryHints: (candidate.sourceFacets || []).filter((facet) => !isBroadResearchRole(facet)).slice(0, 5),
+    };
+  }).filter((candidate) => candidate.symbol);
+
+  return [
+    `Classify this already provider-verified public-company universe for the investment theme "${args.theme}".`,
+    'Use only the supplied profile text and discovery hints. Do not add financial facts, supplier/customer contracts, ticker ideas, or companies not in the payload.',
+    'Create concise role buckets that describe concrete business functions, products, infrastructure, operators, tools, materials, or value-chain positions for this exact theme.',
+    'Avoid labels that are only provider sectors/industries or one-word catch-alls when the profile text supports a more specific function.',
+    'Assign each company to its single strongest role only when the supplied profile supports direct or enabler exposure to the theme. Mark broad beneficiaries or unsupported names as beneficiary or unrelated.',
+    'Return direct or enabler only for companies whose supplied profile text materially supports the role. It is better to leave a company unrelated than to over-classify it.',
+    'Return valid JSON only with this shape:',
+    '{"roles":[{"label":"concrete role","definition":"profile-grounded qualification rule","required":true,"searchQueries":["optional query"]}],"candidates":[{"symbol":"TICKER","role":"one role label or null","evidenceLevel":"direct|enabler|beneficiary|unrelated","confidence":0-100,"rationale":"short phrase from supplied profile text"}]}',
+    JSON.stringify(payload),
+  ].join('\n\n');
+}
+
+function parseVerifiedProfileRolePlan(args: {
+  raw: string;
+  theme: string;
+  candidateSymbols: Set<string>;
+}): { roles: ResearchUniverseRole[]; requiredDimensions: ResearchRequiredDimension[]; evidenceBySymbol: Map<string, ResearchSourceEvidence> } {
+  const parsed = parseResearchJsonObject(args.raw);
+  const rawRoles = Array.isArray(parsed?.roles)
+    ? parsed.roles
+    : Array.isArray(parsed?.buckets)
+      ? parsed.buckets
+      : [];
+  const roleMap = new Map<string, ResearchUniverseRole>();
+  for (const role of rawRoles) {
+    const label = sanitizeResearchFacetLabel(role?.label || role?.role || role?.name);
+    if (!isUsableProfileRoleLabel(label, args.theme)) continue;
+    const key = normalizeResearchEvidenceText(label);
+    if (roleMap.has(key)) continue;
+    roleMap.set(key, {
+      label,
+      definition: typeof role?.definition === 'string'
+        ? role.definition.slice(0, 240)
+        : 'Derived by classifying verified provider profiles against the requested theme.',
+      required: role?.required !== false,
+      query: sanitizeResearchFacetLabel(role?.query || `${args.theme} ${label}`),
+      dimensions: [label],
+      searchQueries: parseStringArray(role?.searchQueries || role?.queries, 4),
+    });
+  }
+
+  const evidenceBySymbol = new Map<string, ResearchSourceEvidence>();
+  const candidateRows = Array.isArray(parsed?.candidates)
+    ? parsed.candidates
+    : Array.isArray(parsed?.companies)
+      ? parsed.companies
+      : [];
+  for (const row of candidateRows) {
+    const symbol = normalizeTickerCandidate(row?.symbol || row?.ticker);
+    if (!symbol || !args.candidateSymbols.has(symbol)) continue;
+    const levelRaw = String(row?.evidenceLevel || row?.level || '').toLowerCase();
+    const level = levelRaw === 'direct' ? 'direct' : levelRaw === 'enabler' ? 'enabler' : null;
+    if (!level) continue;
+    const confidence = Math.max(0, Math.min(100, Number(row?.confidence) || 0));
+    if (confidence < 60) continue;
+    const roleLabel = sanitizeResearchFacetLabel(row?.role || row?.subtheme || row?.bucket);
+    if (!isUsableProfileRoleLabel(roleLabel, args.theme)) continue;
+    const roleKey = normalizeResearchEvidenceText(roleLabel);
+    if (!roleMap.has(roleKey)) {
+      roleMap.set(roleKey, {
+        label: roleLabel,
+        definition: 'Derived by classifying verified provider profiles against the requested theme.',
+        required: false,
+        query: `${args.theme} ${roleLabel}`,
+        dimensions: [roleLabel],
+        searchQueries: [`${args.theme} ${roleLabel} public companies`],
+      });
+    }
+    evidenceBySymbol.set(symbol, {
+      role: roleMap.get(roleKey)?.label || roleLabel,
+      level,
+      confidence,
+      rationale: String(row?.rationale || 'Verified provider profile supports this theme role.').trim().slice(0, 240),
+      source: 'provider-profile-classifier',
+    });
+  }
+
+  const usedRoleKeys = new Set(Array.from(evidenceBySymbol.values()).map((evidence) => normalizeResearchEvidenceText(evidence.role)));
+  const roles = Array.from(roleMap.values())
+    .filter((role) => usedRoleKeys.has(normalizeResearchEvidenceText(role.label)))
+    .slice(0, 8)
+    .map((role, index) => ({
+      ...role,
+      required: index < 4 ? role.required !== false : false,
+      searchQueries: role.searchQueries?.length ? role.searchQueries : [`${args.theme} ${role.label} public companies`],
+    }));
+  const retainedRoleKeys = new Set(roles.map((role) => normalizeResearchEvidenceText(role.label)));
+  for (const [symbol, evidence] of Array.from(evidenceBySymbol.entries())) {
+    if (!retainedRoleKeys.has(normalizeResearchEvidenceText(evidence.role))) {
+      evidenceBySymbol.delete(symbol);
+    }
+  }
+  const requiredDimensions: ResearchRequiredDimension[] = roles.map((role) => ({
+    label: role.label,
+    required: role.required !== false,
+    searchQueries: role.searchQueries,
+    rationale: 'Verified-profile LLM role bucket used to repair missing generated taxonomy.',
+  }));
+  return { roles, requiredDimensions, evidenceBySymbol };
+}
+
+async function buildVerifiedProfileLLMResearchRoles(args: {
+  theme: string;
+  candidates: ResearchCandidateData[];
+  targetCount: number;
+  llmFill?: LLMFiller;
+  deadlineAt?: number;
+}): Promise<{ roles: ResearchUniverseRole[]; requiredDimensions: ResearchRequiredDimension[]; evidenceBySymbol: Map<string, ResearchSourceEvidence>; notes: string[] }> {
+  if (!args.llmFill || args.candidates.length === 0 || !hasReportLLMBudget(args.deadlineAt)) {
+    return { roles: [], requiredDimensions: [], evidenceBySymbol: new Map(), notes: [] };
+  }
+  const symbols = new Set<string>();
+  for (const candidate of args.candidates) {
+    const symbol = normalizeTickerCandidate(candidate.symbol);
+    if (symbol) symbols.add(symbol);
+  }
+  if (!symbols.size) {
+    return { roles: [], requiredDimensions: [], evidenceBySymbol: new Map(), notes: [] };
+  }
+  try {
+    const prompt = buildVerifiedProfileRolePrompt(args);
+    const raw = await withReportTaskTimeout(args.llmFill(prompt), 'llm', args.deadlineAt);
+    const parsed = parseVerifiedProfileRolePlan({
+      raw,
+      theme: args.theme,
+      candidateSymbols: symbols,
+    });
+    if (parsed.roles.length === 0 || parsed.evidenceBySymbol.size === 0) {
+      return {
+        roles: [],
+        requiredDimensions: [],
+        evidenceBySymbol: new Map(),
+        notes: ['Verified-profile LLM role repair returned no usable concrete role evidence; falling back to provider-profile phrase repair.'],
+      };
+    }
+    return {
+      ...parsed,
+      notes: [
+        `Verified-profile LLM role repair produced ${parsed.roles.length} concrete role bucket${parsed.roles.length === 1 ? '' : 's'} and ${parsed.evidenceBySymbol.size}/${args.candidates.length} direct/enabler classifications.`,
+      ],
+    };
+  } catch (error: any) {
+    return {
+      roles: [],
+      requiredDimensions: [],
+      evidenceBySymbol: new Map(),
+      notes: [`Verified-profile LLM role repair skipped: ${error?.message || 'LLM unavailable'}; falling back to provider-profile phrase repair.`],
+    };
+  }
 }
 function buildResearchThemeCandidatePrompt(theme: string, targetCount: number, maxFacets: number, candidatesPerFacet: number): string {
   return [
@@ -5530,11 +5728,27 @@ export async function executeTool(
             });
         selectionNotes.push(`Universe validation: ${validatedSelectionCandidateData.length}/${selectionCandidateData.length} candidates remained active/provider-confirmed.`);
         if (lockedSymbols.length === 0 && validatedSelectionCandidateData.length > 0 && universeRoles.length === 0) {
-          const profileRoleRepair = buildProfileDerivedResearchRoles({
+          const llmRoleRepair = await buildVerifiedProfileLLMResearchRoles({
             theme: resolverSector,
             candidates: validatedSelectionCandidateData,
             targetCount: finalCount,
+            llmFill: options?.llmFill,
+            deadlineAt,
           });
+          let profileRoleRepair = llmRoleRepair;
+          if (profileRoleRepair.roles.length === 0 || profileRoleRepair.evidenceBySymbol.size === 0) {
+            const deterministicRepair = buildProfileDerivedResearchRoles({
+              theme: resolverSector,
+              candidates: validatedSelectionCandidateData,
+              targetCount: finalCount,
+            });
+            profileRoleRepair = {
+              roles: deterministicRepair.roles,
+              requiredDimensions: deterministicRepair.requiredDimensions,
+              evidenceBySymbol: deterministicRepair.evidenceBySymbol,
+              notes: [...llmRoleRepair.notes, ...deterministicRepair.notes],
+            };
+          }
           if (profileRoleRepair.roles.length) {
             universeRoles = profileRoleRepair.roles;
             classificationRequiredDimensions = profileRoleRepair.requiredDimensions;
@@ -5551,8 +5765,15 @@ export async function executeTool(
               }
               candidateEvidenceMap.set(symbol, normalizeStoredResearchSourceEvidence(candidate.sourceEvidence));
             }
+            const finalConcreteEvidenceCount = validatedSelectionCandidateData.filter((candidate) =>
+              normalizeStoredResearchSourceEvidence(candidate.sourceEvidence).some((evidence) =>
+                evidence.source === 'provider-profile-classifier'
+                  && (evidence.level === 'direct' || evidence.level === 'enabler')
+                  && !isBroadResearchRole(evidence.role)
+              )
+            ).length;
             selectionNotes.push(...profileRoleRepair.notes);
-            selectionNotes.push(`Profile-derived classification repair added concrete role evidence for ${repairedEvidenceCount}/${validatedSelectionCandidateData.length} validated candidates.`);
+            selectionNotes.push(`Profile classification repair has concrete role evidence for ${finalConcreteEvidenceCount}/${validatedSelectionCandidateData.length} validated candidates (${repairedEvidenceCount} newly added this pass).`);
           } else {
             selectionNotes.push(...profileRoleRepair.notes);
           }
