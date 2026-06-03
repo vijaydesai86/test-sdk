@@ -483,6 +483,7 @@ function broadOnlyTickerResponse() {
 
 async function runCompleteUniverseScenario() {
   await fs.rm(testRoot, { recursive: true, force: true });
+  let taxonomyCalls = 0;
   const result = await executeTool(
     'generate_research_report',
     { sector: 'AI infrastructure', range: '1y', count: 15 },
@@ -490,7 +491,10 @@ async function runCompleteUniverseScenario() {
     {
       deadlineAt: Date.now() + 240000,
       async llmFill(prompt) {
-        if (prompt.includes('Build a verified-candidate proposal')) return taxonomyResponse();
+        if (prompt.includes('Build a verified-candidate proposal')) {
+          taxonomyCalls += 1;
+          return taxonomyCalls === 1 ? '{}' : taxonomyResponse();
+        }
         if (prompt.includes('deep research ecosystem analysis')) {
           return JSON.stringify({
             dependencyAnalysis: '### Role Map\n\nAI infrastructure spans compute, cloud, foundry, equipment, memory, networking, and power/cooling.',
@@ -503,6 +507,8 @@ async function runCompleteUniverseScenario() {
   );
 
   assert.equal(result.success, true, result.error || 'research report failed');
+  assert.ok(taxonomyCalls >= 2, 'expected taxonomy retry before generic fallback');
+  assert.match(result.data.content, /Theme taxonomy attempt 1 returned 0 concrete role buckets; retrying before generic fallback/);
   assert.equal(result.data.reportKind, 'research');
   assert.ok(!/Verified Data Status/.test(result.data.content), 'did not expect unavailable-data placeholder');
   assert.ok(!/Broad theme resolver/.test(result.data.content), 'did not expect broad resolver role in final report');
@@ -742,7 +748,9 @@ async function runGenericFallbackCheckpointScenario() {
     assert.ok(!/Provider profile group:/i.test(roleText), `provider profile groups must stay diagnostic-only, not dependency-map roles: ${roleText}`);
     assert.ok(!/direct providers\/operators|critical suppliers|tools\/services providers/i.test(roleText), `generic fallback archetypes must not masquerade as concrete dependency roles: ${roleText}`);
     assert.ok((universe.candidates || []).some((candidate) => candidate.providerGroup), 'generic fallback should preserve provider groups as diagnostics');
-    assert.match(result.data.content, /Fallback query-derived role taxonomy/);
+    assert.equal((universe.roles || []).length, 0, 'generic fallback buckets must not be stored as classification roles');
+    assert.equal((universe.requiredDimensions || []).length, 0, 'generic fallback buckets must not be stored as required readiness dimensions');
+    assert.match(result.data.content, /Fallback query-derived generic buckets added discovery searches only/);
     assert.ok((universe.readiness?.roleCount || 0) < (universe.readiness?.minRoleCount || 4), `generic fallback without generated dimensions should not fake role readiness: ${roleText}`);
     assert.ok((universe.readiness?.missingDimensions || []).length > 0, 'generic fallback checkpoint should expose missing dimensions');
     console.log(`research generic fallback checkpoint e2e smoke passed with status ${universe.status}`);

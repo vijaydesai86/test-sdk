@@ -1136,7 +1136,7 @@ function buildResearchThemeCandidatePrompt(theme: string, targetCount: number, m
     'First infer the required economic dimensions that a credible portfolio research universe should cover for this exact theme. Dimensions must be specific to the theme and generic in method, not copied from any hardcoded ticker list.',
     'Then create concrete investable role buckets mapped to those dimensions, ordered from most central/decision-critical to least central for the theme. Do not use catch-all roles like Broad theme resolver, Technology, Retail, Media, Financial Services, General beneficiary, or Miscellaneous.',
     'Output company names plus likely US-listed ticker/ADR candidates. Do not invent tickers. If unsure, include companyName with likelyTicker null so provider verification can search by name.',
-    'Infer generic investable role buckets from the theme: upstream suppliers, direct producers/operators, critical tools/services, distribution or networking, platforms/operators, and physical infrastructure only when relevant.',
+    'Infer concrete business-function role buckets specific to this exact theme. Do not paste the theme onto generic archetypes like direct providers/operators, critical suppliers/enablers, tools/services providers, components/materials suppliers, or distribution/connectivity channels.',
     'Main candidates must be theme providers or enablers. Exclude generic broad beneficiaries and weakly related companies from main candidates.',
     'For every role bucket, return 3-6 candidate ideas where possible. Include companyName, likelyTicker, listingHint, evidenceLevel direct|enabler, confidence 0-100, and a concrete product/service reason.',
     'No duplicate likelyTicker across role buckets; assign each company to its strongest role. Prefer the most liquid/common US listing or ADR. Prefer GOOGL over GOOG unless a reason says otherwise.',
@@ -1306,14 +1306,28 @@ async function resolveResearchCandidateSeeds(args: {
     try {
       const taxonomyCandidatesPerFacet = Math.min(RESEARCH_FACET_CANDIDATES, process.env.VERCEL ? 4 : 6);
       const taxonomyTargetCount = Math.min(args.targetCount, RESEARCH_THEME_FACET_COUNT * taxonomyCandidatesPerFacet);
-      const prompt = buildResearchThemeCandidatePrompt(
+      const basePrompt = buildResearchThemeCandidatePrompt(
         args.theme,
         taxonomyTargetCount,
         RESEARCH_THEME_FACET_COUNT,
         taxonomyCandidatesPerFacet
       );
-      const raw = await args.llmFill(prompt);
-      const parsedPlan = parseResearchThemeCandidatePlan(raw, args.theme);
+      let parsedPlan: ResearchThemeCandidatePlan = { facets: [], requiredDimensions: [], notes: [] };
+      const taxonomyAttempts = hasReportWorkBudget(args.deadlineAt, 'optional', args.targetCount) ? 2 : 1;
+      for (let attempt = 0; attempt < taxonomyAttempts && hasReportLLMBudget(args.deadlineAt); attempt += 1) {
+        const prompt = attempt === 0
+          ? basePrompt
+          : [
+              basePrompt,
+              'Previous taxonomy was missing or too generic. Retry with concrete theme-specific business functions only.',
+              'Reject labels that are only the user theme plus generic words such as direct providers/operators, critical suppliers/enablers, tools/services providers, components/materials suppliers, or distribution/connectivity channels.',
+              'Roles must contain concrete product, infrastructure, operator, tool, material, channel, or value-chain language that can match company profile descriptions.',
+            ].join('\n\n');
+        const raw = await args.llmFill(prompt);
+        parsedPlan = parseResearchThemeCandidatePlan(raw, args.theme);
+        if (parsedPlan.facets.length >= Math.min(3, RESEARCH_THEME_FACET_COUNT)) break;
+        notes.push(`Theme taxonomy attempt ${attempt + 1} returned ${parsedPlan.facets.length} concrete role bucket${parsedPlan.facets.length === 1 ? '' : 's'}; retrying before generic fallback.`);
+      }
       facets = parsedPlan.facets.slice(0, RESEARCH_THEME_FACET_COUNT);
       if (parsedPlan.requiredDimensions.length) {
         const mergedDimensions = new Map(requiredDimensions.map((dimension) => [dimension.label.toLowerCase(), dimension]));
@@ -1373,7 +1387,7 @@ async function resolveResearchCandidateSeeds(args: {
       }
       requiredDimensions = Array.from(mergedDimensions.values());
       usedFallbackTaxonomy = true;
-      notes.push(`Fallback query-derived role taxonomy derived ${fallbackFacets.length} generic role bucket${fallbackFacets.length === 1 ? '' : 's'} from the user theme.`);
+      notes.push(`Fallback query-derived generic buckets added discovery searches only; they are not used as classification roles or lock/readiness dimensions.`);
     }
   }
 
@@ -5184,14 +5198,18 @@ export async function executeTool(
               deadlineAt,
               previousUniverse: updateContext.previous?.metadata?.researchUniverse,
             });
-        const universeRoles: ResearchUniverseRole[] = candidateDiscovery.facets.map((facet) => ({
-          label: facet.label,
-          definition: facet.definition,
-          required: facet.required,
-          query: facet.query,
-          dimensions: facet.dimensions,
-          searchQueries: facet.searchQueries,
-        }));
+        const taxonomyAvailable = !candidateDiscovery.usedFallbackTaxonomy;
+        const classificationRequiredDimensions = taxonomyAvailable ? candidateDiscovery.requiredDimensions : [];
+        const universeRoles: ResearchUniverseRole[] = taxonomyAvailable
+          ? candidateDiscovery.facets.map((facet) => ({
+              label: facet.label,
+              definition: facet.definition,
+              required: facet.required,
+              query: facet.query,
+              dimensions: facet.dimensions,
+              searchQueries: facet.searchQueries,
+            }))
+          : [];
         const candidateFacetMap = new Map(candidateDiscovery.seeds.map((seed) => [seed.symbol, seed.sourceFacets]));
         const candidateEvidenceMap = new Map<string, ResearchSourceEvidence[]>(
           candidateDiscovery.seeds.map((seed) => [seed.symbol, normalizeStoredResearchSourceEvidence(seed.sourceEvidence)])
@@ -5294,7 +5312,7 @@ export async function executeTool(
             const sourceEvidence = mergeResearchProfileEvidence({
               theme: resolverSector,
               candidate: candidateData,
-              requiredDimensions: candidateDiscovery.requiredDimensions,
+              requiredDimensions: classificationRequiredDimensions,
               roles: universeRoles,
             });
             candidateEvidenceMap.set(symbol, sourceEvidence);
@@ -5375,7 +5393,7 @@ export async function executeTool(
         let universeReadiness: ResearchUniverseReadiness = evaluateResearchUniverseReadiness({
           selection: universeSelection,
           roles: universeRoles,
-          requiredDimensions: candidateDiscovery.requiredDimensions,
+          requiredDimensions: classificationRequiredDimensions,
           targetCount: finalCount,
         });
         selectionNotes.push(
@@ -5461,7 +5479,7 @@ export async function executeTool(
               status: universeReadiness.status,
               selectedSymbols: universeSelection.selectedSymbols,
               qualifiedSymbols: universeSelection.qualifiedSymbols,
-              requiredDimensions: candidateDiscovery.requiredDimensions,
+              requiredDimensions: classificationRequiredDimensions,
               coveredDimensions: universeReadiness.coveredDimensions,
               missingDimensions: universeReadiness.missingDimensions,
               roles: universeRoles,
@@ -5917,7 +5935,7 @@ export async function executeTool(
         universeReadiness = evaluateResearchUniverseReadiness({
           selection: universeSelection,
           roles: universeRoles,
-          requiredDimensions: candidateDiscovery.requiredDimensions,
+          requiredDimensions: classificationRequiredDimensions,
           targetCount: finalCount,
         });
         researchPipelineCheckpoint.selectedCount = universeReadiness.selectedCount;
@@ -6091,7 +6109,7 @@ export async function executeTool(
             status: lockedSymbols.length > 0 ? 'locked' : universeReadiness.status,
             selectedSymbols: universeSelection.selectedSymbols,
             qualifiedSymbols: universeSelection.qualifiedSymbols,
-            requiredDimensions: candidateDiscovery.requiredDimensions,
+            requiredDimensions: classificationRequiredDimensions,
             coveredDimensions: universeReadiness.coveredDimensions,
             missingDimensions: universeReadiness.missingDimensions,
             roles: universeRoles,
