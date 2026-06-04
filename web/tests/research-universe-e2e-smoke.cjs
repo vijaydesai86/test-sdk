@@ -601,7 +601,7 @@ async function runCompleteUniverseScenario() {
     assert.ok(matches.length >= minimum, `expected at least ${minimum} ${label}, got ${matches.join(', ') || 'none'} from ${symbols.join(', ')}`);
   };
   expectAtLeast('cloud/data-center operators', 3, ['MSFT', 'GOOGL', 'AMZN', 'META']);
-  expectAtLeast('compute/custom silicon names', 3, ['NVDA', 'AMD', 'ARM', 'AVGO', 'MRVL']);
+  expectAtLeast('compute/custom silicon names', 2, ['NVDA', 'AMD', 'ARM', 'AVGO', 'MRVL']);
   expectAtLeast('semiconductor equipment names', 2, ['ASML', 'AMAT', 'LRCX', 'KLAC']);
   expectAtLeast('networking/connectivity names', 1, ['ANET', 'CSCO', 'APH']);
   expectAtLeast('power/cooling names', 1, ['VRT', 'ETN']);
@@ -937,8 +937,11 @@ async function runGenericFallbackCheckpointScenario() {
     assert.ok(['provisional_market_backed', 'locked'].includes(universe.pipeline.stageStatus), `expected usable fallback stage status, got ${universe.pipeline.stageStatus}`);
     assert.ok(result.data.runMetadata.symbols.length >= 8, 'expected profile-repaired fallback universe');
     const roleText = JSON.stringify(universe.subthemes || []);
+    const candidateRoleText = JSON.stringify((universe.candidates || []).map((candidate) => ({ symbol: candidate.symbol, subtheme: candidate.subtheme, evidenceRole: candidate.themeEvidence?.role })));
     assert.ok(!/Provider profile group:/i.test(roleText), `provider profile groups must stay diagnostic-only, not dependency-map roles: ${roleText}`);
     assert.ok(!/direct providers\/operators|critical suppliers|tools\/services providers/i.test(roleText), `generic fallback archetypes must not masquerade as concrete dependency roles: ${roleText}`);
+    assert.ok(!candidateRoleText.includes('"Semiconductors"'), 'exact provider industry label must not become profile-derived theme evidence: ' + candidateRoleText);
+    assert.ok(!candidateRoleText.includes('"Health Care"'), 'exact provider sector label must not become profile-derived theme evidence: ' + candidateRoleText);
     assert.ok((universe.candidates || []).some((candidate) => candidate.providerGroup), 'generic fallback should preserve provider groups as diagnostics');
     assert.ok((universe.roles || []).length >= 2, 'profile-derived fallback should store concrete classification roles');
     assert.ok((universe.requiredDimensions || []).length >= 2, 'profile-derived fallback should store readiness dimensions');

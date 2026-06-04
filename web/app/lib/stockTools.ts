@@ -1082,6 +1082,22 @@ function deriveProviderGroundedRole(args: {
   return null;
 }
 
+function providerProfileLabelSet(overview: any): Set<string> {
+  return new Set([
+    overview?.industry,
+    overview?.Industry,
+    overview?.sector,
+    overview?.Sector,
+  ].map((value) => normalizeResearchEvidenceText(value)).filter(Boolean));
+}
+
+function isProviderProfileOnlyEvidence(candidate: Pick<ResearchCandidateData, 'overview'>, evidence: ResearchSourceEvidence): boolean {
+  if (evidence.source !== 'provider-profile-classifier') return false;
+  const role = normalizeResearchEvidenceText(evidence.role);
+  if (!role) return false;
+  return providerProfileLabelSet(candidate.overview || {}).has(role);
+}
+
 export function classifyResearchCandidateProfileEvidence(args: {
   theme: string;
   candidate: Pick<ResearchCandidateData, 'symbol' | 'overview' | 'sourceFacets'>;
@@ -1149,9 +1165,10 @@ function mergeResearchProfileEvidence(args: {
   requiredDimensions?: ResearchRequiredDimension[];
   roles?: ResearchUniverseRole[];
 }): ResearchSourceEvidence[] {
-  const existing = normalizeStoredResearchSourceEvidence(args.candidate.sourceEvidence);
+  const existing = normalizeStoredResearchSourceEvidence(args.candidate.sourceEvidence)
+    .filter((item) => !isProviderProfileOnlyEvidence(args.candidate, item));
   const profileEvidence = classifyResearchCandidateProfileEvidence(args);
-  if (!profileEvidence) return existing;
+  if (!profileEvidence || isProviderProfileOnlyEvidence(args.candidate, profileEvidence)) return existing;
   if (existing.some((item) => item.role === profileEvidence.role && item.level === profileEvidence.level)) {
     return existing;
   }
@@ -1280,10 +1297,7 @@ function buildProfileDerivedResearchRoles(args: {
     const symbol = normalizeTickerCandidate(candidate.symbol);
     if (!symbol) continue;
     const industry = sanitizeResearchFacetLabel(overview.industry || overview.Industry);
-    const sector = sanitizeResearchFacetLabel(overview.sector || overview.Sector);
     const sourceText = (candidate.sourceFacets || []).filter((facet) => !isBroadResearchRole(facet)).join(' ');
-    if (industry) addProfileRolePhrase(phraseMap, symbol, industry, args.theme, 30, researchTokenOverlapScore(sourceText, industry) > 0);
-    if (sector && sector.toLowerCase() !== industry.toLowerCase()) addProfileRolePhrase(phraseMap, symbol, sector, args.theme, 8, false);
 
     const tokens = orderedResearchRoleTokens([industry, overview.description].filter(Boolean).join(' '));
     for (const size of [3, 2]) {
@@ -1294,6 +1308,7 @@ function buildProfileDerivedResearchRoles(args: {
         const phrase = phraseTokens.join(' ');
         const themeOverlap = researchTokenOverlapScore(phrase, args.theme);
         const sourceOverlap = researchTokenOverlapScore(sourceText, phrase);
+        if (themeOverlap <= 0 && sourceOverlap <= 0) continue;
         const phraseWeight = 10 + Math.min(12, themeOverlap * 5) + Math.min(10, sourceOverlap * 4);
         addProfileRolePhrase(phraseMap, symbol, phrase, args.theme, phraseWeight, sourceOverlap > 0);
       }
@@ -5771,7 +5786,7 @@ export async function executeTool(
               return !issue;
             });
         selectionNotes.push(`Universe validation: ${validatedSelectionCandidateData.length}/${selectionCandidateData.length} candidates remained active/provider-confirmed.`);
-        if (lockedSymbols.length === 0 && validatedSelectionCandidateData.length > 0) {
+        if (validatedSelectionCandidateData.length > 0) {
           const concreteEvidenceSymbols = (candidates: ResearchCandidateData[], sourceFilter?: string) => new Set(
             candidates
               .filter((candidate) => normalizeStoredResearchSourceEvidence(candidate.sourceEvidence).some((evidence) =>

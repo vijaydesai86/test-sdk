@@ -250,6 +250,37 @@ async function testProvisionalAllocationExcludesRejectedNames() {
   assert.ok(!allocationSection.includes('BAD Corp (BAD)'), allocationSection);
 }
 
+async function testGenericSectorLabelSupportsThemeButNotRole() {
+  const selection = await selectResearchUniverse({
+    query: 'AI infrastructure',
+    finalCount: 1,
+    candidates: [
+      candidate('AMAT', 'Wafer fabrication and materials engineering equipment used to manufacture advanced AI data center semiconductors', {
+        overview: { name: 'AMAT Corp', sector: 'Technology', industry: 'Semiconductors', description: 'Wafer fabrication and materials engineering equipment used to manufacture advanced AI data center semiconductors', marketCapitalization: 180_000_000_000, forwardPE: 25 },
+      }),
+      candidate('VEEV', 'Life sciences CRM and regulated healthcare content management software', {
+        overview: { name: 'VEEV Corp', sector: 'Health Care', industry: 'Health Information Services', description: 'Life sciences CRM and regulated healthcare content management software', marketCapitalization: 30_000_000_000, forwardPE: 35 },
+      }),
+    ],
+    llmFill: async () => JSON.stringify({
+      candidates: [
+        { symbol: 'AMAT', themeScore: 82, fit: 'strong_adjacent', evidenceLevel: 'enabler', evidenceConfidence: 82, subtheme: 'Semiconductors', rationale: 'Profile supports AI infrastructure manufacturing equipment exposure.' },
+        { symbol: 'VEEV', themeScore: 8, fit: 'reject', evidenceLevel: 'unrelated', evidenceConfidence: 90, subtheme: 'Health Care', rationale: 'No material AI infrastructure exposure.' },
+      ],
+    }),
+  });
+
+  const amat = selection.candidates.find((item) => item.symbol === 'AMAT');
+  const veev = selection.candidates.find((item) => item.symbol === 'VEEV');
+  assert.ok(amat, 'expected AMAT diagnostics');
+  assert.ok(veev, 'expected VEEV diagnostics');
+  assert.deepEqual(selection.selectedSymbols, ['AMAT']);
+  assert.ok(amat.themeScore >= 70, 'generic sector label should not collapse theme score: ' + amat.themeScore);
+  assert.notEqual(amat.subtheme, 'Semiconductors', 'provider sector label must not become the theme role');
+  assert.equal(veev.themeFit, 'reject');
+  assert.notEqual(veev.subtheme, 'Health Care', 'unrelated provider sector label must not become a theme role');
+}
+
 async function testProviderGroupsDoNotDriveFallbackMap() {
   const selection = await selectResearchUniverse({
     query: 'AI infrastructure',
@@ -318,6 +349,7 @@ async function main() {
   await testReadinessUsesSelectedRolesNotPlannedRoles();
   await testFacetEvidenceKeepsCanonicalRole();
   await testProvisionalAllocationExcludesRejectedNames();
+  await testGenericSectorLabelSupportsThemeButNotRole();
   await testProviderGroupsDoNotDriveFallbackMap();
   await testThemeFitBeatsUnrelatedFinancialQuality();
   console.log('research universe selector smoke tests passed');
