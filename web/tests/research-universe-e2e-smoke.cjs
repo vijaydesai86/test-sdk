@@ -667,6 +667,87 @@ async function runLimitedRoleProvisionalDataScenario() {
   }
 }
 
+async function runUpdatePreservesPriorScreenedPoolScenario() {
+  await fs.rm(testRoot, { recursive: true, force: true });
+  const priorSymbols = BROAD_ONLY_SYMBOLS.slice(0, 45);
+  const priorContent = [
+    '# Research Report: AI infrastructure',
+    '',
+    'Generated: 2026-06-04T06:25:05.723Z',
+    '',
+    '## Research Methodology',
+    '**Initial candidates screened:** ' + priorSymbols.join(', '),
+    '',
+    'Refined to 7 companies: NVDA, MSFT, AMZN, ANET, CSCO, AMD, INTC',
+  ].join('\n');
+  const previous = {
+    id: 'prior-ai-infra',
+    filename: 'ai-infrastructure-research-report.md',
+    title: 'Research Report: AI infrastructure',
+    content: priorContent,
+    reportKind: 'research',
+    metadata: {
+      version: 1,
+      kind: 'research',
+      query: 'AI infrastructure',
+      symbols: ['NVDA', 'MSFT', 'AMZN', 'ANET', 'CSCO', 'AMD', 'INTC'],
+      range: '1y',
+      generatedAt: '2026-06-04T06:25:05.723Z',
+      coverage: {},
+      checkpoint: {},
+      missingData: [],
+      researchUniverse: {
+        status: 'refining',
+        selectedSymbols: ['NVDA', 'MSFT', 'AMZN', 'ANET', 'CSCO', 'AMD', 'INTC'],
+        qualifiedSymbols: ['NVDA', 'MSFT', 'AMZN', 'ANET', 'CSCO', 'AMD', 'INTC'],
+        requiredDimensions: [
+          { label: 'compute accelerators', required: true },
+          { label: 'cloud/data-center operators', required: true },
+          { label: 'networking/connectivity', required: true },
+          { label: 'semiconductor equipment', required: true },
+        ],
+        roles: [
+          { label: 'Compute accelerators', query: 'AI infrastructure compute accelerators', dimensions: ['compute accelerators'] },
+          { label: 'Cloud/data-center operators', query: 'AI infrastructure cloud data center operators', dimensions: ['cloud/data-center operators'] },
+          { label: 'Networking/connectivity', query: 'AI infrastructure networking connectivity', dimensions: ['networking/connectivity'] },
+          { label: 'Semiconductor equipment', query: 'AI infrastructure semiconductor equipment', dimensions: ['semiconductor equipment'] },
+        ],
+        candidates: ['NVDA', 'MSFT', 'AMZN', 'ANET', 'CSCO', 'AMD', 'INTC'].map((symbol) => ({
+          symbol,
+          selected: true,
+          qualified: true,
+          sourceFacets: ['Prior selected candidate'],
+          sourceEvidence: [{ role: 'Prior selected candidate', level: 'enabler', rationale: 'Prior selected universe.', confidence: 80 }],
+        })),
+      },
+    },
+  };
+
+  const result = await executeTool(
+    'generate_research_report',
+    { sector: 'AI infrastructure', range: '1y', count: 15, updateMode: true, updateSourceReport: previous },
+    createBroadOnlyFailureService(),
+    {
+      deadlineAt: Date.now() + 240000,
+      async llmFill(prompt) {
+        if (prompt.includes('Build a verified-candidate proposal')) return '{}';
+        if (prompt.includes('List exactly') || prompt.includes('Name 45')) return JSON.stringify(['FIP', 'AIIA']);
+        if (prompt.includes('deep research ecosystem analysis')) return '{}';
+        return '{}';
+      },
+    }
+  );
+
+  assert.equal(result.success, true, result.error || 'update research report failed');
+  const initial = result.data.runMetadata.researchUniverse.initialCandidates || [];
+  assert.ok(initial.length >= 40, 'expected update to preserve prior screened pool, got ' + initial.length + ': ' + initial.join(', '));
+  assert.ok(initial.includes('NVDA') && initial.includes('HPE') && initial.includes('DELL'), 'expected prior body-screened candidates to seed update: ' + initial.join(', '));
+  assert.match(result.data.content, /resolver identified 45 verified initial listed candidates/i);
+  assert.match(result.data.content, /Resumed 45 prior screened candidates from saved research metadata\/content/);
+  await fs.rm(testRoot, { recursive: true, force: true });
+  console.log('research update preserved prior screened pool with ' + initial.length + ' initial candidates');
+}
+
 async function runNearReadyProvisionalScenario() {
   await fs.rm(testRoot, { recursive: true, force: true });
   const priorDebug = process.env.DEBUG;
@@ -767,6 +848,7 @@ async function main() {
   await runBroadOnlyClassifierRescueScenario();
   await runLimitedRoleProvisionalDataScenario();
   await runNearReadyProvisionalScenario();
+  await runUpdatePreservesPriorScreenedPoolScenario();
   await runGenericFallbackCheckpointScenario();
 }
 

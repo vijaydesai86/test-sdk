@@ -90,6 +90,7 @@ export interface ReportRunMetadata {
   improveHistory?: ReportImproveHistoryEntry[];
   researchUniverse?: {
     status?: 'discovering' | 'refining' | 'locked' | 'failed';
+    initialCandidates?: string[];
     selectedSymbols: string[];
     qualifiedSymbols: string[];
     requiredDimensions?: Array<{

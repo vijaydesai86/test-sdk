@@ -780,6 +780,60 @@ function normalizeStoredResearchSourceEvidence(value: any): ResearchSourceEviden
     .filter((item: ResearchSourceEvidence | null): item is ResearchSourceEvidence => Boolean(item?.role));
 }
 
+function normalizeResearchSymbolList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return Array.from(new Set(
+    value
+      .map((item) => normalizeTickerCandidate(item))
+      .filter(Boolean) as string[]
+  ));
+}
+
+function extractResearchInitialCandidatesFromContent(content: unknown): string[] {
+  const text = typeof content === 'string' ? content : '';
+  if (!text) return [];
+  const patterns = [
+    /\*\*Initial candidates screened:\*\*\s*([^\n]+)/i,
+    /Initial candidates screened:\s*([^\n]+)/i,
+    /Initial candidates discovered:\s*([^\n]+)/i,
+    /Initial candidates:\s*([^\n]+)/i,
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (!match?.[1]) continue;
+    const symbols = match[1]
+      .replace(/\.$/, '')
+      .split(/[,;]/)
+      .map((token) => {
+        const raw = token.trim().split(/\s+/)[0];
+        if (/^(none|n\/?a)$/i.test(raw)) return undefined;
+        return normalizeTickerCandidate(raw);
+      })
+      .filter(Boolean) as string[];
+    if (symbols.length) return Array.from(new Set(symbols));
+  }
+  return [];
+}
+
+function collectPreviousResearchSeedSymbols(previousUniverse: any, previousContent?: string): string[] {
+  const progressCandidates = Array.isArray(previousUniverse?.progress?.candidates)
+    ? previousUniverse.progress.candidates
+    : [];
+  const storedCandidates = Array.isArray(previousUniverse?.candidates)
+    ? previousUniverse.candidates
+    : [];
+  const progressSymbols = normalizeResearchSymbolList(progressCandidates.map((candidate: any) => candidate?.symbol));
+  const candidateSymbols = normalizeResearchSymbolList(storedCandidates.map((candidate: any) => candidate?.symbol));
+  return Array.from(new Set([
+    ...normalizeResearchSymbolList(previousUniverse?.initialCandidates),
+    ...extractResearchInitialCandidatesFromContent(previousContent),
+    ...progressSymbols,
+    ...candidateSymbols,
+    ...normalizeResearchSymbolList(previousUniverse?.selectedSymbols),
+    ...normalizeResearchSymbolList(previousUniverse?.qualifiedSymbols),
+  ]));
+}
+
 function buildResearchPipelineCheckpoint(args: {
   targetFinalCount: number;
   candidatePoolCount: number;
@@ -1459,11 +1513,16 @@ async function resolveResearchCandidateSeeds(args: {
   stockService?: StockDataService;
   deadlineAt?: number;
   previousUniverse?: any;
+  previousContent?: string;
 }): Promise<{ seeds: ResearchCandidateSeed[]; facets: ResearchThemeFacetPlan[]; requiredDimensions: ResearchRequiredDimension[]; notes: string[]; usedFallbackTaxonomy: boolean }> {
   const notes: string[] = [];
   const seedMap = new Map<string, Set<string>>();
   const evidenceMap = new Map<string, ResearchSourceEvidence[]>();
   const companyNameMap = new Map<string, Set<string>>();
+  const previousSeedSymbols = collectPreviousResearchSeedSymbols(args.previousUniverse, args.previousContent);
+  for (const symbol of previousSeedSymbols) {
+    seedMap.set(symbol, new Set(['Prior screened candidate']));
+  }
   const previousCandidates = Array.isArray(args.previousUniverse?.candidates) ? args.previousUniverse.candidates : [];
   for (const item of previousCandidates) {
     const symbol = normalizeTickerCandidate(item?.symbol);
@@ -1471,10 +1530,12 @@ async function resolveResearchCandidateSeeds(args: {
     const facetsForSymbol = Array.isArray(item?.sourceFacets) && item.sourceFacets.length
       ? item.sourceFacets.map((facet: unknown) => sanitizeResearchFacetLabel(facet)).filter(Boolean)
       : ['Prior candidate'];
-    seedMap.set(symbol, new Set(facetsForSymbol));
-    evidenceMap.set(symbol, normalizeStoredResearchSourceEvidence(item?.sourceEvidence));
+    const existingFacets = seedMap.get(symbol) || new Set<string>();
+    for (const facet of facetsForSymbol) existingFacets.add(facet);
+    seedMap.set(symbol, existingFacets);
+    const existingEvidence = evidenceMap.get(symbol) || [];
+    evidenceMap.set(symbol, [...existingEvidence, ...normalizeStoredResearchSourceEvidence(item?.sourceEvidence)]);
   }
-  let facets: ResearchThemeFacetPlan[] = [];
   let usedFallbackTaxonomy = false;
   let requiredDimensions: ResearchRequiredDimension[] = Array.isArray(args.previousUniverse?.requiredDimensions)
     ? args.previousUniverse.requiredDimensions
@@ -1486,6 +1547,38 @@ async function resolveResearchCandidateSeeds(args: {
         }))
         .filter((item: ResearchRequiredDimension) => item.label)
     : [];
+  let facets: ResearchThemeFacetPlan[] = Array.isArray(args.previousUniverse?.roles)
+    ? args.previousUniverse.roles
+        .map((role: any) => {
+          const label = sanitizeResearchFacetLabel(role?.label || role?.query);
+          if (!label || isBroadResearchRole(label)) return null;
+          return {
+            label,
+            query: sanitizeResearchFacetLabel(role?.query || label) || label,
+            role: label,
+            definition: typeof role?.definition === 'string' ? role.definition.slice(0, 240) : undefined,
+            required: role?.required !== false,
+            dimensions: parseStringArray(role?.dimensions, 5),
+            searchQueries: parseStringArray(role?.searchQueries || role?.queries, 5),
+            candidates: [],
+          } as ResearchThemeFacetPlan;
+        })
+        .filter((item: ResearchThemeFacetPlan | null): item is ResearchThemeFacetPlan => Boolean(item))
+    : [];
+  if (previousSeedSymbols.length) {
+    notes.push(
+      'Resumed ' + previousSeedSymbols.length + ' prior screened candidate' +
+      (previousSeedSymbols.length === 1 ? '' : 's') +
+      ' from saved research metadata/content.'
+    );
+  }
+  if (facets.length) {
+    notes.push(
+      'Resumed ' + facets.length + ' prior concrete role bucket' +
+      (facets.length === 1 ? '' : 's') +
+      ' for unlocked research refinement.'
+    );
+  }
   let nameOnlyLookups = 0;
   const maxNameOnlyLookups = Math.max(3, Math.min(12, Math.ceil(args.targetCount / 4)));
 
@@ -1515,7 +1608,9 @@ async function resolveResearchCandidateSeeds(args: {
         if (parsedPlan.facets.length >= Math.min(3, RESEARCH_THEME_FACET_COUNT)) break;
         notes.push(`Theme taxonomy attempt ${attempt + 1} returned ${parsedPlan.facets.length} concrete role bucket${parsedPlan.facets.length === 1 ? '' : 's'}; retrying before generic fallback.`);
       }
-      facets = parsedPlan.facets.slice(0, RESEARCH_THEME_FACET_COUNT);
+      if (parsedPlan.facets.length) {
+        facets = parsedPlan.facets.slice(0, RESEARCH_THEME_FACET_COUNT);
+      }
       if (parsedPlan.requiredDimensions.length) {
         const mergedDimensions = new Map(requiredDimensions.map((dimension) => [dimension.label.toLowerCase(), dimension]));
         for (const dimension of parsedPlan.requiredDimensions) {
@@ -1551,7 +1646,7 @@ async function resolveResearchCandidateSeeds(args: {
           }
         }
       }
-      if (facets.length) {
+      if (parsedPlan.facets.length) {
         notes.push(`Theme taxonomy generated ${facets.length} role bucket${facets.length === 1 ? '' : 's'} for candidate discovery.`);
       }
     } catch (error: any) {
@@ -5384,6 +5479,7 @@ export async function executeTool(
               stockService,
               deadlineAt,
               previousUniverse: updateContext.previous?.metadata?.researchUniverse,
+              previousContent: updateContext.previous?.content,
             });
         const taxonomyAvailable = !candidateDiscovery.usedFallbackTaxonomy;
         let classificationRequiredDimensions = taxonomyAvailable ? candidateDiscovery.requiredDimensions : [];
@@ -5695,6 +5791,7 @@ export async function executeTool(
             ],
             researchUniverse: {
               status: universeReadiness.status,
+              initialCandidates: normalizedInitialCandidates,
               selectedSymbols: universeSelection.selectedSymbols,
               qualifiedSymbols: universeSelection.qualifiedSymbols,
               requiredDimensions: classificationRequiredDimensions,
@@ -6325,6 +6422,7 @@ export async function executeTool(
           notes,
           researchUniverse: universeSelection ? {
             status: lockedSymbols.length > 0 ? 'locked' : universeReadiness.status,
+            initialCandidates: lockedSymbols.length > 0 ? undefined : normalizedInitialCandidates,
             selectedSymbols: universeSelection.selectedSymbols,
             qualifiedSymbols: universeSelection.qualifiedSymbols,
             requiredDimensions: classificationRequiredDimensions,
